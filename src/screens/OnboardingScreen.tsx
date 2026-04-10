@@ -21,10 +21,6 @@ const MASKED_SENTINEL = "••••••••";
 
 type ValidationState = "idle" | "loading" | "success" | "error";
 
-interface StepValidation {
-  state: ValidationState;
-  message: string;
-}
 
 interface OnboardingScreenProps {
   onComplete: () => void;

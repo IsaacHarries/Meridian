@@ -401,6 +401,8 @@ Ran the integration test suite locally. All passing.`,
     taskCount: 1,
     url: "https://bitbucket.org/example/repo/pull-requests/87",
     jiraIssueKey: "PROJ-143",
+    changesRequested: false,
+    draft: false,
   },
   {
     id: 88,
@@ -429,6 +431,8 @@ Uses a test double for the payment provider's webhook signature verification.`,
     taskCount: 0,
     url: "https://bitbucket.org/example/repo/pull-requests/88",
     jiraIssueKey: "PROJ-146",
+    changesRequested: false,
+    draft: false,
   },
   {
     id: 89,
@@ -456,6 +460,8 @@ Validates uploaded files on both frontend (before upload) and backend (before pr
     taskCount: 0,
     url: "https://bitbucket.org/example/repo/pull-requests/89",
     jiraIssueKey: "PROJ-148",
+    changesRequested: false,
+    draft: false,
   },
 ];
 
@@ -475,6 +481,8 @@ export const MERGED_PRS: BitbucketPr[] = [
     taskCount: 0,
     url: "https://bitbucket.org/example/repo/pull-requests/84",
     jiraIssueKey: "PROJ-141",
+    changesRequested: false,
+    draft: false,
   },
   {
     id: 85,
@@ -491,6 +499,8 @@ export const MERGED_PRS: BitbucketPr[] = [
     taskCount: 0,
     url: "https://bitbucket.org/example/repo/pull-requests/85",
     jiraIssueKey: "PROJ-144",
+    changesRequested: false,
+    draft: false,
   },
   {
     id: 86,
@@ -507,6 +517,8 @@ export const MERGED_PRS: BitbucketPr[] = [
     taskCount: 0,
     url: "https://bitbucket.org/example/repo/pull-requests/86",
     jiraIssueKey: "PROJ-151",
+    changesRequested: false,
+    draft: false,
   },
 ];
 

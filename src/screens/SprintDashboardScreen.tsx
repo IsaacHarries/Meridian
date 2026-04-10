@@ -341,13 +341,11 @@ function HealthSummaryCard({
   issues,
   sprint,
   openPrs,
-  mergedPrs,
   prTasks,
 }: {
   issues: JiraIssue[];
   sprint: { startDate?: string | null; endDate?: string | null } | null;
   openPrs: BitbucketPr[];
-  mergedPrs: BitbucketPr[];
   prTasks: Map<number, BitbucketTask[]>;
 }) {
   const progress    = sprintProgress(sprint);
@@ -850,10 +848,8 @@ function buildDevStats(
 
 function DevRow({
   dev,
-  maxPts,
 }: {
   dev: DevStats;
-  maxPts: number;
 }) {
   const [expanded, setExpanded] = useState(false);
 
@@ -974,8 +970,6 @@ function TeamPerformanceCard({
 }: {
   devStats: DevStats[];
 }) {
-  const maxPts = Math.max(...devStats.map((d) => d.assignedPts), 1);
-
   return (
     <Card>
       <CardHeader className="pb-3">
@@ -989,7 +983,7 @@ function TeamPerformanceCard({
         ) : (
           <>
             {devStats.map((dev) => (
-              <DevRow key={dev.name} dev={dev} maxPts={maxPts} />
+              <DevRow key={dev.name} dev={dev} />
             ))}
             <div className="flex items-center gap-4 pt-3 pb-1 px-1 border-t mt-1">
               <span className="text-[10px] text-muted-foreground">Legend:</span>
@@ -1108,7 +1102,6 @@ export function SprintDashboardScreen({ onBack }: SprintDashboardScreenProps) {
               issues={data.issues}
               sprint={data.sprint}
               openPrs={data.openPrs}
-              mergedPrs={data.mergedPrs}
               prTasks={data.prTasks}
             />
             <SprintOverview
