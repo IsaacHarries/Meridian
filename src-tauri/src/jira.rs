@@ -57,8 +57,10 @@ pub struct JiraClient {
 
 impl JiraClient {
     pub fn new(base_url: String, email: String, api_token: String) -> Result<Self, String> {
-        let client = Client::builder()
+        let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(15))
+            .redirect(reqwest::redirect::Policy::none())
+            .use_native_tls()
             .build()
             .map_err(|e| format!("HTTP client error: {e}"))?;
         Ok(Self {
@@ -78,6 +80,7 @@ impl JiraClient {
             .client
             .get(url)
             .basic_auth(&self.email, Some(&self.api_token))
+            .header("Accept", "application/json")
             .send()
             .await
             .map_err(|e| {
@@ -88,16 +91,100 @@ impl JiraClient {
                 }
             })?;
 
-        match resp.status() {
+        let status = resp.status();
+
+        // Catch redirects before consuming the body — a redirect here almost always
+        // means the request was sent to an OAuth/SAML login page.
+        if status.is_redirection() {
+            let location = resp
+                .headers()
+                .get("location")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("(no location header)")
+                .to_string();
+            return Err(format!(
+                "JIRA redirected the request to {location} (HTTP {status}). \
+                 This usually means your workspace URL is wrong, or your organisation \
+                 uses a proxy/SSO that intercepts API calls. \
+                 Check your workspace URL in Settings."
+            ));
+        }
+
+        let www_auth = resp
+            .headers()
+            .get("www-authenticate")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_string();
+
+        match status {
             StatusCode::OK => resp
                 .json::<Value>()
                 .await
                 .map_err(|e| format!("Failed to parse JIRA response: {e}")),
-            StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => {
-                Err("JIRA authentication failed. Check your credentials in Settings.".to_string())
+            StatusCode::UNAUTHORIZED => {
+                let body = resp.text().await.unwrap_or_default();
+                let body_excerpt = if body.len() > 400 { &body[..400] } else { &body };
+                let detail = serde_json::from_str::<Value>(&body)
+                    .ok()
+                    .and_then(|v| {
+                        v["message"].as_str()
+                            .or_else(|| v["errorMessages"].get(0).and_then(|m| m.as_str()))
+                            .map(str::to_string)
+                    });
+                let mut parts = vec![format!("JIRA returned 401 Unauthorized for {url}.")];
+                if !www_auth.is_empty() {
+                    parts.push(format!("WWW-Authenticate: {www_auth}"));
+                }
+                if let Some(d) = detail {
+                    parts.push(format!("JIRA message: \"{d}\""));
+                } else if !body_excerpt.is_empty() {
+                    parts.push(format!("Body: {body_excerpt}"));
+                }
+                parts.push(
+                    "Check your email and API token in Settings — the token may have \
+                     expired or been revoked. Generate a new one at \
+                     id.atlassian.com → Security → API tokens."
+                        .to_string(),
+                );
+                Err(parts.join("\n"))
             }
-            StatusCode::NOT_FOUND => Err(format!("JIRA resource not found: {url}")),
-            s => Err(format!("JIRA returned unexpected status {s}")),
+            StatusCode::FORBIDDEN => {
+                let body = resp.text().await.unwrap_or_default();
+                let body_excerpt = if body.len() > 400 { &body[..400] } else { &body };
+                let detail = serde_json::from_str::<Value>(&body)
+                    .ok()
+                    .and_then(|v| {
+                        v["message"].as_str()
+                            .or_else(|| v["errorMessages"].get(0).and_then(|m| m.as_str()))
+                            .map(str::to_string)
+                    });
+                let mut parts = vec![format!("JIRA returned 403 Forbidden for {url}.")];
+                if !www_auth.is_empty() {
+                    parts.push(format!("WWW-Authenticate: {www_auth}"));
+                }
+                if let Some(d) = detail {
+                    parts.push(format!("JIRA message: \"{d}\""));
+                } else if !body_excerpt.is_empty() {
+                    parts.push(format!("Body: {body_excerpt}"));
+                }
+                parts.push(
+                    "Your account may lack permission to access this board or resource. \
+                     Check that the board ID in Settings is correct and that your account \
+                     has Browse Projects and Agile board permissions in JIRA."
+                        .to_string(),
+                );
+                Err(parts.join("\n"))
+            }
+            StatusCode::NOT_FOUND => Err(format!(
+                "JIRA resource not found (404): {url} — \
+                 check your board ID in Settings and ensure the board exists."
+            )),
+            s => {
+                let body = resp.text().await.unwrap_or_default();
+                let body_excerpt = if body.len() > 400 { &body[..400] } else { &body };
+                Err(format!("JIRA returned unexpected status {s} for {url}.\nBody: {body_excerpt}"))
+            }
         }
     }
 
@@ -117,13 +204,21 @@ impl JiraClient {
         board_id: i64,
         limit: usize,
     ) -> Result<Vec<JiraSprint>, String> {
+        // Fetch a larger page — the Agile API returns sprints oldest-first and
+        // there is no sort parameter, so we fetch up to 200 and sort client-side
+        // to guarantee the most recent sprints are returned.
+        let fetch_limit = 200.max(limit);
         let url = self.url(&format!(
-            "/rest/agile/1.0/board/{board_id}/sprint?state=closed&maxResults={limit}"
+            "/rest/agile/1.0/board/{board_id}/sprint?state=closed&maxResults={fetch_limit}"
         ));
         let body = self.get_json(&url).await?;
         let values = body["values"].as_array().cloned().unwrap_or_default();
         let mut sprints: Vec<JiraSprint> = values.iter().map(parse_sprint).collect();
-        sprints.reverse(); // most recent first
+        // Sort by endDate descending — most recently completed sprint first.
+        sprints.sort_by(|a, b| {
+            b.end_date.as_deref().unwrap_or("").cmp(a.end_date.as_deref().unwrap_or(""))
+        });
+        sprints.truncate(limit);
         Ok(sprints)
     }
 
@@ -153,13 +248,37 @@ impl JiraClient {
         jql: &str,
         max_results: usize,
     ) -> Result<Vec<JiraIssue>, String> {
-        let fields = issue_fields();
-        // Build query string manually to avoid adding urlencoding dep
-        let encoded_jql = percent_encode(jql);
-        let url = self.url(&format!(
-            "/rest/api/3/search?jql={encoded_jql}&maxResults={max_results}&fields={fields}"
-        ));
-        let body = self.get_json(&url).await?;
+        let fields: Vec<&str> = issue_fields().split(',').collect();
+        let url = self.url("/rest/api/3/search/jql");
+        let payload = serde_json::json!({
+            "jql": jql,
+            "maxResults": max_results,
+            "fields": fields,
+        });
+        let resp = self
+            .client
+            .post(&url)
+            .basic_auth(&self.email, Some(&self.api_token))
+            .header("Accept", "application/json")
+            .header("Content-Type", "application/json")
+            .json(&payload)
+            .send()
+            .await
+            .map_err(|e| format!("Request failed: {e}"))?;
+
+        let status = resp.status();
+        if status.is_redirection() {
+            let location = resp.headers().get("location")
+                .and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
+            return Err(format!("JIRA redirected search to {location}"));
+        }
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            let excerpt = if body.len() > 400 { &body[..400] } else { &body };
+            return Err(format!("JIRA search returned {status}. Body: {excerpt}"));
+        }
+        let body = resp.json::<serde_json::Value>().await
+            .map_err(|e| format!("Failed to parse JIRA search response: {e}"))?;
         let issues = body["issues"].as_array().cloned().unwrap_or_default();
         Ok(issues.iter().map(|i| parse_issue(i, &self.base_url)).collect())
     }
@@ -305,36 +424,3 @@ fn collect_adf_text(node: &Value) -> String {
     String::new()
 }
 
-/// Minimal percent-encoding for JQL query strings (encodes spaces and common special chars).
-fn percent_encode(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for byte in s.bytes() {
-        match byte {
-            b'A'..=b'Z'
-            | b'a'..=b'z'
-            | b'0'..=b'9'
-            | b'-'
-            | b'_'
-            | b'.'
-            | b'~'
-            | b'='
-            | b'('
-            | b')'
-            | b'"'
-            | b'\''
-            | b','
-            | b' ' => {
-                if byte == b' ' {
-                    out.push('+');
-                } else {
-                    out.push(byte as char);
-                }
-            }
-            _ => {
-                out.push('%');
-                out.push_str(&format!("{byte:02X}"));
-            }
-        }
-    }
-    out
-}

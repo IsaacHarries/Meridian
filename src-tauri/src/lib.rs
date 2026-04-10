@@ -1,10 +1,11 @@
 pub mod bitbucket;
 pub mod commands;
+pub mod http;
 pub mod jira;
 
 use commands::{
-    credential_status, delete_credential, save_credential, validate_anthropic, validate_bitbucket,
-    validate_jira, assess_ticket_quality, generate_standup_briefing, generate_sprint_retrospective,
+    credential_status, delete_credential, save_credential, get_non_secret_config, validate_anthropic, validate_bitbucket,
+    validate_jira, test_anthropic_stored, test_jira_stored, test_bitbucket_stored, debug_jira_endpoints, assess_ticket_quality, generate_standup_briefing, generate_sprint_retrospective,
     generate_workload_suggestions, review_pr,
     // Agent pipeline
     run_grooming_agent, run_impact_analysis, run_triage_turn, finalize_implementation_plan,
@@ -14,7 +15,7 @@ use commands::{
     get_active_sprint, get_active_sprint_issues, get_completed_sprints, get_issue,
     get_my_sprint_issues, get_sprint_issues, get_sprint_issues_by_id, search_jira_issues,
     // Bitbucket data commands
-    get_open_prs, get_merged_prs, get_pr, get_pr_comments, get_pr_diff, get_prs_for_review,
+    get_open_prs, get_merged_prs, get_pr, get_pr_comments, get_pr_diff, get_pr_tasks, get_prs_for_review,
     // Knowledge base
     load_knowledge_entries, save_knowledge_entry, delete_knowledge_entry, export_knowledge_markdown,
     // Agent skills
@@ -50,10 +51,15 @@ pub fn run() {
             credential_status,
             save_credential,
             delete_credential,
+            get_non_secret_config,
             // Validation
             validate_anthropic,
             validate_jira,
             validate_bitbucket,
+            test_anthropic_stored,
+            test_jira_stored,
+            test_bitbucket_stored,
+            debug_jira_endpoints,
             // JIRA
             get_active_sprint,
             get_active_sprint_issues,
@@ -70,6 +76,7 @@ pub fn run() {
             get_pr,
             get_pr_diff,
             get_pr_comments,
+            get_pr_tasks,
             // Knowledge base
             load_knowledge_entries,
             save_knowledge_entry,

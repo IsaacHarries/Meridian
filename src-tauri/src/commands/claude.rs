@@ -3,16 +3,14 @@ use serde_json::json;
 use std::time::Duration;
 
 use super::credentials::get_credential;
+use crate::http::make_corporate_client;
 
 const HAIKU: &str = "claude-haiku-4-5-20251001";
 
 fn claude_client() -> Result<(Client, String), String> {
     let api_key = get_credential("anthropic_api_key")
         .ok_or("Anthropic API key not configured. Check Settings.")?;
-    let client = Client::builder()
-        .timeout(Duration::from_secs(60))
-        .build()
-        .map_err(|e| format!("HTTP client error: {e}"))?;
+    let client = make_corporate_client(Duration::from_secs(60))?;
     Ok((client, api_key))
 }
 

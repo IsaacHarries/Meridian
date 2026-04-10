@@ -10,7 +10,7 @@ pub mod skills;
 pub mod validate;
 
 pub use bitbucket::{
-    get_merged_prs, get_open_prs, get_pr, get_pr_comments, get_pr_diff, get_prs_for_review,
+    get_merged_prs, get_open_prs, get_pr, get_pr_comments, get_pr_diff, get_pr_tasks, get_prs_for_review,
 };
 pub use claude::{
     assess_ticket_quality, generate_standup_briefing, generate_sprint_retrospective,
@@ -20,7 +20,7 @@ pub use claude::{
     run_implementation_guidance, run_test_suggestions, run_plan_review,
     run_pr_description_gen, run_retrospective_agent,
 };
-pub use credentials::{credential_status, delete_credential, save_credential};
+pub use credentials::{credential_status, delete_credential, save_credential, get_non_secret_config};
 pub use jira::{
     get_active_sprint, get_active_sprint_issues, get_completed_sprints, get_issue,
     get_my_sprint_issues, get_sprint_issues, get_sprint_issues_by_id, search_jira_issues,
@@ -29,4 +29,4 @@ pub use knowledge::{
     delete_knowledge_entry, export_knowledge_markdown, load_knowledge_entries, save_knowledge_entry,
 };
 pub use skills::{load_agent_skills, save_agent_skill, delete_agent_skill};
-pub use validate::{validate_anthropic, validate_bitbucket, validate_jira};
+pub use validate::{validate_anthropic, validate_bitbucket, validate_jira, test_anthropic_stored, test_jira_stored, test_bitbucket_stored, debug_jira_endpoints};

@@ -1,7 +1,3 @@
-// Credentials are stored as JSON in the Tauri app data directory.
-// The path is initialised once at startup via init_credentials_path().
-// Values are never returned to the frontend.
-
 use std::collections::HashMap;
 use std::fs;
 use std::sync::OnceLock;
@@ -48,9 +44,22 @@ const ALLOWED_KEYS: &[&str] = &[
     "jira_email",
     "jira_api_token",
     "jira_board_id",
+    "jira_account_id",
     "bitbucket_workspace",
+    "bitbucket_email",
     "bitbucket_access_token",
     "bitbucket_username",
+    "bitbucket_repo_slug",
+];
+
+/// Keys whose values may be returned to the frontend (not secrets).
+const NON_SECRET_KEYS: &[&str] = &[
+    "jira_base_url",
+    "jira_email",
+    "jira_board_id",
+    "jira_account_id",
+    "bitbucket_workspace",
+    "bitbucket_email",
     "bitbucket_repo_slug",
 ];
 
@@ -63,23 +72,19 @@ pub struct CredentialStatus {
     pub jira_api_token: bool,
     pub jira_board_id: bool,
     pub bitbucket_workspace: bool,
+    pub bitbucket_email: bool,
     pub bitbucket_access_token: bool,
     pub bitbucket_repo_slug: bool,
 }
 
 impl CredentialStatus {
-    pub fn anthropic_complete(&self) -> bool {
-        self.anthropic_api_key
-    }
-
+    pub fn anthropic_complete(&self) -> bool { self.anthropic_api_key }
     pub fn jira_complete(&self) -> bool {
         self.jira_base_url && self.jira_email && self.jira_api_token && self.jira_board_id
     }
-
     pub fn bitbucket_complete(&self) -> bool {
-        self.bitbucket_workspace && self.bitbucket_access_token && self.bitbucket_repo_slug
+        self.bitbucket_workspace && self.bitbucket_email && self.bitbucket_access_token && self.bitbucket_repo_slug
     }
-
     pub fn all_complete(&self) -> bool {
         self.anthropic_complete() && self.jira_complete() && self.bitbucket_complete()
     }
@@ -109,9 +114,26 @@ pub fn credential_status() -> Result<CredentialStatus, String> {
         jira_api_token: has("jira_api_token"),
         jira_board_id: has("jira_board_id"),
         bitbucket_workspace: has("bitbucket_workspace"),
+        bitbucket_email: has("bitbucket_email"),
         bitbucket_access_token: has("bitbucket_access_token"),
         bitbucket_repo_slug: has("bitbucket_repo_slug"),
     })
+}
+
+/// Return only non-secret stored values so the UI can pre-populate display fields.
+/// Secret keys (api keys, tokens, passwords) are never included.
+#[tauri::command]
+pub fn get_non_secret_config() -> Result<HashMap<String, String>, String> {
+    let creds = read_all();
+    let result = NON_SECRET_KEYS
+        .iter()
+        .filter_map(|&k| {
+            creds.get(k)
+                .filter(|v| !v.trim().is_empty())
+                .map(|v| (k.to_string(), v.clone()))
+        })
+        .collect();
+    Ok(result)
 }
 
 #[tauri::command]
