@@ -22,7 +22,8 @@ pub use claude::{
 };
 pub use credentials::{credential_status, delete_credential, save_credential, get_non_secret_config};
 pub use jira::{
-    get_active_sprint, get_active_sprint_issues, get_completed_sprints, get_issue,
+    get_active_sprint, get_all_active_sprints, get_all_active_sprint_issues,
+    get_active_sprint_issues, get_completed_sprints, get_issue,
     get_my_sprint_issues, get_sprint_issues, get_sprint_issues_by_id, search_jira_issues,
 };
 pub use knowledge::{

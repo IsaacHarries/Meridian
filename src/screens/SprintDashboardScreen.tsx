@@ -21,8 +21,7 @@ import {
   type JiraIssue,
   type BitbucketPr,
   type BitbucketTask,
-  getActiveSprint,
-  getActiveSprintIssues,
+  getAllActiveSprintIssues,
   getOpenPrs,
   getMergedPrs,
   getPrTasks,
@@ -41,6 +40,13 @@ interface DashboardData {
   openPrs: BitbucketPr[];
   mergedPrs: BitbucketPr[];
   /** tasks keyed by PR id — only fetched for 2+-approval candidates */
+  prTasks: Map<number, BitbucketTask[]>;
+}
+
+interface AllSprintsData {
+  sprints: Array<{ sprint: JiraSprint; issues: JiraIssue[] }>;
+  openPrs: BitbucketPr[];
+  mergedPrs: BitbucketPr[];
   prTasks: Map<number, BitbucketTask[]>;
 }
 
@@ -1007,7 +1013,8 @@ function TeamPerformanceCard({
 // ── Main screen ───────────────────────────────────────────────────────────────
 
 export function SprintDashboardScreen({ onBack }: SprintDashboardScreenProps) {
-  const [data, setData] = useState<DashboardData | null>(null);
+  const [allData, setAllData] = useState<AllSprintsData | null>(null);
+  const [selectedSprintIndex, setSelectedSprintIndex] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -1015,15 +1022,15 @@ export function SprintDashboardScreen({ onBack }: SprintDashboardScreenProps) {
     setLoading(true);
     setError(null);
     try {
-      const sprint = await getActiveSprint();
-      const [issues, openPrs, mergedPrs] = await Promise.all([
-        getActiveSprintIssues(),
+      const sprintIssuesPairs = await getAllActiveSprintIssues();
+      const firstSprint = sprintIssuesPairs[0]?.[0] ?? null;
+
+      const [openPrs, mergedPrs] = await Promise.all([
         getOpenPrs().catch(() => [] as BitbucketPr[]),
-        getMergedPrs(sprint?.startDate ?? undefined).catch(() => [] as BitbucketPr[]),
+        getMergedPrs(firstSprint?.startDate ?? undefined).catch(() => [] as BitbucketPr[]),
       ]);
 
       // Lazily fetch tasks only for PRs that are candidates for Ready for QA
-      // (2+ approvals, no changes requested, not a draft) — avoids N API calls for every PR.
       const candidates = openPrs.filter(
         (pr) =>
           !pr.draft &&
@@ -1040,7 +1047,13 @@ export function SprintDashboardScreen({ onBack }: SprintDashboardScreenProps) {
         }
       }
 
-      setData({ sprint, issues, openPrs, mergedPrs, prTasks });
+      setAllData({
+        sprints: sprintIssuesPairs.map(([sprint, issues]) => ({ sprint, issues })),
+        openPrs,
+        mergedPrs,
+        prTasks,
+      });
+      setSelectedSprintIndex(0);
     } catch (err) {
       setError(String(err));
     } finally {
@@ -1052,11 +1065,25 @@ export function SprintDashboardScreen({ onBack }: SprintDashboardScreenProps) {
     load();
   }, [load]);
 
+  // Derive the currently-selected sprint's data
+  const selected = allData?.sprints[selectedSprintIndex] ?? null;
+  const data: DashboardData | null = selected
+    ? {
+        sprint: selected.sprint,
+        issues: selected.issues,
+        openPrs: allData!.openPrs,
+        mergedPrs: allData!.mergedPrs,
+        prTasks: allData!.prTasks,
+      }
+    : null;
+
   const days = data?.sprint ? daysRemaining(data.sprint.endDate) : null;
   const risks = data ? buildRisks(data.issues, data.openPrs, days) : [];
   const devStats = data
     ? buildDevStats(data.issues, data.openPrs, data.mergedPrs)
     : [];
+
+  const multiSprint = (allData?.sprints.length ?? 0) > 1;
 
   return (
     <div className="min-h-screen bg-background">
@@ -1079,7 +1106,7 @@ export function SprintDashboardScreen({ onBack }: SprintDashboardScreenProps) {
       </header>
 
       <main className="max-w-5xl mx-auto px-6 py-8">
-        {loading && !data && (
+        {loading && !allData && (
           <div className="flex items-center justify-center py-24 text-muted-foreground text-sm gap-2">
             <RefreshCw className="h-4 w-4 animate-spin" />
             Loading sprint data…
@@ -1096,22 +1123,51 @@ export function SprintDashboardScreen({ onBack }: SprintDashboardScreenProps) {
           </div>
         )}
 
-        {data && (
+        {allData && allData.sprints.length === 0 && (
+          <div className="text-center py-24 text-muted-foreground text-sm">
+            No active sprints found for the configured board.
+          </div>
+        )}
+
+        {allData && allData.sprints.length > 0 && (
           <div className="space-y-4">
-            <HealthSummaryCard
-              issues={data.issues}
-              sprint={data.sprint}
-              openPrs={data.openPrs}
-              prTasks={data.prTasks}
-            />
-            <SprintOverview
-              sprint={data.sprint}
-              issues={data.issues}
-              openPrs={data.openPrs}
-              mergedPrs={data.mergedPrs}
-            />
-            <BlockersPanel risks={risks} />
-            <TeamPerformanceCard devStats={devStats} />
+            {/* Sprint selector tabs — only shown when there are multiple active sprints */}
+            {multiSprint && (
+              <div className="flex gap-2 flex-wrap">
+                {allData.sprints.map(({ sprint }, idx) => (
+                  <button
+                    key={sprint.id}
+                    onClick={() => setSelectedSprintIndex(idx)}
+                    className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors border ${
+                      idx === selectedSprintIndex
+                        ? "bg-primary text-primary-foreground border-primary"
+                        : "bg-background text-muted-foreground border-border hover:bg-muted"
+                    }`}
+                  >
+                    {sprint.name}
+                  </button>
+                ))}
+              </div>
+            )}
+
+            {data && (
+              <>
+                <HealthSummaryCard
+                  issues={data.issues}
+                  sprint={data.sprint}
+                  openPrs={data.openPrs}
+                  prTasks={data.prTasks}
+                />
+                <SprintOverview
+                  sprint={data.sprint}
+                  issues={data.issues}
+                  openPrs={data.openPrs}
+                  mergedPrs={data.mergedPrs}
+                />
+                <BlockersPanel risks={risks} />
+                <TeamPerformanceCard devStats={devStats} />
+              </>
+            )}
           </div>
         )}
       </main>

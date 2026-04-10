@@ -12,7 +12,8 @@ use commands::{
     run_implementation_guidance, run_test_suggestions, run_plan_review,
     run_pr_description_gen, run_retrospective_agent,
     // JIRA data commands
-    get_active_sprint, get_active_sprint_issues, get_completed_sprints, get_issue,
+    get_active_sprint, get_all_active_sprints, get_all_active_sprint_issues,
+    get_active_sprint_issues, get_completed_sprints, get_issue,
     get_my_sprint_issues, get_sprint_issues, get_sprint_issues_by_id, search_jira_issues,
     // Bitbucket data commands
     get_open_prs, get_merged_prs, get_pr, get_pr_comments, get_pr_diff, get_pr_tasks, get_prs_for_review,
@@ -62,6 +63,8 @@ pub fn run() {
             debug_jira_endpoints,
             // JIRA
             get_active_sprint,
+            get_all_active_sprints,
+            get_all_active_sprint_issues,
             get_active_sprint_issues,
             get_my_sprint_issues,
             get_sprint_issues,

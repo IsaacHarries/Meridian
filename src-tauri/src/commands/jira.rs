@@ -26,6 +26,26 @@ pub async fn get_active_sprint() -> Result<Option<JiraSprint>, String> {
     client.get_active_sprint(board_id).await
 }
 
+/// All active sprints for the configured board (boards can have multiple active sprints).
+#[tauri::command]
+pub async fn get_all_active_sprints() -> Result<Vec<JiraSprint>, String> {
+    let (client, board_id) = jira_client()?;
+    client.get_all_active_sprints(board_id).await
+}
+
+/// All issues across all active sprints.
+#[tauri::command]
+pub async fn get_all_active_sprint_issues() -> Result<Vec<(JiraSprint, Vec<JiraIssue>)>, String> {
+    let (client, board_id) = jira_client()?;
+    let sprints = client.get_all_active_sprints(board_id).await?;
+    let mut result = Vec::new();
+    for sprint in sprints {
+        let issues = client.get_sprint_issues(sprint.id).await?;
+        result.push((sprint, issues));
+    }
+    Ok(result)
+}
+
 /// All issues in a specific sprint.
 #[tauri::command]
 pub async fn get_sprint_issues(sprint_id: i64) -> Result<Vec<JiraIssue>, String> {

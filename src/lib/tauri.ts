@@ -287,6 +287,23 @@ export async function getActiveSprint(): Promise<JiraSprint | null> {
   return invoke<JiraSprint | null>("get_active_sprint");
 }
 
+export async function getAllActiveSprints(): Promise<JiraSprint[]> {
+  if (isMockMode()) {
+    const { ACTIVE_SPRINT } = await import("./mockData");
+    return ACTIVE_SPRINT ? [ACTIVE_SPRINT] : [];
+  }
+  return invoke<JiraSprint[]>("get_all_active_sprints");
+}
+
+export async function getAllActiveSprintIssues(): Promise<Array<[JiraSprint, JiraIssue[]]>> {
+  if (isMockMode()) {
+    const { ACTIVE_SPRINT, SPRINT_ISSUES_BY_ID } = await import("./mockData");
+    if (!ACTIVE_SPRINT) return [];
+    return [[ACTIVE_SPRINT, SPRINT_ISSUES_BY_ID[23] ?? []]];
+  }
+  return invoke<Array<[JiraSprint, JiraIssue[]]>>("get_all_active_sprint_issues");
+}
+
 export async function getActiveSprintIssues(): Promise<JiraIssue[]> {
   if (isMockMode()) {
     const { SPRINT_ISSUES_BY_ID } = await import("./mockData");
