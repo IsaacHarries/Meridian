@@ -1,0 +1,629 @@
+import { invoke } from "@tauri-apps/api/core";
+
+// ── Mock mode ─────────────────────────────────────────────────────────────────
+// When enabled, all JIRA and Bitbucket commands return local mock data.
+// Claude API calls still go through normally (Anthropic key must be set).
+
+const MOCK_KEY = "meridian_mock_mode";
+
+export function isMockMode(): boolean {
+  return localStorage.getItem(MOCK_KEY) === "true";
+}
+
+export function setMockMode(enabled: boolean): void {
+  if (enabled) {
+    localStorage.setItem(MOCK_KEY, "true");
+  } else {
+    localStorage.removeItem(MOCK_KEY);
+  }
+}
+
+// ── Credential / config status ────────────────────────────────────────────────
+
+export interface CredentialStatus {
+  anthropicApiKey: boolean;
+  jiraBaseUrl: boolean;
+  jiraEmail: boolean;
+  jiraApiToken: boolean;
+  jiraBoardId: boolean;
+  bitbucketWorkspace: boolean;
+  bitbucketAccessToken: boolean;
+  bitbucketRepoSlug: boolean;
+}
+
+export function credentialStatusComplete(s: CredentialStatus) {
+  return (
+    s.anthropicApiKey &&
+    s.jiraBaseUrl &&
+    s.jiraEmail &&
+    s.jiraApiToken &&
+    s.jiraBoardId &&
+    s.bitbucketWorkspace &&
+    s.bitbucketAccessToken &&
+    s.bitbucketRepoSlug
+  );
+}
+
+export function anthropicComplete(s: CredentialStatus) {
+  return s.anthropicApiKey;
+}
+
+export function jiraComplete(s: CredentialStatus) {
+  return s.jiraBaseUrl && s.jiraEmail && s.jiraApiToken && s.jiraBoardId;
+}
+
+export function bitbucketComplete(s: CredentialStatus) {
+  return s.bitbucketWorkspace && s.bitbucketAccessToken && s.bitbucketRepoSlug;
+}
+
+// ── Credential commands ───────────────────────────────────────────────────────
+
+export async function getCredentialStatus(): Promise<CredentialStatus> {
+  const status = await invoke<CredentialStatus>("credential_status");
+  if (isMockMode()) {
+    // Override JIRA + Bitbucket fields so the app routes past onboarding.
+    // The Anthropic key must still be real — Claude calls go through normally.
+    return {
+      ...status,
+      jiraBaseUrl: true,
+      jiraEmail: true,
+      jiraApiToken: true,
+      jiraBoardId: true,
+      bitbucketWorkspace: true,
+      bitbucketAccessToken: true,
+      bitbucketRepoSlug: true,
+    };
+  }
+  return status;
+}
+
+export async function saveCredential(key: string, value: string): Promise<void> {
+  return invoke("save_credential", { key, value });
+}
+
+export async function deleteCredential(key: string): Promise<void> {
+  return invoke("delete_credential", { key });
+}
+
+// ── Validation commands ───────────────────────────────────────────────────────
+
+export async function validateAnthropic(apiKey: string): Promise<string> {
+  return invoke<string>("validate_anthropic", { apiKey });
+}
+
+export async function validateJira(
+  baseUrl: string,
+  email: string,
+  apiToken: string
+): Promise<string> {
+  return invoke<string>("validate_jira", { baseUrl, email, apiToken });
+}
+
+export async function validateBitbucket(
+  workspace: string,
+  accessToken: string
+): Promise<string> {
+  return invoke<string>("validate_bitbucket", { workspace, accessToken });
+}
+
+// ── Claude commands ───────────────────────────────────────────────────────────
+
+export async function generateStandupBriefing(standupText: string): Promise<string> {
+  return invoke<string>("generate_standup_briefing", { standupText });
+}
+
+export async function generateSprintRetrospective(sprintText: string): Promise<string> {
+  return invoke<string>("generate_sprint_retrospective", { sprintText });
+}
+
+export async function generateWorkloadSuggestions(workloadText: string): Promise<string> {
+  return invoke<string>("generate_workload_suggestions", { workloadText });
+}
+
+export async function assessTicketQuality(ticketText: string): Promise<string> {
+  return invoke<string>("assess_ticket_quality", { ticketText });
+}
+
+// ── Ticket quality types ──────────────────────────────────────────────────────
+
+export interface QualityCriterion {
+  name: string;
+  result: "pass" | "partial" | "fail";
+  feedback: string;
+}
+
+export interface QualityReport {
+  overall: "ready" | "needs_work" | "not_ready";
+  summary: string;
+  criteria: QualityCriterion[];
+  open_questions: string[];
+  suggested_improvements: string;
+}
+
+export async function reviewPr(reviewText: string): Promise<string> {
+  return invoke<string>("review_pr", { reviewText });
+}
+
+// ── PR review report types ────────────────────────────────────────────────────
+
+export interface ReviewFinding {
+  severity: "blocking" | "non_blocking" | "nitpick";
+  title: string;
+  description: string;
+  file: string | null;
+  line_range: string | null;
+}
+
+export interface ReviewLens {
+  assessment: string;
+  findings: ReviewFinding[];
+}
+
+export interface ReviewReport {
+  overall: "approve" | "request_changes" | "needs_discussion";
+  summary: string;
+  lenses: {
+    acceptance_criteria: ReviewLens;
+    security: ReviewLens;
+    logic: ReviewLens;
+    quality: ReviewLens;
+  };
+}
+
+export function parseReviewReport(raw: string): ReviewReport | null {
+  try {
+    const cleaned = raw.replace(/^```(?:json)?\n?/m, "").replace(/\n?```$/m, "").trim();
+    return JSON.parse(cleaned) as ReviewReport;
+  } catch {
+    return null;
+  }
+}
+
+export function parseQualityReport(raw: string): QualityReport | null {
+  try {
+    // Strip markdown fences if Claude added them anyway
+    const cleaned = raw.replace(/^```(?:json)?\n?/m, "").replace(/\n?```$/m, "").trim();
+    return JSON.parse(cleaned) as QualityReport;
+  } catch {
+    return null;
+  }
+}
+
+// ── JIRA types ────────────────────────────────────────────────────────────────
+
+export interface JiraSprint {
+  id: number;
+  name: string;
+  state: string;
+  startDate: string | null;
+  endDate: string | null;
+  goal: string | null;
+}
+
+export interface JiraUser {
+  accountId: string;
+  displayName: string;
+  emailAddress: string | null;
+}
+
+export interface JiraIssue {
+  id: string;
+  key: string;
+  url: string;
+  summary: string;
+  description: string | null;
+  status: string;
+  statusCategory: string;
+  assignee: JiraUser | null;
+  reporter: JiraUser | null;
+  issueType: string;
+  priority: string | null;
+  storyPoints: number | null;
+  labels: string[];
+  epicKey: string | null;
+  epicSummary: string | null;
+  created: string;
+  updated: string;
+}
+
+// ── JIRA commands ─────────────────────────────────────────────────────────────
+
+export async function getActiveSprint(): Promise<JiraSprint | null> {
+  if (isMockMode()) {
+    const { ACTIVE_SPRINT } = await import("./mockData");
+    return ACTIVE_SPRINT;
+  }
+  return invoke<JiraSprint | null>("get_active_sprint");
+}
+
+export async function getActiveSprintIssues(): Promise<JiraIssue[]> {
+  if (isMockMode()) {
+    const { SPRINT_ISSUES_BY_ID } = await import("./mockData");
+    return SPRINT_ISSUES_BY_ID[23] ?? [];
+  }
+  return invoke<JiraIssue[]>("get_active_sprint_issues");
+}
+
+export async function getMySprintIssues(): Promise<JiraIssue[]> {
+  if (isMockMode()) {
+    const { MY_SPRINT_ISSUES } = await import("./mockData");
+    return MY_SPRINT_ISSUES;
+  }
+  return invoke<JiraIssue[]>("get_my_sprint_issues");
+}
+
+export async function getSprintIssues(sprintId: number): Promise<JiraIssue[]> {
+  if (isMockMode()) {
+    const { SPRINT_ISSUES_BY_ID } = await import("./mockData");
+    return SPRINT_ISSUES_BY_ID[sprintId] ?? [];
+  }
+  return invoke<JiraIssue[]>("get_sprint_issues", { sprintId });
+}
+
+export async function getSprintIssuesById(sprintId: number): Promise<JiraIssue[]> {
+  if (isMockMode()) {
+    const { SPRINT_ISSUES_BY_ID } = await import("./mockData");
+    return SPRINT_ISSUES_BY_ID[sprintId] ?? [];
+  }
+  return invoke<JiraIssue[]>("get_sprint_issues_by_id", { sprintId });
+}
+
+export async function getIssue(issueKey: string): Promise<JiraIssue> {
+  if (isMockMode()) {
+    const { ALL_ISSUES_BY_KEY } = await import("./mockData");
+    const issue = ALL_ISSUES_BY_KEY[issueKey];
+    if (!issue) throw new Error(`Mock: issue ${issueKey} not found`);
+    return issue;
+  }
+  return invoke<JiraIssue>("get_issue", { issueKey });
+}
+
+export async function getCompletedSprints(limit: number): Promise<JiraSprint[]> {
+  if (isMockMode()) {
+    const { COMPLETED_SPRINTS } = await import("./mockData");
+    return COMPLETED_SPRINTS.slice(0, limit);
+  }
+  return invoke<JiraSprint[]>("get_completed_sprints", { limit });
+}
+
+export async function searchJiraIssues(
+  jql: string,
+  maxResults: number
+): Promise<JiraIssue[]> {
+  if (isMockMode()) {
+    const { SPRINT_ISSUES_BY_ID } = await import("./mockData");
+    const all = SPRINT_ISSUES_BY_ID[23] ?? [];
+    const q = jql.toLowerCase();
+    const filtered = all.filter(
+      (i) =>
+        i.summary.toLowerCase().includes(q) ||
+        i.key.toLowerCase().includes(q) ||
+        i.status.toLowerCase().includes(q)
+    );
+    return filtered.slice(0, maxResults);
+  }
+  return invoke<JiraIssue[]>("search_jira_issues", { jql, maxResults });
+}
+
+// ── Bitbucket types ───────────────────────────────────────────────────────────
+
+export interface BitbucketUser {
+  displayName: string;
+  nickname: string;
+  accountId: string | null;
+}
+
+export interface BitbucketReviewer {
+  user: BitbucketUser;
+  approved: boolean;
+  state: string;
+}
+
+export interface BitbucketPr {
+  id: number;
+  title: string;
+  description: string | null;
+  state: string;
+  author: BitbucketUser;
+  reviewers: BitbucketReviewer[];
+  sourceBranch: string;
+  destinationBranch: string;
+  createdOn: string;
+  updatedOn: string;
+  commentCount: number;
+  taskCount: number;
+  url: string;
+  jiraIssueKey: string | null;
+}
+
+export interface BitbucketInlineContext {
+  path: string;
+  fromLine: number | null;
+  toLine: number | null;
+}
+
+export interface BitbucketComment {
+  id: number;
+  content: string;
+  author: BitbucketUser;
+  createdOn: string;
+  updatedOn: string;
+  inline: BitbucketInlineContext | null;
+  parentId: number | null;
+}
+
+// ── Bitbucket commands ────────────────────────────────────────────────────────
+
+export async function getOpenPrs(): Promise<BitbucketPr[]> {
+  if (isMockMode()) {
+    const { OPEN_PRS } = await import("./mockData");
+    return OPEN_PRS;
+  }
+  return invoke<BitbucketPr[]>("get_open_prs");
+}
+
+export async function getMergedPrs(sinceIso?: string): Promise<BitbucketPr[]> {
+  if (isMockMode()) {
+    const { MERGED_PRS } = await import("./mockData");
+    if (sinceIso) {
+      const since = new Date(sinceIso).getTime();
+      return MERGED_PRS.filter((pr) => new Date(pr.updatedOn).getTime() >= since);
+    }
+    return MERGED_PRS;
+  }
+  return invoke<BitbucketPr[]>("get_merged_prs", { sinceIso: sinceIso ?? null });
+}
+
+export async function getPrsForReview(): Promise<BitbucketPr[]> {
+  if (isMockMode()) {
+    const { OPEN_PRS } = await import("./mockData");
+    // PRs where the current user (user-1) is a reviewer and hasn't approved yet
+    return OPEN_PRS.filter((pr) =>
+      pr.reviewers.some((r) => r.user.nickname === "isaac.chen" && !r.approved)
+    );
+  }
+  return invoke<BitbucketPr[]>("get_prs_for_review");
+}
+
+export async function getPr(prId: number): Promise<BitbucketPr> {
+  if (isMockMode()) {
+    const { OPEN_PRS, MERGED_PRS } = await import("./mockData");
+    const pr = [...OPEN_PRS, ...MERGED_PRS].find((p) => p.id === prId);
+    if (!pr) throw new Error(`Mock: PR #${prId} not found`);
+    return pr;
+  }
+  return invoke<BitbucketPr>("get_pr", { prId });
+}
+
+export async function getPrDiff(prId: number): Promise<string> {
+  if (isMockMode()) {
+    const { PR_87_DIFF } = await import("./mockData");
+    // Return a realistic diff for PR 87; stub for others
+    if (prId === 87) return PR_87_DIFF;
+    return `diff --git a/src/example.rs b/src/example.rs\nindex 0000000..1234567\n--- a/src/example.rs\n+++ b/src/example.rs\n@@ -1,3 +1,5 @@\n fn main() {\n-    println!("hello");\n+    println!("hello, world");\n+    // PR ${prId} mock diff\n }\n`;
+  }
+  return invoke<string>("get_pr_diff", { prId });
+}
+
+export async function getPrComments(prId: number): Promise<BitbucketComment[]> {
+  if (isMockMode()) {
+    const { PR_87_COMMENTS } = await import("./mockData");
+    return prId === 87 ? PR_87_COMMENTS : [];
+  }
+  return invoke<BitbucketComment[]>("get_pr_comments", { prId });
+}
+
+// ── Knowledge base types ──────────────────────────────────────────────────────
+
+export interface KnowledgeEntry {
+  id: string;
+  /** "decision" | "pattern" | "learning" */
+  entryType: string;
+  title: string;
+  body: string;
+  tags: string[];
+  createdAt: string;
+  updatedAt: string;
+  linkedJiraKey: string | null;
+  linkedPrId: number | null;
+}
+
+// ── Knowledge base commands ───────────────────────────────────────────────────
+
+export async function loadKnowledgeEntries(): Promise<KnowledgeEntry[]> {
+  return invoke<KnowledgeEntry[]>("load_knowledge_entries");
+}
+
+export async function saveKnowledgeEntry(entry: KnowledgeEntry): Promise<void> {
+  return invoke("save_knowledge_entry", { entry });
+}
+
+export async function deleteKnowledgeEntry(id: string): Promise<void> {
+  return invoke("delete_knowledge_entry", { id });
+}
+
+export async function exportKnowledgeMarkdown(ids?: string[]): Promise<string> {
+  return invoke<string>("export_knowledge_markdown", { ids: ids ?? null });
+}
+
+// ── Agent pipeline types ──────────────────────────────────────────────────────
+
+export interface GroomingOutput {
+  ticket_summary: string;
+  ticket_type: string;
+  acceptance_criteria: string[];
+  relevant_areas: { area: string; reason: string; files_to_check: string[] }[];
+  ambiguities: string[];
+  dependencies: string[];
+  estimated_complexity: "low" | "medium" | "high";
+  grooming_notes: string;
+}
+
+export interface ImpactOutput {
+  risk_level: "low" | "medium" | "high";
+  risk_justification: string;
+  affected_areas: string[];
+  potential_regressions: string[];
+  cross_cutting_concerns: string[];
+  files_needing_consistent_updates: string[];
+  recommendations: string;
+}
+
+export interface PlanFile {
+  path: string;
+  action: "create" | "modify" | "delete";
+  description: string;
+}
+
+export interface ImplementationPlan {
+  summary: string;
+  files: PlanFile[];
+  order_of_operations: string[];
+  edge_cases: string[];
+  do_not_change: string[];
+  assumptions: string[];
+  open_questions: string[];
+}
+
+export interface GuidanceStep {
+  step: number;
+  title: string;
+  file: string;
+  action: string;
+  details: string;
+  code_hints: string;
+}
+
+export interface GuidanceOutput {
+  steps: GuidanceStep[];
+  patterns_to_follow: string[];
+  common_pitfalls: string[];
+  definition_of_done: string[];
+}
+
+export interface TestCase {
+  description: string;
+  target: string;
+  cases: string[];
+}
+
+export interface IntegrationTest {
+  description: string;
+  setup: string;
+  cases: string[];
+}
+
+export interface TestOutput {
+  test_strategy: string;
+  unit_tests: TestCase[];
+  integration_tests: IntegrationTest[];
+  edge_cases_to_test: string[];
+  coverage_notes: string;
+}
+
+export interface PlanReviewFinding {
+  severity: "blocking" | "non_blocking" | "suggestion";
+  area: string;
+  feedback: string;
+}
+
+export interface PlanReviewOutput {
+  confidence: "ready" | "needs_attention" | "requires_rework";
+  summary: string;
+  findings: PlanReviewFinding[];
+  things_to_address: string[];
+  things_to_watch: string[];
+}
+
+export interface PrDescriptionOutput {
+  title: string;
+  description: string;
+}
+
+export interface RetroSkillSuggestion {
+  skill: string;
+  suggestion: string;
+}
+
+export interface RetroKbEntry {
+  type: "decision" | "pattern" | "learning";
+  title: string;
+  body: string;
+}
+
+export interface RetrospectiveOutput {
+  what_went_well: string[];
+  what_could_improve: string[];
+  patterns_identified: string[];
+  agent_skill_suggestions: RetroSkillSuggestion[];
+  knowledge_base_entries: RetroKbEntry[];
+  summary: string;
+}
+
+export interface TriageMessage {
+  role: "user" | "assistant";
+  content: string;
+}
+
+// ── Agent pipeline commands ───────────────────────────────────────────────────
+
+export async function runGroomingAgent(ticketText: string): Promise<string> {
+  return invoke<string>("run_grooming_agent", { ticketText });
+}
+
+export async function runImpactAnalysis(ticketText: string, groomingJson: string): Promise<string> {
+  return invoke<string>("run_impact_analysis", { ticketText, groomingJson });
+}
+
+export async function runTriageTurn(contextText: string, historyJson: string): Promise<string> {
+  return invoke<string>("run_triage_turn", { contextText, historyJson });
+}
+
+export async function finalizeImplementationPlan(contextText: string, conversationJson: string): Promise<string> {
+  return invoke<string>("finalize_implementation_plan", { contextText, conversationJson });
+}
+
+export async function runImplementationGuidance(ticketText: string, planJson: string): Promise<string> {
+  return invoke<string>("run_implementation_guidance", { ticketText, planJson });
+}
+
+export async function runTestSuggestions(planJson: string, guidanceJson: string): Promise<string> {
+  return invoke<string>("run_test_suggestions", { planJson, guidanceJson });
+}
+
+export async function runPlanReview(planJson: string, guidanceJson: string, testJson: string): Promise<string> {
+  return invoke<string>("run_plan_review", { planJson, guidanceJson, testJson });
+}
+
+export async function runPrDescriptionGen(ticketText: string, planJson: string, reviewJson: string): Promise<string> {
+  return invoke<string>("run_pr_description_gen", { ticketText, planJson, reviewJson });
+}
+
+export async function runRetrospectiveAgent(ticketText: string, planJson: string, reviewJson: string): Promise<string> {
+  return invoke<string>("run_retrospective_agent", { ticketText, planJson, reviewJson });
+}
+
+// ── Agent skills commands ─────────────────────────────────────────────────────
+
+export type SkillType = "grooming" | "patterns" | "implementation" | "review";
+
+export async function loadAgentSkills(): Promise<Record<SkillType, string>> {
+  return invoke<Record<SkillType, string>>("load_agent_skills");
+}
+
+export async function saveAgentSkill(skillType: SkillType, content: string): Promise<void> {
+  return invoke("save_agent_skill", { skillType, content });
+}
+
+export async function deleteAgentSkill(skillType: SkillType): Promise<void> {
+  return invoke("delete_agent_skill", { skillType });
+}
+
+export function parseAgentJson<T>(raw: string): T | null {
+  try {
+    const cleaned = raw.replace(/^```(?:json)?\n?/m, "").replace(/\n?```$/m, "").trim();
+    return JSON.parse(cleaned) as T;
+  } catch {
+    return null;
+  }
+}

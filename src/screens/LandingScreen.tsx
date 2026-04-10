@@ -1,0 +1,366 @@
+import { useEffect, useState } from "react";
+import { AlertTriangle, Settings, TrendingUp, CheckSquare, GitPullRequest, Sun, Moon, Monitor } from "lucide-react";
+import { useTheme } from "@/providers/ThemeProvider";
+import { Button } from "@/components/ui/button";
+import {
+  type CredentialStatus,
+  type JiraSprint,
+  type JiraIssue,
+  type BitbucketPr,
+  anthropicComplete,
+  jiraComplete,
+  bitbucketComplete,
+  getActiveSprint,
+  getActiveSprintIssues,
+  getPrsForReview,
+} from "@/lib/tauri";
+import type { WorkflowId } from "@/screens/WorkflowScreen";
+
+interface LandingScreenProps {
+  credStatus: CredentialStatus;
+  onOpenSettings: () => void;
+  onNavigate: (workflow: WorkflowId) => void;
+}
+
+// ── Missing credentials banner ────────────────────────────────────────────────
+
+function MissingCredentialsBanner({
+  credStatus,
+  onOpenSettings,
+}: {
+  credStatus: CredentialStatus;
+  onOpenSettings: () => void;
+}) {
+  const missing: string[] = [];
+  if (!anthropicComplete(credStatus)) missing.push("Anthropic");
+  if (!jiraComplete(credStatus)) missing.push("JIRA");
+  if (!bitbucketComplete(credStatus)) missing.push("Bitbucket");
+
+  if (missing.length === 0) return null;
+
+  return (
+    <div className="flex items-center gap-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-600 dark:text-amber-400">
+      <AlertTriangle className="h-4 w-4 shrink-0" />
+      <span className="flex-1">
+        Missing credentials: <strong>{missing.join(", ")}</strong>. Some features won't work
+        until they're configured.
+      </span>
+      <Button
+        variant="outline"
+        size="sm"
+        onClick={onOpenSettings}
+        className="shrink-0 border-amber-500/40 text-amber-600 dark:text-amber-400 hover:bg-amber-500/10"
+      >
+        Configure
+      </Button>
+    </div>
+  );
+}
+
+// ── Sprint summary widget ─────────────────────────────────────────────────────
+
+interface SprintData {
+  sprint: JiraSprint | null;
+  issues: JiraIssue[];
+  prs: BitbucketPr[];
+}
+
+function StatPill({
+  icon: Icon,
+  label,
+  value,
+}: {
+  icon: React.ElementType;
+  label: string;
+  value: string;
+}) {
+  return (
+    <div className="flex items-center gap-2 rounded-lg border bg-card px-3 py-2 text-sm">
+      <Icon className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+      <span className="text-muted-foreground">{label}</span>
+      <span className="font-medium tabular-nums">{value}</span>
+    </div>
+  );
+}
+
+function SprintSummary({ credStatus }: { credStatus: CredentialStatus }) {
+  const [data, setData] = useState<SprintData | null>(null);
+  const [error, setError] = useState(false);
+
+  const canFetch = jiraComplete(credStatus) && bitbucketComplete(credStatus);
+
+  useEffect(() => {
+    if (!canFetch) return;
+    Promise.all([getActiveSprint(), getActiveSprintIssues(), getPrsForReview()])
+      .then(([sprint, issues, prs]) => setData({ sprint, issues, prs }))
+      .catch(() => setError(true));
+  }, [canFetch]);
+
+  // Not configured yet — show inert placeholder
+  if (!canFetch) {
+    return (
+      <div className="flex flex-wrap gap-2">
+        <StatPill icon={TrendingUp} label="Sprint" value="—" />
+        <StatPill icon={CheckSquare} label="Tickets done" value="—/—" />
+        <StatPill icon={GitPullRequest} label="PRs to review" value="—" />
+      </div>
+    );
+  }
+
+  if (!data || error) {
+    // Loading or silently failed
+    return (
+      <div className="flex flex-wrap gap-2">
+        <StatPill icon={TrendingUp} label="Sprint" value="…" />
+        <StatPill icon={CheckSquare} label="Tickets done" value="…" />
+        <StatPill icon={GitPullRequest} label="PRs to review" value="…" />
+      </div>
+    );
+  }
+
+  const { sprint, issues, prs } = data;
+
+  const doneCount = issues.filter((i) => i.statusCategory === "Done").length;
+  const totalCount = issues.length;
+
+  const daysRemaining = sprint?.endDate
+    ? Math.ceil((new Date(sprint.endDate).getTime() - Date.now()) / 86_400_000)
+    : null;
+
+  const sprintLabel = sprint
+    ? daysRemaining !== null
+      ? `${sprint.name} · ${daysRemaining > 0 ? `${daysRemaining}d left` : "ended"}`
+      : sprint.name
+    : "No active sprint";
+
+  return (
+    <div className="flex flex-wrap gap-2">
+      <StatPill icon={TrendingUp} label="Sprint" value={sprintLabel} />
+      <StatPill
+        icon={CheckSquare}
+        label="Tickets done"
+        value={totalCount > 0 ? `${doneCount}/${totalCount}` : "—"}
+      />
+      <StatPill icon={GitPullRequest} label="PRs to review" value={String(prs.length)} />
+    </div>
+  );
+}
+
+// ── Workflow cards ────────────────────────────────────────────────────────────
+
+const WORKFLOW_CARDS: {
+  id: WorkflowId;
+  emoji: string;
+  title: string;
+  description: string;
+  ready: boolean;
+}[] = [
+  {
+    id: "implement-ticket",
+    emoji: "🎫",
+    title: "Implement a Ticket",
+    description: "Full 8-agent pipeline from JIRA ticket to PR",
+    ready: false,
+  },
+  {
+    id: "review-pr",
+    emoji: "🔍",
+    title: "Review a Pull Request",
+    description: "AI-assisted code review across 4 analysis lenses",
+    ready: false,
+  },
+  {
+    id: "sprint-dashboard",
+    emoji: "📊",
+    title: "Sprint Dashboard",
+    description: "Real-time sprint health, team performance, and blockers",
+    ready: false,
+  },
+  {
+    id: "retrospectives",
+    emoji: "🔄",
+    title: "Sprint Retrospectives",
+    description: "Metrics and AI summaries for completed sprints",
+    ready: false,
+  },
+  {
+    id: "standup",
+    emoji: "☀️",
+    title: "Daily Standup Briefing",
+    description: "Auto-generated standup agenda from JIRA activity",
+    ready: false,
+  },
+  {
+    id: "workload-balancer",
+    emoji: "⚖️",
+    title: "Team Workload Balancer",
+    description: "Visualise and rebalance work across the team",
+    ready: false,
+  },
+  {
+    id: "ticket-quality",
+    emoji: "✅",
+    title: "Ticket Quality Checker",
+    description: "Readiness assessment for backlog and sprint tickets",
+    ready: false,
+  },
+  {
+    id: "knowledge-base",
+    emoji: "🧠",
+    title: "Knowledge Base",
+    description: "Searchable log of decisions, patterns, and learnings",
+    ready: false,
+  },
+];
+
+// ── Theme mode toggle (cycles light → dark → system) ─────────────────────────
+
+function ThemeModeToggle() {
+  const { config, setMode } = useTheme();
+  const cycle = () => {
+    if (config.mode === "light") setMode("dark");
+    else if (config.mode === "dark") setMode("system");
+    else setMode("light");
+  };
+  return (
+    <Button variant="ghost" size="icon" onClick={cycle} title={`Mode: ${config.mode}`}>
+      {config.mode === "light" ? <Sun className="h-4 w-4" /> :
+       config.mode === "dark"  ? <Moon className="h-4 w-4" /> :
+       <Monitor className="h-4 w-4" />}
+    </Button>
+  );
+}
+
+// ── Background SVG ────────────────────────────────────────────────────────────
+
+function LandingBackground() {
+  return (
+    <div aria-hidden className="fixed inset-0 -z-10 overflow-hidden pointer-events-none select-none">
+      <svg className="w-full h-full" xmlns="http://www.w3.org/2000/svg">
+        <defs>
+          {/* Dot grid */}
+          <pattern id="m-dots" x="0" y="0" width="24" height="24" patternUnits="userSpaceOnUse">
+            <circle cx="1.5" cy="1.5" r="1.5" fill="currentColor" />
+          </pattern>
+          {/* Blur filters */}
+          <filter id="m-blur-xl" x="-50%" y="-50%" width="200%" height="200%">
+            <feGaussianBlur stdDeviation="80" />
+          </filter>
+          <filter id="m-blur-lg" x="-50%" y="-50%" width="200%" height="200%">
+            <feGaussianBlur stdDeviation="55" />
+          </filter>
+        </defs>
+
+        {/* Dot grid — inherits currentColor from the rect */}
+        <rect
+          width="100%"
+          height="100%"
+          fill="url(#m-dots)"
+          style={{ color: "hsl(var(--foreground))", opacity: 0.045 }}
+        />
+
+        {/* Primary blob — top right */}
+        <ellipse
+          cx="92%"
+          cy="-8%"
+          rx="520"
+          ry="420"
+          filter="url(#m-blur-xl)"
+          style={{ fill: "hsl(var(--primary))", opacity: 0.13 }}
+        />
+
+        {/* Primary blob — bottom left */}
+        <ellipse
+          cx="8%"
+          cy="105%"
+          rx="380"
+          ry="300"
+          filter="url(#m-blur-lg)"
+          style={{ fill: "hsl(var(--primary))", opacity: 0.09 }}
+        />
+
+        {/* Concentric arcs — top-right corner */}
+        <circle
+          cx="100%"
+          cy="0"
+          r="220"
+          fill="none"
+          strokeWidth="1"
+          style={{ stroke: "hsl(var(--primary))", opacity: 0.14 }}
+        />
+        <circle
+          cx="100%"
+          cy="0"
+          r="360"
+          fill="none"
+          strokeWidth="1"
+          style={{ stroke: "hsl(var(--primary))", opacity: 0.09 }}
+        />
+        <circle
+          cx="100%"
+          cy="0"
+          r="500"
+          fill="none"
+          strokeWidth="0.75"
+          style={{ stroke: "hsl(var(--primary))", opacity: 0.06 }}
+        />
+      </svg>
+    </div>
+  );
+}
+
+// ── Landing screen ────────────────────────────────────────────────────────────
+
+export function LandingScreen({ credStatus, onOpenSettings, onNavigate }: LandingScreenProps) {
+  const allComplete =
+    anthropicComplete(credStatus) && jiraComplete(credStatus) && bitbucketComplete(credStatus);
+
+  return (
+    <div className="min-h-screen bg-background">
+      <LandingBackground />
+      <header className="sticky top-0 z-10 border-b bg-background/80 backdrop-blur-sm">
+        <div className="max-w-5xl mx-auto px-6 h-14 flex items-center justify-between">
+          <span className="font-semibold tracking-tight">Meridian</span>
+          <div className="flex items-center gap-1">
+            <ThemeModeToggle />
+            <Button variant="ghost" size="icon" onClick={onOpenSettings}>
+              <Settings className="h-4 w-4" />
+            </Button>
+          </div>
+        </div>
+      </header>
+
+      <main className="max-w-5xl mx-auto px-6 py-8 space-y-8">
+        {!allComplete && (
+          <MissingCredentialsBanner credStatus={credStatus} onOpenSettings={onOpenSettings} />
+        )}
+
+        <div className="space-y-3">
+          <div>
+            <h1 className="text-2xl font-semibold tracking-tight mb-1">Good morning</h1>
+            <p className="text-muted-foreground text-sm">What are we working on today?</p>
+          </div>
+          <SprintSummary credStatus={credStatus} />
+        </div>
+
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+          {WORKFLOW_CARDS.map((card) => (
+            <button
+              key={card.id}
+              onClick={() => onNavigate(card.id)}
+              className="group flex flex-col gap-2 rounded-xl border bg-card p-4 text-left transition-colors hover:bg-accent cursor-pointer"
+            >
+              <span className="text-2xl">{card.emoji}</span>
+              <div>
+                <p className="text-sm font-medium leading-snug">{card.title}</p>
+                <p className="text-xs text-muted-foreground mt-0.5 leading-snug">
+                  {card.description}
+                </p>
+              </div>
+            </button>
+          ))}
+        </div>
+      </main>
+    </div>
+  );
+}
