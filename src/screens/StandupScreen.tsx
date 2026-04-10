@@ -15,6 +15,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { JiraTicketLink } from "@/components/JiraTicketLink";
 import {
   type JiraSprint,
   type JiraIssue,
@@ -309,7 +310,7 @@ function MemberCard({ member }: { member: MemberActivity }) {
               <ul className="space-y-1">
                 {member.updatedYesterday.map((issue) => (
                   <li key={issue.key} className="flex items-center gap-2 text-xs">
-                    <span className="font-mono text-muted-foreground shrink-0">{issue.key}</span>
+                    <JiraTicketLink ticketKey={issue.key} url={issue.url} />
                     <span className="truncate">{issue.summary}</span>
                     <Badge variant="secondary" className="text-[10px] shrink-0 ml-auto">
                       {issue.status}
@@ -343,7 +344,7 @@ function MemberCard({ member }: { member: MemberActivity }) {
               <ul className="space-y-1">
                 {member.inProgress.map((issue) => (
                   <li key={issue.key} className="flex items-center gap-2 text-xs">
-                    <span className="font-mono text-muted-foreground shrink-0">{issue.key}</span>
+                    <JiraTicketLink ticketKey={issue.key} url={issue.url} />
                     <span className="truncate">{issue.summary}</span>
                     {issue.storyPoints != null && (
                       <span className="text-muted-foreground/60 shrink-0">{issue.storyPoints}pt</span>
@@ -364,7 +365,7 @@ function MemberCard({ member }: { member: MemberActivity }) {
                 {member.blocked.map((issue) => (
                   <li key={issue.key} className="flex items-center gap-2 text-xs text-red-600">
                     <AlertTriangle className="h-3 w-3 shrink-0" />
-                    <span className="font-mono shrink-0">{issue.key}</span>
+                    <JiraTicketLink ticketKey={issue.key} url={issue.url} className="text-red-600" />
                     <span className="truncate">{issue.summary}</span>
                   </li>
                 ))}
@@ -420,7 +421,7 @@ function FlagsPanel({
         {atRiskTickets.map((t) => (
           <div key={t.key} className="flex items-center gap-2 py-0.5">
             <AlertTriangle className="h-3 w-3 text-amber-500 shrink-0" />
-            <span className="font-mono text-muted-foreground shrink-0">{t.key}</span>
+            <JiraTicketLink ticketKey={t.key} url={t.url} />
             <span className="truncate">{t.summary}</span>
             <Badge variant="warning" className="text-[10px] shrink-0 ml-auto">Not started</Badge>
           </div>

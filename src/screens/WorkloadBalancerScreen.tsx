@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback } from "react";
+import { JiraTicketLink } from "@/components/JiraTicketLink";
 import {
   ArrowLeft,
   RefreshCw,
@@ -89,18 +90,21 @@ function buildWorkloads(
     loadStatus: "balanced" as LoadStatus,
   }));
 
-  // Classify load relative to team average remaining pts
+  // Classify load relative to team average remaining ticket count
   const withWork = raw.filter((d) => d.totalPts > 0);
   if (withWork.length > 1) {
-    const avg =
-      withWork.reduce((s, d) => s + d.remainingPts, 0) / withWork.length;
+    const avgTickets =
+      withWork.reduce((s, d) => s + d.issues.filter((i) => !isDone(i)).length, 0) / withWork.length;
     for (const d of raw) {
-      if (d.remainingPts > avg * 1.4) d.loadStatus = "overloaded";
-      else if (d.remainingPts < avg * 0.6 && avg > 0) d.loadStatus = "underutilised";
+      const remainingTickets = d.issues.filter((i) => !isDone(i)).length;
+      if (remainingTickets > avgTickets * 1.4) d.loadStatus = "overloaded";
+      else if (remainingTickets < avgTickets * 0.6 && avgTickets > 0) d.loadStatus = "underutilised";
     }
   }
 
-  return raw.sort((a, b) => b.remainingPts - a.remainingPts);
+  return raw.sort((a, b) =>
+    b.issues.filter((i) => !isDone(i)).length - a.issues.filter((i) => !isDone(i)).length
+  );
 }
 
 // ── Format for Claude ─────────────────────────────────────────────────────────
@@ -170,17 +174,17 @@ const STATUS_COLORS: Record<LoadStatus, { bar: string; badge: string; icon: Reac
 
 function DevCard({
   dev,
-  maxPts,
+  maxTickets,
 }: {
   dev: DevWorkload;
-  maxPts: number;
+  maxTickets: number;
 }) {
   const [expanded, setExpanded] = useState(false);
   const colors = STATUS_COLORS[dev.loadStatus];
   const Icon = colors.icon;
   const remaining = dev.issues.filter((i) => !isDone(i));
   const done = dev.issues.filter(isDone);
-  const remainingPct = maxPts > 0 ? (dev.remainingPts / maxPts) * 100 : 0;
+  const remainingPct = maxTickets > 0 ? (remaining.length / maxTickets) * 100 : 0;
 
   return (
     <Card>
@@ -215,11 +219,11 @@ function DevCard({
           <div className="text-xs text-muted-foreground text-right shrink-0 space-y-0.5">
             <p>
               <span className="font-medium text-foreground tabular-nums">
-                {dev.remainingPts}pt
+                {remaining.length}
               </span>{" "}
-              remaining
+              ticket{remaining.length !== 1 ? "s" : ""} remaining
             </p>
-            <p>{remaining.length} tickets left</p>
+            <p>{dev.remainingPts}pt left</p>
             {dev.reviewCount > 0 && (
               <p className="flex items-center gap-0.5 justify-end">
                 <GitPullRequest className="h-3 w-3" />
@@ -246,9 +250,7 @@ function DevCard({
               <ul className="space-y-1">
                 {remaining.map((issue) => (
                   <li key={issue.key} className="flex items-center gap-2 text-xs">
-                    <span className="font-mono text-muted-foreground shrink-0">
-                      {issue.key}
-                    </span>
+                    <JiraTicketLink ticketKey={issue.key} url={issue.url} />
                     <span className="truncate">{issue.summary}</span>
                     {issue.storyPoints != null && (
                       <span className="text-muted-foreground/60 shrink-0">
@@ -274,7 +276,7 @@ function DevCard({
                     key={issue.key}
                     className="flex items-center gap-2 text-xs text-muted-foreground"
                   >
-                    <span className="font-mono shrink-0">{issue.key}</span>
+                    <JiraTicketLink ticketKey={issue.key} url={issue.url} />
                     <span className="truncate line-through">{issue.summary}</span>
                     {issue.storyPoints != null && (
                       <span className="shrink-0">{issue.storyPoints}pt</span>
@@ -392,9 +394,12 @@ function SummaryStrip({
     ? Math.ceil((new Date(sprint.endDate).getTime() - Date.now()) / 86_400_000)
     : null;
 
-  const totalRemaining = workloads.reduce((s, d) => s + d.remainingPts, 0);
-  const avgRemaining =
-    workloads.length > 0 ? Math.round(totalRemaining / workloads.length) : 0;
+  const totalRemainingTickets = workloads.reduce(
+    (s, d) => s + d.issues.filter((i) => !isDone(i)).length,
+    0
+  );
+  const avgRemainingTickets =
+    workloads.length > 0 ? Math.round(totalRemainingTickets / workloads.length) : 0;
   const overloaded = workloads.filter((d) => d.loadStatus === "overloaded").length;
   const underutilised = workloads.filter((d) => d.loadStatus === "underutilised").length;
 
@@ -416,7 +421,7 @@ function SummaryStrip({
       )}
       <div className="flex items-center gap-1.5 rounded-lg border bg-card px-3 py-2">
         <span className="text-muted-foreground">Team avg</span>
-        <span className="font-medium tabular-nums">{avgRemaining}pt remaining</span>
+        <span className="font-medium tabular-nums">{avgRemainingTickets} tickets remaining</span>
       </div>
       {overloaded > 0 && (
         <div className="flex items-center gap-1.5 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-red-600">
@@ -487,7 +492,7 @@ export function WorkloadBalancerScreen({ credStatus, onBack }: WorkloadBalancerS
 
   useEffect(() => { load(); }, [load]);
 
-  const maxPts = Math.max(...workloads.map((d) => d.remainingPts), 1);
+  const maxTickets = Math.max(...workloads.map((d) => d.issues.filter((i) => !isDone(i)).length), 1);
 
   return (
     <div className="min-h-screen bg-background">
@@ -543,7 +548,7 @@ export function WorkloadBalancerScreen({ credStatus, onBack }: WorkloadBalancerS
                   </p>
                 ) : (
                   workloads.map((dev) => (
-                    <DevCard key={dev.name} dev={dev} maxPts={maxPts} />
+                    <DevCard key={dev.name} dev={dev} maxTickets={maxTickets} />
                   ))
                 )}
               </div>
@@ -572,9 +577,7 @@ export function WorkloadBalancerScreen({ credStatus, onBack }: WorkloadBalancerS
                     <CardContent className="space-y-1">
                       {unstartedTickets.map((t) => (
                         <div key={t.key} className="flex items-center gap-2 text-xs">
-                          <span className="font-mono text-muted-foreground shrink-0">
-                            {t.key}
-                          </span>
+                          <JiraTicketLink ticketKey={t.key} url={t.url} />
                           <span className="truncate">{t.summary}</span>
                           {t.storyPoints != null && (
                             <span className="text-muted-foreground/60 shrink-0">

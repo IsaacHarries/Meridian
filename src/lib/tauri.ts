@@ -1,4 +1,14 @@
 import { invoke } from "@tauri-apps/api/core";
+import { openUrl as tauriOpenUrl } from "@tauri-apps/plugin-opener";
+
+/**
+ * Open a URL in the user's default system browser.
+ * Must be used instead of window.open() — Tauri's webview does not handle
+ * window.open or <a target="_blank"> the way a browser does.
+ */
+export function openUrl(url: string): void {
+  tauriOpenUrl(url).catch((e) => console.error("Failed to open URL:", url, e));
+}
 
 // ── Mock mode ─────────────────────────────────────────────────────────────────
 // When enabled, all JIRA and Bitbucket commands return local mock data.
@@ -27,6 +37,7 @@ export interface CredentialStatus {
   jiraApiToken: boolean;
   jiraBoardId: boolean;
   bitbucketWorkspace: boolean;
+  bitbucketEmail: boolean;
   bitbucketAccessToken: boolean;
   bitbucketRepoSlug: boolean;
 }
@@ -39,6 +50,7 @@ export function credentialStatusComplete(s: CredentialStatus) {
     s.jiraApiToken &&
     s.jiraBoardId &&
     s.bitbucketWorkspace &&
+    s.bitbucketEmail &&
     s.bitbucketAccessToken &&
     s.bitbucketRepoSlug
   );
@@ -48,12 +60,24 @@ export function anthropicComplete(s: CredentialStatus) {
   return s.anthropicApiKey;
 }
 
+/** All three auth credentials are present (board ID not required). */
+export function jiraCredentialsSet(s: CredentialStatus) {
+  return s.jiraBaseUrl && s.jiraEmail && s.jiraApiToken;
+}
+
+/** All three auth credentials are present (repo slug not required). */
+export function bitbucketCredentialsSet(s: CredentialStatus) {
+  return s.bitbucketWorkspace && s.bitbucketEmail && s.bitbucketAccessToken;
+}
+
+/** Fully ready: credentials + board ID configured. */
 export function jiraComplete(s: CredentialStatus) {
   return s.jiraBaseUrl && s.jiraEmail && s.jiraApiToken && s.jiraBoardId;
 }
 
+/** Fully ready: credentials + repo slug configured. */
 export function bitbucketComplete(s: CredentialStatus) {
-  return s.bitbucketWorkspace && s.bitbucketAccessToken && s.bitbucketRepoSlug;
+  return s.bitbucketWorkspace && s.bitbucketEmail && s.bitbucketAccessToken && s.bitbucketRepoSlug;
 }
 
 // ── Credential commands ───────────────────────────────────────────────────────
@@ -70,6 +94,7 @@ export async function getCredentialStatus(): Promise<CredentialStatus> {
       jiraApiToken: true,
       jiraBoardId: true,
       bitbucketWorkspace: true,
+      bitbucketEmail: true,
       bitbucketAccessToken: true,
       bitbucketRepoSlug: true,
     };
@@ -83,6 +108,11 @@ export async function saveCredential(key: string, value: string): Promise<void> 
 
 export async function deleteCredential(key: string): Promise<void> {
   return invoke("delete_credential", { key });
+}
+
+/** Returns non-secret stored config values (URLs, email, workspace slug) for UI display. */
+export async function getNonSecretConfig(): Promise<Record<string, string>> {
+  return invoke<Record<string, string>>("get_non_secret_config");
 }
 
 // ── Validation commands ───────────────────────────────────────────────────────
@@ -101,9 +131,30 @@ export async function validateJira(
 
 export async function validateBitbucket(
   workspace: string,
+  email: string,
   accessToken: string
 ): Promise<string> {
-  return invoke<string>("validate_bitbucket", { workspace, accessToken });
+  return invoke<string>("validate_bitbucket", { workspace, email, accessToken });
+}
+
+/** Test the stored Anthropic key without passing it through the frontend. */
+export async function testAnthropicStored(): Promise<string> {
+  return invoke<string>("test_anthropic_stored");
+}
+
+/** Test the stored JIRA credentials without passing secrets through the frontend. */
+export async function testJiraStored(): Promise<string> {
+  return invoke<string>("test_jira_stored");
+}
+
+/** Test the stored Bitbucket credentials without passing secrets through the frontend. */
+export async function testBitbucketStored(): Promise<string> {
+  return invoke<string>("test_bitbucket_stored");
+}
+
+/** Run a full diagnostic sweep of every JIRA endpoint, returning a plain-text report. */
+export async function debugJiraEndpoints(): Promise<string> {
+  return invoke<string>("debug_jira_endpoints");
 }
 
 // ── Claude commands ───────────────────────────────────────────────────────────
@@ -334,6 +385,14 @@ export interface BitbucketPr {
   taskCount: number;
   url: string;
   jiraIssueKey: string | null;
+  changesRequested: boolean;
+  draft: boolean;
+}
+
+export interface BitbucketTask {
+  id: number;
+  content: string;
+  resolved: boolean;
 }
 
 export interface BitbucketInlineContext {
@@ -411,6 +470,10 @@ export async function getPrComments(prId: number): Promise<BitbucketComment[]> {
     return prId === 87 ? PR_87_COMMENTS : [];
   }
   return invoke<BitbucketComment[]>("get_pr_comments", { prId });
+}
+
+export async function getPrTasks(prId: number): Promise<BitbucketTask[]> {
+  return invoke<BitbucketTask[]>("get_pr_tasks", { prId });
 }
 
 // ── Knowledge base types ──────────────────────────────────────────────────────

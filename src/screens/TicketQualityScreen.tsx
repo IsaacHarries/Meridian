@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback } from "react";
+import { JiraTicketLink } from "@/components/JiraTicketLink";
 import {
   ArrowLeft,
   Search,
@@ -29,6 +30,7 @@ import {
   searchJiraIssues,
   assessTicketQuality,
   parseQualityReport,
+  openUrl,
 } from "@/lib/tauri";
 
 interface TicketQualityScreenProps {
@@ -302,7 +304,7 @@ function TicketSelector({ sprintIssues, loadingIssues, selected, onSelect }: Tic
         }`}
       >
         <div className="flex items-center gap-2">
-          <span className="text-xs font-mono text-muted-foreground shrink-0">{issue.key}</span>
+          <JiraTicketLink ticketKey={issue.key} url={issue.url} />
           <Badge variant="outline" className="text-xs py-0 h-5">{issue.issueType}</Badge>
           {issue.storyPoints != null && (
             <span className="ml-auto text-xs text-muted-foreground shrink-0">{issue.storyPoints}pt</span>
@@ -473,7 +475,7 @@ export function TicketQualityScreen({ credStatus, onBack }: TicketQualityScreenP
                     <div className="flex items-start justify-between gap-3">
                       <div className="space-y-1 min-w-0">
                         <div className="flex items-center gap-2 flex-wrap">
-                          <span className="text-xs font-mono text-muted-foreground">{selected.key}</span>
+                          <JiraTicketLink ticketKey={selected.key} url={selected.url} />
                           <Badge variant="outline" className="text-xs">{selected.issueType}</Badge>
                           {selected.storyPoints != null && (
                             <Badge variant="secondary" className="text-xs">{selected.storyPoints} pts</Badge>
@@ -488,7 +490,7 @@ export function TicketQualityScreen({ credStatus, onBack }: TicketQualityScreenP
                         variant="outline"
                         size="sm"
                         className="shrink-0"
-                        onClick={() => window.open(selected.url, "_blank")}
+                        onClick={() => selected.url && openUrl(selected.url)}
                         title="Open in JIRA"
                       >
                         <ExternalLink className="h-3.5 w-3.5 mr-1" /> JIRA

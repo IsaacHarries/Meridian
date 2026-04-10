@@ -44,47 +44,47 @@ export const BITBUCKET_SCOPES = {
   note: "Select these when creating the token at bitbucket.org → Workspace settings → Access tokens.",
   scopes: [
     {
-      name: "read:account",
-      reason: "authenticate and read your account profile",
-      required: true,
-    },
-    {
       name: "read:repository:bitbucket",
-      reason: "read commit history and file content for code analysis",
+      reason: "list repositories, read commits, branches, and diffs",
       required: true,
     },
     {
       name: "read:pullrequest:bitbucket",
-      reason: "read PR diffs, comments, review times, and team metrics",
+      reason: "read open and merged PRs, comments, and review status",
       required: true,
     },
     {
       name: "write:pullrequest:bitbucket",
-      reason: "submit review comments and raise PRs (future feature — enable now)",
-      required: false,
+      reason: "submit review comments and approve/request changes on PRs",
+      required: true,
     },
   ] satisfies Scope[],
 };
 
-// JIRA — Personal API tokens use Basic auth and inherit your account's project
-// permissions. These are the Atlassian OAuth scope strings that correspond to
-// what your account needs access to.
+// JIRA — Classic API tokens (ATATT3x…) inherit your Atlassian account permissions.
+// No scope selection exists when generating the token. This list shows the account-level
+// project permissions your account needs in JIRA — not token scopes.
 export const JIRA_PERMISSIONS = {
-  title: "Required scopes",
-  note: "Personal API tokens inherit your account permissions — no scope selection needed when generating the token. Ensure your account has these on the relevant JIRA projects.",
+  title: "Required account permissions",
+  note: "Classic API tokens have no scopes — they use your account's existing JIRA permissions. Create the token at id.atlassian.net → Security → API tokens (no scope picker = correct token type).",
   scopes: [
     {
-      name: "read:jira-work",
-      reason: "sprint boards, issues, story points, and ticket data",
+      name: "Browse Projects",
+      reason: "read issues, sprints, boards, and epics",
       required: true,
     },
     {
-      name: "read:jira-user",
-      reason: "team member info and assignee details",
+      name: "View Development Tools",
+      reason: "agile board and sprint data via the Agile API",
       required: true,
     },
     {
-      name: "write:jira-work",
+      name: "View Members",
+      reason: "team member profiles and assignee details",
+      required: true,
+    },
+    {
+      name: "Edit Issues",
       reason: "update ticket descriptions and reassign issues (future feature)",
       required: false,
     },

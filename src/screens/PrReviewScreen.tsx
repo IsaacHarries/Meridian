@@ -38,9 +38,12 @@ import {
   getPrDiff,
   getPrComments,
   getIssue,
+  getNonSecretConfig,
   reviewPr,
   parseReviewReport,
+  openUrl,
 } from "@/lib/tauri";
+import { JiraTicketLink } from "@/components/JiraTicketLink";
 
 interface PrReviewScreenProps {
   credStatus: CredentialStatus;
@@ -381,13 +384,19 @@ interface PrSelectorProps {
   allOpenPrs: BitbucketPr[];
   loading: boolean;
   onSelect: (pr: BitbucketPr) => void;
+  jiraBaseUrl: string;
+  myAccountId: string;
 }
 
-function PrSelector({ prsForReview, allOpenPrs, loading, onSelect }: PrSelectorProps) {
+function PrSelector({ prsForReview, allOpenPrs, loading, onSelect, jiraBaseUrl, myAccountId }: PrSelectorProps) {
   const [showAll, setShowAll] = useState(false);
   const list = showAll ? allOpenPrs : prsForReview;
 
   function PrRow({ pr }: { pr: BitbucketPr }) {
+    const iApproved = myAccountId
+      ? pr.reviewers.some((r) => r.user.accountId === myAccountId && r.approved)
+      : false;
+
     return (
       <button
         onClick={() => onSelect(pr)}
@@ -396,6 +405,11 @@ function PrSelector({ prsForReview, allOpenPrs, loading, onSelect }: PrSelectorP
         <div className="flex items-center gap-2">
           <GitPullRequest className="h-4 w-4 text-muted-foreground shrink-0" />
           <span className="text-xs font-mono text-muted-foreground">#{pr.id}</span>
+          {iApproved && (
+            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-400">
+              <CheckCircle2 className="h-3 w-3" /> Approved
+            </span>
+          )}
           <span className="ml-auto text-xs text-muted-foreground shrink-0">{prAge(pr.createdOn)}</span>
         </div>
         <p className="text-sm font-medium leading-snug">{pr.title}</p>
@@ -406,7 +420,10 @@ function PrSelector({ prsForReview, allOpenPrs, loading, onSelect }: PrSelectorP
           {pr.jiraIssueKey && (
             <>
               <span>·</span>
-              <span>{pr.jiraIssueKey}</span>
+              <JiraTicketLink
+                ticketKey={pr.jiraIssueKey}
+                url={jiraBaseUrl ? `${jiraBaseUrl.replace(/\/$/, "")}/browse/${pr.jiraIssueKey}` : null}
+              />
             </>
           )}
           {pr.commentCount > 0 && (
@@ -471,6 +488,8 @@ export function PrReviewScreen({ credStatus, onBack }: PrReviewScreenProps) {
   const [prsForReview, setPrsForReview] = useState<BitbucketPr[]>([]);
   const [allOpenPrs, setAllOpenPrs] = useState<BitbucketPr[]>([]);
   const [loadingPrs, setLoadingPrs] = useState(true);
+  const [jiraBaseUrl, setJiraBaseUrl] = useState("");
+  const [myAccountId, setMyAccountId] = useState("");
 
   // Selected PR state
   const [selectedPr, setSelectedPr] = useState<BitbucketPr | null>(null);
@@ -489,10 +508,14 @@ export function PrReviewScreen({ credStatus, onBack }: PrReviewScreenProps) {
 
   // Load PR lists on mount
   useEffect(() => {
+    getNonSecretConfig().then((cfg) => {
+      setJiraBaseUrl(cfg["jira_base_url"] ?? "");
+      setMyAccountId(cfg["jira_account_id"] ?? "");
+    }).catch(() => {});
     if (!bbAvailable) { setLoadingPrs(false); return; }
     Promise.allSettled([getPrsForReview(), getOpenPrs()]).then(([forReview, allOpen]) => {
-      if (forReview.status === "fulfilled") setPrsForReview(forReview.value);
-      if (allOpen.status === "fulfilled") setAllOpenPrs(allOpen.value);
+      if (forReview.status === "fulfilled") setPrsForReview(forReview.value.filter((pr) => !pr.draft));
+      if (allOpen.status === "fulfilled") setAllOpenPrs(allOpen.value.filter((pr) => !pr.draft));
       setLoadingPrs(false);
     });
   }, [bbAvailable]);
@@ -613,7 +636,7 @@ export function PrReviewScreen({ credStatus, onBack }: PrReviewScreenProps) {
               <Button
                 variant="outline"
                 size="sm"
-                onClick={() => window.open(selectedPr.url, "_blank")}
+                onClick={() => selectedPr?.url && openUrl(selectedPr.url)}
               >
                 <ExternalLink className="h-3.5 w-3.5 mr-1" /> Bitbucket
               </Button>
@@ -621,7 +644,7 @@ export function PrReviewScreen({ credStatus, onBack }: PrReviewScreenProps) {
                 <Button
                   variant="outline"
                   size="sm"
-                  onClick={() => window.open(linkedIssue.url, "_blank")}
+                  onClick={() => linkedIssue.url && openUrl(linkedIssue.url)}
                 >
                   <ExternalLink className="h-3.5 w-3.5 mr-1" /> {linkedIssue.key}
                 </Button>
@@ -655,6 +678,8 @@ export function PrReviewScreen({ credStatus, onBack }: PrReviewScreenProps) {
               allOpenPrs={allOpenPrs}
               loading={loadingPrs}
               onSelect={selectPr}
+              jiraBaseUrl={jiraBaseUrl}
+              myAccountId={myAccountId}
             />
           </div>
         ) : (

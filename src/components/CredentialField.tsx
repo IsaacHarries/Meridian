@@ -5,6 +5,8 @@ import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
+const MASKED_SENTINEL = "••••••••";
+
 interface CredentialFieldProps {
   id: string;
   label: string;
@@ -30,6 +32,8 @@ export function CredentialField({
 }: CredentialFieldProps) {
   const [revealed, setRevealed] = useState(false);
 
+  const isSentinel = value === MASKED_SENTINEL;
+
   return (
     <div className={cn("space-y-1.5", className)}>
       <Label htmlFor={id}>{label}</Label>
@@ -42,8 +46,12 @@ export function CredentialField({
           onChange={(e) => onChange(e.target.value)}
           disabled={disabled}
           className={masked ? "pr-9" : undefined}
-          autoComplete="off"
+          autoComplete={masked ? "new-password" : "off"}
+          autoCorrect="off"
+          autoCapitalize="off"
           spellCheck={false}
+          data-1p-ignore
+          data-lpignore="true"
         />
         {masked && (
           <Button
@@ -51,11 +59,12 @@ export function CredentialField({
             variant="ghost"
             size="icon"
             className="absolute right-0 top-0 h-9 w-9 text-muted-foreground hover:text-foreground"
-            onClick={() => setRevealed((r) => !r)}
+            onClick={() => !isSentinel && setRevealed((r) => !r)}
             tabIndex={-1}
-            disabled={disabled}
+            disabled={disabled || isSentinel}
+            title={isSentinel ? "Value is stored securely and cannot be displayed — clear the field to enter a new one" : undefined}
           >
-            {revealed ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+            {revealed && !isSentinel ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
           </Button>
         )}
       </div>

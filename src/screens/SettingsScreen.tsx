@@ -13,11 +13,18 @@ import {
   type CredentialStatus,
   anthropicComplete,
   jiraComplete,
+  jiraCredentialsSet,
   bitbucketComplete,
+  bitbucketCredentialsSet,
   getCredentialStatus,
+  getNonSecretConfig,
   validateAnthropic,
   validateJira,
   validateBitbucket,
+  testAnthropicStored,
+  testJiraStored,
+  testBitbucketStored,
+  debugJiraEndpoints,
   deleteCredential,
   saveCredential,
   getActiveSprint,
@@ -108,14 +115,34 @@ interface SettingsScreenProps {
 
 function StatusBadge({ complete }: { complete: boolean }) {
   return complete ? (
-    <Badge variant="success" className="gap-1">
-      <CheckCircle className="h-3 w-3" /> Connected
+    <Badge variant="outline" className="gap-1 text-muted-foreground">
+      <CheckCircle className="h-3 w-3" /> Saved
     </Badge>
   ) : (
     <Badge variant="warning" className="gap-1">
       <AlertCircle className="h-3 w-3" /> Not configured
     </Badge>
   );
+}
+
+type TestResult = "untested" | "success" | "error";
+
+function VerifiedBadge({ result }: { result: TestResult }) {
+  if (result === "success") {
+    return (
+      <Badge variant="success" className="gap-1">
+        <CheckCircle className="h-3 w-3" /> Connected
+      </Badge>
+    );
+  }
+  if (result === "error") {
+    return (
+      <Badge variant="destructive" className="gap-1">
+        <AlertCircle className="h-3 w-3" /> Failed
+      </Badge>
+    );
+  }
+  return null;
 }
 
 function SectionMessage({ state, message }: { state: SectionState; message: string }) {
@@ -143,26 +170,45 @@ function AnthropicSection({ isConfigured, onSaved }: { isConfigured: boolean; on
   const [apiKey, setApiKey] = useState("");
   const [saved, setSaved] = useState(false);
   const [status, setStatus] = useState<SectionStatus>({ state: "idle", message: "" });
+  const [testResult, setTestResult] = useState<TestResult>("untested");
+
+  function startEditing() {
+    setApiKey(isConfigured ? MASKED_SENTINEL : "");
+    setSaved(isConfigured);
+    setStatus({ state: "idle", message: "" });
+    setTestResult("untested");
+    setEditing(true);
+  }
 
   async function handleSave() {
-    if (!apiKey.trim()) return;
-    setStatus({ state: "loading", message: "Saving…" });
+    if (!apiKey.trim() || apiKey === MASKED_SENTINEL) return;
+    setStatus({ state: "loading", message: "Saving and testing…" });
     try {
-      await saveCredential("anthropic_api_key", apiKey.trim());
+      const msg = await validateAnthropic(apiKey.trim());
       setSaved(true);
-      setStatus({ state: "success", message: "API key saved." });
+      // validate_anthropic may succeed even if network is blocked (returns Ok with a warning)
+      // only mark as verified if it explicitly says "successfully"
+      const verified = msg.toLowerCase().includes("successfully");
+      setTestResult(verified ? "success" : "untested");
+      setStatus({ state: "success", message: msg });
       onSaved();
     } catch (err) {
+      setTestResult("error");
       setStatus({ state: "error", message: String(err) });
     }
   }
 
   async function handleTest() {
     setStatus({ state: "loading", message: "Testing connection…" });
+    setTestResult("untested");
     try {
-      const msg = await validateAnthropic(apiKey.trim());
+      const msg = apiKey === MASKED_SENTINEL
+        ? await testAnthropicStored()
+        : await validateAnthropic(apiKey.trim());
+      setTestResult("success");
       setStatus({ state: "success", message: msg });
     } catch (err) {
+      setTestResult("error");
       setStatus({ state: "error", message: String(err) });
     }
   }
@@ -177,6 +223,7 @@ function AnthropicSection({ isConfigured, onSaved }: { isConfigured: boolean; on
   async function handleReset() {
     try {
       await deleteCredential("anthropic_api_key");
+      setTestResult("untested");
       onSaved();
     } catch {
       // If it doesn't exist, that's fine
@@ -191,13 +238,16 @@ function AnthropicSection({ isConfigured, onSaved }: { isConfigured: boolean; on
             <CardTitle className="text-base">Anthropic</CardTitle>
             <CardDescription className="text-xs mt-0.5">Claude API key for all AI workflows</CardDescription>
           </div>
-          <StatusBadge complete={isConfigured} />
+          <div className="flex items-center gap-2">
+            <VerifiedBadge result={testResult} />
+            <StatusBadge complete={isConfigured} />
+          </div>
         </div>
       </CardHeader>
       <CardContent className="space-y-3">
         {!editing ? (
           <div className="flex gap-2">
-            <Button variant="outline" size="sm" onClick={() => setEditing(true)}>
+            <Button variant="outline" size="sm" onClick={startEditing}>
               {isConfigured ? "Update key" : "Add key"}
             </Button>
             {isConfigured && (
@@ -214,22 +264,17 @@ function AnthropicSection({ isConfigured, onSaved }: { isConfigured: boolean; on
               placeholder="sk-ant-api03-…"
               masked
               value={apiKey}
-              onChange={(v) => { setApiKey(v); setSaved(false); }}
+              onChange={(v) => { setApiKey(v); setSaved(false); setTestResult("untested"); }}
               disabled={status.state === "loading"}
             />
             <div className="flex gap-2">
-              {!saved ? (
-                <Button size="sm" onClick={handleSave} disabled={!apiKey.trim() || status.state === "loading"}>
-                  {status.state === "loading" ? <Loader2 className="h-3 w-3 animate-spin" /> : "Save key"}
-                </Button>
-              ) : (
-                <Button size="sm" variant="outline" onClick={handleTest} disabled={status.state === "loading"}>
-                  {status.state === "loading" ? <Loader2 className="h-3 w-3 animate-spin" /> : "Test connection"}
-                </Button>
-              )}
-              <Button variant="ghost" size="sm" onClick={handleCancel}>
-                {saved ? "Done" : "Cancel"}
+              <Button size="sm" onClick={handleSave} disabled={!apiKey.trim() || apiKey === MASKED_SENTINEL || status.state === "loading"}>
+                {status.state === "loading" ? <Loader2 className="h-3 w-3 animate-spin" /> : "Save key"}
               </Button>
+              <Button size="sm" variant="outline" onClick={handleTest} disabled={!apiKey.trim() || status.state === "loading"}>
+                Test connection
+              </Button>
+              <Button variant="ghost" size="sm" onClick={handleCancel}>Cancel</Button>
             </div>
           </div>
         )}
@@ -239,34 +284,90 @@ function AnthropicSection({ isConfigured, onSaved }: { isConfigured: boolean; on
   );
 }
 
+const MASKED_SENTINEL = "••••••••";
+
 function JiraSection({ isConfigured, onSaved }: { isConfigured: boolean; onSaved: () => void }) {
   const [editing, setEditing] = useState(false);
   const [baseUrl, setBaseUrl] = useState("");
   const [email, setEmail] = useState("");
   const [apiToken, setApiToken] = useState("");
+  const [saved, setSaved] = useState(false);
   const [status, setStatus] = useState<SectionStatus>({ state: "idle", message: "" });
+  const [testResult, setTestResult] = useState<TestResult>("untested");
+
+  async function startEditing() {
+    try {
+      const config = await getNonSecretConfig();
+      setBaseUrl(config["jira_base_url"] ?? "");
+      setEmail(config["jira_email"] ?? "");
+      const hasStoredCreds = !!(config["jira_base_url"] || config["jira_email"]);
+      setApiToken(hasStoredCreds ? MASKED_SENTINEL : "");
+    } catch {
+      setBaseUrl(""); setEmail(""); setApiToken("");
+    }
+    setSaved(false);
+    setTestResult("untested");
+    setStatus({ state: "idle", message: "" });
+    setEditing(true);
+  }
 
   async function handleSave() {
-    setStatus({ state: "loading", message: "Validating…" });
+    if (!baseUrl.trim() || !email.trim() || !apiToken.trim()) return;
+    setStatus({ state: "loading", message: "Saving…" });
     try {
-      const msg = await validateJira(baseUrl, email, apiToken);
-      setStatus({ state: "success", message: msg });
-      setEditing(false);
-      setBaseUrl(""); setEmail(""); setApiToken("");
+      await saveCredential("jira_base_url", baseUrl.trim());
+      await saveCredential("jira_email", email.trim());
+      if (apiToken !== MASKED_SENTINEL) {
+        // Strip ALL whitespace — API tokens never contain spaces or newlines,
+        // and paste events in password fields can introduce them invisibly.
+        const cleanToken = apiToken.replace(/\s/g, "");
+        if (cleanToken.length !== apiToken.trim().length) {
+          console.warn(`JIRA token had embedded whitespace stripped: raw length ${apiToken.length} → clean length ${cleanToken.length}`);
+        }
+        console.log(`Saving JIRA API token (length: ${cleanToken.length}, prefix: ${cleanToken.slice(0, 8)}, suffix: ${cleanToken.slice(-4)})`);
+        await saveCredential("jira_api_token", cleanToken);
+      }
+      setSaved(true);
+      setTestResult("untested");
+      setStatus({ state: "success", message: "Credentials saved." });
       onSaved();
     } catch (err) {
       setStatus({ state: "error", message: String(err) });
     }
   }
 
+  async function handleTest() {
+    setStatus({ state: "loading", message: "Testing connection…" });
+    setTestResult("untested");
+    try {
+      const msg = apiToken === MASKED_SENTINEL
+        ? await testJiraStored()
+        : await validateJira(baseUrl.trim(), email.trim(), apiToken.trim());
+      setTestResult("success");
+      setStatus({ state: "success", message: msg });
+    } catch (err) {
+      setTestResult("error");
+      setStatus({ state: "error", message: String(err) });
+    }
+  }
+
+  function handleCancel() {
+    setEditing(false);
+    setSaved(false);
+    setBaseUrl(""); setEmail(""); setApiToken("");
+    setStatus({ state: "idle", message: "" });
+  }
+
   async function handleReset() {
     for (const key of ["jira_base_url", "jira_email", "jira_api_token"]) {
       try { await deleteCredential(key); } catch { /* already gone */ }
     }
+    setTestResult("untested");
     onSaved();
   }
 
   const hasInput = baseUrl.trim() && email.trim() && apiToken.trim();
+  const canTest = !!(baseUrl.trim() && email.trim() && apiToken.trim());
 
   return (
     <Card>
@@ -276,13 +377,16 @@ function JiraSection({ isConfigured, onSaved }: { isConfigured: boolean; onSaved
             <CardTitle className="text-base">JIRA</CardTitle>
             <CardDescription className="text-xs mt-0.5">Sprint data, tickets, and standup briefings</CardDescription>
           </div>
-          <StatusBadge complete={isConfigured} />
+          <div className="flex items-center gap-2">
+            <VerifiedBadge result={testResult} />
+            <StatusBadge complete={isConfigured} />
+          </div>
         </div>
       </CardHeader>
       <CardContent className="space-y-3">
         {!editing ? (
           <div className="flex gap-2">
-            <Button variant="outline" size="sm" onClick={() => setEditing(true)}>
+            <Button variant="outline" size="sm" onClick={startEditing}>
               {isConfigured ? "Update credentials" : "Add credentials"}
             </Button>
             {isConfigured && (
@@ -294,16 +398,17 @@ function JiraSection({ isConfigured, onSaved }: { isConfigured: boolean; onSaved
         ) : (
           <div className="space-y-3">
             <ScopeList {...JIRA_PERMISSIONS} />
-            <CredentialField id="s-jira-url" label="Workspace URL" placeholder="https://yourcompany.atlassian.net" value={baseUrl} onChange={setBaseUrl} disabled={status.state === "loading"} />
-            <CredentialField id="s-jira-email" label="Email" placeholder="you@yourcompany.com" value={email} onChange={setEmail} disabled={status.state === "loading"} />
-            <CredentialField id="s-jira-token" label="API Token" placeholder="ATATT3x…" masked value={apiToken} onChange={setApiToken} disabled={status.state === "loading"} helperText="Generate at id.atlassian.com → Manage profile → Security → API tokens" />
+            <CredentialField id="s-jira-url" label="Workspace URL" placeholder="https://yourcompany.atlassian.net" value={baseUrl} onChange={(v) => { setBaseUrl(v); setSaved(false); setTestResult("untested"); }} disabled={status.state === "loading"} />
+            <CredentialField id="s-jira-email" label="Email" placeholder="you@yourcompany.com" value={email} onChange={(v) => { setEmail(v); setSaved(false); setTestResult("untested"); }} disabled={status.state === "loading"} />
+            <CredentialField id="s-jira-token" label="API Token" placeholder="ATATT3x…" masked value={apiToken} onChange={(v) => { setApiToken(v); setSaved(false); setTestResult("untested"); }} disabled={status.state === "loading"} helperText={isConfigured && apiToken === MASKED_SENTINEL ? "Token already saved — clear to replace" : "Classic API token from id.atlassian.com → Security → API tokens. Must be a classic token (starts with ATATT3x, no scope picker) — not an OAuth 2.0 scoped token."} />
             <div className="flex gap-2">
               <Button size="sm" onClick={handleSave} disabled={!hasInput || status.state === "loading"}>
-                {status.state === "loading" ? <Loader2 className="h-3 w-3 animate-spin" /> : "Validate & save"}
+                {status.state === "loading" && !status.message.includes("Testing") ? <Loader2 className="h-3 w-3 animate-spin" /> : "Save credentials"}
               </Button>
-              <Button variant="ghost" size="sm" onClick={() => { setEditing(false); setStatus({ state: "idle", message: "" }); }}>
-                Cancel
+              <Button size="sm" variant="outline" onClick={handleTest} disabled={!canTest || status.state === "loading"}>
+                {status.state === "loading" && status.message.includes("Testing") ? <Loader2 className="h-3 w-3 animate-spin" /> : "Test connection"}
               </Button>
+              <Button variant="ghost" size="sm" onClick={handleCancel}>Cancel</Button>
             </div>
           </div>
         )}
@@ -316,30 +421,76 @@ function JiraSection({ isConfigured, onSaved }: { isConfigured: boolean; onSaved
 function BitbucketSection({ isConfigured, onSaved }: { isConfigured: boolean; onSaved: () => void }) {
   const [editing, setEditing] = useState(false);
   const [workspace, setWorkspace] = useState("");
+  const [email, setEmail] = useState("");
   const [accessToken, setAccessToken] = useState("");
+  const [saved, setSaved] = useState(false);
   const [status, setStatus] = useState<SectionStatus>({ state: "idle", message: "" });
+  const [testResult, setTestResult] = useState<TestResult>("untested");
+
+  async function startEditing() {
+    try {
+      const config = await getNonSecretConfig();
+      setWorkspace(config["bitbucket_workspace"] ?? "");
+      setEmail(config["bitbucket_email"] ?? "");
+      const hasStoredCreds = !!config["bitbucket_workspace"];
+      setAccessToken(hasStoredCreds ? MASKED_SENTINEL : "");
+    } catch {
+      setWorkspace(""); setEmail(""); setAccessToken("");
+    }
+    setSaved(false);
+    setTestResult("untested");
+    setStatus({ state: "idle", message: "" });
+    setEditing(true);
+  }
 
   async function handleSave() {
-    setStatus({ state: "loading", message: "Validating…" });
+    if (!workspace.trim() || !email.trim() || !accessToken.trim()) return;
+    setStatus({ state: "loading", message: "Saving…" });
     try {
-      const msg = await validateBitbucket(workspace, accessToken);
-      setStatus({ state: "success", message: msg });
-      setEditing(false);
-      setWorkspace(""); setAccessToken("");
+      await saveCredential("bitbucket_workspace", workspace.trim());
+      await saveCredential("bitbucket_email", email.trim());
+      if (accessToken !== MASKED_SENTINEL) await saveCredential("bitbucket_access_token", accessToken.trim());
+      setSaved(true);
+      setTestResult("untested");
+      setStatus({ state: "success", message: "Credentials saved." });
       onSaved();
     } catch (err) {
       setStatus({ state: "error", message: String(err) });
     }
   }
 
+  async function handleTest() {
+    setStatus({ state: "loading", message: "Testing connection…" });
+    setTestResult("untested");
+    try {
+      const msg = accessToken === MASKED_SENTINEL
+        ? await testBitbucketStored()
+        : await validateBitbucket(workspace.trim(), email.trim(), accessToken.trim());
+      setTestResult("success");
+      setStatus({ state: "success", message: msg });
+    } catch (err) {
+      setTestResult("error");
+      setStatus({ state: "error", message: String(err) });
+    }
+  }
+
+  function handleCancel() {
+    setEditing(false);
+    setSaved(false);
+    setWorkspace(""); setEmail(""); setAccessToken("");
+    setStatus({ state: "idle", message: "" });
+  }
+
   async function handleReset() {
-    for (const key of ["bitbucket_workspace", "bitbucket_access_token", "bitbucket_username"]) {
+    for (const key of ["bitbucket_workspace", "bitbucket_email", "bitbucket_access_token", "bitbucket_username"]) {
       try { await deleteCredential(key); } catch { /* already gone */ }
     }
+    setTestResult("untested");
     onSaved();
   }
 
-  const hasInput = workspace.trim() && accessToken.trim();
+  const hasInput = workspace.trim() && email.trim() && accessToken.trim();
+  const canTest = !!(workspace.trim() && email.trim() && accessToken.trim());
 
   return (
     <Card>
@@ -349,13 +500,16 @@ function BitbucketSection({ isConfigured, onSaved }: { isConfigured: boolean; on
             <CardTitle className="text-base">Bitbucket</CardTitle>
             <CardDescription className="text-xs mt-0.5">PR reviews, team metrics, and workload analysis</CardDescription>
           </div>
-          <StatusBadge complete={isConfigured} />
+          <div className="flex items-center gap-2">
+            <VerifiedBadge result={testResult} />
+            <StatusBadge complete={isConfigured} />
+          </div>
         </div>
       </CardHeader>
       <CardContent className="space-y-3">
         {!editing ? (
           <div className="flex gap-2">
-            <Button variant="outline" size="sm" onClick={() => setEditing(true)}>
+            <Button variant="outline" size="sm" onClick={startEditing}>
               {isConfigured ? "Update credentials" : "Add credentials"}
             </Button>
             {isConfigured && (
@@ -367,15 +521,17 @@ function BitbucketSection({ isConfigured, onSaved }: { isConfigured: boolean; on
         ) : (
           <div className="space-y-3">
             <ScopeList {...BITBUCKET_SCOPES} />
-            <CredentialField id="s-bb-ws" label="Workspace slug" placeholder="your-workspace" value={workspace} onChange={setWorkspace} disabled={status.state === "loading"} helperText="The slug from your Bitbucket workspace URL" />
-            <CredentialField id="s-bb-token" label="Access Token" placeholder="ATCTT3x…" masked value={accessToken} onChange={setAccessToken} disabled={status.state === "loading"} helperText="Workspace or repository HTTP access token" />
+            <CredentialField id="s-bb-ws" label="Workspace slug" placeholder="your-workspace" value={workspace} onChange={(v) => { setWorkspace(v); setSaved(false); setTestResult("untested"); }} disabled={status.state === "loading"} helperText="The slug from your Bitbucket workspace URL" />
+            <CredentialField id="s-bb-email" label="Email" placeholder="you@yourcompany.com" value={email} onChange={(v) => { setEmail(v); setSaved(false); setTestResult("untested"); }} disabled={status.state === "loading"} helperText="The email address associated with your Bitbucket account" />
+            <CredentialField id="s-bb-token" label="Access Token" placeholder="ATCTT3x…" masked value={accessToken} onChange={(v) => { setAccessToken(v); setSaved(false); setTestResult("untested"); }} disabled={status.state === "loading"} helperText={isConfigured && accessToken === MASKED_SENTINEL ? "Token already saved — clear to enter a new one" : "Workspace or repository HTTP access token"} />
             <div className="flex gap-2">
               <Button size="sm" onClick={handleSave} disabled={!hasInput || status.state === "loading"}>
-                {status.state === "loading" ? <Loader2 className="h-3 w-3 animate-spin" /> : "Validate & save"}
+                {status.state === "loading" && !status.message.includes("Testing") ? <Loader2 className="h-3 w-3 animate-spin" /> : "Save credentials"}
               </Button>
-              <Button variant="ghost" size="sm" onClick={() => { setEditing(false); setStatus({ state: "idle", message: "" }); }}>
-                Cancel
+              <Button size="sm" variant="outline" onClick={handleTest} disabled={!canTest || status.state === "loading"}>
+                {status.state === "loading" && status.message.includes("Testing") ? <Loader2 className="h-3 w-3 animate-spin" /> : "Test connection"}
               </Button>
+              <Button variant="ghost" size="sm" onClick={handleCancel}>Cancel</Button>
             </div>
           </div>
         )}
@@ -401,6 +557,29 @@ function ConfigSection({
   const [editing, setEditing] = useState(!jiraBoardId || !bitbucketRepoSlug);
   const [status, setStatus] = useState<SectionStatus>({ state: "idle", message: "" });
 
+  async function startEditing() {
+    try {
+      const config = await getNonSecretConfig();
+      setBoardId(config["jira_board_id"] ?? "");
+      setRepoSlug(config["bitbucket_repo_slug"] ?? "");
+    } catch {
+      setBoardId(""); setRepoSlug("");
+    }
+    setStatus({ state: "idle", message: "" });
+    setEditing(true);
+  }
+
+  // Auto-load on first mount if already in editing state (incomplete config)
+  useEffect(() => {
+    if (editing) {
+      getNonSecretConfig().then(config => {
+          setBoardId(prev => prev || (config["jira_board_id"] ?? ""));
+          setRepoSlug(prev => prev || (config["bitbucket_repo_slug"] ?? ""));
+      }).catch(() => {});
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   async function handleSave() {
     if (!boardId.trim() && !repoSlug.trim()) return;
     setStatus({ state: "loading", message: "Saving…" });
@@ -409,8 +588,6 @@ function ConfigSection({
       if (repoSlug.trim()) await saveCredential("bitbucket_repo_slug", repoSlug.trim());
       setStatus({ state: "success", message: "Configuration saved." });
       setEditing(false);
-      setBoardId("");
-      setRepoSlug("");
       onSaved();
     } catch (err) {
       setStatus({ state: "error", message: String(err) });
@@ -442,7 +619,7 @@ function ConfigSection({
       </CardHeader>
       <CardContent className="space-y-3">
         {!editing ? (
-          <Button variant="outline" size="sm" onClick={() => setEditing(true)}>
+          <Button variant="outline" size="sm" onClick={startEditing}>
             Update configuration
           </Button>
         ) : (
@@ -557,12 +734,15 @@ type DataTestState = "idle" | "loading" | "success" | "error";
 function DataTestSection({ fullyConfigured }: { fullyConfigured: boolean }) {
   const [state, setState] = useState<DataTestState>("idle");
   const [result, setResult] = useState("");
+  const [diagState, setDiagState] = useState<DataTestState>("idle");
+  const [diagResult, setDiagResult] = useState("");
 
   async function runTest() {
     setState("loading");
     setResult("");
     try {
-      const [sprint, prs] = await Promise.all([getActiveSprint(), getOpenPrs()]);
+      const sprint = await getActiveSprint();
+      const prs = await getOpenPrs();
       const lines: string[] = [];
       if (sprint) {
         lines.push(`Active sprint: "${sprint.name}" (${sprint.state})`);
@@ -587,6 +767,21 @@ function DataTestSection({ fullyConfigured }: { fullyConfigured: boolean }) {
     }
   }
 
+  async function runDiag() {
+    setDiagState("loading");
+    setDiagResult("");
+    try {
+      const report = await debugJiraEndpoints();
+      setDiagResult(report);
+      setDiagState("success");
+    } catch (err) {
+      setDiagResult(String(err));
+      setDiagState("error");
+    }
+  }
+
+  const loading = state === "loading" || diagState === "loading";
+
   return (
     <Card>
       <CardHeader className="pb-3">
@@ -598,20 +793,36 @@ function DataTestSection({ fullyConfigured }: { fullyConfigured: boolean }) {
         </div>
       </CardHeader>
       <CardContent className="space-y-3">
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={runTest}
-          disabled={!fullyConfigured || state === "loading"}
-          className="gap-1.5"
-        >
-          {state === "loading" ? (
-            <Loader2 className="h-3.5 w-3.5 animate-spin" />
-          ) : (
-            <FlaskConical className="h-3.5 w-3.5" />
-          )}
-          {state === "loading" ? "Fetching…" : "Run test"}
-        </Button>
+        <div className="flex gap-2 flex-wrap">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={runTest}
+            disabled={!fullyConfigured || loading}
+            className="gap-1.5"
+          >
+            {state === "loading" ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <FlaskConical className="h-3.5 w-3.5" />
+            )}
+            {state === "loading" ? "Fetching…" : "Run test"}
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={runDiag}
+            disabled={loading}
+            className="gap-1.5"
+          >
+            {diagState === "loading" ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <FlaskConical className="h-3.5 w-3.5" />
+            )}
+            {diagState === "loading" ? "Running…" : "JIRA endpoint diagnostics"}
+          </Button>
+        </div>
         {!fullyConfigured && (
           <p className="text-xs text-muted-foreground">
             Complete credentials and configuration above first.
@@ -626,6 +837,11 @@ function DataTestSection({ fullyConfigured }: { fullyConfigured: boolean }) {
             }`}
           >
             {result}
+          </div>
+        )}
+        {diagResult && (
+          <div className="rounded-md px-3 py-2 text-xs font-mono whitespace-pre-wrap max-h-96 overflow-y-auto bg-muted text-muted-foreground border">
+            {diagResult}
           </div>
         )}
       </CardContent>
@@ -681,9 +897,9 @@ export function SettingsScreen({ onClose, onNavigate }: SettingsScreenProps) {
                 isConfigured={anthropicComplete(credStatus)}
                 onSaved={refresh}
               />
-              <JiraSection isConfigured={jiraComplete(credStatus)} onSaved={refresh} />
+              <JiraSection isConfigured={jiraCredentialsSet(credStatus)} onSaved={refresh} />
               <BitbucketSection
-                isConfigured={bitbucketComplete(credStatus)}
+                isConfigured={bitbucketCredentialsSet(credStatus)}
                 onSaved={refresh}
               />
             </section>

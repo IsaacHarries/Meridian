@@ -1,4 +1,5 @@
 import { useEffect, useState, useRef, useCallback } from "react";
+import { JiraTicketLink } from "@/components/JiraTicketLink";
 import {
   ArrowLeft,
   Loader2,
@@ -39,8 +40,9 @@ import {
   type SkillType,
   anthropicComplete,
   jiraComplete,
-  getActiveSprintIssues,
+  getMySprintIssues,
   searchJiraIssues,
+  openUrl,
   runGroomingAgent,
   runImpactAnalysis,
   runTriageTurn,
@@ -589,7 +591,7 @@ function TicketSelector({ sprintIssues, loading, onSelect }: TicketSelectorProps
         </p>
       ) : (
         <div className="space-y-2">
-          {!q && <p className="text-xs text-muted-foreground">Active sprint — {list.length} tickets</p>}
+          {!q && <p className="text-xs text-muted-foreground">Active sprint — {list.length} ticket{list.length !== 1 ? "s" : ""} assigned to you</p>}
           {list.map((issue) => (
             <button
               key={issue.id}
@@ -597,7 +599,7 @@ function TicketSelector({ sprintIssues, loading, onSelect }: TicketSelectorProps
               className="w-full text-left px-4 py-3 rounded-md border hover:bg-muted/60 transition-colors"
             >
               <div className="flex items-center gap-2 mb-1">
-                <span className="text-xs font-mono text-muted-foreground">{issue.key}</span>
+                <JiraTicketLink ticketKey={issue.key} url={issue.url} />
                 <Badge variant="outline" className="text-xs">{issue.issueType}</Badge>
                 {issue.storyPoints != null && (
                   <span className="ml-auto text-xs text-muted-foreground">{issue.storyPoints}pt</span>
@@ -714,10 +716,10 @@ export function ImplementTicketScreen({ credStatus, onBack }: ImplementTicketScr
     setErrors((prev) => ({ ...prev, [stage]: err }));
   }
 
-  // Load sprint issues
+  // Load sprint issues assigned to the current user
   useEffect(() => {
     if (!jiraAvailable) { setLoadingIssues(false); return; }
-    getActiveSprintIssues().then(setSprintIssues).catch(() => {}).finally(() => setLoadingIssues(false));
+    getMySprintIssues().then(setSprintIssues).catch(() => {}).finally(() => setLoadingIssues(false));
   }, [jiraAvailable]);
 
   // Stable ref for skills — loaded once at pipeline start, used throughout
@@ -1034,7 +1036,7 @@ export function ImplementTicketScreen({ credStatus, onBack }: ImplementTicketScr
             )}
           </div>
           {selectedIssue && (
-            <Button variant="outline" size="sm" onClick={() => window.open(selectedIssue.url, "_blank")}>
+            <Button variant="outline" size="sm" onClick={() => selectedIssue.url && openUrl(selectedIssue.url)}>
               <ExternalLink className="h-3.5 w-3.5 mr-1" /> JIRA
             </Button>
           )}

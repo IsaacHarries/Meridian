@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback } from "react";
+import { JiraTicketLink } from "@/components/JiraTicketLink";
 import {
   ArrowLeft,
   RefreshCw,
@@ -8,6 +9,9 @@ import {
   Clock,
   GitPullRequest,
   User,
+  CheckCircle2,
+  XCircle,
+  ExternalLink,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -16,10 +20,13 @@ import {
   type JiraSprint,
   type JiraIssue,
   type BitbucketPr,
+  type BitbucketTask,
   getActiveSprint,
   getActiveSprintIssues,
   getOpenPrs,
   getMergedPrs,
+  getPrTasks,
+  openUrl,
 } from "@/lib/tauri";
 
 interface SprintDashboardScreenProps {
@@ -33,6 +40,8 @@ interface DashboardData {
   issues: JiraIssue[];
   openPrs: BitbucketPr[];
   mergedPrs: BitbucketPr[];
+  /** tasks keyed by PR id — only fetched for 2+-approval candidates */
+  prTasks: Map<number, BitbucketTask[]>;
 }
 
 // ── Data helpers ──────────────────────────────────────────────────────────────
@@ -69,6 +78,154 @@ function totalPoints(issues: JiraIssue[]): number {
   return issues.reduce((s, i) => s + (i.storyPoints ?? 0), 0);
 }
 
+// ── Business-day helpers (mirrors sprint-dashboard utils.py) ─────────────────
+// Counts Mon–Fri only, with partial days, so weekends don't inflate PR age.
+
+function businessDaysAgo(isoStr: string): number {
+  const dt  = new Date(isoStr).getTime();
+  const now = Date.now();
+  if (dt >= now) return 0;
+
+  let total = 0;
+  let cursor = dt;
+  while (cursor < now) {
+    const d = new Date(cursor);
+    const dow = d.getUTCDay(); // 0=Sun … 6=Sat
+    if (dow >= 1 && dow <= 5) {
+      // midnight ending this business day
+      const dayEnd = Date.UTC(
+        d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() + 1
+      );
+      const chunkEnd = Math.min(now, dayEnd);
+      total += (chunkEnd - cursor) / 86_400_000;
+    }
+    // advance cursor to midnight of next day
+    const d2 = new Date(cursor);
+    cursor = Date.UTC(d2.getUTCFullYear(), d2.getUTCMonth(), d2.getUTCDate() + 1);
+  }
+  return total;
+}
+
+/** Sprint progress 0→1: fraction of **business** days elapsed (matches get_sprint_progress). */
+function sprintProgress(sprint: { startDate?: string | null; endDate?: string | null } | null): number | null {
+  if (!sprint?.startDate || !sprint?.endDate) return null;
+  const startMs = new Date(sprint.startDate).getTime();
+  const endMs   = new Date(sprint.endDate).getTime();
+  if (endMs <= startMs) return null;
+
+  function countBdays(fromMs: number, toMs: number): number {
+    if (toMs <= fromMs) return 0;
+    let total = 0;
+    let cursor = fromMs;
+    while (cursor < toMs) {
+      const d = new Date(cursor);
+      const dow = d.getUTCDay();
+      if (dow >= 1 && dow <= 5) {
+        const dayEnd = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() + 1);
+        const chunkEnd = Math.min(toMs, dayEnd);
+        total += (chunkEnd - cursor) / 86_400_000;
+      }
+      const d2 = new Date(cursor);
+      cursor = Date.UTC(d2.getUTCFullYear(), d2.getUTCMonth(), d2.getUTCDate() + 1);
+    }
+    return total;
+  }
+
+  const totalBdays   = countBdays(startMs, endMs);
+  const elapsedBdays = countBdays(startMs, Math.min(Date.now(), endMs));
+  if (totalBdays <= 0) return 1;
+  return Math.min(1, Math.max(0, elapsedBdays / totalBdays));
+}
+
+// ── PR health classification (mirrors sprint-dashboard classifier.py) ─────────
+// Thresholds match config.py: stale=7bd, warning=5bd, no-commit=3bd
+const STALE_PR_DAYS   = 7;
+const WARNING_PR_DAYS = 5;
+const NO_COMMIT_DAYS  = 3;
+
+type PrHealthStatus = "good" | "warn" | "urgent";
+
+function classifyPr(pr: BitbucketPr, progress: number | null): PrHealthStatus {
+  const ageBd  = businessDaysAgo(pr.createdOn);
+  // updatedOn is the best proxy we have for last-commit age without fetching commits
+  const updBd  = businessDaysAgo(pr.updatedOn);
+
+  if (ageBd >= STALE_PR_DAYS) return "urgent";
+  // 5+ bd old AND no activity in last 24 calendar hours → urgent
+  if (ageBd >= WARNING_PR_DAYS && updBd >= 1) return "urgent";
+  if (ageBd >= WARNING_PR_DAYS || updBd >= NO_COMMIT_DAYS) return "warn";
+
+  // Sprint-pressure escalation (≥75% elapsed → warn; ≥90% → urgent)
+  if (progress !== null) {
+    if (progress >= 0.90) return "urgent";
+    if (progress >= 0.75) return "warn";
+  }
+
+  return "good";
+}
+
+interface PrHealthCounts {
+  good: number;
+  warn: number;
+  urgent: number;
+  total: number;
+  /** 0–1, same formula as sprint-dashboard quality_score */
+  qualityScore: number;
+}
+
+function computePrHealth(openPrs: BitbucketPr[], progress: number | null): PrHealthCounts {
+  let good = 0, warn = 0, urgent = 0;
+  for (const pr of openPrs) {
+    const s = classifyPr(pr, progress);
+    if (s === "good") good++;
+    else if (s === "warn") warn++;
+    else urgent++;
+  }
+  const scorable = good + warn + urgent;
+  const qualityScore = scorable > 0 ? (good + warn * 0.5) / scorable : 1;
+  return { good, warn, urgent, total: openPrs.length, qualityScore };
+}
+
+interface SprintHealthResult {
+  /** 0–100 */
+  healthPct: number;
+  /** 0–100 */
+  pacePct: number;
+  /** 0–100 */
+  prHealthPct: number;
+}
+
+function computeSprintHealth(
+  issues: JiraIssue[],
+  sprint: { startDate?: string | null; endDate?: string | null } | null,
+  prHealth: PrHealthCounts,
+): SprintHealthResult {
+  const progress = sprintProgress(sprint);
+  const totalTickets = issues.length;
+  const doneTickets  = issues.filter((i) => statusCategory(i) === "done").length;
+
+  let pacePct = 100;
+  if (progress !== null && totalTickets > 0) {
+    const expectedCompletion = progress;
+    const actualCompletion   = doneTickets / totalTickets;
+    let paceRatio: number;
+    if (expectedCompletion <= 0 || actualCompletion >= expectedCompletion) {
+      paceRatio = 1.0;
+    } else {
+      const gracefulFloor = Math.max(0, 1 - expectedCompletion);
+      const actualRatio   = actualCompletion / expectedCompletion;
+      paceRatio = Math.max(gracefulFloor, actualRatio);
+    }
+    pacePct = Math.round(paceRatio * 100);
+  }
+
+  const qualityBoost = 0.75 + 0.25 * prHealth.qualityScore;
+  const healthPct    = Math.round((pacePct / 100) * qualityBoost * 100);
+  const prHealthPct  = Math.round(prHealth.qualityScore * 100);
+
+  return { healthPct, pacePct, prHealthPct };
+}
+
 // ── Segmented bar ─────────────────────────────────────────────────────────────
 
 interface Segment {
@@ -94,6 +251,279 @@ function SegmentedBar({ segments, total }: { segments: Segment[]; total: number 
         ) : null
       )}
     </div>
+  );
+}
+
+// ── PR attention / QA lists (mirrors reporters.py) ───────────────────────────
+
+// Exempt task prefixes — matches EXEMPT_TASK_PREFIXES in config.py
+const EXEMPT_TASK_PREFIXES = ["qa review", "design review"];
+
+interface PrListItem {
+  pr: BitbucketPr;
+  status: PrHealthStatus;
+  ageBd: number;
+  updBd: number;
+  approvalCount: number;
+  /** True if any unresolved, non-exempt task exists (mirrors has_blocking_incomplete_tasks) */
+  hasBlockingTasks: boolean;
+}
+
+function hasBlockingIncompleteTasks(tasks: BitbucketTask[]): boolean {
+  return tasks.some(
+    (t) =>
+      !t.resolved &&
+      !EXEMPT_TASK_PREFIXES.some((pfx) => t.content.toLowerCase().startsWith(pfx))
+  );
+}
+
+function buildPrListItems(
+  openPrs: BitbucketPr[],
+  progress: number | null,
+  prTasks: Map<number, BitbucketTask[]>,
+): PrListItem[] {
+  return openPrs.map((pr) => {
+    const tasks = prTasks.get(pr.id) ?? [];
+    return {
+      pr,
+      status: classifyPr(pr, progress),
+      ageBd: businessDaysAgo(pr.createdOn),
+      updBd: businessDaysAgo(pr.updatedOn),
+      approvalCount: pr.reviewers.filter((r) => r.approved).length,
+      hasBlockingTasks: tasks.length > 0 ? hasBlockingIncompleteTasks(tasks) : true, // unknown → assume blocking
+    };
+  });
+}
+
+/** PRs that need attention — warn or urgent, non-draft, sorted urgent-first */
+function buildAttentionPrs(items: PrListItem[]): PrListItem[] {
+  return items
+    .filter((i) => !i.pr.draft && (i.status === "urgent" || i.status === "warn"))
+    .sort((a, b) => {
+      if (a.status !== b.status) return a.status === "urgent" ? -1 : 1;
+      return b.ageBd - a.ageBd;
+    });
+}
+
+/**
+ * PRs ready for QA — mirrors sprint_status.py exactly:
+ *   num_approvals >= 2
+ *   not changes_requested
+ *   has_blocking_tasks is not True  (unresolved tasks that aren't "qa review"/"design review")
+ *   not draft
+ * lint_passing is omitted — we don't fetch build statuses from the list API.
+ */
+function buildReadyForQaPrs(items: PrListItem[]): PrListItem[] {
+  return items.filter(
+    (i) => !i.pr.draft && i.approvalCount >= 2 && !i.pr.changesRequested && !i.hasBlockingTasks
+  );
+}
+
+// ── Health summary card ───────────────────────────────────────────────────────
+
+function GradientBar({ pct, warningAt = 60, dangerAt = 40 }: { pct: number; warningAt?: number; dangerAt?: number }) {
+  const color =
+    pct >= warningAt ? "bg-emerald-500"
+    : pct >= dangerAt ? "bg-amber-500"
+    : "bg-red-500";
+
+  return (
+    <div className="h-3 rounded-full bg-muted overflow-hidden w-full">
+      <div
+        className={`h-full rounded-full transition-all ${color}`}
+        style={{ width: `${Math.max(2, pct)}%` }}
+      />
+    </div>
+  );
+}
+
+function HealthSummaryCard({
+  issues,
+  sprint,
+  openPrs,
+  mergedPrs,
+  prTasks,
+}: {
+  issues: JiraIssue[];
+  sprint: { startDate?: string | null; endDate?: string | null } | null;
+  openPrs: BitbucketPr[];
+  mergedPrs: BitbucketPr[];
+  prTasks: Map<number, BitbucketTask[]>;
+}) {
+  const progress    = sprintProgress(sprint);
+  const prHealth    = computePrHealth(openPrs, progress);
+  const health      = computeSprintHealth(issues, sprint, prHealth);
+
+  const totalTickets = issues.length;
+  const doneTickets  = issues.filter((i) => statusCategory(i) === "done").length;
+
+  const healthColor =
+    health.healthPct >= 75 ? "text-emerald-600 dark:text-emerald-400"
+    : health.healthPct >= 50 ? "text-amber-600 dark:text-amber-400"
+    : "text-red-600 dark:text-red-400";
+
+  const prColor =
+    prHealth.qualityScore >= 0.75 ? "text-emerald-600 dark:text-emerald-400"
+    : prHealth.qualityScore >= 0.5 ? "text-amber-600 dark:text-amber-400"
+    : "text-red-600 dark:text-red-400";
+
+  const prItems      = buildPrListItems(openPrs, progress, prTasks);
+  const attentionPrs = buildAttentionPrs(prItems);
+  const readyForQa   = buildReadyForQaPrs(prItems);
+
+  return (
+    <Card>
+      <CardContent className="pt-4 pb-4 space-y-4">
+        {/* ── Health bars ── */}
+        <div className="grid grid-cols-2 gap-6">
+          {/* Sprint Health */}
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="text-sm font-medium">Sprint Health</span>
+              <span className={`text-lg font-bold tabular-nums ${healthColor}`}>
+                {health.healthPct}%
+              </span>
+            </div>
+            <GradientBar pct={health.healthPct} warningAt={75} dangerAt={50} />
+            <div className="flex items-center justify-between text-xs text-muted-foreground">
+              <span>
+                Pace: <strong className="text-foreground">{health.pacePct}%</strong>
+                {progress !== null && (
+                  <span className="ml-1 opacity-70">({Math.round(progress * 100)}% elapsed)</span>
+                )}
+              </span>
+              <span>{doneTickets}/{totalTickets} tickets done</span>
+            </div>
+          </div>
+
+          {/* PR Health */}
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="text-sm font-medium">PR Health</span>
+              <span className={`text-lg font-bold tabular-nums ${prColor}`}>
+                {health.prHealthPct}%
+              </span>
+            </div>
+            {prHealth.total === 0 ? (
+              <div className="h-3 rounded-full bg-muted w-full" />
+            ) : (
+              <div className="flex h-3 rounded-full overflow-hidden w-full gap-px">
+                {prHealth.good > 0 && (
+                  <div className="h-full bg-emerald-500" style={{ width: `${(prHealth.good / prHealth.total) * 100}%` }} title={`Good: ${prHealth.good}`} />
+                )}
+                {prHealth.warn > 0 && (
+                  <div className="h-full bg-amber-500" style={{ width: `${(prHealth.warn / prHealth.total) * 100}%` }} title={`Warning: ${prHealth.warn}`} />
+                )}
+                {prHealth.urgent > 0 && (
+                  <div className="h-full bg-red-500" style={{ width: `${(prHealth.urgent / prHealth.total) * 100}%` }} title={`Urgent: ${prHealth.urgent}`} />
+                )}
+              </div>
+            )}
+            <div className="flex items-center gap-3 text-xs text-muted-foreground flex-wrap">
+              <span className="flex items-center gap-1">
+                <span className="h-2 w-2 rounded-full bg-emerald-500 inline-block" />
+                Good <strong className="text-foreground">{prHealth.good}</strong>
+              </span>
+              <span className="flex items-center gap-1">
+                <span className="h-2 w-2 rounded-full bg-amber-500 inline-block" />
+                Warn <strong className="text-foreground">{prHealth.warn}</strong>
+              </span>
+              <span className="flex items-center gap-1">
+                <span className="h-2 w-2 rounded-full bg-red-500 inline-block" />
+                Urgent <strong className="text-foreground">{prHealth.urgent}</strong>
+              </span>
+              <span
+                className="ml-auto opacity-70"
+                title="All open PRs in the repo — sprint_status.py only counts PRs linked to Needs Review tickets"
+              >
+                {prHealth.total} open PRs
+              </span>
+            </div>
+          </div>
+        </div>
+
+        {/* ── Needs Attention ── */}
+        {attentionPrs.length > 0 && (
+          <div className="border-t pt-3 space-y-1.5">
+            <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide flex items-center gap-1.5">
+              <XCircle className="h-3.5 w-3.5 text-red-500" />
+              Needs Attention
+              <span className="ml-1 rounded-full bg-red-100 text-red-700 dark:bg-red-900/50 dark:text-red-300 px-1.5 py-0.5 text-[10px] font-medium leading-none">
+                {attentionPrs.length}
+              </span>
+            </p>
+            {attentionPrs.map(({ pr, status, ageBd, updBd, approvalCount }) => (
+              <div key={pr.id} className="py-2 border-b last:border-0 space-y-1">
+                {/* Row 1: status dot + clickable title */}
+                <div className="flex items-center gap-2">
+                  <span className={`h-2 w-2 rounded-full shrink-0 ${status === "urgent" ? "bg-red-500" : "bg-amber-500"}`} />
+                  <button
+                    onClick={() => pr.url && openUrl(pr.url)}
+                    className="flex-1 min-w-0 truncate text-xs font-medium text-left hover:underline hover:text-primary transition-colors"
+                    title="Open in Bitbucket"
+                  >
+                    {pr.title}
+                  </button>
+                </div>
+                {/* Row 2: labelled metadata */}
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 pl-4 text-xs text-muted-foreground">
+                  <span>PR <span className="font-mono text-foreground">#{pr.id}</span></span>
+                  <span>Open <strong className="text-foreground">{Math.round(ageBd)} business days</strong></span>
+                  <span>Last activity <strong className="text-foreground">{Math.round(updBd) === 0 ? "today" : `${Math.round(updBd)}bd ago`}</strong></span>
+                  <span>Approvals <strong className="text-foreground">{approvalCount}</strong></span>
+                  {pr.jiraIssueKey && (
+                    <JiraTicketLink ticketKey={pr.jiraIssueKey} url={null} />
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* ── Ready for QA ── */}
+        {readyForQa.length > 0 && (
+          <div className={`${attentionPrs.length === 0 ? "border-t pt-3" : "pt-1"} space-y-1.5`}>
+            <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide flex items-center gap-1.5">
+              <CheckCircle2 className="h-3.5 w-3.5 text-emerald-500" />
+              Ready for QA
+              <span className="ml-1 rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-900/50 dark:text-emerald-300 px-1.5 py-0.5 text-[10px] font-medium leading-none">
+                {readyForQa.length}
+              </span>
+            </p>
+            {readyForQa.map(({ pr, approvalCount }) => (
+              <div key={pr.id} className="flex items-center gap-2 text-xs py-1 border-b last:border-0">
+                <CheckCircle2 className="h-3 w-3 text-emerald-500 shrink-0" />
+                <span className="font-mono text-muted-foreground shrink-0">#{pr.id}</span>
+                <span className="flex-1 min-w-0 truncate font-medium">{pr.title}</span>
+                {pr.jiraIssueKey && (
+                  <JiraTicketLink ticketKey={pr.jiraIssueKey} url={null} className="shrink-0" />
+                )}
+                <span className="shrink-0 text-emerald-600 dark:text-emerald-400 font-medium">
+                  ✅{approvalCount} approvals
+                </span>
+                {pr.url && (
+                  <button
+                    onClick={() => openUrl(pr.url)}
+                    className="shrink-0 text-muted-foreground hover:text-foreground transition-colors"
+                    title="Open in Bitbucket"
+                  >
+                    <ExternalLink className="h-3 w-3" />
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* All clear */}
+        {attentionPrs.length === 0 && readyForQa.length === 0 && prHealth.total > 0 && (
+          <div className="border-t pt-3 flex items-center gap-2 text-xs text-emerald-600 dark:text-emerald-400">
+            <CheckCircle2 className="h-3.5 w-3.5" />
+            All PRs are in good standing
+          </div>
+        )}
+      </CardContent>
+    </Card>
   );
 }
 
@@ -353,7 +783,7 @@ function BlockersPanel({
                 {meta.label}
               </Badge>
               <div className="flex-1 min-w-0">
-                <span className="font-mono text-xs text-muted-foreground mr-1.5">{risk.key}</span>
+                <JiraTicketLink ticketKey={risk.key} url={risk.url} className="mr-1.5" />
                 <span className="truncate">{risk.summary}</span>
               </div>
               <span className="text-xs text-muted-foreground shrink-0">{risk.detail}</span>
@@ -373,6 +803,10 @@ interface DevStats {
   assignedPts: number;
   donePts: number;
   doneCount: number;
+  inProgressPts: number;
+  inProgressCount: number;
+  inReviewPts: number;
+  inReviewCount: number;
   totalCount: number;
   openPrs: BitbucketPr[];
   mergedPrs: BitbucketPr[];
@@ -393,15 +827,21 @@ function buildDevStats(
 
   return Array.from(map.entries())
     .map(([name, devIssues]) => {
-      const done = devIssues.filter((i) => statusCategory(i) === "done");
+      const done       = devIssues.filter((i) => statusCategory(i) === "done");
+      const inReview   = devIssues.filter((i) => statusCategory(i) === "inreview");
+      const inProgress = devIssues.filter((i) => statusCategory(i) === "inprogress");
       return {
         name,
         issues: devIssues,
-        assignedPts: totalPoints(devIssues),
-        donePts: totalPoints(done),
-        doneCount: done.length,
-        totalCount: devIssues.length,
-        openPrs: openPrs.filter((p) => p.author.displayName === name),
+        assignedPts:     totalPoints(devIssues),
+        donePts:         totalPoints(done),
+        doneCount:       done.length,
+        inProgressPts:   totalPoints(inProgress),
+        inProgressCount: inProgress.length,
+        inReviewPts:     totalPoints(inReview),
+        inReviewCount:   inReview.length,
+        totalCount:      devIssues.length,
+        openPrs:   openPrs.filter((p) => p.author.displayName === name),
         mergedPrs: mergedPrs.filter((p) => p.author.displayName === name),
       };
     })
@@ -416,7 +856,6 @@ function DevRow({
   maxPts: number;
 }) {
   const [expanded, setExpanded] = useState(false);
-  const pct = maxPts > 0 ? (dev.donePts / maxPts) * 100 : 0;
 
   return (
     <div className="border-b last:border-0">
@@ -432,19 +871,42 @@ function DevRow({
           <div className="flex items-center justify-between mb-1">
             <span className="font-medium truncate">{dev.name}</span>
             <span className="text-xs text-muted-foreground shrink-0 ml-2">
-              {dev.donePts}/{dev.assignedPts} pts
+              {dev.doneCount + dev.inReviewCount + dev.inProgressCount}/{dev.totalCount} tickets
             </span>
           </div>
-          <div className="h-1.5 rounded-full bg-muted overflow-hidden">
-            <div
-              className="h-full bg-emerald-500 rounded-full transition-all"
-              style={{ width: `${pct}%` }}
-            />
+          {/* Segmented bar: done | in review | in progress (by ticket count) */}
+          <div className="h-1.5 rounded-full bg-muted overflow-hidden flex">
+            {dev.totalCount > 0 && dev.doneCount > 0 && (
+              <div
+                className="h-full bg-emerald-500 transition-all"
+                style={{ width: `${(dev.doneCount / dev.totalCount) * 100}%` }}
+                title={`Done: ${dev.doneCount} tickets`}
+              />
+            )}
+            {dev.totalCount > 0 && dev.inReviewCount > 0 && (
+              <div
+                className="h-full bg-blue-500 transition-all"
+                style={{ width: `${(dev.inReviewCount / dev.totalCount) * 100}%` }}
+                title={`In Review: ${dev.inReviewCount} tickets`}
+              />
+            )}
+            {dev.totalCount > 0 && dev.inProgressCount > 0 && (
+              <div
+                className="h-full bg-amber-500 transition-all"
+                style={{ width: `${(dev.inProgressCount / dev.totalCount) * 100}%` }}
+                title={`In Progress: ${dev.inProgressCount} tickets`}
+              />
+            )}
           </div>
         </div>
 
         <div className="flex items-center gap-3 text-xs text-muted-foreground shrink-0">
-          <span title="Tickets done">{dev.doneCount}/{dev.totalCount} tickets</span>
+          <span title={`Done: ${dev.doneCount} · In Review: ${dev.inReviewCount} · In Progress: ${dev.inProgressCount}`}>
+            <span className="text-emerald-600 font-medium">{dev.doneCount}</span>
+            {dev.inReviewCount > 0 && <span className="text-blue-500 font-medium">+{dev.inReviewCount}</span>}
+            {dev.inProgressCount > 0 && <span className="text-amber-500 font-medium">+{dev.inProgressCount}</span>}
+            <span>/{dev.totalCount}</span>
+          </span>
           {(dev.openPrs.length > 0 || dev.mergedPrs.length > 0) && (
             <span
               className="flex items-center gap-0.5"
@@ -477,7 +939,7 @@ function DevRow({
             return (
               <div key={issue.key} className="flex items-center gap-2 text-xs py-1 pl-10">
                 <span className={`h-1.5 w-1.5 rounded-full shrink-0 ${dotColor}`} />
-                <span className="font-mono text-muted-foreground shrink-0">{issue.key}</span>
+                <JiraTicketLink ticketKey={issue.key} url={issue.url} />
                 <span className="truncate text-muted-foreground">{issue.summary}</span>
                 {issue.storyPoints != null && (
                   <span className="shrink-0 text-muted-foreground/60">
@@ -525,9 +987,23 @@ function TeamPerformanceCard({
             No assigned issues found.
           </p>
         ) : (
-          devStats.map((dev) => (
-            <DevRow key={dev.name} dev={dev} maxPts={maxPts} />
-          ))
+          <>
+            {devStats.map((dev) => (
+              <DevRow key={dev.name} dev={dev} maxPts={maxPts} />
+            ))}
+            <div className="flex items-center gap-4 pt-3 pb-1 px-1 border-t mt-1">
+              <span className="text-[10px] text-muted-foreground">Legend:</span>
+              <span className="flex items-center gap-1 text-[10px] text-muted-foreground">
+                <span className="h-2 w-2 rounded-sm bg-emerald-500 inline-block" /> Done
+              </span>
+              <span className="flex items-center gap-1 text-[10px] text-muted-foreground">
+                <span className="h-2 w-2 rounded-sm bg-blue-500 inline-block" /> In Review
+              </span>
+              <span className="flex items-center gap-1 text-[10px] text-muted-foreground">
+                <span className="h-2 w-2 rounded-sm bg-amber-500 inline-block" /> In Progress
+              </span>
+            </div>
+          </>
         )}
       </CardContent>
     </Card>
@@ -551,7 +1027,26 @@ export function SprintDashboardScreen({ onBack }: SprintDashboardScreenProps) {
         getOpenPrs().catch(() => [] as BitbucketPr[]),
         getMergedPrs(sprint?.startDate ?? undefined).catch(() => [] as BitbucketPr[]),
       ]);
-      setData({ sprint, issues, openPrs, mergedPrs });
+
+      // Lazily fetch tasks only for PRs that are candidates for Ready for QA
+      // (2+ approvals, no changes requested, not a draft) — avoids N API calls for every PR.
+      const candidates = openPrs.filter(
+        (pr) =>
+          !pr.draft &&
+          pr.reviewers.filter((r) => r.approved).length >= 2 &&
+          !pr.changesRequested
+      );
+      const taskResults = await Promise.allSettled(
+        candidates.map((pr) => getPrTasks(pr.id).then((tasks) => ({ id: pr.id, tasks })))
+      );
+      const prTasks = new Map<number, BitbucketTask[]>();
+      for (const result of taskResults) {
+        if (result.status === "fulfilled") {
+          prTasks.set(result.value.id, result.value.tasks);
+        }
+      }
+
+      setData({ sprint, issues, openPrs, mergedPrs, prTasks });
     } catch (err) {
       setError(String(err));
     } finally {
@@ -609,6 +1104,13 @@ export function SprintDashboardScreen({ onBack }: SprintDashboardScreenProps) {
 
         {data && (
           <div className="space-y-4">
+            <HealthSummaryCard
+              issues={data.issues}
+              sprint={data.sprint}
+              openPrs={data.openPrs}
+              mergedPrs={data.mergedPrs}
+              prTasks={data.prTasks}
+            />
             <SprintOverview
               sprint={data.sprint}
               issues={data.issues}

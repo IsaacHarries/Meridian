@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback, useRef } from "react";
+import { JiraTicketLink } from "@/components/JiraTicketLink";
 import {
   ArrowLeft,
   RefreshCw,
@@ -210,7 +211,7 @@ function TicketCompletionCard({ issues }: { issues: JiraIssue[] }) {
               <ul className="mt-2 space-y-1">
                 {carryOver.map((issue) => (
                   <li key={issue.key} className="flex items-center gap-2 text-xs py-0.5">
-                    <span className="font-mono text-muted-foreground shrink-0">{issue.key}</span>
+                    <JiraTicketLink ticketKey={issue.key} url={issue.url} />
                     <span className="truncate text-muted-foreground">{issue.summary}</span>
                     <Badge variant="secondary" className="text-[10px] shrink-0 ml-auto">
                       {issue.status}
@@ -626,9 +627,10 @@ export function RetrospectivesScreen({ onBack }: RetrospectivesScreenProps) {
   const [trendData, setTrendData] = useState<TrendPoint[]>([]);
   const [loadingTrend, setLoadingTrend] = useState(false);
 
-  // Fetch the sprint list on mount
-  useEffect(() => {
+  // Fetch the sprint list — extracted so the refresh button can call it directly
+  const loadSprintList = useCallback(() => {
     setLoadingList(true);
+    setListError(null);
     getCompletedSprints(10)
       .then((list) => {
         setSprints(list);
@@ -637,6 +639,8 @@ export function RetrospectivesScreen({ onBack }: RetrospectivesScreenProps) {
       .catch((e) => setListError(String(e)))
       .finally(() => setLoadingList(false));
   }, []);
+
+  useEffect(() => { loadSprintList(); }, [loadSprintList]);
 
   // Fetch data for selected sprint
   const loadSprint = useCallback(
@@ -718,7 +722,16 @@ export function RetrospectivesScreen({ onBack }: RetrospectivesScreenProps) {
           <Button variant="ghost" size="icon" onClick={onBack}>
             <ArrowLeft className="h-4 w-4" />
           </Button>
-          <h1 className="font-semibold">Sprint Retrospectives</h1>
+          <h1 className="font-semibold flex-1">Sprint Retrospectives</h1>
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={() => { cache.current.clear(); loadSprintList(); }}
+            disabled={loadingList}
+            title="Refresh sprint list"
+          >
+            <RefreshCw className={`h-4 w-4 ${loadingList ? "animate-spin" : ""}`} />
+          </Button>
         </div>
       </header>
 

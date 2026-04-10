@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { CheckCircle, XCircle, Loader2, ExternalLink, ArrowRight, ChevronLeft, FlaskRound } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -9,8 +9,15 @@ import {
   validateAnthropic,
   validateJira,
   validateBitbucket,
+  testAnthropicStored,
+  testJiraStored,
+  testBitbucketStored,
+  getNonSecretConfig,
+  getCredentialStatus,
   setMockMode,
 } from "@/lib/tauri";
+
+const MASKED_SENTINEL = "••••••••";
 
 type ValidationState = "idle" | "loading" | "success" | "error";
 
@@ -93,7 +100,7 @@ function WelcomeStep({ onNext, onMockMode }: { onNext: () => void; onMockMode?: 
       </div>
 
       <p className="text-xs text-center text-muted-foreground">
-        You'll need API keys for Anthropic, JIRA, and Bitbucket. All credentials are stored securely in your OS keychain and never leave your machine.
+        You'll need API keys for Anthropic, JIRA, and Bitbucket.
       </p>
 
       <Button className="w-full" size="lg" onClick={onNext}>
@@ -131,15 +138,30 @@ function AnthropicStep({
   const [testState, setTestState] = useState<ValidationState>("idle");
   const [testMessage, setTestMessage] = useState("");
 
-  async function handleSave() {
-    if (!apiKey.trim()) return;
+  // On mount, check if a key is already stored and reflect that in the UI
+  useEffect(() => {
+    getCredentialStatus().then(status => {
+      if (status.anthropicApiKey) {
+        setApiKey(MASKED_SENTINEL);
+        setSaved(true);
+      }
+    }).catch(() => {});
+  }, []);
+
+  async function handleSaveAndTest() {
+    if (!apiKey.trim() || apiKey === MASKED_SENTINEL) return;
+    if (!apiKey.trim() || apiKey === MASKED_SENTINEL) return;
     setSaving(true);
+    setTestState("loading");
+    setTestMessage("Saving and testing connection…");
     try {
-      await saveCredential("anthropic_api_key", apiKey.trim());
+      // validate_anthropic saves first, then tests — returns Ok even if network blocked
+      const msg = await validateAnthropic(apiKey.trim());
       setSaved(true);
-      setTestState("idle");
-      setTestMessage("");
+      setTestState("success");
+      setTestMessage(msg);
     } catch (err) {
+      // Only a hard error (e.g. empty key, save failure) lands here
       setTestState("error");
       setTestMessage(String(err));
     } finally {
@@ -149,9 +171,11 @@ function AnthropicStep({
 
   async function handleTest() {
     setTestState("loading");
-    setTestMessage("Connecting to Anthropic API…");
+    setTestMessage("Testing connection…");
     try {
-      const msg = await validateAnthropic(apiKey.trim());
+      const msg = apiKey === MASKED_SENTINEL
+        ? await testAnthropicStored()
+        : await validateAnthropic(apiKey.trim());
       setTestState("success");
       setTestMessage(msg);
     } catch (err) {
@@ -159,6 +183,9 @@ function AnthropicStep({
       setTestMessage(String(err));
     }
   }
+
+  const canTest = !!apiKey.trim();
+  const isNewKey = apiKey !== MASKED_SENTINEL && apiKey.trim().length > 0;
 
   return (
     <div className="space-y-5">
@@ -178,9 +205,9 @@ function AnthropicStep({
         placeholder="sk-ant-api03-…"
         masked
         value={apiKey}
-        onChange={(v) => { setApiKey(v); setSaved(false); }}
+        onChange={(v) => { setApiKey(v); setSaved(false); setTestState("idle"); setTestMessage(""); }}
         disabled={saving || testState === "loading"}
-        helperText="Find this at platform.claude.com → API Keys"
+        helperText={saved && apiKey === MASKED_SENTINEL ? "Key already saved — clear to enter a new one" : "Find this at platform.claude.com → API Keys"}
       />
 
       <ValidationMessage state={testState} message={testMessage} />
@@ -198,20 +225,23 @@ function AnthropicStep({
         <Button variant="ghost" onClick={onBack} className="gap-1">
           <ChevronLeft className="h-4 w-4" /> Back
         </Button>
-        {!saved ? (
+
+        {isNewKey ? (
+          // New key entered — save & test in one step
           <Button
             className="flex-1"
-            onClick={handleSave}
-            disabled={!apiKey.trim() || saving}
+            onClick={handleSaveAndTest}
+            disabled={saving || testState === "loading"}
           >
             {saving ? <><Loader2 className="h-4 w-4 animate-spin" /> Saving…</> : "Save key"}
           </Button>
-        ) : (
+        ) : saved ? (
+          // Key already stored — offer test and next
           <>
             <Button
               variant="outline"
               onClick={handleTest}
-              disabled={testState === "loading"}
+              disabled={!canTest || testState === "loading"}
             >
               {testState === "loading" ? <Loader2 className="h-4 w-4 animate-spin" /> : "Test connection"}
             </Button>
@@ -219,6 +249,9 @@ function AnthropicStep({
               Next <ArrowRight className="h-4 w-4" />
             </Button>
           </>
+        ) : (
+          // Nothing entered yet
+          <Button className="flex-1" disabled>Save key</Button>
         )}
       </div>
 
@@ -247,20 +280,60 @@ function JiraStep({
   const [baseUrl, setBaseUrl] = useState("");
   const [email, setEmail] = useState("");
   const [apiToken, setApiToken] = useState("");
-  const [validation, setValidation] = useState<StepValidation>({ state: "idle", message: "" });
+  const [saved, setSaved] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [testState, setTestState] = useState<ValidationState>("idle");
+  const [testMessage, setTestMessage] = useState("");
 
-  async function handleValidate() {
-    setValidation({ state: "loading", message: "Connecting to JIRA…" });
+  // Pre-populate from stored values when navigating back to this step
+  useEffect(() => {
+    getNonSecretConfig().then(config => {
+      if (config["jira_base_url"] || config["jira_email"]) {
+        setBaseUrl(config["jira_base_url"] ?? "");
+        setEmail(config["jira_email"] ?? "");
+        setApiToken(MASKED_SENTINEL);
+        setSaved(true);
+      }
+    }).catch(() => {});
+  }, []);
+
+  async function handleSave() {
+    if (!baseUrl.trim() || !email.trim() || !apiToken.trim()) return;
+    setSaving(true);
     try {
-      const msg = await validateJira(baseUrl, email, apiToken);
-      setValidation({ state: "success", message: msg });
+      await saveCredential("jira_base_url", baseUrl.trim());
+      await saveCredential("jira_email", email.trim());
+      if (apiToken !== MASKED_SENTINEL) {
+        await saveCredential("jira_api_token", apiToken.trim());
+      }
+      setSaved(true);
+      setTestState("idle");
+      setTestMessage("");
     } catch (err) {
-      setValidation({ state: "error", message: String(err) });
+      setTestState("error");
+      setTestMessage(String(err));
+    } finally {
+      setSaving(false);
     }
   }
 
-  const canProceed = validation.state === "success";
+  async function handleTest() {
+    setTestState("loading");
+    setTestMessage("Connecting to JIRA…");
+    try {
+      const msg = apiToken === MASKED_SENTINEL
+        ? await testJiraStored()
+        : await validateJira(baseUrl.trim(), email.trim(), apiToken.trim());
+      setTestState("success");
+      setTestMessage(msg);
+    } catch (err) {
+      setTestState("error");
+      setTestMessage(String(err));
+    }
+  }
+
   const hasInput = baseUrl.trim() && email.trim() && apiToken.trim();
+  const canTest = hasInput;
 
   return (
     <div className="space-y-5">
@@ -282,16 +355,16 @@ function JiraStep({
           label="Workspace URL"
           placeholder="https://yourcompany.atlassian.net"
           value={baseUrl}
-          onChange={setBaseUrl}
-          disabled={validation.state === "loading"}
+          onChange={(v) => { setBaseUrl(v); setSaved(false); }}
+          disabled={saving || testState === "loading"}
         />
         <CredentialField
           id="jira-email"
           label="Email"
           placeholder="you@yourcompany.com"
           value={email}
-          onChange={setEmail}
-          disabled={validation.state === "loading"}
+          onChange={(v) => { setEmail(v); setSaved(false); }}
+          disabled={saving || testState === "loading"}
         />
         <CredentialField
           id="jira-token"
@@ -299,13 +372,13 @@ function JiraStep({
           placeholder="ATATT3x…"
           masked
           value={apiToken}
-          onChange={setApiToken}
-          disabled={validation.state === "loading"}
-          helperText="Generate at id.atlassian.com → Manage profile → Security → API tokens"
+          onChange={(v) => { setApiToken(v); setSaved(false); }}
+          disabled={saving || testState === "loading"}
+          helperText={saved && apiToken === MASKED_SENTINEL ? "Token already saved — clear to enter a new one" : "Classic API token from id.atlassian.com → Security → API tokens. Must be a classic token (starts with ATATT3x, no scope picker) — not an OAuth 2.0 scoped token."}
         />
       </div>
 
-      <ValidationMessage {...validation} />
+      <ValidationMessage state={testState} message={testMessage} />
 
       <div className="flex gap-2">
         <Button variant="ghost" onClick={onBack} className="gap-1">
@@ -313,23 +386,28 @@ function JiraStep({
         </Button>
         <Button
           className="flex-1"
-          onClick={handleValidate}
-          disabled={!hasInput || validation.state === "loading"}
+          onClick={handleSave}
+          disabled={!hasInput || saving}
         >
-          {validation.state === "loading" ? (
-            <><Loader2 className="h-4 w-4 animate-spin" /> Validating…</>
-          ) : (
-            "Validate & save"
-          )}
+          {saving ? <><Loader2 className="h-4 w-4 animate-spin" /> Saving…</> : "Save credentials"}
         </Button>
-        {canProceed && (
+        {saved && (
+          <Button
+            variant="outline"
+            onClick={handleTest}
+            disabled={!canTest || testState === "loading"}
+          >
+            {testState === "loading" ? <Loader2 className="h-4 w-4 animate-spin" /> : "Test"}
+          </Button>
+        )}
+        {saved && (
           <Button onClick={onNext}>
             Next <ArrowRight className="h-4 w-4" />
           </Button>
         )}
       </div>
 
-      {!canProceed && (
+      {!saved && (
         <button
           onClick={onNext}
           className="w-full text-xs text-muted-foreground hover:text-foreground text-center"
@@ -352,21 +430,62 @@ function BitbucketStep({
   stepNum: number;
 }) {
   const [workspace, setWorkspace] = useState("");
+  const [email, setEmail] = useState("");
   const [accessToken, setAccessToken] = useState("");
-  const [validation, setValidation] = useState<StepValidation>({ state: "idle", message: "" });
+  const [saved, setSaved] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [testState, setTestState] = useState<ValidationState>("idle");
+  const [testMessage, setTestMessage] = useState("");
 
-  async function handleValidate() {
-    setValidation({ state: "loading", message: "Connecting to Bitbucket…" });
+  // Pre-populate from stored values when navigating back to this step
+  useEffect(() => {
+    getNonSecretConfig().then(config => {
+      if (config["bitbucket_workspace"]) {
+        setWorkspace(config["bitbucket_workspace"]);
+        setEmail(config["bitbucket_email"] ?? "");
+        setAccessToken(MASKED_SENTINEL);
+        setSaved(true);
+      }
+    }).catch(() => {});
+  }, []);
+
+  async function handleSave() {
+    if (!workspace.trim() || !email.trim() || !accessToken.trim()) return;
+    setSaving(true);
     try {
-      const msg = await validateBitbucket(workspace, accessToken);
-      setValidation({ state: "success", message: msg });
+      await saveCredential("bitbucket_workspace", workspace.trim());
+      await saveCredential("bitbucket_email", email.trim());
+      if (accessToken !== MASKED_SENTINEL) {
+        await saveCredential("bitbucket_access_token", accessToken.trim());
+      }
+      setSaved(true);
+      setTestState("idle");
+      setTestMessage("");
     } catch (err) {
-      setValidation({ state: "error", message: String(err) });
+      setTestState("error");
+      setTestMessage(String(err));
+    } finally {
+      setSaving(false);
     }
   }
 
-  const canProceed = validation.state === "success";
-  const hasInput = workspace.trim() && accessToken.trim();
+  async function handleTest() {
+    setTestState("loading");
+    setTestMessage("Connecting to Bitbucket…");
+    try {
+      const msg = accessToken === MASKED_SENTINEL
+        ? await testBitbucketStored()
+        : await validateBitbucket(workspace.trim(), email.trim(), accessToken.trim());
+      setTestState("success");
+      setTestMessage(msg);
+    } catch (err) {
+      setTestState("error");
+      setTestMessage(String(err));
+    }
+  }
+
+  const hasInput = workspace.trim() && email.trim() && accessToken.trim();
+  const canTest = hasInput;
 
   return (
     <div className="space-y-5">
@@ -388,9 +507,18 @@ function BitbucketStep({
           label="Workspace slug"
           placeholder="your-workspace"
           value={workspace}
-          onChange={setWorkspace}
-          disabled={validation.state === "loading"}
+          onChange={(v) => { setWorkspace(v); setSaved(false); }}
+          disabled={saving || testState === "loading"}
           helperText="The slug from your Bitbucket workspace URL"
+        />
+        <CredentialField
+          id="bb-email"
+          label="Email"
+          placeholder="you@yourcompany.com"
+          value={email}
+          onChange={(v) => { setEmail(v); setSaved(false); }}
+          disabled={saving || testState === "loading"}
+          helperText="The email address associated with your Bitbucket account"
         />
         <CredentialField
           id="bb-token"
@@ -398,13 +526,13 @@ function BitbucketStep({
           placeholder="ATCTT3x…"
           masked
           value={accessToken}
-          onChange={setAccessToken}
-          disabled={validation.state === "loading"}
-          helperText="Workspace or repository HTTP access token — generate at bitbucket.org → Workspace settings → Access tokens"
+          onChange={(v) => { setAccessToken(v); setSaved(false); }}
+          disabled={saving || testState === "loading"}
+          helperText={saved && accessToken === MASKED_SENTINEL ? "Token already saved — clear to enter a new one" : "Workspace or repository HTTP access token — generate at bitbucket.org → Workspace settings → Access tokens"}
         />
       </div>
 
-      <ValidationMessage {...validation} />
+      <ValidationMessage state={testState} message={testMessage} />
 
       <div className="flex gap-2">
         <Button variant="ghost" onClick={onBack} className="gap-1">
@@ -412,23 +540,28 @@ function BitbucketStep({
         </Button>
         <Button
           className="flex-1"
-          onClick={handleValidate}
-          disabled={!hasInput || validation.state === "loading"}
+          onClick={handleSave}
+          disabled={!hasInput || saving}
         >
-          {validation.state === "loading" ? (
-            <><Loader2 className="h-4 w-4 animate-spin" /> Validating…</>
-          ) : (
-            "Validate & save"
-          )}
+          {saving ? <><Loader2 className="h-4 w-4 animate-spin" /> Saving…</> : "Save credentials"}
         </Button>
-        {canProceed && (
+        {saved && (
+          <Button
+            variant="outline"
+            onClick={handleTest}
+            disabled={!canTest || testState === "loading"}
+          >
+            {testState === "loading" ? <Loader2 className="h-4 w-4 animate-spin" /> : "Test"}
+          </Button>
+        )}
+        {saved && (
           <Button onClick={onNext}>
             Done <ArrowRight className="h-4 w-4" />
           </Button>
         )}
       </div>
 
-      {!canProceed && (
+      {!saved && (
         <button
           onClick={onNext}
           className="w-full text-xs text-muted-foreground hover:text-foreground text-center"
