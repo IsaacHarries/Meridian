@@ -735,7 +735,7 @@ export function RetrospectivesScreen({ onBack }: RetrospectivesScreenProps) {
         </div>
       </header>
 
-      <main className="max-w-5xl mx-auto px-6 py-8 space-y-6">
+      <main className="max-w-5xl mx-auto px-6 py-8 space-y-6 bg-background/60 rounded-xl">
         {/* Error loading sprint list */}
         {listError && (
           <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive flex items-start gap-2">
@@ -763,8 +763,8 @@ export function RetrospectivesScreen({ onBack }: RetrospectivesScreenProps) {
                 onClick={() => setSelectedId(sprint.id)}
                 className={`shrink-0 rounded-lg border px-3 py-2 text-sm text-left transition-colors ${
                   selectedId === sprint.id
-                    ? "border-foreground bg-foreground text-background"
-                    : "border-border bg-card hover:bg-accent"
+                    ? "border-foreground bg-foreground/60 text-background"
+                    : "border-border bg-card/60 hover:bg-accent/60"
                 }`}
               >
                 <p className="font-medium whitespace-nowrap">{sprint.name}</p>

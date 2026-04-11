@@ -412,7 +412,7 @@ export function TicketQualityScreen({ credStatus, onBack }: TicketQualityScreenP
   }
 
   return (
-    <div className="min-h-screen">
+    <div className="min-h-screen flex flex-col">
       {/* Header */}
       <div className="border-b bg-background/95 backdrop-blur sticky top-0 z-10">
         <div className="max-w-5xl mx-auto px-6 py-4 flex items-center gap-3">
@@ -428,7 +428,8 @@ export function TicketQualityScreen({ credStatus, onBack }: TicketQualityScreenP
         </div>
       </div>
 
-      <div className="max-w-5xl mx-auto px-6 py-6">
+      <div className="flex-1 flex items-center">
+        <div className="w-full max-w-5xl mx-auto px-6 py-6 bg-background/60 rounded-xl">
         {/* Credential warnings */}
         {!jiraAvailable && (
           <div className="mb-5 rounded-md border border-amber-200 bg-amber-50 dark:border-amber-900 dark:bg-amber-950/30 px-4 py-3 text-sm text-amber-800 dark:text-amber-200">
@@ -573,6 +574,7 @@ export function TicketQualityScreen({ credStatus, onBack }: TicketQualityScreenP
               </>
             )}
           </div>
+        </div>
         </div>
       </div>
     </div>

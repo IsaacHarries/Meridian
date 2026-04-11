@@ -163,7 +163,9 @@ export default function Root() {
   return (
     <ThemeProvider>
       <GlobalBackground />
-      <AppInner />
+      <div className="relative z-[1]">
+        <AppInner />
+      </div>
     </ThemeProvider>
   );
 }

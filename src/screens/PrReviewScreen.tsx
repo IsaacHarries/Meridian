@@ -400,7 +400,7 @@ function PrSelector({ prsForReview, allOpenPrs, loading, onSelect, jiraBaseUrl, 
     return (
       <button
         onClick={() => onSelect(pr)}
-        className="w-full text-left px-4 py-3 rounded-md border hover:bg-muted/60 transition-colors space-y-1"
+        className="w-full text-left px-4 py-3 rounded-md border bg-card/60 hover:bg-muted/60 transition-colors space-y-1"
       >
         <div className="flex items-center gap-2">
           <GitPullRequest className="h-4 w-4 text-muted-foreground shrink-0" />
@@ -668,8 +668,9 @@ export function PrReviewScreen({ credStatus, onBack }: PrReviewScreenProps) {
         </div>
       )}
 
-      {/* Body */}
-      <div className="flex-1 overflow-hidden">
+      {/* Body — centred card */}
+      <div className="flex-1 flex flex-col p-4 overflow-hidden">
+        <div className="flex-1 max-w-3xl w-full mx-auto bg-background/60 rounded-xl overflow-hidden flex flex-col">
         {!selectedPr ? (
           /* PR selector */
           <div className="px-6 py-6">
@@ -684,7 +685,7 @@ export function PrReviewScreen({ credStatus, onBack }: PrReviewScreenProps) {
           </div>
         ) : (
           /* Review layout */
-          <div className="flex h-full" style={{ height: "calc(100vh - 57px)" }}>
+          <div className="flex flex-1 overflow-hidden">
             {/* Left: diff viewer */}
             <div className="flex-1 overflow-y-auto border-r p-4 space-y-3">
               <div className="flex items-center justify-between">
@@ -798,6 +799,7 @@ export function PrReviewScreen({ credStatus, onBack }: PrReviewScreenProps) {
             </div>
           </div>
         )}
+        </div>
       </div>
     </div>
   );

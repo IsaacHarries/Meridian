@@ -361,7 +361,7 @@ function SuggestionsPanel({
 
         {suggestions && (
           <div className="space-y-3">
-            <pre className="text-xs whitespace-pre-wrap font-sans leading-relaxed bg-muted/40 rounded-md p-3 max-h-80 overflow-y-auto">
+            <pre className="text-xs whitespace-pre-wrap font-sans leading-relaxed bg-muted/60 rounded-md p-3 max-h-80 overflow-y-auto">
               {suggestions}
             </pre>
             <div className="flex gap-2">
@@ -406,7 +406,7 @@ function SummaryStrip({
   return (
     <div className="flex flex-wrap gap-2 text-sm">
       {sprint && (
-        <div className="flex items-center gap-1.5 rounded-lg border bg-card px-3 py-2">
+        <div className="flex items-center gap-1.5 rounded-lg border bg-card/60 px-3 py-2">
           <span className="text-muted-foreground">Sprint</span>
           <span className="font-medium">{sprint.name}</span>
           {daysLeft !== null && (
@@ -419,7 +419,7 @@ function SummaryStrip({
           )}
         </div>
       )}
-      <div className="flex items-center gap-1.5 rounded-lg border bg-card px-3 py-2">
+      <div className="flex items-center gap-1.5 rounded-lg border bg-card/60 px-3 py-2">
         <span className="text-muted-foreground">Team avg</span>
         <span className="font-medium tabular-nums">{avgRemainingTickets} tickets remaining</span>
       </div>
@@ -495,7 +495,7 @@ export function WorkloadBalancerScreen({ credStatus, onBack }: WorkloadBalancerS
   const maxTickets = Math.max(...workloads.map((d) => d.issues.filter((i) => !isDone(i)).length), 1);
 
   return (
-    <div className="min-h-screen">
+    <div className="min-h-screen flex flex-col">
       <header className="sticky top-0 z-10 border-b bg-background/80 backdrop-blur-sm">
         <div className="max-w-5xl mx-auto px-6 h-14 flex items-center gap-3">
           <Button variant="ghost" size="icon" onClick={onBack}>
@@ -514,7 +514,8 @@ export function WorkloadBalancerScreen({ credStatus, onBack }: WorkloadBalancerS
         </div>
       </header>
 
-      <main className="max-w-5xl mx-auto px-6 py-8 space-y-4">
+      <main className="flex-1 flex items-center">
+        <div className="w-full max-w-5xl mx-auto px-6 py-8 space-y-4 bg-background/60 rounded-xl">
         {loading && (
           <div className="flex items-center justify-center gap-2 text-sm text-muted-foreground py-24">
             <RefreshCw className="h-4 w-4 animate-spin" />
@@ -593,6 +594,7 @@ export function WorkloadBalancerScreen({ credStatus, onBack }: WorkloadBalancerS
             </div>
           </>
         )}
+        </div>
       </main>
     </div>
   );

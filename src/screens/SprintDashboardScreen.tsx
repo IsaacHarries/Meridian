@@ -1105,7 +1105,7 @@ export function SprintDashboardScreen({ onBack }: SprintDashboardScreenProps) {
         </div>
       </header>
 
-      <main className="max-w-5xl mx-auto px-6 py-8">
+      <main className="max-w-5xl mx-auto px-6 py-8 bg-background/60 rounded-xl">
         {loading && !allData && (
           <div className="flex items-center justify-center py-24 text-muted-foreground text-sm gap-2">
             <RefreshCw className="h-4 w-4 animate-spin" />

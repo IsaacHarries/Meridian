@@ -1,6 +1,33 @@
-import { useEffect, useState } from "react";
-import { AlertTriangle, Settings, TrendingUp, CheckSquare, GitPullRequest, Sun, Moon, Monitor } from "lucide-react";
-import { useTheme } from "@/providers/ThemeProvider";
+import { useEffect, useState, useMemo } from "react";
+import { AlertTriangle, Settings, TrendingUp, CheckSquare, GitPullRequest } from "lucide-react";
+
+const GREETINGS = [
+  "It works on my machine...",
+  "Have you tried turning it off and on again?",
+  "undefined is not a function...",
+  "git blame yourself...",
+  "Ship it, we'll fix it in prod...",
+  "It's not a bug, it's a feature...",
+  "Works fine, must be a caching issue...",
+  "Just one more console.log...",
+  "I'll refactor it later...",
+  "The build was green when I pushed it...",
+  "Have you tried clearing your cache?",
+  "It was working yesterday, I swear...",
+  "Compiling, please enjoy this loading screen...",
+  "Merge conflicts? Never heard of her...",
+  "ChatGPT said it would work...",
+  "That's a known issue...",
+  "We'll fix it in the next sprint...",
+  "The tests are flaky, just re-run them...",
+  "Did you read the error message?",
+  "Ten lines of code, two weeks of debugging...",
+  "It's not slow, it's thorough...",
+  "I'll add tests once it's stable...",
+  "Senior engineer? I just Google faster...",
+  "The regex made sense when I wrote it...",
+  "Technically it's not deprecated, just discouraged...",
+];
 import { Button } from "@/components/ui/button";
 import {
   type CredentialStatus,
@@ -75,7 +102,7 @@ function StatPill({
   value: string;
 }) {
   return (
-    <div className="flex items-center gap-2 rounded-lg border bg-card px-3 py-2 text-sm">
+    <div className="flex items-center gap-2 rounded-lg border bg-card/60 px-3 py-2 text-sm">
       <Icon className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
       <span className="text-muted-foreground">{label}</span>
       <span className="font-medium tabular-nums">{value}</span>
@@ -213,38 +240,23 @@ const WORKFLOW_CARDS: {
   },
 ];
 
-// ── Theme mode toggle (cycles light → dark → system) ─────────────────────────
-
-function ThemeModeToggle() {
-  const { config, setMode } = useTheme();
-  const cycle = () => {
-    if (config.mode === "light") setMode("dark");
-    else if (config.mode === "dark") setMode("system");
-    else setMode("light");
-  };
-  return (
-    <Button variant="ghost" size="icon" onClick={cycle} title={`Mode: ${config.mode}`}>
-      {config.mode === "light" ? <Sun className="h-4 w-4" /> :
-       config.mode === "dark"  ? <Moon className="h-4 w-4" /> :
-       <Monitor className="h-4 w-4" />}
-    </Button>
-  );
-}
-
 
 // ── Landing screen ────────────────────────────────────────────────────────────
 
 export function LandingScreen({ credStatus, onOpenSettings, onNavigate }: LandingScreenProps) {
+  const greeting = useMemo(
+    () => GREETINGS[Math.floor(Math.random() * GREETINGS.length)],
+    []
+  );
   const allComplete =
     anthropicComplete(credStatus) && jiraComplete(credStatus) && bitbucketComplete(credStatus);
 
   return (
-    <div className="min-h-screen">
+    <div className="min-h-screen flex flex-col">
       <header className="sticky top-0 z-10 border-b bg-background/80 backdrop-blur-sm">
         <div className="max-w-5xl mx-auto px-6 h-14 flex items-center justify-between">
           <span className="font-semibold tracking-tight">Meridian</span>
           <div className="flex items-center gap-1">
-            <ThemeModeToggle />
             <Button variant="ghost" size="icon" onClick={onOpenSettings}>
               <Settings className="h-4 w-4" />
             </Button>
@@ -252,15 +264,15 @@ export function LandingScreen({ credStatus, onOpenSettings, onNavigate }: Landin
         </div>
       </header>
 
-      <main className="max-w-5xl mx-auto px-6 py-8 space-y-8">
+      <main className="flex-1 flex items-center">
+        <div className="w-full max-w-5xl mx-auto px-6 py-8 space-y-8 bg-background/60 rounded-xl">
         {!allComplete && (
           <MissingCredentialsBanner credStatus={credStatus} onOpenSettings={onOpenSettings} />
         )}
 
         <div className="space-y-3">
           <div>
-            <h1 className="text-2xl font-semibold tracking-tight mb-1">Good morning</h1>
-            <p className="text-muted-foreground text-sm">What are we working on today?</p>
+            <h1 className="text-2xl font-semibold tracking-tight mb-1">{greeting}</h1>
           </div>
           <SprintSummary credStatus={credStatus} />
         </div>
@@ -270,7 +282,7 @@ export function LandingScreen({ credStatus, onOpenSettings, onNavigate }: Landin
             <button
               key={card.id}
               onClick={() => onNavigate(card.id)}
-              className="group flex flex-col gap-2 rounded-xl border bg-card p-4 text-left transition-colors hover:bg-accent cursor-pointer"
+              className="group flex flex-col gap-2 rounded-xl border bg-card/60 p-4 text-left transition-colors hover:bg-accent/60 cursor-pointer"
             >
               <span className="text-2xl">{card.emoji}</span>
               <div>
@@ -281,6 +293,7 @@ export function LandingScreen({ credStatus, onOpenSettings, onNavigate }: Landin
               </div>
             </button>
           ))}
+        </div>
         </div>
       </main>
     </div>

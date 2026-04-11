@@ -587,7 +587,7 @@ export function OnboardingScreen({ onComplete, onMockMode }: OnboardingScreenPro
 
   return (
     <div className="min-h-screen flex items-center justify-center p-6">
-      <div className="w-full max-w-md">
+      <div className="w-full max-w-md bg-background/60 rounded-xl p-6">
         {step > 0 && (
           <div className="mb-6 flex justify-center">
             <StepIndicator current={step} total={TOTAL_STEPS} />

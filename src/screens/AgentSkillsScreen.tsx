@@ -166,7 +166,8 @@ export function AgentSkillsScreen({ onBack }: Props) {
         </div>
       </header>
 
-      <div className="flex flex-1 overflow-hidden">
+      <div className="flex-1 flex flex-col p-4 overflow-hidden">
+        <div className="flex-1 max-w-3xl w-full mx-auto bg-background/60 rounded-xl overflow-hidden flex">
         {/* Sidebar tabs */}
         <aside className="w-56 border-r border-border flex flex-col gap-1 p-3 shrink-0">
           {SKILL_DEFS.map((def) => {
@@ -281,6 +282,7 @@ export function AgentSkillsScreen({ onBack }: Props) {
             )}
           </div>
         </main>
+        </div>
       </div>
     </div>
   );

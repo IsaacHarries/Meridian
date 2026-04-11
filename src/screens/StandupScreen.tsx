@@ -494,7 +494,7 @@ function AiBriefingPanel({
 
         {briefing && (
           <div className="space-y-3">
-            <pre className="text-xs whitespace-pre-wrap font-sans leading-relaxed text-foreground bg-muted/40 rounded-md p-3 max-h-96 overflow-y-auto">
+            <pre className="text-xs whitespace-pre-wrap font-sans leading-relaxed text-foreground bg-muted/60 rounded-md p-3 max-h-96 overflow-y-auto">
               {briefing}
             </pre>
             <div className="flex gap-2">
@@ -554,7 +554,7 @@ function ThresholdConfig({
                 onChange={(e) =>
                   onChange({ ...thresholds, [key]: Math.max(1, parseInt(e.target.value) || 1) })
                 }
-                className="w-10 rounded border bg-background px-1.5 py-0.5 text-center text-foreground"
+                className="w-10 rounded border bg-background/60 px-1.5 py-0.5 text-center text-foreground"
               />
               days
             </label>
@@ -662,7 +662,7 @@ export function StandupScreen({ credStatus, onBack }: StandupScreenProps) {
         </div>
       </header>
 
-      <main className="max-w-3xl mx-auto px-6 py-8 space-y-4">
+      <main className="max-w-3xl mx-auto px-6 py-8 space-y-4 bg-background/60 rounded-xl">
         {loading && (
           <div className="flex items-center gap-2 text-sm text-muted-foreground py-16 justify-center">
             <RefreshCw className="h-4 w-4 animate-spin" />

@@ -1,9 +1,8 @@
 import { useState, useEffect } from "react";
 import { useTheme } from "@/providers/ThemeProvider";
-import { type ThemeMode, type AccentColor, ACCENT_LABELS, ACCENT_SWATCH } from "@/lib/theme";
+import { type AccentColor, ACCENT_LABELS, ACCENT_SWATCH } from "@/lib/theme";
 import { isMockMode, setMockMode } from "@/lib/tauri";
 import { BACKGROUNDS, CATEGORY_LABELS, BackgroundRenderer, type BgCategory, getBackgroundId, setBackgroundId } from "@/lib/backgrounds";
-import { Sun, Moon, Monitor } from "lucide-react";
 import { CheckCircle, AlertCircle, Loader2, X, RotateCcw, FlaskConical, Sparkles, ChevronRight, FlaskRound } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -36,16 +35,11 @@ import {
 
 const ACCENTS: AccentColor[] = ["slate", "blue", "violet", "green", "orange", "rose"];
 
-const MODE_OPTIONS: { value: ThemeMode; label: string; icon: React.ReactNode }[] = [
-  { value: "light",  label: "Light",  icon: <Sun className="h-4 w-4" /> },
-  { value: "dark",   label: "Dark",   icon: <Moon className="h-4 w-4" /> },
-  { value: "system", label: "System", icon: <Monitor className="h-4 w-4" /> },
-];
 
 const BG_CATEGORIES: BgCategory[] = ["meridian", "space", "jwst", "abstract", "patterns", "minimal"];
 
 function ThemeSection() {
-  const { config, setMode, setAccent } = useTheme();
+  const { config, setAccent } = useTheme();
   const [selectedBg, setSelectedBg] = useState(() => getBackgroundId());
 
   function pickBackground(id: string) {
@@ -57,29 +51,9 @@ function ThemeSection() {
     <Card>
       <CardHeader>
         <CardTitle className="text-base">Appearance</CardTitle>
-        <CardDescription>Choose your preferred colour mode, accent colour, and background.</CardDescription>
+        <CardDescription>Choose your accent colour and background.</CardDescription>
       </CardHeader>
       <CardContent className="space-y-6">
-        {/* Mode */}
-        <div className="space-y-2">
-          <p className="text-sm font-medium">Mode</p>
-          <div className="flex gap-2">
-            {MODE_OPTIONS.map(({ value, label, icon }) => (
-              <button
-                key={value}
-                onClick={() => setMode(value)}
-                className={`flex items-center gap-2 px-4 py-2 rounded-md border text-sm transition-colors ${
-                  config.mode === value
-                    ? "border-primary bg-primary text-primary-foreground font-medium"
-                    : "border-border hover:bg-muted"
-                }`}
-              >
-                {icon}
-                {label}
-              </button>
-            ))}
-          </div>
-        </div>
 
         {/* Accent */}
         <div className="space-y-2">
@@ -932,7 +906,7 @@ export function SettingsScreen({ onClose, onNavigate }: SettingsScreenProps) {
         </div>
       </header>
 
-      <main className="max-w-2xl mx-auto px-6 py-8 space-y-8">
+      <main className="max-w-2xl mx-auto px-6 py-8 space-y-8 bg-background/60 rounded-xl">
         {credStatus ? (
           <>
             <section className="space-y-3">

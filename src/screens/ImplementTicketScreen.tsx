@@ -596,7 +596,7 @@ function TicketSelector({ sprintIssues, loading, onSelect }: TicketSelectorProps
             <button
               key={issue.id}
               onClick={() => onSelect(issue)}
-              className="w-full text-left px-4 py-3 rounded-md border hover:bg-muted/60 transition-colors"
+              className="w-full text-left px-4 py-3 rounded-md border bg-card/60 hover:bg-muted/60 transition-colors"
             >
               <div className="flex items-center gap-2 mb-1">
                 <JiraTicketLink ticketKey={issue.key} url={issue.url} />
@@ -1051,13 +1051,15 @@ export function ImplementTicketScreen({ credStatus, onBack }: ImplementTicketScr
         </div>
       )}
 
-      {/* Body */}
-      {currentStage === "select" ? (
-        <div className="px-6 py-6">
-          <TicketSelector sprintIssues={sprintIssues} loading={loadingIssues} onSelect={startPipeline} />
-        </div>
-      ) : (
-        <div className="flex flex-1 overflow-hidden" style={{ height: "calc(100vh - 57px)" }}>
+      {/* Body — centred card */}
+      <div className="flex-1 flex flex-col p-4 overflow-hidden">
+        <div className="flex-1 max-w-3xl w-full mx-auto bg-background/60 rounded-xl overflow-hidden flex flex-col">
+          {currentStage === "select" ? (
+            <div className="p-6">
+              <TicketSelector sprintIssues={sprintIssues} loading={loadingIssues} onSelect={startPipeline} />
+            </div>
+          ) : (
+            <div className="flex flex-1 overflow-hidden">
           {/* Pipeline sidebar */}
           <PipelineSidebar
             currentStage={currentStage}
@@ -1110,6 +1112,8 @@ export function ImplementTicketScreen({ credStatus, onBack }: ImplementTicketScr
           </div>
         </div>
       )}
+        </div>
+      </div>
     </div>
   );
 }

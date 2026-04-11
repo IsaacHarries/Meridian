@@ -73,7 +73,7 @@ export function WorkflowScreen({ workflowId, onBack }: WorkflowScreenProps) {
         </div>
       </header>
 
-      <main className="max-w-5xl mx-auto px-6 py-16 flex flex-col items-center text-center gap-4">
+      <main className="max-w-5xl mx-auto px-6 py-16 flex flex-col items-center text-center gap-4 bg-background/60 rounded-xl">
         <div className="rounded-full bg-muted p-4">
           <Construction className="h-8 w-8 text-muted-foreground" />
         </div>

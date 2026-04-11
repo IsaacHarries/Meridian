@@ -482,7 +482,7 @@ export function KnowledgeBaseScreen({ onBack }: KnowledgeBaseScreenProps) {
   };
 
   return (
-    <div className="min-h-screen">
+    <div className="min-h-screen flex flex-col">
       {/* Header */}
       <div className="border-b bg-background/95 backdrop-blur sticky top-0 z-10">
         <div className="max-w-4xl mx-auto px-6 py-4 flex items-center justify-between gap-4">
@@ -513,7 +513,8 @@ export function KnowledgeBaseScreen({ onBack }: KnowledgeBaseScreenProps) {
         </div>
       </div>
 
-      <div className="max-w-4xl mx-auto px-6 py-6 space-y-5">
+      <div className="flex-1 flex items-center">
+        <div className="w-full max-w-4xl mx-auto px-6 py-6 space-y-5 bg-background/60 rounded-xl">
         {/* Search */}
         <div className="relative">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground pointer-events-none" />
@@ -642,6 +643,7 @@ export function KnowledgeBaseScreen({ onBack }: KnowledgeBaseScreenProps) {
         {loading && (
           <div className="text-sm text-muted-foreground text-center py-12">Loading…</div>
         )}
+        </div>
       </div>
 
       {/* Entry editor */}
