@@ -79,12 +79,23 @@ function ensureKF() {
     }
     /* ── Pulsar ── */
     @keyframes m-pulsar-spin {
-      from { transform: translate(-50%,-50%) rotate(0deg); }
-      to   { transform: translate(-50%,-50%) rotate(360deg); }
+      0%      { transform: translate(-50%,-50%) rotate(0deg); animation-timing-function: ease-out; }
+      12.5%   { transform: translate(-50%,-50%) rotate(26deg); animation-timing-function: ease-in; }
+      25%     { transform: translate(-50%,-50%) rotate(0deg); animation-timing-function: ease-out; }
+      37.5%   { transform: translate(-50%,-50%) rotate(-26deg); animation-timing-function: ease-in; }
+      50%     { transform: translate(-50%,-50%) rotate(0deg); animation-timing-function: ease-out; }
+      62.5%   { transform: translate(-50%,-50%) rotate(26deg); animation-timing-function: ease-in; }
+      75%     { transform: translate(-50%,-50%) rotate(0deg); animation-timing-function: ease-out; }
+      87.5%   { transform: translate(-50%,-50%) rotate(-26deg); animation-timing-function: ease-in; }
+      100%    { transform: translate(-50%,-50%) rotate(0deg); }
     }
     @keyframes m-pulsar-core {
       0%,42%,58%,100% { opacity: 0.35; transform: translate(-50%,-50%) scale(0.8); box-shadow: 0 0 4px 2px rgba(160,210,255,0.35); }
       50%             { opacity: 1;    transform: translate(-50%,-50%) scale(1.5); box-shadow: 0 0 18px 8px rgba(160,210,255,0.9); }
+    }
+    @keyframes m-pulsar-fade-in {
+      from { opacity: 0; }
+      to   { opacity: 1; }
     }
     /* ── Comet ── */
     @keyframes m-comet {
@@ -121,6 +132,9 @@ function ensureKF() {
       0%,100% { opacity: 0.5; transform: translate(-50%,-50%) scale(0.88); }
       50%     { opacity: 1;   transform: translate(-50%,-50%) scale(1.12); }
     }
+    @keyframes m-se-vanish {
+      to { opacity: 0; scale: 0; }
+    }
   `;
   document.head.appendChild(s);
 }
@@ -132,10 +146,16 @@ interface Nova { id: number; x: number; y: number; }
 const NOVA_DUR = 3200;
 
 function NovaEl({ nova, onDone }: { nova: Nova; onDone: () => void }) {
+  const [vanishing, setVanishing] = React.useState(false);
+
   React.useEffect(() => {
+    if (vanishing) {
+      const t = setTimeout(onDone, 300);
+      return () => clearTimeout(t);
+    }
     const t = setTimeout(onDone, NOVA_DUR + 400);
     return () => clearTimeout(t);
-  }, [onDone]);
+  }, [onDone, vanishing]);
 
   const base: React.CSSProperties = {
     position: "absolute", borderRadius: "50%",
@@ -143,7 +163,7 @@ function NovaEl({ nova, onDone }: { nova: Nova; onDone: () => void }) {
   };
 
   return (
-    <div style={{ position: "absolute", left: `${nova.x}%`, top: `${nova.y}%` }}>
+    <div onClick={() => !vanishing && setVanishing(true)} style={{ position: "absolute", left: `${nova.x}%`, top: `${nova.y}%`, cursor: "pointer", pointerEvents: "auto", animation: vanishing ? "m-se-vanish 0.3s ease-in forwards" : undefined }}>
       {/* Wide radial flash — covers a chunk of the sky */}
       <div style={{
         ...base,
@@ -223,10 +243,14 @@ function BHEl({ bh, onDone }: { bh: BH; onDone: () => void }) {
   const [vanishing, setVanishing] = React.useState(false);
 
   React.useEffect(() => {
+    if (vanishing) {
+      const t = setTimeout(onDone, VANISH);
+      return () => clearTimeout(t);
+    }
     const t1 = setTimeout(() => setVanishing(true), bh.duration - VANISH);
     const t2 = setTimeout(onDone, bh.duration + 200);
     return () => { clearTimeout(t1); clearTimeout(t2); };
-  }, [bh.duration, onDone]);
+  }, [bh.duration, onDone, vanishing]);
 
   const fadeAnim: React.CSSProperties = {
     animationName: vanishing ? "m-bh-vanish" : "m-bh-appear",
@@ -236,7 +260,7 @@ function BHEl({ bh, onDone }: { bh: BH; onDone: () => void }) {
   };
 
   return (
-    <div style={{ position: "absolute", left: `${bh.x}%`, top: `${bh.y}%`, transform: "translate(-50%, -50%)" }}>
+    <div onClick={() => !vanishing && setVanishing(true)} style={{ position: "absolute", left: `${bh.x}%`, top: `${bh.y}%`, transform: "translate(-50%, -50%)", cursor: "pointer", pointerEvents: "auto" }}>
       {/* Rotation wrapper — separate from fade so keyframe scale() doesn't overwrite rotate() */}
       <div style={{ transform: `rotate(${bh.rotation}deg)` }}>
         <div style={fadeAnim}>
@@ -268,18 +292,28 @@ function CometEl({ comet, onDone }: { comet: Comet; onDone: () => void }) {
   const { x, y, angle, tail, duration, tx, ty } = comet;
   const HEAD = 3;
   const coneHalf = tail * 0.30; // half-height at widest (trailing) end
+  const [vanishing, setVanishing] = React.useState(false);
 
   React.useEffect(() => {
+    if (vanishing) {
+      const t = setTimeout(onDone, 300);
+      return () => clearTimeout(t);
+    }
     const t = setTimeout(onDone, duration + 400);
     return () => clearTimeout(t);
-  }, [duration, onDone]);
+  }, [duration, onDone, vanishing]);
 
   return (
-    <div style={{
+    <div onClick={() => !vanishing && setVanishing(true)} style={{
       position: "absolute", left: `${x}%`, top: `${y}%`,
       willChange: "transform, opacity",
-      animationName: "m-comet", animationDuration: `${duration}ms`,
-      animationTimingFunction: "linear", animationFillMode: "both",
+      ...(vanishing ? {
+        animation: "m-se-vanish 0.3s ease-in forwards"
+      } : {
+        animationName: "m-comet", animationDuration: `${duration}ms`,
+        animationTimingFunction: "linear", animationFillMode: "both"
+      }),
+      cursor: "pointer", pointerEvents: "auto",
       "--cx-tx": `${tx}px`, "--cx-ty": `${ty}px`,
     } as React.CSSProperties}>
       <div style={{ transform: `rotate(${angle}deg)`, transformOrigin: "left center" }}>
@@ -328,13 +362,26 @@ function mkComet(): Comet {
 interface Pulsar { id: number; x: number; y: number; duration: number; period: number; }
 
 function PulsarEl({ pulsar, onDone }: { pulsar: Pulsar; onDone: () => void }) {
+  const [novaDone, setNovaDone] = React.useState(false);
+  const [showPulsar, setShowPulsar] = React.useState(false);
+  const [vanishing, setVanishing] = React.useState(false);
   const { x, y, duration, period } = pulsar;
-  const BEAM_LEN = 220;
+  const BEAM_LEN = 600;
 
   React.useEffect(() => {
+    const t = setTimeout(() => setShowPulsar(true), 1200);
+    return () => clearTimeout(t);
+  }, []);
+
+  React.useEffect(() => {
+    if (!showPulsar) return;
+    if (vanishing) {
+      const t = setTimeout(onDone, 300);
+      return () => clearTimeout(t);
+    }
     const t = setTimeout(onDone, duration + 200);
     return () => clearTimeout(t);
-  }, [duration, onDone]);
+  }, [duration, onDone, showPulsar, vanishing]);
 
   const beamStyle = (delay: string): React.CSSProperties => ({
     position: "absolute",
@@ -351,23 +398,32 @@ function PulsarEl({ pulsar, onDone }: { pulsar: Pulsar; onDone: () => void }) {
   });
 
   return (
-    <div style={{ position: "absolute", left: `${x}%`, top: `${y}%` }}>
-      {/* Beam pair — 180° apart via delay offset */}
-      <div style={beamStyle("0ms")} />
-      <div style={beamStyle(`-${period / 2}ms`)} />
-      {/* Pulsing core */}
-      <div style={{
-        position: "absolute",
-        width: "8px", height: "8px",
-        left: "50%", top: "50%",
-        borderRadius: "50%",
-        background: "rgba(210,230,255,0.95)",
-        animationName: "m-pulsar-core",
-        animationDuration: `${period}ms`,
-        animationTimingFunction: "ease-in-out",
-        animationIterationCount: "infinite",
-      }} />
-    </div>
+    <>
+      {!novaDone && <NovaEl nova={{ id: pulsar.id, x, y }} onDone={() => setNovaDone(true)} />}
+      {showPulsar && (
+        <div onClick={() => !vanishing && setVanishing(true)} style={{
+          position: "absolute", left: `${x}%`, top: `${y}%`,
+          transform: `rotate(${pulsar.id * 47}deg)`,
+          animation: vanishing ? "m-se-vanish 0.3s ease-in forwards" : "m-pulsar-fade-in 3s ease-out forwards",
+          cursor: "pointer", pointerEvents: "auto",
+        }}>
+          {/* Single light beam */}
+          <div style={beamStyle("0ms")} />
+          {/* Pulsing core */}
+          <div style={{
+            position: "absolute",
+            width: "8px", height: "8px",
+            left: "50%", top: "50%",
+            borderRadius: "50%",
+            background: "rgba(210,230,255,0.95)",
+            animationName: "m-pulsar-core",
+            animationDuration: `${period}ms`,
+            animationTimingFunction: "ease-in-out",
+            animationIterationCount: "infinite",
+          }} />
+        </div>
+      )}
+    </>
   );
 }
 
@@ -376,8 +432,8 @@ function mkPulsar(): Pulsar {
     id: uid(),
     x: 10 + r() * 80,
     y: 10 + r() * 80,
-    duration: 60_000,
-    period: 1000 + r() * 1200,
+    duration: 120_000,
+    period: 16000 + r() * 4800,
   };
 }
 
@@ -390,18 +446,28 @@ function MeteorEl({ meteor, onDone }: { meteor: Meteor; onDone: () => void }) {
   const rad = (angle * Math.PI) / 180;
   const tx = Math.cos(rad) * travel;
   const ty = Math.sin(rad) * travel;
+  const [vanishing, setVanishing] = React.useState(false);
 
   React.useEffect(() => {
+    if (vanishing) {
+      const t = setTimeout(onDone, 300);
+      return () => clearTimeout(t);
+    }
     const t = setTimeout(onDone, duration + delay + 300);
     return () => clearTimeout(t);
-  }, [duration, delay, onDone]);
+  }, [duration, delay, onDone, vanishing]);
 
   return (
-    <div style={{
+    <div onClick={() => !vanishing && setVanishing(true)} style={{
       position: "absolute", left: `${x}%`, top: `${y}%`,
-      animationName: "m-meteor", animationDuration: `${duration}ms`,
-      animationDelay: `${delay}ms`, animationTimingFunction: "ease-out",
-      animationFillMode: "both",
+      ...(vanishing ? {
+        animation: "m-se-vanish 0.3s ease-in forwards"
+      } : {
+        animationName: "m-meteor", animationDuration: `${duration}ms`,
+        animationDelay: `${delay}ms`, animationTimingFunction: "ease-out",
+        animationFillMode: "both"
+      }),
+      cursor: "pointer", pointerEvents: "auto",
       "--mt-tx": `${tx}px`, "--mt-ty": `${ty}px`,
     } as React.CSSProperties}>
       <div style={{
@@ -448,10 +514,14 @@ function WormholeEl({ wh, onDone }: { wh: WH; onDone: () => void }) {
   const frameRef = React.useRef<number>(0);
 
   React.useEffect(() => {
+    if (vanishing) {
+      const t = setTimeout(onDone, VANISH);
+      return () => clearTimeout(t);
+    }
     const t1 = setTimeout(() => setVanishing(true), duration - VANISH);
     const t2 = setTimeout(onDone, duration + 200);
     return () => { clearTimeout(t1); clearTimeout(t2); };
-  }, [duration, onDone]);
+  }, [duration, onDone, vanishing]);
 
   // Canvas-based gravitational lensing
   React.useEffect(() => {
@@ -565,7 +635,7 @@ function WormholeEl({ wh, onDone }: { wh: WH; onDone: () => void }) {
   const SIZE = Math.round(S * 3.2);
 
   return (
-    <div style={{ position: "absolute", left: `${x}%`, top: `${y}%`, transform: "translate(-50%, -50%)" }}>
+    <div onClick={() => !vanishing && setVanishing(true)} style={{ position: "absolute", left: `${x}%`, top: `${y}%`, transform: "translate(-50%, -50%)", cursor: "pointer", pointerEvents: "auto" }}>
       <div style={{
         animationName: vanishing ? "m-wh-vanish" : "m-wh-appear",
         animationDuration: vanishing ? `${VANISH}ms` : `${APPEAR}ms`,
@@ -657,7 +727,6 @@ export function SpaceEffectsOverlay({ bgId }: { bgId: string }) {
       timers.push(setTimeout(tick, minMs + r() * (maxMs - minMs)));
     };
 
-    sched(addNova,    45_000, 120_000);
     sched(addComet,   18_000,  55_000);
     sched(addPulsar,  55_000, 160_000);
     sched(addMeteors, 80_000, 220_000);
@@ -705,3 +774,4 @@ export function SpaceEffectsOverlay({ bgId }: { bgId: string }) {
     </div>
   );
 }
+

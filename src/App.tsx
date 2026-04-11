@@ -156,6 +156,16 @@ function GlobalBackground() {
   return (
     <div aria-hidden className="fixed inset-0 overflow-hidden pointer-events-none select-none">
       <BackgroundRenderer id={bgId} />
+    </div>
+  );
+}
+
+function GlobalForeground() {
+  const [bgId, setBgId] = useState(() => getBackgroundId());
+  const handleChange = useCallback((id: string) => setBgId(id), []);
+  useBgChangeListener(handleChange);
+  return (
+    <div aria-hidden className="fixed inset-0 overflow-hidden pointer-events-none select-none z-[2]">
       <ShootingStarOverlay bgId={bgId} />
       <SpaceEffectsOverlay bgId={bgId} />
     </div>
@@ -169,6 +179,7 @@ export default function Root() {
       <div className="relative z-[1]">
         <AppInner />
       </div>
+      <GlobalForeground />
     </ThemeProvider>
   );
 }

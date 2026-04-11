@@ -1033,23 +1033,35 @@ function ShootingStarEl({ star, onDone }: { star: SStar; onDone: () => void }) {
   const rad = (angle * Math.PI) / 180;
   const tx = Math.cos(rad) * travel;
   const ty = Math.sin(rad) * travel;
+  const [vanishing, setVanishing] = React.useState(false);
 
   React.useEffect(() => {
+    if (vanishing) {
+      const t = setTimeout(onDone, 300);
+      return () => clearTimeout(t);
+    }
     const t = setTimeout(onDone, duration + delay + 300);
     return () => clearTimeout(t);
-  }, [duration, delay, onDone]);
+  }, [duration, delay, onDone, vanishing]);
 
   return (
     <div
+      onClick={() => !vanishing && setVanishing(true)}
       style={{
         position: "absolute",
         left: `${x}%`,
         top: `${y}%`,
-        animationName: "meridian-ss",
-        animationDuration: `${duration}ms`,
-        animationDelay: `${delay}ms`,
-        animationTimingFunction: "ease-out",
-        animationFillMode: "both",
+        ...(vanishing ? {
+          animation: "m-se-vanish 0.3s ease-in forwards"
+        } : {
+          animationName: "meridian-ss",
+          animationDuration: `${duration}ms`,
+          animationDelay: `${delay}ms`,
+          animationTimingFunction: "ease-out",
+          animationFillMode: "both"
+        }),
+        cursor: "pointer",
+        pointerEvents: "auto",
         "--ss-tx": `${tx}px`,
         "--ss-ty": `${ty}px`,
       } as React.CSSProperties}
@@ -1079,9 +1091,26 @@ export function ShootingStarOverlay({ bgId }: { bgId: string }) {
   }, [bgId]);
 
   const [stars, setStars] = React.useState<SStar[]>([]);
+  const [enabled, setEnabled] = React.useState(true);
   const timerRef = React.useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
+  React.useEffect(() => {
+    const onEnabled = (e: Event) => {
+      const on = (e as CustomEvent<boolean>).detail;
+      setEnabled(on);
+      if (!on) setStars([]);
+    };
+    const onClear = () => setStars([]);
+    window.addEventListener("m-effects-enabled", onEnabled);
+    window.addEventListener("m-clear-all", onClear);
+    return () => {
+      window.removeEventListener("m-effects-enabled", onEnabled);
+      window.removeEventListener("m-clear-all", onClear);
+    };
+  }, []);
+
   const spawnStars = React.useCallback((count: number) => {
+    if (!enabled) return;
     const r = Math.random;
     setStars((prev) => [
       ...prev,
@@ -1099,7 +1128,7 @@ export function ShootingStarOverlay({ bgId }: { bgId: string }) {
         };
       }),
     ]);
-  }, []);
+  }, [enabled]);
 
   // Listen for manual fire events (used by test button)
   React.useEffect(() => {
@@ -1109,8 +1138,8 @@ export function ShootingStarOverlay({ bgId }: { bgId: string }) {
   }, [spawnStars]);
 
   React.useEffect(() => {
-    if (!isSpace) {
-      setStars([]);
+    if (!isSpace || !enabled) {
+      if (!isSpace) setStars([]);
       return;
     }
     ensureSSKeyframes();
@@ -1126,13 +1155,13 @@ export function ShootingStarOverlay({ bgId }: { bgId: string }) {
     return () => {
       if (timerRef.current !== undefined) clearTimeout(timerRef.current);
     };
-  }, [isSpace, spawnStars]);
+  }, [isSpace, enabled, spawnStars]);
 
   const removeStar = React.useCallback((id: number) => {
     setStars((p) => p.filter((s) => s.id !== id));
   }, []);
 
-  if (!isSpace) return null;
+  if (!isSpace && stars.length === 0) return null;
 
   return (
     <div style={{ position: "absolute", inset: 0, overflow: "hidden", pointerEvents: "none" }}>

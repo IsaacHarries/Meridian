@@ -346,9 +346,8 @@ export function LandingScreen({ credStatus, onOpenSettings, onNavigate }: Landin
               ["✦", "shooting star",  fireShootingStar],
               ["☄", "comet",          fireComet],
               ["⁂", "meteor shower",  fireMeteorShower],
-              ["☉", "supernova",      fireSupernova],
               ["◉", "black hole",     fireBlackHole],
-              ["✷", "pulsar",         firePulsar],
+              ["✷", "supernova",      firePulsar],
               ["⊕", "wormhole",       fireWormhole],
             ] as [string, string, () => void][]
           ).map(([icon, label, fn]) => (
