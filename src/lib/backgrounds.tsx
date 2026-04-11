@@ -991,6 +991,158 @@ function NoneBg() {
   return null;
 }
 
+// ── Shooting Stars overlay (space & jwst categories only) ─────────────────────
+
+interface SStar {
+  id: number;
+  x: number;        // start position, % of viewport width
+  y: number;        // start position, % of viewport height
+  angle: number;    // travel direction in degrees from +x axis
+  length: number;   // streak length in px
+  travel: number;   // total distance travelled in px
+  duration: number; // animation duration in ms
+  delay: number;    // animation delay in ms (used to stagger pairs)
+}
+
+const SS_KF_ID = "meridian-ss-kf";
+const SS_FIRE_EVENT = "meridian-ss-fire";
+
+export function fireShootingStar() {
+  window.dispatchEvent(new CustomEvent(SS_FIRE_EVENT));
+}
+
+function ensureSSKeyframes() {
+  if (document.getElementById(SS_KF_ID)) return;
+  const el = document.createElement("style");
+  el.id = SS_KF_ID;
+  el.textContent = `
+    @keyframes meridian-ss {
+      0%   { transform: translate(0,0); opacity: 0; }
+      8%   { opacity: 1; }
+      80%  { opacity: 0.8; }
+      100% { transform: translate(var(--ss-tx),var(--ss-ty)); opacity: 0; }
+    }
+  `;
+  document.head.appendChild(el);
+}
+
+let ssIdCounter = 0;
+
+function ShootingStarEl({ star, onDone }: { star: SStar; onDone: () => void }) {
+  const { x, y, angle, length, travel, duration, delay } = star;
+  const rad = (angle * Math.PI) / 180;
+  const tx = Math.cos(rad) * travel;
+  const ty = Math.sin(rad) * travel;
+
+  React.useEffect(() => {
+    const t = setTimeout(onDone, duration + delay + 300);
+    return () => clearTimeout(t);
+  }, [duration, delay, onDone]);
+
+  return (
+    <div
+      style={{
+        position: "absolute",
+        left: `${x}%`,
+        top: `${y}%`,
+        animationName: "meridian-ss",
+        animationDuration: `${duration}ms`,
+        animationDelay: `${delay}ms`,
+        animationTimingFunction: "ease-out",
+        animationFillMode: "both",
+        "--ss-tx": `${tx}px`,
+        "--ss-ty": `${ty}px`,
+      } as React.CSSProperties}
+    >
+      <div
+        style={{
+          width: `${length}px`,
+          height: "1.5px",
+          background:
+            "linear-gradient(90deg, transparent 0%, rgba(200,220,255,0.6) 60%, rgba(255,255,255,0.95) 100%)",
+          borderRadius: "9999px",
+          transform: `rotate(${angle}deg)`,
+          transformOrigin: "left center",
+          boxShadow: "0 0 4px 1px rgba(180,210,255,0.25)",
+        }}
+      />
+    </div>
+  );
+}
+
+const SPACE_BG_CATEGORIES: BgCategory[] = ["space", "jwst"];
+
+export function ShootingStarOverlay({ bgId }: { bgId: string }) {
+  const isSpace = React.useMemo(() => {
+    const def = BACKGROUNDS.find((b) => b.id === bgId);
+    return def ? SPACE_BG_CATEGORIES.includes(def.category) : false;
+  }, [bgId]);
+
+  const [stars, setStars] = React.useState<SStar[]>([]);
+  const timerRef = React.useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+
+  const spawnStars = React.useCallback((count: number) => {
+    const r = Math.random;
+    setStars((prev) => [
+      ...prev,
+      ...Array.from({ length: count }, (_, i): SStar => {
+        const angle = 25 + r() * 30;
+        return {
+          id: ssIdCounter++,
+          x: 5 + r() * 60,
+          y: 3 + r() * 38,
+          angle,
+          length: 60 + r() * 110,
+          travel: 350 + r() * 400,
+          duration: 500 + r() * 400,
+          delay: i * (70 + r() * 110),
+        };
+      }),
+    ]);
+  }, []);
+
+  // Listen for manual fire events (used by test button)
+  React.useEffect(() => {
+    const handler = () => { ensureSSKeyframes(); spawnStars(1 + Math.floor(Math.random() * 3)); };
+    window.addEventListener(SS_FIRE_EVENT, handler);
+    return () => window.removeEventListener(SS_FIRE_EVENT, handler);
+  }, [spawnStars]);
+
+  React.useEffect(() => {
+    if (!isSpace) {
+      setStars([]);
+      return;
+    }
+    ensureSSKeyframes();
+
+    function schedule() {
+      timerRef.current = setTimeout(() => {
+        spawnStars(Math.random() < 0.25 ? 2 : 1);
+        schedule();
+      }, 2500 + Math.random() * 5500); // fire every 2.5–8 s
+    }
+
+    schedule();
+    return () => {
+      if (timerRef.current !== undefined) clearTimeout(timerRef.current);
+    };
+  }, [isSpace, spawnStars]);
+
+  const removeStar = React.useCallback((id: number) => {
+    setStars((p) => p.filter((s) => s.id !== id));
+  }, []);
+
+  if (!isSpace) return null;
+
+  return (
+    <div style={{ position: "absolute", inset: 0, overflow: "hidden", pointerEvents: "none" }}>
+      {stars.map((s) => (
+        <ShootingStarEl key={s.id} star={s} onDone={() => removeStar(s.id)} />
+      ))}
+    </div>
+  );
+}
+
 // ── Registry ───────────────────────────────────────────────────────────────────
 const COMPONENTS: Record<string, React.FC> = {
   "meridian":       MeridianBg,
