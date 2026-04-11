@@ -616,7 +616,7 @@ export function PrReviewScreen({ credStatus, onBack }: PrReviewScreenProps) {
   // ── Render ────────────────────────────────────────────────────────────────
 
   return (
-    <div className="min-h-screen bg-background flex flex-col">
+    <div className="min-h-screen flex flex-col">
       {/* Header */}
       <div className="border-b bg-background/95 backdrop-blur sticky top-0 z-20">
         <div className="px-4 py-3 flex items-center gap-3">

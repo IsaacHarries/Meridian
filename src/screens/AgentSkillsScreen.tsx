@@ -150,7 +150,7 @@ export function AgentSkillsScreen({ onBack }: Props) {
   }
 
   return (
-    <div className="min-h-screen bg-background flex flex-col">
+    <div className="min-h-screen flex flex-col">
       {/* Header */}
       <header className="border-b border-border px-6 py-4 flex items-center gap-4">
         <Button variant="ghost" size="sm" onClick={onBack} className="gap-2">

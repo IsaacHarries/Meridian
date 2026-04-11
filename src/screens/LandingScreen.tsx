@@ -231,83 +231,6 @@ function ThemeModeToggle() {
   );
 }
 
-// ── Background SVG ────────────────────────────────────────────────────────────
-
-function LandingBackground() {
-  return (
-    <div aria-hidden className="fixed inset-0 -z-10 overflow-hidden pointer-events-none select-none">
-      <svg className="w-full h-full" xmlns="http://www.w3.org/2000/svg">
-        <defs>
-          {/* Dot grid */}
-          <pattern id="m-dots" x="0" y="0" width="24" height="24" patternUnits="userSpaceOnUse">
-            <circle cx="1.5" cy="1.5" r="1.5" fill="currentColor" />
-          </pattern>
-          {/* Blur filters */}
-          <filter id="m-blur-xl" x="-50%" y="-50%" width="200%" height="200%">
-            <feGaussianBlur stdDeviation="80" />
-          </filter>
-          <filter id="m-blur-lg" x="-50%" y="-50%" width="200%" height="200%">
-            <feGaussianBlur stdDeviation="55" />
-          </filter>
-        </defs>
-
-        {/* Dot grid — inherits currentColor from the rect */}
-        <rect
-          width="100%"
-          height="100%"
-          fill="url(#m-dots)"
-          style={{ color: "hsl(var(--foreground))", opacity: 0.045 }}
-        />
-
-        {/* Primary blob — top right */}
-        <ellipse
-          cx="92%"
-          cy="-8%"
-          rx="520"
-          ry="420"
-          filter="url(#m-blur-xl)"
-          style={{ fill: "hsl(var(--primary))", opacity: 0.13 }}
-        />
-
-        {/* Primary blob — bottom left */}
-        <ellipse
-          cx="8%"
-          cy="105%"
-          rx="380"
-          ry="300"
-          filter="url(#m-blur-lg)"
-          style={{ fill: "hsl(var(--primary))", opacity: 0.09 }}
-        />
-
-        {/* Concentric arcs — top-right corner */}
-        <circle
-          cx="100%"
-          cy="0"
-          r="220"
-          fill="none"
-          strokeWidth="1"
-          style={{ stroke: "hsl(var(--primary))", opacity: 0.14 }}
-        />
-        <circle
-          cx="100%"
-          cy="0"
-          r="360"
-          fill="none"
-          strokeWidth="1"
-          style={{ stroke: "hsl(var(--primary))", opacity: 0.09 }}
-        />
-        <circle
-          cx="100%"
-          cy="0"
-          r="500"
-          fill="none"
-          strokeWidth="0.75"
-          style={{ stroke: "hsl(var(--primary))", opacity: 0.06 }}
-        />
-      </svg>
-    </div>
-  );
-}
 
 // ── Landing screen ────────────────────────────────────────────────────────────
 
@@ -316,8 +239,7 @@ export function LandingScreen({ credStatus, onOpenSettings, onNavigate }: Landin
     anthropicComplete(credStatus) && jiraComplete(credStatus) && bitbucketComplete(credStatus);
 
   return (
-    <div className="min-h-screen bg-background">
-      <LandingBackground />
+    <div className="min-h-screen">
       <header className="sticky top-0 z-10 border-b bg-background/80 backdrop-blur-sm">
         <div className="max-w-5xl mx-auto px-6 h-14 flex items-center justify-between">
           <span className="font-semibold tracking-tight">Meridian</span>

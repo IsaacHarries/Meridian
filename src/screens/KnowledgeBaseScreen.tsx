@@ -482,7 +482,7 @@ export function KnowledgeBaseScreen({ onBack }: KnowledgeBaseScreenProps) {
   };
 
   return (
-    <div className="min-h-screen bg-background">
+    <div className="min-h-screen">
       {/* Header */}
       <div className="border-b bg-background/95 backdrop-blur sticky top-0 z-10">
         <div className="max-w-4xl mx-auto px-6 py-4 flex items-center justify-between gap-4">

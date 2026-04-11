@@ -1,7 +1,8 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { ThemeProvider } from "@/providers/ThemeProvider";
 import { Loader2 } from "lucide-react";
 import { type CredentialStatus, credentialStatusComplete, getCredentialStatus } from "@/lib/tauri";
+import { BackgroundRenderer, getBackgroundId, useBgChangeListener } from "@/lib/backgrounds";
 import { OnboardingScreen } from "@/screens/OnboardingScreen";
 import { SettingsScreen } from "@/screens/SettingsScreen";
 import { LandingScreen } from "@/screens/LandingScreen";
@@ -147,9 +148,21 @@ function AppInner() {
   return <LoadingScreen />;
 }
 
+function GlobalBackground() {
+  const [bgId, setBgId] = useState(() => getBackgroundId());
+  const handleChange = useCallback((id: string) => setBgId(id), []);
+  useBgChangeListener(handleChange);
+  return (
+    <div aria-hidden className="fixed inset-0 overflow-hidden pointer-events-none select-none">
+      <BackgroundRenderer id={bgId} />
+    </div>
+  );
+}
+
 export default function Root() {
   return (
     <ThemeProvider>
+      <GlobalBackground />
       <AppInner />
     </ThemeProvider>
   );

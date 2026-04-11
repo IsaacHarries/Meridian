@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { useTheme } from "@/providers/ThemeProvider";
 import { type ThemeMode, type AccentColor, ACCENT_LABELS, ACCENT_SWATCH } from "@/lib/theme";
 import { isMockMode, setMockMode } from "@/lib/tauri";
+import { BACKGROUNDS, CATEGORY_LABELS, BackgroundRenderer, type BgCategory, getBackgroundId, setBackgroundId } from "@/lib/backgrounds";
 import { Sun, Moon, Monitor } from "lucide-react";
 import { CheckCircle, AlertCircle, Loader2, X, RotateCcw, FlaskConical, Sparkles, ChevronRight, FlaskRound } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -41,16 +42,24 @@ const MODE_OPTIONS: { value: ThemeMode; label: string; icon: React.ReactNode }[]
   { value: "system", label: "System", icon: <Monitor className="h-4 w-4" /> },
 ];
 
+const BG_CATEGORIES: BgCategory[] = ["meridian", "space", "jwst", "abstract", "patterns", "minimal"];
+
 function ThemeSection() {
   const { config, setMode, setAccent } = useTheme();
+  const [selectedBg, setSelectedBg] = useState(() => getBackgroundId());
+
+  function pickBackground(id: string) {
+    setSelectedBg(id);
+    setBackgroundId(id);
+  }
 
   return (
     <Card>
       <CardHeader>
         <CardTitle className="text-base">Appearance</CardTitle>
-        <CardDescription>Choose your preferred colour mode and accent colour.</CardDescription>
+        <CardDescription>Choose your preferred colour mode, accent colour, and background.</CardDescription>
       </CardHeader>
-      <CardContent className="space-y-5">
+      <CardContent className="space-y-6">
         {/* Mode */}
         <div className="space-y-2">
           <p className="text-sm font-medium">Mode</p>
@@ -96,8 +105,57 @@ function ThemeSection() {
             ))}
           </div>
         </div>
+
+        {/* Background */}
+        <div className="space-y-3">
+          <p className="text-sm font-medium">Background</p>
+          {BG_CATEGORIES.map((cat) => {
+            const bgs = BACKGROUNDS.filter((b) => b.category === cat);
+            return (
+              <div key={cat}>
+                <p className="text-xs text-muted-foreground mb-2">{CATEGORY_LABELS[cat]}</p>
+                <div className="flex flex-wrap gap-2">
+                  {bgs.map((bg) => (
+                    <button
+                      key={bg.id}
+                      onClick={() => pickBackground(bg.id)}
+                      title={bg.name}
+                      className={`relative rounded-md border overflow-hidden transition-all ${
+                        selectedBg === bg.id
+                          ? "border-primary ring-2 ring-primary ring-offset-2"
+                          : "border-border hover:border-primary/50"
+                      }`}
+                      style={{ width: 88, height: 56 }}
+                    >
+                      {/* Thumbnail — mini render of the background */}
+                      <div className="absolute inset-0 bg-background" />
+                      <div className="absolute inset-0">
+                        <BgThumbnail id={bg.id} />
+                      </div>
+                      {/* Label overlay */}
+                      <div className="absolute bottom-0 inset-x-0 bg-background/80 backdrop-blur-sm px-1 py-0.5">
+                        <p className="text-[10px] text-center font-medium leading-tight truncate">{bg.name}</p>
+                      </div>
+                      {selectedBg === bg.id && (
+                        <div className="absolute top-1 right-1 w-3 h-3 rounded-full bg-primary" />
+                      )}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            );
+          })}
+        </div>
       </CardContent>
     </Card>
+  );
+}
+
+function BgThumbnail({ id }: { id: string }) {
+  return (
+    <div className="w-full h-full overflow-hidden">
+      <BackgroundRenderer id={id} />
+    </div>
   );
 }
 
@@ -864,7 +922,7 @@ export function SettingsScreen({ onClose, onNavigate }: SettingsScreenProps) {
     : false;
 
   return (
-    <div className="min-h-screen bg-background">
+    <div className="min-h-screen">
       <header className="sticky top-0 z-10 border-b bg-background/80 backdrop-blur-sm">
         <div className="max-w-2xl mx-auto px-6 h-14 flex items-center justify-between">
           <h1 className="font-semibold">Settings</h1>

@@ -586,7 +586,7 @@ export function OnboardingScreen({ onComplete, onMockMode }: OnboardingScreenPro
   ];
 
   return (
-    <div className="min-h-screen bg-background flex items-center justify-center p-6">
+    <div className="min-h-screen flex items-center justify-center p-6">
       <div className="w-full max-w-md">
         {step > 0 && (
           <div className="mb-6 flex justify-center">

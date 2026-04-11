@@ -716,7 +716,7 @@ export function RetrospectivesScreen({ onBack }: RetrospectivesScreenProps) {
   const selectedSprint = sprints.find((s) => s.id === selectedId) ?? null;
 
   return (
-    <div className="min-h-screen bg-background">
+    <div className="min-h-screen">
       <header className="sticky top-0 z-10 border-b bg-background/80 backdrop-blur-sm">
         <div className="max-w-5xl mx-auto px-6 h-14 flex items-center gap-3">
           <Button variant="ghost" size="icon" onClick={onBack}>
