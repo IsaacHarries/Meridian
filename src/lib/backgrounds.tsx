@@ -992,16 +992,6 @@ function NoneBg() {
 }
 
 // ── Registry ───────────────────────────────────────────────────────────────────
-
-  // { id: "jwst-carina",        name: "Cosmic Cliffs",      category: "jwst" },
-  // { id: "jwst-pillars",       name: "Pillars of Creation", category: "jwst" },
-  // { id: "jwst-southern-ring", name: "Southern Ring",       category: "jwst" },
-  // { id: "jwst-phantom",       name: "Phantom Galaxy",      category: "jwst" },
-  // { id: "jwst-tarantula",     name: "Tarantula Nebula",    category: "jwst" },
-  // { id: "jwst-deep-field",    name: "Deep Field",          category: "jwst" },
-  // { id: "jwst-stephans",      name: "Stephan's Quintet",   category: "jwst" },
-  // { id: "jwst-cartwheel",     name: "Cartwheel Galaxy",    category: "jwst" },
-
 const COMPONENTS: Record<string, React.FC> = {
   "meridian":       MeridianBg,
   "dusk":            DuskBg,
