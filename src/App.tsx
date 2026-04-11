@@ -165,7 +165,7 @@ function GlobalForeground() {
   const handleChange = useCallback((id: string) => setBgId(id), []);
   useBgChangeListener(handleChange);
   return (
-    <div aria-hidden className="fixed inset-0 overflow-hidden pointer-events-none select-none z-[2]">
+    <div aria-hidden className="fixed inset-0 overflow-hidden pointer-events-none select-none z-[0]">
       <ShootingStarOverlay bgId={bgId} />
       <SpaceEffectsOverlay bgId={bgId} />
     </div>
