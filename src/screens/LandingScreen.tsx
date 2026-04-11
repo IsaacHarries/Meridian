@@ -1,7 +1,7 @@
 import { useEffect, useState, useMemo } from "react";
 import { AlertTriangle, Settings, TrendingUp, CheckSquare, GitPullRequest } from "lucide-react";
 
-const GREETINGS = [
+const QUIPS = [
   "It works on my machine...",
   "Have you tried turning it off and on again?",
   "undefined is not a function...",
@@ -244,8 +244,8 @@ const WORKFLOW_CARDS: {
 // ── Landing screen ────────────────────────────────────────────────────────────
 
 export function LandingScreen({ credStatus, onOpenSettings, onNavigate }: LandingScreenProps) {
-  const greeting = useMemo(
-    () => GREETINGS[Math.floor(Math.random() * GREETINGS.length)],
+  const quip = useMemo(
+    () => QUIPS[Math.floor(Math.random() * QUIPS.length)],
     []
   );
   const allComplete =
@@ -272,7 +272,7 @@ export function LandingScreen({ credStatus, onOpenSettings, onNavigate }: Landin
 
         <div className="space-y-3">
           <div>
-            <h1 className="text-2xl font-semibold tracking-tight mb-1">{greeting}</h1>
+            <h1 className="text-2xl font-semibold tracking-tight mb-1">{quip}</h1>
           </div>
           <SprintSummary credStatus={credStatus} />
         </div>
