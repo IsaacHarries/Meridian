@@ -70,6 +70,13 @@ const ALLOWED_KEYS: &[&str] = &[
     "anthropic_api_key",
     "claude_oauth_json",
     "claude_model",
+    "gemini_api_key",
+    "gemini_model",
+    "ai_provider",
+    "ai_provider_order",
+    "local_llm_url",
+    "local_llm_api_key",
+    "local_llm_model",
     "jira_base_url",
     "jira_email",
     "jira_api_token",
@@ -85,6 +92,11 @@ const ALLOWED_KEYS: &[&str] = &[
 /// Keys whose values may be returned to the frontend (not secrets).
 const NON_SECRET_KEYS: &[&str] = &[
     "claude_model",
+    "gemini_model",
+    "ai_provider",
+    "ai_provider_order",
+    "local_llm_url",
+    "local_llm_model",
     "jira_base_url",
     "jira_email",
     "jira_board_id",
@@ -147,6 +159,8 @@ pub fn store_credential(key: &str, value: &str) -> Result<(), String> {
 #[serde(rename_all = "camelCase")]
 pub struct CredentialStatus {
     pub anthropic_api_key: bool,
+    pub gemini_api_key: bool,
+    pub local_llm_url: bool,
     pub jira_base_url: bool,
     pub jira_email: bool,
     pub jira_api_token: bool,
@@ -159,6 +173,8 @@ pub struct CredentialStatus {
 
 impl CredentialStatus {
     pub fn anthropic_complete(&self) -> bool { self.anthropic_api_key }
+    pub fn gemini_complete(&self) -> bool { self.gemini_api_key }
+    pub fn local_llm_complete(&self) -> bool { self.local_llm_url }
     pub fn jira_complete(&self) -> bool {
         self.jira_base_url && self.jira_email && self.jira_api_token && self.jira_board_id
     }
@@ -176,6 +192,8 @@ pub fn credential_status() -> Result<CredentialStatus, String> {
     let has = |k: &str| keychain_get(k).map(|v| !v.trim().is_empty()).unwrap_or(false);
     Ok(CredentialStatus {
         anthropic_api_key: has("anthropic_api_key"),
+        gemini_api_key:    has("gemini_api_key"),
+        local_llm_url:     has("local_llm_url"),
         jira_base_url:     has("jira_base_url"),
         jira_email:        has("jira_email"),
         jira_api_token:    has("jira_api_token"),

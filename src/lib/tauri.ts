@@ -32,6 +32,8 @@ export function setMockMode(enabled: boolean): void {
 
 export interface CredentialStatus {
   anthropicApiKey: boolean;
+  geminiApiKey: boolean;
+  localLlmUrl: boolean;
   jiraBaseUrl: boolean;
   jiraEmail: boolean;
   jiraApiToken: boolean;
@@ -155,6 +157,45 @@ export async function importClaudeProToken(): Promise<string> {
 /** Return the list of available Claude models as [id, display_label] pairs. */
 export async function getClaudeModels(): Promise<[string, string][]> {
   return invoke<[string, string][]>("get_claude_models");
+}
+
+/** Return the list of available Gemini models as [id, display_label] pairs. */
+export async function getGeminiModels(): Promise<[string, string][]> {
+  return invoke<[string, string][]>("get_gemini_models");
+}
+
+/**
+ * Validate a Gemini API key by making a lightweight models-list request.
+ * Saves the key on success; throws on failure.
+ */
+export async function validateGemini(apiKey: string): Promise<string> {
+  return invoke<string>("validate_gemini", { apiKey });
+}
+
+/** Test the already-stored Gemini API key without re-saving it. */
+export async function testGeminiStored(): Promise<string> {
+  return invoke<string>("test_gemini_stored");
+}
+
+/**
+ * Return the model list from the configured local LLM server.
+ * Returns an empty array if no server URL is configured or the server is unreachable.
+ */
+export async function getLocalModels(): Promise<[string, string][]> {
+  return invoke<[string, string][]>("get_local_models");
+}
+
+/**
+ * Validate a local LLM server URL (and optional API key) by connecting to it.
+ * Normalises the URL to end with /v1, saves on success; throws on failure.
+ */
+export async function validateLocalLlm(url: string, apiKey: string): Promise<string> {
+  return invoke<string>("validate_local_llm", { url, apiKey });
+}
+
+/** Test the already-stored local LLM server connection without re-saving it. */
+export async function testLocalLlmStored(): Promise<string> {
+  return invoke<string>("test_local_llm_stored");
 }
 
 /** Test the stored JIRA credentials without passing secrets through the frontend. */

@@ -1,10 +1,12 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef, useMemo } from "react";
 import { useTheme } from "@/providers/ThemeProvider";
 import { type AccentColor, ACCENT_LABELS, ACCENT_SWATCH } from "@/lib/theme";
 import { isMockMode, setMockMode } from "@/lib/tauri";
 import { BACKGROUNDS, CATEGORY_LABELS, BackgroundRenderer, type BgCategory, getBackgroundId, setBackgroundId } from "@/lib/backgrounds";
 import { CheckCircle, AlertCircle, Loader2, X, RotateCcw, FlaskConical, Sparkles, ChevronRight, FlaskRound } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { CredentialField } from "@/components/CredentialField";
@@ -19,14 +21,20 @@ import {
   getCredentialStatus,
   getNonSecretConfig,
   validateAnthropic,
+  validateGemini,
+  validateLocalLlm,
   validateJira,
   validateBitbucket,
   testAnthropicStored,
   testJiraStored,
   testBitbucketStored,
+  testGeminiStored,
+  testLocalLlmStored,
   debugJiraEndpoints,
   deleteCredential,
   saveCredential,
+  getGeminiModels,
+  getLocalModels,
   getActiveSprint,
   getOpenPrs,
   importClaudeProToken,
@@ -278,6 +286,19 @@ function AnthropicSection({ isConfigured, onSaved }: { isConfigured: boolean; on
     }
   }
 
+  async function handleTestStored() {
+    setStatus({ state: "loading", message: "Testing connection…" });
+    setTestResult("untested");
+    try {
+      const msg = await testAnthropicStored();
+      setTestResult("success");
+      setStatus({ state: "success", message: msg });
+    } catch (err) {
+      setTestResult("error");
+      setStatus({ state: "error", message: String(err) });
+    }
+  }
+
   function handleCancel() {
     setEditing(false);
     setApiKey("");
@@ -323,6 +344,11 @@ function AnthropicSection({ isConfigured, onSaved }: { isConfigured: boolean; on
             >
               {importing ? <><Loader2 className="h-3 w-3 animate-spin" /> Importing…</> : "Use Claude Pro / Max"}
             </Button>
+            {isConfigured && (
+              <Button variant="outline" size="sm" onClick={handleTestStored} disabled={status.state === "loading"}>
+                {status.state === "loading" ? <><Loader2 className="h-3 w-3 animate-spin" /> Testing…</> : "Test connection"}
+              </Button>
+            )}
             {isConfigured && (
               <Button variant="ghost" size="sm" className="text-muted-foreground gap-1" onClick={handleReset}>
                 <RotateCcw className="h-3 w-3" /> Reset
@@ -377,6 +403,602 @@ function AnthropicSection({ isConfigured, onSaved }: { isConfigured: boolean; on
 }
 
 const MASKED_SENTINEL = "••••••••";
+
+// ── AI Provider selector ───────────────────────────────────────────────────────
+
+const AI_PROVIDER_MODES = [
+  { value: "auto",   label: "Auto (ordered fallback)" },
+  { value: "claude", label: "Claude only"  },
+  { value: "gemini", label: "Gemini only"  },
+  { value: "local",  label: "Local LLM only" },
+] as const;
+
+const PROVIDER_META: Record<string, { label: string; color: string; dot: string }> = {
+  claude: { label: "Claude",    color: "border-orange-400/40 bg-orange-400/10 text-orange-400",  dot: "bg-orange-400" },
+  gemini: { label: "Gemini",    color: "border-blue-400/40  bg-blue-400/10  text-blue-400",    dot: "bg-blue-400"   },
+  local:  { label: "Local LLM", color: "border-purple-400/40 bg-purple-400/10 text-purple-400", dot: "bg-purple-400" },
+};
+
+const DEFAULT_ORDER = ["claude", "gemini", "local"];
+
+function AiProviderSection() {
+  const [mode, setMode] = useState("auto");
+  const [order, setOrder] = useState<string[]>(DEFAULT_ORDER);
+  const dragSrc    = useRef<number | null>(null);
+  const dragOffset = useRef({ x: 0, y: 0 });
+  const dragWidth  = useRef(0);
+  const [draggingIdx, setDraggingIdx] = useState<number | null>(null);
+  const [insertBefore, setInsertBefore] = useState<number | null>(null);
+  const [dragPos, setDragPos] = useState<{ x: number; y: number } | null>(null);
+
+  useEffect(() => {
+    getNonSecretConfig().then(cfg => {
+      if (cfg.ai_provider) setMode(cfg.ai_provider);
+      if (cfg.ai_provider_order) {
+        const parsed = cfg.ai_provider_order.split(",").map((s: string) => s.trim()).filter(Boolean);
+        if (parsed.length > 0) setOrder(parsed);
+      }
+    }).catch(() => {});
+  }, []);
+
+  async function handleModeChange(value: string) {
+    setMode(value);
+    try { await saveCredential("ai_provider", value); } catch { /* non-critical */ }
+  }
+
+  async function persistOrder(next: string[]) {
+    setOrder(next);
+    try { await saveCredential("ai_provider_order", next.join(",")); } catch { /* non-critical */ }
+  }
+
+  // Live preview order
+  const liveOrder = useMemo(() => {
+    if (draggingIdx === null || insertBefore === null) return order;
+    const rest = order.filter((_, i) => i !== draggingIdx);
+    rest.splice(insertBefore, 0, order[draggingIdx]);
+    return rest;
+  }, [order, draggingIdx, insertBefore]);
+
+  // Find the insertion index among non-dragged rows by cursor Y position
+  function getInsertBefore(clientY: number, fromProvider: string): number {
+    const rows = Array.from(document.querySelectorAll("[data-dnd-provider]")) as HTMLElement[];
+    const others = rows.filter(r => r.dataset.dndProvider !== fromProvider);
+    for (let i = 0; i < others.length; i++) {
+      const rect = others[i].getBoundingClientRect();
+      if (clientY < rect.top + rect.height / 2) return i;
+    }
+    return others.length;
+  }
+
+  function handlePointerDown(e: React.PointerEvent<HTMLDivElement>, idx: number) {
+    if (e.button !== 0) return;
+    e.preventDefault();
+
+    const rect = e.currentTarget.getBoundingClientRect();
+    dragOffset.current = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+    dragWidth.current  = rect.width;
+    dragSrc.current    = idx;
+
+    const fromProvider = order[idx]; // capture before re-render changes DOM
+
+    setDraggingIdx(idx);
+    setInsertBefore(getInsertBefore(e.clientY, fromProvider));
+    setDragPos({ x: e.clientX, y: e.clientY });
+
+    // Use global document listeners so events keep firing even after the source
+    // element is unmounted when React replaces it with the placeholder.
+    function onMove(ev: PointerEvent) {
+      setDragPos({ x: ev.clientX, y: ev.clientY });
+      setInsertBefore(getInsertBefore(ev.clientY, fromProvider));
+    }
+
+    function onUp(ev: PointerEvent) {
+      cleanup();
+      const from = dragSrc.current;
+      dragSrc.current = null;
+      // Compute final drop position before clearing state (DOM still correct here)
+      const ib = from !== null ? getInsertBefore(ev.clientY, fromProvider) : null;
+      setDraggingIdx(null);
+      setInsertBefore(null);
+      setDragPos(null);
+      if (from === null || ib === null) return;
+      const rest = order.filter((_, i) => i !== from);
+      rest.splice(ib, 0, order[from]);
+      if (rest.join(",") !== order.join(",")) persistOrder(rest);
+    }
+
+    function onCancel() {
+      cleanup();
+      dragSrc.current = null;
+      setDraggingIdx(null);
+      setInsertBefore(null);
+      setDragPos(null);
+    }
+
+    function cleanup() {
+      document.removeEventListener("pointermove", onMove);
+      document.removeEventListener("pointerup",   onUp);
+      document.removeEventListener("pointercancel", onCancel);
+    }
+
+    document.addEventListener("pointermove",   onMove);
+    document.addEventListener("pointerup",     onUp);
+    document.addEventListener("pointercancel", onCancel);
+  }
+
+  const modeDesc: Record<string, string> = {
+    auto:   "Providers are tried in the order below. If one exceeds its quota, the next is used automatically.",
+    claude: "Always use Claude exclusively. No fallback.",
+    gemini: "Always use Gemini exclusively. No fallback.",
+    local:  "Always use the local model exclusively. Requires a running server.",
+  };
+
+  const ghostProvider = draggingIdx !== null ? order[draggingIdx] : null;
+  const ghostMeta     = ghostProvider ? PROVIDER_META[ghostProvider] ?? null : null;
+
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <CardTitle className="text-base">AI Provider Priority</CardTitle>
+        <CardDescription className="text-xs mt-0.5">{modeDesc[mode]}</CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {/* Mode selector */}
+        <div className="flex flex-wrap gap-2">
+          {AI_PROVIDER_MODES.map(p => (
+            <button
+              key={p.value}
+              onClick={() => handleModeChange(p.value)}
+              className={`rounded-full border px-3 py-1 text-xs transition-colors ${
+                mode === p.value
+                  ? "bg-primary/20 border-primary/40 text-primary font-medium"
+                  : "bg-muted/40 border-border text-muted-foreground hover:bg-muted/60"
+              }`}
+            >
+              {p.label}
+            </button>
+          ))}
+        </div>
+
+        {/* Live-preview draggable list — only shown in Auto mode */}
+        {mode === "auto" && (
+          <div className="space-y-1.5">
+            <p className="text-xs text-muted-foreground font-medium uppercase tracking-wider">
+              Fallback order — drag to reorder
+            </p>
+            {liveOrder.map((provider, displayIdx) => {
+              const originalIdx = order.indexOf(provider);
+              const isDragging  = originalIdx === draggingIdx;
+              const meta        = PROVIDER_META[provider] ?? {
+                label: provider, color: "border-border bg-muted/40 text-foreground", dot: "bg-muted-foreground",
+              };
+
+              if (isDragging) {
+                return (
+                  <div
+                    key={provider}
+                    className="h-9 rounded-lg border-2 border-dashed border-primary/40 bg-primary/5 flex items-center justify-center"
+                  >
+                    <span className="text-[10px] text-primary/50 font-medium tracking-wide pointer-events-none">
+                      drop here
+                    </span>
+                  </div>
+                );
+              }
+
+              return (
+                <div
+                  key={provider}
+                  data-dnd-provider={provider}
+                  onPointerDown={e => handlePointerDown(e, originalIdx)}
+                  className={[
+                    "flex items-center gap-3 rounded-lg border px-3 py-2 text-xs",
+                    "select-none cursor-grab transition-all duration-200",
+                    meta.color,
+                  ].join(" ")}
+                >
+                  <span className="opacity-40 shrink-0 text-base leading-none pointer-events-none">⠿</span>
+                  <span className="w-4 h-4 rounded-full bg-black/20 flex items-center justify-center text-[10px] font-bold shrink-0 pointer-events-none">
+                    {displayIdx + 1}
+                  </span>
+                  <span className={`w-2 h-2 rounded-full shrink-0 pointer-events-none ${meta.dot}`} />
+                  <span className="flex-1 font-medium pointer-events-none">{meta.label}</span>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </CardContent>
+
+      {/* Ghost that follows the cursor */}
+      {dragPos && ghostMeta && draggingIdx !== null && (
+        <div
+          style={{
+            position:      "fixed",
+            left:          dragPos.x - dragOffset.current.x,
+            top:           dragPos.y - dragOffset.current.y,
+            width:         dragWidth.current,
+            pointerEvents: "none",
+            zIndex:        9999,
+          }}
+          className={[
+            "flex items-center gap-3 rounded-lg border px-3 py-2 text-xs",
+            "shadow-2xl rotate-1 scale-105 opacity-95",
+            ghostMeta.color,
+          ].join(" ")}
+        >
+          <span className="opacity-40 shrink-0 text-base leading-none">⠿</span>
+          <span className="w-4 h-4 rounded-full bg-black/20 flex items-center justify-center text-[10px] font-bold shrink-0">
+            {draggingIdx + 1}
+          </span>
+          <span className={`w-2 h-2 rounded-full shrink-0 ${ghostMeta.dot}`} />
+          <span className="flex-1 font-medium">{ghostMeta.label}</span>
+        </div>
+      )}
+    </Card>
+  );
+}
+
+// ── Gemini section ─────────────────────────────────────────────────────────────
+
+function GeminiSection({ isConfigured, onSaved }: { isConfigured: boolean; onSaved: () => void }) {
+  const [editing, setEditing] = useState(false);
+  const [apiKey, setApiKey] = useState("");
+  const [status, setStatus] = useState<SectionStatus>({ state: "idle", message: "" });
+  const [testResult, setTestResult] = useState<TestResult>("untested");
+  const [models, setModels] = useState<[string, string][]>([]);
+  const [selectedModel, setSelectedModel] = useState("");
+
+  useEffect(() => {
+    getGeminiModels().then(setModels).catch(() => {});
+    getNonSecretConfig().then(cfg => {
+      if (cfg.gemini_model) setSelectedModel(cfg.gemini_model);
+    }).catch(() => {});
+  }, []);
+
+  async function handleModelChange(modelId: string) {
+    setSelectedModel(modelId);
+    try { await saveCredential("gemini_model", modelId); } catch { /* non-critical */ }
+  }
+
+  function startEditing() {
+    setApiKey(isConfigured ? MASKED_SENTINEL : "");
+    setStatus({ state: "idle", message: "" });
+    setTestResult("untested");
+    setEditing(true);
+  }
+
+  async function handleSave() {
+    if (!apiKey.trim() || apiKey === MASKED_SENTINEL) return;
+    setStatus({ state: "loading", message: "Saving and testing…" });
+    try {
+      const msg = await validateGemini(apiKey.trim());
+      setTestResult("success");
+      setStatus({ state: "success", message: msg });
+      setEditing(false);
+      onSaved();
+      // Refresh model list with the new key
+      getGeminiModels().then(setModels).catch(() => {});
+    } catch (err) {
+      setTestResult("error");
+      setStatus({ state: "error", message: String(err) });
+    }
+  }
+
+  async function handleTestStored() {
+    setStatus({ state: "loading", message: "Testing connection…" });
+    setTestResult("untested");
+    try {
+      const msg = await testGeminiStored();
+      setTestResult("success");
+      setStatus({ state: "success", message: msg });
+    } catch (err) {
+      setTestResult("error");
+      setStatus({ state: "error", message: String(err) });
+    }
+  }
+
+  function handleCancel() {
+    setEditing(false);
+    setApiKey("");
+    setStatus({ state: "idle", message: "" });
+  }
+
+  async function handleReset() {
+    try {
+      await deleteCredential("gemini_api_key");
+      setTestResult("untested");
+      onSaved();
+    } catch { /* fine */ }
+  }
+
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <div className="flex items-center justify-between">
+          <div>
+            <CardTitle className="text-base">Google Gemini</CardTitle>
+          </div>
+          <div className="flex items-center gap-2">
+            <VerifiedBadge result={testResult} />
+            <StatusBadge complete={isConfigured} />
+          </div>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        {!editing ? (
+          <div className="flex flex-wrap gap-2">
+            <Button variant="outline" size="sm" onClick={startEditing}>
+              {isConfigured ? "Update key" : "Add key"}
+            </Button>
+            {isConfigured && (
+              <Button variant="outline" size="sm" onClick={handleTestStored} disabled={status.state === "loading"}>
+                {status.state === "loading" ? <><Loader2 className="h-3 w-3 animate-spin" /> Testing…</> : "Test connection"}
+              </Button>
+            )}
+            {isConfigured && (
+              <Button variant="ghost" size="sm" className="text-destructive hover:text-destructive" onClick={handleReset}>
+                Remove
+              </Button>
+            )}
+          </div>
+        ) : (
+          <div className="space-y-3">
+            <div>
+              <Label className="text-xs">Gemini API Key</Label>
+              <div className="flex gap-2 mt-1">
+                <Input
+                  type="password"
+                  value={apiKey}
+                  onChange={e => setApiKey(e.target.value)}
+                  placeholder="AIza…"
+                  className="text-xs h-8 font-mono"
+                  onFocus={() => { if (apiKey === MASKED_SENTINEL) setApiKey(""); }}
+                />
+              </div>
+              <p className="text-xs text-muted-foreground mt-1">
+                Get a free key at{" "}
+                <a href="https://aistudio.google.com/apikey" target="_blank" rel="noreferrer"
+                  className="underline hover:text-foreground">
+                  aistudio.google.com/apikey
+                </a>
+              </p>
+            </div>
+            <div className="flex gap-2">
+              <Button size="sm" onClick={handleSave} disabled={!apiKey.trim() || apiKey === MASKED_SENTINEL}>
+                Save &amp; Test
+              </Button>
+              <Button variant="outline" size="sm" onClick={handleCancel}>Cancel</Button>
+            </div>
+          </div>
+        )}
+
+        <SectionMessage state={status.state} message={status.message} />
+
+        {isConfigured && models.length > 0 && (
+          <div>
+            <Label className="text-xs">Model</Label>
+            <select
+              value={selectedModel}
+              onChange={e => handleModelChange(e.target.value)}
+              className="mt-1 w-full text-xs rounded-md border border-input bg-background px-2 py-1.5 text-foreground"
+            >
+              {models.map(([id, label]) => (
+                <option key={id} value={id}>{label}</option>
+              ))}
+            </select>
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+// ── Local LLM section ──────────────────────────────────────────────────────────
+
+function LocalLlmSection({ isConfigured, onSaved }: { isConfigured: boolean; onSaved: () => void }) {
+  const [editing, setEditing] = useState(false);
+  const [serverUrl, setServerUrl] = useState("");
+  const [apiKey, setApiKey] = useState("");
+  const [status, setStatus] = useState<SectionStatus>({ state: "idle", message: "" });
+  const [testResult, setTestResult] = useState<TestResult>("untested");
+  const [models, setModels] = useState<[string, string][]>([]);
+  const [selectedModel, setSelectedModel] = useState("");
+  const [customModel, setCustomModel] = useState("");
+
+  useEffect(() => {
+    getNonSecretConfig().then(cfg => {
+      if (cfg.local_llm_url)   setServerUrl(cfg.local_llm_url);
+      if (cfg.local_llm_model) setSelectedModel(cfg.local_llm_model);
+    }).catch(() => {});
+    if (isConfigured) {
+      getLocalModels().then(setModels).catch(() => {});
+    }
+  }, [isConfigured]);
+
+  async function handleModelChange(value: string) {
+    setSelectedModel(value);
+    try { await saveCredential("local_llm_model", value); } catch { /* non-critical */ }
+  }
+
+  function startEditing() {
+    setApiKey("");
+    setStatus({ state: "idle", message: "" });
+    setTestResult("untested");
+    setEditing(true);
+  }
+
+  async function handleSave() {
+    if (!serverUrl.trim()) return;
+    setStatus({ state: "loading", message: "Connecting…" });
+    try {
+      const msg = await validateLocalLlm(serverUrl.trim(), apiKey.trim());
+      setTestResult("success");
+      setStatus({ state: "success", message: msg });
+      setEditing(false);
+      onSaved();
+      const list = await getLocalModels();
+      setModels(list);
+      if (list.length > 0 && !selectedModel) {
+        handleModelChange(list[0][0]);
+      }
+    } catch (err) {
+      setTestResult("error");
+      setStatus({ state: "error", message: String(err) });
+    }
+  }
+
+  async function handleTestStored() {
+    setStatus({ state: "loading", message: "Testing connection…" });
+    setTestResult("untested");
+    try {
+      const msg = await testLocalLlmStored();
+      setTestResult("success");
+      setStatus({ state: "success", message: msg });
+    } catch (err) {
+      setTestResult("error");
+      setStatus({ state: "error", message: String(err) });
+    }
+  }
+
+  function handleCancel() {
+    setEditing(false);
+    setApiKey("");
+    setStatus({ state: "idle", message: "" });
+  }
+
+  async function handleReset() {
+    try {
+      await deleteCredential("local_llm_url");
+      setTestResult("untested");
+      setModels([]);
+      onSaved();
+    } catch { /* fine */ }
+  }
+
+  async function handleRefreshModels() {
+    setStatus({ state: "loading", message: "Refreshing model list…" });
+    try {
+      const list = await getLocalModels();
+      setModels(list);
+      setStatus({ state: list.length > 0 ? "success" : "idle", message: list.length > 0 ? `${list.length} model${list.length !== 1 ? "s" : ""} found.` : "No models found. Make sure at least one model is pulled in Ollama." });
+    } catch (err) {
+      setStatus({ state: "error", message: String(err) });
+    }
+  }
+
+  const displayModels = models.length > 0 ? models : (selectedModel ? [[selectedModel, selectedModel]] as [string,string][] : []);
+
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <div className="flex items-center justify-between">
+          <div>
+            <CardTitle className="text-base">Local LLM</CardTitle>
+            <CardDescription className="text-xs mt-0.5">
+              Ollama, LM Studio, Jan, or any OpenAI-compatible server
+            </CardDescription>
+          </div>
+          <div className="flex items-center gap-2">
+            <VerifiedBadge result={testResult} />
+            <StatusBadge complete={isConfigured} />
+          </div>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        {!editing ? (
+          <div className="flex flex-wrap gap-2">
+            <Button variant="outline" size="sm" onClick={startEditing}>
+              {isConfigured ? "Update server" : "Add server"}
+            </Button>
+            {isConfigured && (
+              <Button variant="outline" size="sm" onClick={handleTestStored} disabled={status.state === "loading"}>
+                {status.state === "loading" ? <><Loader2 className="h-3 w-3 animate-spin" /> Testing…</> : "Test connection"}
+              </Button>
+            )}
+            {isConfigured && (
+              <Button variant="ghost" size="sm" className="text-destructive hover:text-destructive" onClick={handleReset}>
+                Remove
+              </Button>
+            )}
+          </div>
+        ) : (
+          <div className="space-y-3">
+            <div>
+              <Label className="text-xs">Server URL</Label>
+              <Input
+                value={serverUrl}
+                onChange={e => setServerUrl(e.target.value)}
+                placeholder="http://localhost:11434"
+                className="text-xs h-8 font-mono mt-1"
+              />
+              <p className="text-xs text-muted-foreground mt-1">
+                Ollama default: <code className="bg-muted px-1 rounded">http://localhost:11434</code>
+                {" · "}LM Studio: <code className="bg-muted px-1 rounded">http://localhost:1234</code>
+              </p>
+            </div>
+            <div>
+              <Label className="text-xs">API Key <span className="text-muted-foreground">(optional)</span></Label>
+              <Input
+                type="password"
+                value={apiKey}
+                onChange={e => setApiKey(e.target.value)}
+                placeholder="Leave blank if not required"
+                className="text-xs h-8 font-mono mt-1"
+              />
+            </div>
+            <div className="flex gap-2">
+              <Button size="sm" onClick={handleSave} disabled={!serverUrl.trim()}>
+                Save &amp; Test
+              </Button>
+              <Button variant="outline" size="sm" onClick={handleCancel}>Cancel</Button>
+            </div>
+          </div>
+        )}
+
+        <SectionMessage state={status.state} message={status.message} />
+
+        {isConfigured && (
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <Label className="text-xs">Model</Label>
+              <button
+                onClick={handleRefreshModels}
+                className="text-xs text-muted-foreground hover:text-foreground underline underline-offset-2"
+              >
+                Refresh list
+              </button>
+            </div>
+            {displayModels.length > 0 ? (
+              <select
+                value={selectedModel}
+                onChange={e => handleModelChange(e.target.value)}
+                className="w-full text-xs rounded-md border border-input bg-background px-2 py-1.5 text-foreground"
+              >
+                {displayModels.map(([id, label]) => (
+                  <option key={id} value={id}>{label}</option>
+                ))}
+              </select>
+            ) : (
+              <div className="space-y-1">
+                <Input
+                  value={customModel}
+                  onChange={e => setCustomModel(e.target.value)}
+                  onBlur={() => { if (customModel.trim()) handleModelChange(customModel.trim()); }}
+                  placeholder="e.g. llama3.2:latest"
+                  className="text-xs h-8 font-mono"
+                />
+                <p className="text-xs text-muted-foreground">
+                  Type the model name exactly as shown in <code className="bg-muted px-1 rounded">ollama list</code>
+                </p>
+              </div>
+            )}
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
 
 function JiraSection({ isConfigured, onSaved }: { isConfigured: boolean; onSaved: () => void }) {
   const [editing, setEditing] = useState(false);
@@ -440,6 +1062,19 @@ function JiraSection({ isConfigured, onSaved }: { isConfigured: boolean; onSaved
     }
   }
 
+  async function handleTestStored() {
+    setStatus({ state: "loading", message: "Testing connection…" });
+    setTestResult("untested");
+    try {
+      const msg = await testJiraStored();
+      setTestResult("success");
+      setStatus({ state: "success", message: msg });
+    } catch (err) {
+      setTestResult("error");
+      setStatus({ state: "error", message: String(err) });
+    }
+  }
+
   function handleCancel() {
     setEditing(false);
     setBaseUrl(""); setEmail(""); setApiToken("");
@@ -477,6 +1112,11 @@ function JiraSection({ isConfigured, onSaved }: { isConfigured: boolean; onSaved
             <Button variant="outline" size="sm" onClick={startEditing}>
               {isConfigured ? "Update credentials" : "Add credentials"}
             </Button>
+            {isConfigured && (
+              <Button variant="outline" size="sm" onClick={handleTestStored} disabled={status.state === "loading"}>
+                {status.state === "loading" ? <><Loader2 className="h-3 w-3 animate-spin" /> Testing…</> : "Test connection"}
+              </Button>
+            )}
             {isConfigured && (
               <Button variant="ghost" size="sm" className="text-muted-foreground gap-1" onClick={handleReset}>
                 <RotateCcw className="h-3 w-3" /> Reset
@@ -559,6 +1199,19 @@ function BitbucketSection({ isConfigured, onSaved }: { isConfigured: boolean; on
     }
   }
 
+  async function handleTestStored() {
+    setStatus({ state: "loading", message: "Testing connection…" });
+    setTestResult("untested");
+    try {
+      const msg = await testBitbucketStored();
+      setTestResult("success");
+      setStatus({ state: "success", message: msg });
+    } catch (err) {
+      setTestResult("error");
+      setStatus({ state: "error", message: String(err) });
+    }
+  }
+
   function handleCancel() {
     setEditing(false);
     setWorkspace(""); setEmail(""); setAccessToken("");
@@ -596,6 +1249,11 @@ function BitbucketSection({ isConfigured, onSaved }: { isConfigured: boolean; on
             <Button variant="outline" size="sm" onClick={startEditing}>
               {isConfigured ? "Update credentials" : "Add credentials"}
             </Button>
+            {isConfigured && (
+              <Button variant="outline" size="sm" onClick={handleTestStored} disabled={status.state === "loading"}>
+                {status.state === "loading" ? <><Loader2 className="h-3 w-3 animate-spin" /> Testing…</> : "Test connection"}
+              </Button>
+            )}
             {isConfigured && (
               <Button variant="ghost" size="sm" className="text-muted-foreground gap-1" onClick={handleReset}>
                 <RotateCcw className="h-3 w-3" /> Reset
@@ -981,6 +1639,15 @@ export function SettingsScreen({ onClose, onNavigate }: SettingsScreenProps) {
                 isConfigured={anthropicComplete(credStatus)}
                 onSaved={refresh}
               />
+              <GeminiSection
+                isConfigured={credStatus.geminiApiKey}
+                onSaved={refresh}
+              />
+              <LocalLlmSection
+                isConfigured={credStatus.localLlmUrl}
+                onSaved={refresh}
+              />
+              <AiProviderSection />
               <JiraSection isConfigured={jiraCredentialsSet(credStatus)} onSaved={refresh} />
               <BitbucketSection
                 isConfigured={bitbucketCredentialsSet(credStatus)}

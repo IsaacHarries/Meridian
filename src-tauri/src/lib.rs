@@ -8,7 +8,8 @@ use commands::{
     validate_jira, test_anthropic_stored, test_jira_stored, test_bitbucket_stored, debug_jira_endpoints, assess_ticket_quality, generate_standup_briefing, generate_sprint_retrospective,
     import_claude_pro_token,
     generate_workload_suggestions, review_pr,
-    get_claude_models,
+    get_claude_models, get_gemini_models, validate_gemini, test_gemini_stored,
+    get_local_models, validate_local_llm, test_local_llm_stored,
     // Agent pipeline
     run_grooming_agent, run_impact_analysis, run_triage_turn, finalize_implementation_plan,
     run_implementation_guidance, run_test_suggestions, run_plan_review,
@@ -41,6 +42,12 @@ pub fn run() {
             generate_workload_suggestions,
             review_pr,
             get_claude_models,
+            get_gemini_models,
+            validate_gemini,
+            test_gemini_stored,
+            get_local_models,
+            validate_local_llm,
+            test_local_llm_stored,
             // Agent pipeline
             run_grooming_agent,
             run_impact_analysis,

@@ -118,6 +118,617 @@ async fn refresh_oauth_if_needed(client: &Client) -> Result<(), String> {
     Ok(())
 }
 
+// ── Gemini support ─────────────────────────────────────────────────────────────
+
+const GEMINI_DEFAULT_MODEL: &str = "gemini-2.5-flash";
+const GEMINI_BASE_URL: &str =
+    "https://generativelanguage.googleapis.com/v1beta/models";
+
+pub const AVAILABLE_GEMINI_MODELS: &[(&str, &str)] = &[
+    ("gemini-2.5-flash", "Gemini 2.5 Flash — Fast & economical"),
+    ("gemini-2.5-pro",   "Gemini 2.5 Pro   — Most capable"),
+];
+
+fn get_active_gemini_model() -> String {
+    get_credential("gemini_model")
+        .filter(|m| !m.trim().is_empty())
+        .unwrap_or_else(|| GEMINI_DEFAULT_MODEL.to_string())
+}
+
+/// "claude" | "gemini" | "local" | "auto"  (default: "auto" = Claude first, Gemini on quota error)
+fn get_ai_provider() -> String {
+    get_credential("ai_provider")
+        .filter(|p| !p.trim().is_empty())
+        .unwrap_or_else(|| "auto".to_string())
+}
+
+/// Returns true when an error string indicates the Claude quota / rate limit was
+/// exceeded and it is worth trying a Gemini fallback.
+fn is_quota_error(err: &str) -> bool {
+    let e = err.to_lowercase();
+    e.contains("429")
+        || e.contains("rate_limit")
+        || e.contains("overloaded")
+        || e.contains("you've hit your limit")
+        || e.contains("hit your limit")
+        || e.contains("exceeded")
+        || e.contains("quota")
+}
+
+/// Single-turn completion via the Gemini `generateContent` REST API.
+async fn complete_gemini(
+    client: &Client,
+    api_key: &str,
+    model: &str,
+    system: &str,
+    user: &str,
+    max_tokens: u32,
+) -> Result<String, String> {
+    let url = format!("{GEMINI_BASE_URL}/{model}:generateContent?key={api_key}");
+
+    let body = serde_json::json!({
+        "system_instruction": { "parts": [{ "text": system }] },
+        "contents": [{ "role": "user", "parts": [{ "text": user }] }],
+        "generationConfig": { "maxOutputTokens": max_tokens }
+    });
+
+    let resp = client
+        .post(&url)
+        .header("content-type", "application/json")
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| {
+            if e.is_connect() || e.is_timeout() {
+                "Could not reach generativelanguage.googleapis.com.".to_string()
+            } else {
+                format!("Gemini request failed: {e}")
+            }
+        })?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        return Err(format!("Gemini API error {status}: {body}"));
+    }
+
+    let json: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("Failed to parse Gemini response: {e}"))?;
+
+    json["candidates"][0]["content"]["parts"][0]["text"]
+        .as_str()
+        .map(str::to_string)
+        .ok_or_else(|| "Unexpected response shape from Gemini API.".to_string())
+}
+
+/// Multi-turn completion via Gemini. Converts Claude-style history
+/// (role: "assistant") to Gemini style (role: "model") automatically.
+async fn complete_multi_gemini(
+    client: &Client,
+    api_key: &str,
+    model: &str,
+    system: &str,
+    history_json: &str,
+    max_tokens: u32,
+) -> Result<String, String> {
+    let url = format!("{GEMINI_BASE_URL}/{model}:generateContent?key={api_key}");
+
+    let history: serde_json::Value = serde_json::from_str(history_json)
+        .map_err(|e| format!("Invalid history JSON: {e}"))?;
+
+    // Gemini uses "model" where Claude uses "assistant".
+    let contents: Vec<serde_json::Value> = history
+        .as_array()
+        .unwrap_or(&vec![])
+        .iter()
+        .map(|msg| {
+            let role = match msg["role"].as_str().unwrap_or("user") {
+                "assistant" => "model",
+                other => other,
+            };
+            let text = msg["content"].as_str().unwrap_or("");
+            serde_json::json!({ "role": role, "parts": [{ "text": text }] })
+        })
+        .collect();
+
+    let body = serde_json::json!({
+        "system_instruction": { "parts": [{ "text": system }] },
+        "contents": contents,
+        "generationConfig": { "maxOutputTokens": max_tokens }
+    });
+
+    let resp = client
+        .post(&url)
+        .header("content-type", "application/json")
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("Gemini request failed: {e}"))?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        return Err(format!("Gemini API error {status}: {body}"));
+    }
+
+    let json: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("Failed to parse Gemini response: {e}"))?;
+
+    json["candidates"][0]["content"]["parts"][0]["text"]
+        .as_str()
+        .map(str::to_string)
+        .ok_or_else(|| "Unexpected response shape from Gemini API.".to_string())
+}
+
+/// Fetch live Gemini models from the API, filtered to text generation models.
+/// Falls back to `AVAILABLE_GEMINI_MODELS` on any error.
+#[tauri::command]
+pub async fn get_gemini_models() -> Vec<(String, String)> {
+    let fallback = || {
+        AVAILABLE_GEMINI_MODELS
+            .iter()
+            .map(|(id, label)| (id.to_string(), label.to_string()))
+            .collect::<Vec<_>>()
+    };
+
+    let api_key = match get_credential("gemini_api_key") {
+        Some(k) => k,
+        None => return fallback(),
+    };
+
+    let client = match make_corporate_client(Duration::from_secs(8)) {
+        Ok(c) => c,
+        Err(_) => return fallback(),
+    };
+
+    let url = format!(
+        "https://generativelanguage.googleapis.com/v1beta/models?key={api_key}&pageSize=50"
+    );
+
+    let resp = match client.get(&url).send().await {
+        Ok(r) if r.status().is_success() => r,
+        _ => return fallback(),
+    };
+
+    let json: serde_json::Value = match resp.json().await {
+        Ok(j) => j,
+        Err(_) => return fallback(),
+    };
+
+    let models = match json["models"].as_array() {
+        Some(m) => m,
+        None => return fallback(),
+    };
+
+    let mut result: Vec<(String, String)> = models
+        .iter()
+        .filter_map(|m| {
+            let name = m["name"].as_str()?; // "models/gemini-2.5-pro"
+            let id = name.strip_prefix("models/")?;
+
+            // Only text generation models that aren't image/video/embedding/TTS.
+            let supported: Vec<&str> = m["supportedGenerationMethods"]
+                .as_array()?
+                .iter()
+                .filter_map(|v| v.as_str())
+                .collect();
+            if !supported.contains(&"generateContent") { return None; }
+            if id.contains("imagen") || id.contains("veo") || id.contains("embedding")
+                || id.contains("tts") || id.contains("aqa") { return None; }
+            // Skip live/preview models for stability.
+            if id.contains("live") || id.contains("preview") || id.contains("exp") { return None; }
+
+            let display = m["displayName"].as_str().unwrap_or(id).to_string();
+            Some((id.to_string(), display))
+        })
+        .collect();
+
+    if result.is_empty() {
+        return fallback();
+    }
+
+    // Sort: Flash before Pro (alphabetically within tiers).
+    result.sort_by(|a, b| a.0.cmp(&b.0));
+    result
+}
+
+/// Validate a Gemini API key by making a lightweight models list request.
+#[tauri::command]
+pub async fn validate_gemini(api_key: String) -> Result<String, String> {
+    use super::credentials::store_credential;
+
+    let key = api_key.trim();
+    if key.is_empty() {
+        return Err("API key cannot be empty.".to_string());
+    }
+
+    let client = make_corporate_client(Duration::from_secs(10))
+        .map_err(|e| format!("HTTP client error: {e}"))?;
+
+    let url = format!(
+        "https://generativelanguage.googleapis.com/v1beta/models?key={key}&pageSize=1"
+    );
+
+    let resp = client
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| {
+            if e.is_connect() || e.is_timeout() {
+                "Could not reach generativelanguage.googleapis.com. \
+                 Check your internet connection.".to_string()
+            } else {
+                format!("Request failed: {e}")
+            }
+        })?;
+
+    match resp.status() {
+        s if s.is_success() => {
+            store_credential("gemini_api_key", key)?;
+            Ok("Connected to Gemini API successfully.".to_string())
+        }
+        reqwest::StatusCode::UNAUTHORIZED | reqwest::StatusCode::FORBIDDEN => {
+            Err("Gemini rejected the API key. \
+                 Check the key at console.cloud.google.com → APIs & Services → Credentials."
+                .to_string())
+        }
+        s => Err(format!("Unexpected response from Gemini API (HTTP {s}).")),
+    }
+}
+
+/// Test the already-stored Gemini API key without re-saving it.
+#[tauri::command]
+pub async fn test_gemini_stored() -> Result<String, String> {
+    let key = get_credential("gemini_api_key")
+        .filter(|k| !k.trim().is_empty())
+        .ok_or("Gemini API key is not configured.")?;
+
+    let client = make_corporate_client(Duration::from_secs(10))
+        .map_err(|e| format!("HTTP client error: {e}"))?;
+
+    let url = format!(
+        "https://generativelanguage.googleapis.com/v1beta/models?key={key}&pageSize=1"
+    );
+
+    let resp = client
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| {
+            if e.is_connect() || e.is_timeout() {
+                "Could not reach generativelanguage.googleapis.com. \
+                 Check your internet connection.".to_string()
+            } else {
+                format!("Request failed: {e}")
+            }
+        })?;
+
+    match resp.status() {
+        s if s.is_success() => Ok("Connected to Gemini API successfully.".to_string()),
+        reqwest::StatusCode::UNAUTHORIZED | reqwest::StatusCode::FORBIDDEN => {
+            Err("Gemini rejected the stored API key. \
+                 Re-enter it in settings to update it.".to_string())
+        }
+        s => Err(format!("Unexpected response from Gemini API (HTTP {s}).")),
+    }
+}
+
+// ── Local LLM support (OpenAI-compatible) ──────────────────────────────────────
+//
+// Works with Ollama (`http://localhost:11434/v1`), LM Studio
+// (`http://localhost:1234/v1`), Jan, llama.cpp server, and any other server
+// that exposes the OpenAI `/v1/chat/completions` and `/v1/models` endpoints.
+
+fn get_local_llm_model() -> Option<String> {
+    get_credential("local_llm_model").filter(|m| !m.trim().is_empty())
+}
+
+fn local_llm_base_url() -> Option<String> {
+    get_credential("local_llm_url")
+        .map(|u| u.trim_end_matches('/').to_string())
+        .filter(|u| !u.is_empty())
+}
+
+/// Build an HTTP client that does NOT enforce HTTPS — local servers run on plain HTTP.
+fn make_local_client() -> Result<Client, String> {
+    Client::builder()
+        .timeout(Duration::from_secs(120)) // local models can be slow
+        .danger_accept_invalid_certs(true)  // self-signed certs are common
+        .build()
+        .map_err(|e| format!("HTTP client error: {e}"))
+}
+
+async fn complete_local(
+    base_url: &str,
+    api_key: Option<&str>,
+    model: &str,
+    system: &str,
+    user: &str,
+    max_tokens: u32,
+) -> Result<String, String> {
+    let client = make_local_client()?;
+    let url = format!("{base_url}/chat/completions");
+
+    let body = serde_json::json!({
+        "model": model,
+        "messages": [
+            { "role": "system", "content": system },
+            { "role": "user",   "content": user  },
+        ],
+        "max_tokens": max_tokens,
+        "stream": false,
+    });
+
+    let mut req = client
+        .post(&url)
+        .header("content-type", "application/json")
+        .json(&body);
+
+    if let Some(key) = api_key {
+        if !key.is_empty() {
+            req = req.header("Authorization", format!("Bearer {key}"));
+        }
+    }
+
+    let resp = req.send().await.map_err(|e| {
+        if e.is_connect() {
+            format!(
+                "Could not connect to local LLM at {base_url}. \
+                 Make sure Ollama / LM Studio is running."
+            )
+        } else {
+            format!("Local LLM request failed: {e}")
+        }
+    })?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body_text = resp.text().await.unwrap_or_default();
+        return Err(format!("Local LLM error {status}: {body_text}"));
+    }
+
+    let json: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("Failed to parse local LLM response: {e}"))?;
+
+    json["choices"][0]["message"]["content"]
+        .as_str()
+        .map(str::to_string)
+        .ok_or_else(|| "Unexpected response shape from local LLM.".to_string())
+}
+
+async fn complete_multi_local(
+    base_url: &str,
+    api_key: Option<&str>,
+    model: &str,
+    system: &str,
+    history_json: &str,
+    max_tokens: u32,
+) -> Result<String, String> {
+    let client = make_local_client()?;
+    let url = format!("{base_url}/chat/completions");
+
+    let history: serde_json::Value = serde_json::from_str(history_json)
+        .map_err(|e| format!("Invalid history JSON: {e}"))?;
+
+    let mut messages: Vec<serde_json::Value> =
+        vec![serde_json::json!({ "role": "system", "content": system })];
+
+    if let Some(arr) = history.as_array() {
+        for msg in arr {
+            // Claude uses "assistant"; OpenAI-compatible uses "assistant" too — pass through.
+            messages.push(msg.clone());
+        }
+    }
+
+    let body = serde_json::json!({
+        "model": model,
+        "messages": messages,
+        "max_tokens": max_tokens,
+        "stream": false,
+    });
+
+    let mut req = client
+        .post(&url)
+        .header("content-type", "application/json")
+        .json(&body);
+
+    if let Some(key) = api_key {
+        if !key.is_empty() {
+            req = req.header("Authorization", format!("Bearer {key}"));
+        }
+    }
+
+    let resp = req.send().await.map_err(|e| {
+        if e.is_connect() {
+            format!(
+                "Could not connect to local LLM at {base_url}. \
+                 Make sure Ollama / LM Studio is running."
+            )
+        } else {
+            format!("Local LLM request failed: {e}")
+        }
+    })?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body_text = resp.text().await.unwrap_or_default();
+        return Err(format!("Local LLM error {status}: {body_text}"));
+    }
+
+    let json: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("Failed to parse local LLM response: {e}"))?;
+
+    json["choices"][0]["message"]["content"]
+        .as_str()
+        .map(str::to_string)
+        .ok_or_else(|| "Unexpected response shape from local LLM.".to_string())
+}
+
+/// Fetch the model list from the local server via the OpenAI-compatible `/v1/models`
+/// endpoint, with an Ollama-native `/api/tags` fallback.
+#[tauri::command]
+pub async fn get_local_models() -> Vec<(String, String)> {
+    let base_url = match local_llm_base_url() {
+        Some(u) => u,
+        None => return vec![],
+    };
+
+    let api_key = get_credential("local_llm_api_key");
+    let client = match make_local_client() {
+        Ok(c) => c,
+        Err(_) => return vec![],
+    };
+
+    // ── Try OpenAI-compatible /models ─────────────────────────────────────────
+    let mut req = client.get(format!("{base_url}/models"));
+    if let Some(ref key) = api_key {
+        if !key.is_empty() {
+            req = req.header("Authorization", format!("Bearer {key}"));
+        }
+    }
+
+    if let Ok(resp) = req.send().await {
+        if resp.status().is_success() {
+            if let Ok(json) = resp.json::<serde_json::Value>().await {
+                if let Some(arr) = json["data"].as_array() {
+                    let models: Vec<(String, String)> = arr
+                        .iter()
+                        .filter_map(|m| {
+                            let id = m["id"].as_str()?;
+                            Some((id.to_string(), id.to_string()))
+                        })
+                        .collect();
+                    if !models.is_empty() {
+                        return models;
+                    }
+                }
+            }
+        }
+    }
+
+    // ── Ollama fallback: try stripping /v1 suffix and hitting /api/tags ───────
+    let ollama_base = base_url.trim_end_matches("/v1");
+    if let Ok(resp) = client.get(format!("{ollama_base}/api/tags")).send().await {
+        if resp.status().is_success() {
+            if let Ok(json) = resp.json::<serde_json::Value>().await {
+                if let Some(arr) = json["models"].as_array() {
+                    let models: Vec<(String, String)> = arr
+                        .iter()
+                        .filter_map(|m| {
+                            let name = m["name"].as_str()?;
+                            Some((name.to_string(), name.to_string()))
+                        })
+                        .collect();
+                    if !models.is_empty() {
+                        return models;
+                    }
+                }
+            }
+        }
+    }
+
+    vec![]
+}
+
+/// Test connectivity to a local LLM server and save the URL + optional key on success.
+#[tauri::command]
+pub async fn validate_local_llm(url: String, api_key: String) -> Result<String, String> {
+    use super::credentials::store_credential;
+
+    let base = url.trim().trim_end_matches('/');
+    if base.is_empty() {
+        return Err("Server URL cannot be empty.".to_string());
+    }
+    // Normalise: ensure it ends with /v1
+    let base = if base.ends_with("/v1") {
+        base.to_string()
+    } else {
+        format!("{base}/v1")
+    };
+
+    let client = make_local_client()?;
+    let key_opt = if api_key.trim().is_empty() { None } else { Some(api_key.trim()) };
+
+    // Try /models first (OpenAI-compatible)
+    let mut req = client.get(format!("{base}/models"));
+    if let Some(k) = key_opt {
+        req = req.header("Authorization", format!("Bearer {k}"));
+    }
+
+    let ok = match req.send().await {
+        Ok(r) => r.status().is_success() || r.status().as_u16() == 404,
+        Err(_) => {
+            // Fallback: try Ollama's root endpoint
+            let ollama_root = base.trim_end_matches("/v1");
+            match client.get(format!("{ollama_root}/api/tags")).send().await {
+                Ok(r) => r.status().is_success(),
+                Err(e) => {
+                    return Err(format!(
+                        "Could not connect to {base}. \
+                         Is the server running?\n\nError: {e}"
+                    ))
+                }
+            }
+        }
+    };
+
+    if !ok {
+        return Err(format!("Server at {base} responded with an unexpected error."));
+    }
+
+    store_credential("local_llm_url", &base)?;
+    if let Some(k) = key_opt {
+        store_credential("local_llm_api_key", k)?;
+    }
+
+    Ok(format!("Connected to local LLM server at {base}."))
+}
+
+/// Test the already-stored Local LLM server URL without re-saving it.
+#[tauri::command]
+pub async fn test_local_llm_stored() -> Result<String, String> {
+    let base = local_llm_base_url()
+        .ok_or("Local LLM server URL is not configured.")?;
+    let key_opt = get_credential("local_llm_api_key")
+        .filter(|k| !k.trim().is_empty());
+
+    let client = make_local_client()?;
+
+    let mut req = client.get(format!("{base}/models"));
+    if let Some(ref k) = key_opt {
+        req = req.header("Authorization", format!("Bearer {k}"));
+    }
+
+    let ok = match req.send().await {
+        Ok(r) => r.status().is_success() || r.status().as_u16() == 404,
+        Err(_) => {
+            // Fallback: Ollama /api/tags
+            let ollama_root = base.trim_end_matches("/v1");
+            match client.get(format!("{ollama_root}/api/tags")).send().await {
+                Ok(r) => r.status().is_success(),
+                Err(e) => return Err(format!(
+                    "Could not connect to {base}. \
+                     Is the server running?\n\nError: {e}"
+                )),
+            }
+        }
+    };
+
+    if ok {
+        Ok(format!("Connected to local LLM server at {base}."))
+    } else {
+        Err(format!("Server at {base} responded with an unexpected error."))
+    }
+}
+
 // ── Model catalogue ────────────────────────────────────────────────────────────
 
 pub const DEFAULT_MODEL: &str = "claude-sonnet-4-6";
@@ -405,6 +1016,154 @@ async fn complete_multi(
 
 // ── Agent pipeline commands ────────────────────────────────────────────────────
 
+// ── Provider-aware dispatch helpers ───────────────────────────────────────────
+//
+// All agent commands call `dispatch` / `dispatch_multi` instead of `complete`
+// directly. These functions apply the configured provider priority:
+//   "claude"  → Claude only
+//   "gemini"  → Gemini only
+//   "local"   → Local LLM only
+//   "auto"    → Try providers in the user-configured order; fall back on quota errors
+
+/// Returns the user-configured fallback order, e.g. ["claude", "gemini", "local"].
+fn get_provider_order() -> Vec<String> {
+    let raw = get_credential("ai_provider_order").unwrap_or_default();
+    if raw.trim().is_empty() {
+        return vec!["claude".to_string(), "gemini".to_string(), "local".to_string()];
+    }
+    raw.split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
+/// Try one provider for a single-turn call. Returns Ok if it succeeded,
+/// Err with the error string otherwise (including "not configured" cases).
+async fn try_provider_single(
+    provider: &str,
+    client: &Client,
+    claude_key: &str,
+    system: &str,
+    user: &str,
+    max_tokens: u32,
+) -> Result<String, String> {
+    match provider {
+        "claude" => complete(client, claude_key, &get_active_model(), system, user, max_tokens).await,
+        "gemini" => {
+            let key = get_credential("gemini_api_key")
+                .ok_or_else(|| "Gemini: not configured.".to_string())?;
+            complete_gemini(client, &key, &get_active_gemini_model(), system, user, max_tokens).await
+        }
+        "local" => {
+            let base = local_llm_base_url()
+                .ok_or_else(|| "Local LLM: not configured.".to_string())?;
+            let model = get_local_llm_model()
+                .ok_or_else(|| "Local LLM: no model selected.".to_string())?;
+            let key = get_credential("local_llm_api_key");
+            complete_local(&base, key.as_deref(), &model, system, user, max_tokens).await
+        }
+        p => Err(format!("Unknown provider: {p}")),
+    }
+}
+
+/// Try one provider for a multi-turn call.
+async fn try_provider_multi(
+    provider: &str,
+    client: &Client,
+    claude_key: &str,
+    system: &str,
+    history_json: &str,
+    max_tokens: u32,
+) -> Result<String, String> {
+    match provider {
+        "claude" => complete_multi(client, claude_key, &get_active_model(), system, history_json, max_tokens).await,
+        "gemini" => {
+            let key = get_credential("gemini_api_key")
+                .ok_or_else(|| "Gemini: not configured.".to_string())?;
+            complete_multi_gemini(client, &key, &get_active_gemini_model(), system, history_json, max_tokens).await
+        }
+        "local" => {
+            let base = local_llm_base_url()
+                .ok_or_else(|| "Local LLM: not configured.".to_string())?;
+            let model = get_local_llm_model()
+                .ok_or_else(|| "Local LLM: no model selected.".to_string())?;
+            let key = get_credential("local_llm_api_key");
+            complete_multi_local(&base, key.as_deref(), &model, system, history_json, max_tokens).await
+        }
+        p => Err(format!("Unknown provider: {p}")),
+    }
+}
+
+async fn dispatch(
+    client: &Client,
+    claude_key: &str,
+    system: &str,
+    user: &str,
+    max_tokens: u32,
+) -> Result<String, String> {
+    let provider = get_ai_provider();
+
+    // Single-provider modes — no fallback.
+    if provider != "auto" {
+        return try_provider_single(&provider, client, claude_key, system, user, max_tokens).await;
+    }
+
+    // Auto mode: walk the ordered list, skip unconfigured, fall back on quota errors.
+    let order = get_provider_order();
+    let mut last_err = "No providers configured.".to_string();
+
+    for p in &order {
+        match try_provider_single(p, client, claude_key, system, user, max_tokens).await {
+            Ok(r) => return Ok(r),
+            Err(e) if e.contains("not configured") || e.contains("no model") => {
+                // Provider not set up — skip silently.
+                last_err = e;
+            }
+            Err(e) if is_quota_error(&e) => {
+                // Quota exhausted — try next provider.
+                last_err = format!("{p} quota exceeded, trying next provider…");
+                let _ = e; // log-worthy but not returned unless all fail
+            }
+            Err(e) => return Err(e), // Hard error — surface immediately.
+        }
+    }
+
+    Err(format!("All providers failed or are unconfigured. Last error: {last_err}"))
+}
+
+async fn dispatch_multi(
+    client: &Client,
+    claude_key: &str,
+    system: &str,
+    history_json: &str,
+    max_tokens: u32,
+) -> Result<String, String> {
+    let provider = get_ai_provider();
+
+    if provider != "auto" {
+        return try_provider_multi(&provider, client, claude_key, system, history_json, max_tokens).await;
+    }
+
+    let order = get_provider_order();
+    let mut last_err = "No providers configured.".to_string();
+
+    for p in &order {
+        match try_provider_multi(p, client, claude_key, system, history_json, max_tokens).await {
+            Ok(r) => return Ok(r),
+            Err(e) if e.contains("not configured") || e.contains("no model") => {
+                last_err = e;
+            }
+            Err(e) if is_quota_error(&e) => {
+                last_err = format!("{p} quota exceeded, trying next provider…");
+            }
+            Err(e) => return Err(e),
+        }
+    }
+
+    Err(format!("All providers failed or are unconfigured. Last error: {last_err}"))
+}
+
+
 /// Agent 1 — Grooming: analyse ticket and identify relevant code areas.
 #[tauri::command]
 pub async fn run_grooming_agent(ticket_text: String) -> Result<String, String> {
@@ -424,7 +1183,7 @@ pub async fn run_grooming_agent(ticket_text: String) -> Result<String, String> {
           \"grooming_notes\": \"<anything else worth flagging>\"\n\
         }";
     let user = format!("Groom this ticket:\n\n{ticket_text}");
-    complete(&client, &api_key, &get_active_model(), system, &user, 1500).await
+    dispatch(&client, &api_key, system, &user, 1500).await
 }
 
 /// Agent 2 — Impact Analysis: assess the blast radius of the planned change.
@@ -443,7 +1202,7 @@ pub async fn run_impact_analysis(ticket_text: String, grooming_json: String) -> 
           \"recommendations\": \"<key things to be careful about>\"\n\
         }";
     let user = format!("Ticket:\n{ticket_text}\n\nGrooming analysis:\n{grooming_json}");
-    complete(&client, &api_key, &get_active_model(), system, &user, 1500).await
+    dispatch(&client, &api_key, system, &user, 1500).await
 }
 
 /// Agent 3a — Triage turn: one conversational exchange in the planning session.
@@ -465,7 +1224,7 @@ pub async fn run_triage_turn(
         - Be concise and practical\n\
         Respond in plain text. Do NOT produce JSON."
     );
-    complete_multi(&client, &api_key, &get_active_model(), &system, &history_json, 800).await
+    dispatch_multi(&client, &api_key, &system, &history_json, 800).await
 }
 
 /// Agent 3b — Finalize plan: extract a structured implementation plan from the triage conversation.
@@ -494,7 +1253,7 @@ pub async fn finalize_implementation_plan(
         Context:\n{context_text}"
     );
     let user = format!("Triage conversation:\n{conversation_json}");
-    complete(&client, &api_key, &get_active_model(), &system, &user, 2000).await
+    dispatch(&client, &api_key, &system, &user, 2000).await
 }
 
 /// Agent 4 — Implementation Guidance: step-by-step guide for executing the plan.
@@ -518,7 +1277,7 @@ pub async fn run_implementation_guidance(
           \"definition_of_done\": [\"<how to know the step is complete>\", ...]\n\
         }";
     let user = format!("Ticket:\n{ticket_text}\n\nImplementation plan:\n{plan_json}");
-    complete(&client, &api_key, &get_active_model(), system, &user, 2000).await
+    dispatch(&client, &api_key, system, &user, 2000).await
 }
 
 /// Agent 5 — Test Suggestions: recommend tests to write for the implementation.
@@ -545,7 +1304,7 @@ pub async fn run_test_suggestions(
           \"coverage_notes\": \"<anything deliberately not covered and why>\"\n\
         }";
     let user = format!("Implementation plan:\n{plan_json}\n\nImplementation guidance:\n{guidance_json}");
-    complete(&client, &api_key, &get_active_model(), system, &user, 1500).await
+    dispatch(&client, &api_key, system, &user, 1500).await
 }
 
 /// Agent 6 — Plan Review: critique the plan before any code is written.
@@ -570,7 +1329,7 @@ pub async fn run_plan_review(
           \"things_to_watch\": [\"<keep in mind while implementing>\", ...]\n\
         }";
     let user = format!("Plan:\n{plan_json}\n\nGuidance:\n{guidance_json}\n\nTest plan:\n{test_json}");
-    complete(&client, &api_key, &get_active_model(), system, &user, 1500).await
+    dispatch(&client, &api_key, system, &user, 1500).await
 }
 
 /// Agent 7 — PR Description: generate a complete pull request description.
@@ -589,7 +1348,7 @@ pub async fn run_pr_description_gen(
             testing approach, linked JIRA ticket, anything reviewers should pay attention to>\"\n\
         }";
     let user = format!("Ticket:\n{ticket_text}\n\nImplementation plan:\n{plan_json}\n\nReview notes:\n{review_json}");
-    complete(&client, &api_key, &get_active_model(), system, &user, 2000).await
+    dispatch(&client, &api_key, system, &user, 2000).await
 }
 
 /// Agent 8 — Retrospective: capture learnings from the implementation session.
@@ -615,7 +1374,7 @@ pub async fn run_retrospective_agent(
           \"summary\": \"<one paragraph retrospective summary>\"\n\
         }";
     let user = format!("Ticket:\n{ticket_text}\n\nImplementation plan:\n{plan_json}\n\nReview:\n{review_json}");
-    complete(&client, &api_key, &get_active_model(), system, &user, 1500).await
+    dispatch(&client, &api_key, system, &user, 1500).await
 }
 
 /// Analyse a pull request across four review lenses and return a JSON review report.
@@ -655,7 +1414,7 @@ pub async fn review_pr(review_text: String) -> Result<String, String> {
 
     let user = format!("Review this pull request:\n\n{review_text}");
 
-    complete(&client, &api_key, &get_active_model(), system, &user, 4000).await
+    dispatch(&client, &api_key, system, &user, 4000).await
 }
 
 /// Generate workload rebalancing suggestions from pre-compiled capacity text.
@@ -680,7 +1439,7 @@ pub async fn generate_workload_suggestions(workload_text: String) -> Result<Stri
         If the workload is already well balanced, say so clearly. Do not invent problems."
     );
 
-    complete(&client, &api_key, &get_active_model(), system, &user, 1024).await
+    dispatch(&client, &api_key, system, &user, 1024).await
 }
 
 /// Assess a JIRA ticket for development readiness and return a JSON quality report.
@@ -709,7 +1468,7 @@ pub async fn assess_ticket_quality(ticket_text: String) -> Result<String, String
 
     let user = format!("Assess this ticket for sprint readiness:\n\n{ticket_text}");
 
-    complete(&client, &api_key, &get_active_model(), system, &user, 1500).await
+    dispatch(&client, &api_key, system, &user, 1500).await
 }
 
 /// Generate a sprint retrospective summary from pre-compiled sprint data.
@@ -732,7 +1491,7 @@ pub async fn generate_sprint_retrospective(sprint_text: String) -> Result<String
         End with a one-paragraph **Summary** the scrum master can use to open the meeting."
     );
 
-    complete(&client, &api_key, &get_active_model(), system, &user, 1024).await
+    dispatch(&client, &api_key, system, &user, 1024).await
 }
 
 #[tauri::command]
@@ -757,5 +1516,5 @@ pub async fn generate_standup_briefing(standup_text: String) -> Result<String, S
         Skip members with genuinely no data."
     );
 
-    complete(&client, &api_key, &get_active_model(), system, &user, 1024).await
+    dispatch(&client, &api_key, system, &user, 1024).await
 }

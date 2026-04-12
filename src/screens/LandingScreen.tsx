@@ -1,5 +1,7 @@
 import { useEffect, useState, useMemo } from "react";
 import { AlertTriangle, Settings, TrendingUp, CheckSquare, GitPullRequest } from "lucide-react";
+import { MeridianLogo } from "@/components/MeridianLogo";
+import { PipelineProgress, PIPELINE_STEPS } from "@/components/PipelineProgress";
 
 const QUIPS = [
   "It works on my machine...",
@@ -248,15 +250,32 @@ export function LandingScreen({ credStatus, onOpenSettings, onNavigate }: Landin
     () => QUIPS[Math.floor(Math.random() * QUIPS.length)],
     []
   );
+  // Demo: cycle through pipeline steps to preview the animation.
+  // Replace with real pipeline state when wiring up Workflow 1.
+  const [demoStep, setDemoStep] = useState<number | undefined>(undefined);
   const allComplete =
     anthropicComplete(credStatus) && jiraComplete(credStatus) && bitbucketComplete(credStatus);
 
   return (
     <div className="min-h-screen flex flex-col">
-      <header className="sticky top-0 z-10 border-b bg-background/80 backdrop-blur-sm">
-        <div className="max-w-5xl mx-auto px-6 h-14 flex items-center justify-between">
-          <span className="font-semibold tracking-tight">Meridian</span>
+      <header className="sticky top-0 z-10 border-b bg-background/80 backdrop-blur-sm overflow-hidden">
+        <div className="w-full px-[10px] h-14 flex items-center justify-between">
+          <span className="self-start" style={{ marginTop: '-10px' }}>
+            <PipelineProgress
+              activeStep={demoStep}
+              style={{ width: '66vw', height: '96px' }}
+            />
+          </span>
           <div className="flex items-center gap-1">
+            {/* Demo controls — remove when wiring to real pipeline state */}
+            <button
+              className="text-[10px] text-muted-foreground px-1 hover:text-foreground"
+              onClick={() => setDemoStep(s => s === undefined ? 0 : s > 0 ? s - 1 : undefined)}
+            >←</button>
+            <button
+              className="text-[10px] text-muted-foreground px-1 hover:text-foreground"
+              onClick={() => setDemoStep(s => (s ?? -1) < PIPELINE_STEPS.length - 1 ? (s ?? -1) + 1 : s)}
+            >→</button>
             <Button variant="ghost" size="icon" onClick={onOpenSettings}>
               <Settings className="h-4 w-4" />
             </Button>

@@ -1,4 +1,5 @@
 import { useEffect, useState, useRef, useCallback } from "react";
+import { PipelineProgress } from "@/components/PipelineProgress";
 import { JiraTicketLink } from "@/components/JiraTicketLink";
 import {
   ArrowLeft,
@@ -672,6 +673,25 @@ function PipelineSidebar({ currentStage, completedStages, activeStage, onClickSt
   );
 }
 
+// ── Stage → pipeline step mapping ────────────────────────────────────────────
+
+function stageToStep(stage: Stage): number | undefined {
+  if (stage === "select") return undefined;
+  const map: Record<Exclude<Stage, "select">, number> = {
+    grooming:  0,
+    impact:    1,
+    triage:    2,
+    plan:      2,
+    guidance:  3,
+    tests:     4,
+    review:    5,
+    pr:        6,
+    retro:     7,
+    complete:  7,
+  };
+  return map[stage];
+}
+
 // ── Main screen ───────────────────────────────────────────────────────────────
 
 export function ImplementTicketScreen({ credStatus, onBack }: ImplementTicketScreenProps) {
@@ -1017,31 +1037,36 @@ export function ImplementTicketScreen({ credStatus, onBack }: ImplementTicketScr
 
   return (
     <div className="min-h-screen flex flex-col">
-      {/* Header */}
+      {/* Header — mirrors the landing page header with PipelineProgress */}
       <div className="border-b bg-background/95 backdrop-blur sticky top-0 z-20">
-        <div className="px-4 py-3 flex items-center gap-3">
+        <div className="h-14 flex items-center px-[10px] gap-2 overflow-hidden">
           <Button
             variant="ghost"
             size="icon"
+            className="shrink-0"
             onClick={currentStage === "select" ? onBack : () => { setSelectedIssue(null); setCurrentStage("select"); }}
           >
             <ArrowLeft className="h-4 w-4" />
           </Button>
-          <div className="flex-1 min-w-0">
-            <h1 className="text-base font-semibold leading-none">Implement a Ticket</h1>
-            {selectedIssue && (
-              <p className="text-xs text-muted-foreground mt-0.5 truncate">
-                {selectedIssue.key} — {selectedIssue.summary}
-              </p>
-            )}
-          </div>
-          {selectedIssue && (
-            <Button variant="outline" size="sm" onClick={() => selectedIssue.url && openUrl(selectedIssue.url)}>
-              <ExternalLink className="h-3.5 w-3.5 mr-1" /> JIRA
-            </Button>
-          )}
+          <span className="flex-1 self-start min-w-0" style={{ marginTop: "-10px" }}>
+            <PipelineProgress
+              activeStep={currentStage === "select" ? undefined : stageToStep(viewingStage)}
+              style={{ width: "100%", height: "96px" }}
+            />
+          </span>
         </div>
       </div>
+
+      {/* Ticket info bar — shown once a ticket is selected */}
+      {selectedIssue && (
+        <div className="px-4 py-1.5 border-b bg-muted/20 flex items-center gap-2 min-w-0">
+          <JiraTicketLink ticketKey={selectedIssue.key} url={selectedIssue.url} />
+          <span className="text-xs text-muted-foreground truncate flex-1">— {selectedIssue.summary}</span>
+          <Button variant="outline" size="sm" className="shrink-0" onClick={() => selectedIssue.url && openUrl(selectedIssue.url)}>
+            <ExternalLink className="h-3.5 w-3.5 mr-1" /> JIRA
+          </Button>
+        </div>
+      )}
 
       {/* Credential warnings */}
       {(!jiraAvailable || !claudeAvailable) && (
