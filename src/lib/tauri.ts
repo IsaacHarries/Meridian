@@ -142,6 +142,21 @@ export async function testAnthropicStored(): Promise<string> {
   return invoke<string>("test_anthropic_stored");
 }
 
+/**
+ * Read the Claude Pro / Max OAuth token from the macOS keychain (where Claude Code
+ * stores it after `claude /login`) and save it as the Anthropic credential.
+ * The token never passes through the frontend — it is read and stored entirely
+ * in the Tauri backend.
+ */
+export async function importClaudeProToken(): Promise<string> {
+  return invoke<string>("import_claude_pro_token");
+}
+
+/** Return the list of available Claude models as [id, display_label] pairs. */
+export async function getClaudeModels(): Promise<[string, string][]> {
+  return invoke<[string, string][]>("get_claude_models");
+}
+
 /** Test the stored JIRA credentials without passing secrets through the frontend. */
 export async function testJiraStored(): Promise<string> {
   return invoke<string>("test_jira_stored");

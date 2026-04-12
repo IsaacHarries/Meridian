@@ -783,9 +783,9 @@ function PulsarEl({ pulsar, onDone }: { pulsar: Pulsar; onDone: () => void }) {
           cursor: "pointer", pointerEvents: "auto",
         } as React.CSSProperties}>
           {/* Single light beam */}
-          <div style={beamStyle("0ms")} />
+          <div data-space-dismissable="true" style={beamStyle("0ms")} />
           {/* Pulsing core */}
-          <div style={{
+          <div data-space-dismissable="true" style={{
             position: "absolute",
             width: "8px", height: "8px",
             left: "50%", top: "50%",

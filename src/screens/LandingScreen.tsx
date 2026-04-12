@@ -29,8 +29,6 @@ const QUIPS = [
   "Technically it's not deprecated, just discouraged...",
 ];
 import { Button } from "@/components/ui/button";
-import { fireShootingStar } from "@/lib/spaceEffects";
-import { fireBlackHole, fireComet, firePulsar, fireMeteorShower, fireWormhole, clearAllEffects, setEffectsEnabled } from "@/lib/spaceEffects";
 import {
   type CredentialStatus,
   type JiraSprint,
@@ -253,15 +251,6 @@ export function LandingScreen({ credStatus, onOpenSettings, onNavigate }: Landin
   const allComplete =
     anthropicComplete(credStatus) && jiraComplete(credStatus) && bitbucketComplete(credStatus);
 
-  const [hideContent, setHideContent] = useState(false);
-  const [effectsOn, setEffectsOn] = useState(true);
-
-  function toggleEffects() {
-    const next = !effectsOn;
-    setEffectsOn(next);
-    setEffectsEnabled(next);
-  }
-
   return (
     <div className="min-h-screen flex flex-col">
       <header className="sticky top-0 z-10 border-b bg-background/80 backdrop-blur-sm">
@@ -275,8 +264,7 @@ export function LandingScreen({ credStatus, onOpenSettings, onNavigate }: Landin
         </div>
       </header>
 
-      {!hideContent && (
-        <main className="flex-1 flex items-center">
+      <main className="flex-1 flex items-center">
           <div className="w-full max-w-5xl mx-auto px-6 py-8 space-y-8 bg-background/60 rounded-xl">
             {!allComplete && (
               <MissingCredentialsBanner credStatus={credStatus} onOpenSettings={onOpenSettings} />
@@ -308,59 +296,7 @@ export function LandingScreen({ credStatus, onOpenSettings, onNavigate }: Landin
             </div>
           </div>
         </main>
-      )}
 
-      {/* TEMP: space effects test buttons */}
-      <div className="fixed bottom-4 left-0 right-0 z-50 flex justify-center">
-        <div className="flex flex-wrap justify-center gap-1.5 bg-black/30 backdrop-blur-sm border border-white/10 rounded-2xl px-3 py-2">
-          {/* Hide/show content */}
-          <button
-            onClick={() => setHideContent(h => !h)}
-            className="rounded-full bg-white/15 border border-white/25 px-3 py-1.5 text-xs text-white/80 hover:bg-white/25 transition-colors"
-          >
-            {hideContent ? "◧ show" : "◨ hide"}
-          </button>
-          <div className="w-px bg-white/15 self-stretch mx-0.5" />
-          {/* Effects toggle switch */}
-          <button
-            onClick={toggleEffects}
-            className={`rounded-full border px-3 py-1.5 text-xs transition-colors ${
-              effectsOn
-                ? "bg-white/20 border-white/35 text-white/90 hover:bg-white/30"
-                : "bg-white/5 border-white/15 text-white/40 hover:bg-white/10"
-            }`}
-          >
-            {effectsOn ? "⬤ fx on" : "○ fx off"}
-          </button>
-          {/* Clear all */}
-          <button
-            onClick={clearAllEffects}
-            className="rounded-full bg-red-500/20 border border-red-400/30 px-3 py-1.5 text-xs text-red-300/80 hover:bg-red-500/30 transition-colors"
-          >
-            ✕ clear
-          </button>
-          <div className="w-px bg-white/15 self-stretch mx-0.5" />
-          {/* Individual effect buttons */}
-          {(
-            [
-              ["✦", "shooting star",  fireShootingStar],
-              ["☄", "comet",          fireComet],
-              ["⁂", "meteor shower",  fireMeteorShower],
-              ["◉", "black hole",     fireBlackHole],
-              ["✷", "supernova",      firePulsar],
-              ["⊕", "wormhole",       fireWormhole],
-            ] as [string, string, () => void][]
-          ).map(([icon, label, fn]) => (
-            <button
-              key={label}
-              onClick={fn}
-              className="rounded-full bg-white/10 border border-white/20 px-3 py-1.5 text-xs text-white/70 hover:bg-white/20 transition-colors"
-            >
-              {icon} {label}
-            </button>
-          ))}
-        </div>
-      </div>
     </div>
   );
 }

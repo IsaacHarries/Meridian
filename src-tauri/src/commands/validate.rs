@@ -30,6 +30,115 @@ pub async fn test_anthropic_stored() -> Result<String, String> {
     test_anthropic_connectivity(&key, false).await
 }
 
+/// Import the Claude Pro / Claude Max OAuth token from the macOS keychain where
+/// Claude Code stores it after `claude /login`. The token is saved directly as
+/// the Anthropic credential — it never passes through the frontend.
+///
+/// On non-macOS platforms this returns an informational error; support can be
+/// added for other secret stores as needed.
+#[tauri::command]
+pub async fn import_claude_pro_token() -> Result<String, String> {
+    #[cfg(target_os = "macos")]
+    {
+        let user = std::env::var("USER").unwrap_or_default();
+
+        // Claude Code (≥ v2) stores credentials as a JSON blob under the service
+        // name "Claude Code-credentials" and account = the current macOS username.
+        // The JSON shape is: {"claudeAiOauth":{"accessToken":"sk-ant-oat01-…",…},…}
+        let output = std::process::Command::new("security")
+            .args([
+                "find-generic-password",
+                "-a", &user,
+                "-s", "Claude Code-credentials",
+                "-w",
+            ])
+            .output()
+            .map_err(|e| format!("Failed to run keychain lookup: {e}"))?;
+
+        if !output.status.success() {
+            return Err(
+                "Claude Code credentials not found in keychain.\n\
+                 Run  claude  in your terminal and choose \
+                 \"Log in with Claude.ai\" to authenticate with your \
+                 Claude Pro / Max subscription, then click this button again."
+                    .to_string(),
+            );
+        }
+
+        let raw = String::from_utf8_lossy(&output.stdout).trim().to_string();
+
+        if raw.is_empty() {
+            return Err(
+                "Keychain returned an empty value. \
+                 Try running  claude  and logging in again."
+                    .to_string(),
+            );
+        }
+
+        // OAuth tokens use Authorization: Bearer; detect by JSON shape or token prefix.
+        let is_oauth_json = raw.starts_with('{');
+
+        // The stored value is a JSON object — extract the OAuth access token.
+        let token: String = if is_oauth_json {
+            let parsed: serde_json::Value = serde_json::from_str(&raw)
+                .map_err(|e| format!("Could not parse Claude Code credentials JSON: {e}"))?;
+
+            parsed
+                .get("claudeAiOauth")
+                .and_then(|o| o.get("accessToken"))
+                .and_then(|t| t.as_str())
+                .map(str::to_string)
+                .ok_or_else(|| {
+                    "Could not find claudeAiOauth.accessToken in the stored credentials. \
+                     Your Claude Code version may store credentials differently — \
+                     please enter your token manually."
+                        .to_string()
+                })?
+        } else {
+            // Older Claude Code versions stored a bare token string.
+            raw.clone()
+        };
+
+        if !token.starts_with("sk-ant-") {
+            return Err(format!(
+                "Unexpected token format (got prefix '{}'). \
+                 The stored value may not be a valid Anthropic credential.",
+                &token[..token.len().min(12)]
+            ));
+        }
+
+        store_credential("anthropic_api_key", &token)?;
+
+        // Persist the full OAuth blob (refresh token + expiry) so the backend
+        // can silently renew the access token before it expires.
+        if is_oauth_json {
+            store_credential("claude_oauth_json", &raw)?;
+        }
+
+        // Test connectivity with the newly imported token.
+        match test_anthropic_connectivity(&token, true).await {
+            Ok(_) => Ok(
+                "Claude Pro token imported and verified. \
+                 Meridian will use your Claude Pro / Max subscription for all AI features."
+                    .to_string(),
+            ),
+            Err(e) => Err(format!(
+                "Token imported but connectivity check failed: {e}"
+            )),
+        }
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        Err(
+            "Auto-import from the system keychain is currently supported on macOS only. \
+             On other platforms, run  claude /login  in a terminal, then copy the \
+             OAuth token (sk-ant-oat01-…) from ~/.claude/ into the API key field."
+                .to_string(),
+        )
+    }
+}
+
 /// `tolerant`: if true, network failures return Ok with a warning (used on save).
 ///             if false, network failures return Err (used by Test Connection button).
 async fn test_anthropic_connectivity(api_key: &str, tolerant: bool) -> Result<String, String> {

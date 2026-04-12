@@ -484,6 +484,36 @@ export function PrReviewScreen({ credStatus, onBack }: PrReviewScreenProps) {
   const bbAvailable = bitbucketComplete(credStatus);
   const jiraAvailable = jiraComplete(credStatus);
 
+  // Resizable split pane
+  const [splitPct, setSplitPct] = useState(58); // left pane % width
+  const splitContainerRef = useRef<HTMLDivElement>(null);
+  const isDragging = useRef(false);
+
+  const onDividerMouseDown = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    isDragging.current = true;
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+
+    function onMouseMove(ev: MouseEvent) {
+      if (!isDragging.current || !splitContainerRef.current) return;
+      const rect = splitContainerRef.current.getBoundingClientRect();
+      const pct = ((ev.clientX - rect.left) / rect.width) * 100;
+      setSplitPct(Math.min(Math.max(pct, 20), 80));
+    }
+
+    function onMouseUp() {
+      isDragging.current = false;
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+      window.removeEventListener("mousemove", onMouseMove);
+      window.removeEventListener("mouseup", onMouseUp);
+    }
+
+    window.addEventListener("mousemove", onMouseMove);
+    window.addEventListener("mouseup", onMouseUp);
+  }, []);
+
   // PR list state
   const [prsForReview, setPrsForReview] = useState<BitbucketPr[]>([]);
   const [allOpenPrs, setAllOpenPrs] = useState<BitbucketPr[]>([]);
@@ -668,9 +698,9 @@ export function PrReviewScreen({ credStatus, onBack }: PrReviewScreenProps) {
         </div>
       )}
 
-      {/* Body — centred card */}
-      <div className="flex-1 flex flex-col p-4 overflow-hidden">
-        <div className="flex-1 max-w-3xl w-full mx-auto bg-background/60 rounded-xl overflow-hidden flex flex-col">
+      {/* Body */}
+      <div className="flex-1 flex flex-col overflow-hidden">
+        <div className="flex-1 w-full bg-background/60 overflow-hidden flex flex-col">
         {!selectedPr ? (
           /* PR selector */
           <div className="px-6 py-6">
@@ -685,9 +715,9 @@ export function PrReviewScreen({ credStatus, onBack }: PrReviewScreenProps) {
           </div>
         ) : (
           /* Review layout */
-          <div className="flex flex-1 overflow-hidden">
+          <div ref={splitContainerRef} className="flex flex-1 overflow-hidden">
             {/* Left: diff viewer */}
-            <div className="flex-1 overflow-y-auto border-r p-4 space-y-3">
+            <div style={{ width: `${splitPct}%` }} className="flex-none overflow-y-auto border-r p-4 space-y-3">
               <div className="flex items-center justify-between">
                 <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Diff</p>
                 {loadingDetails && (
@@ -705,8 +735,14 @@ export function PrReviewScreen({ credStatus, onBack }: PrReviewScreenProps) {
               )}
             </div>
 
+            {/* Drag handle */}
+            <div
+              onMouseDown={onDividerMouseDown}
+              className="w-1 shrink-0 cursor-col-resize bg-border hover:bg-primary/40 active:bg-primary/60 transition-colors"
+            />
+
             {/* Right: review panel */}
-            <div className="w-[420px] shrink-0 overflow-y-auto flex flex-col">
+            <div style={{ width: `${100 - splitPct}%` }} className="flex-none overflow-y-auto flex flex-col">
               {/* Run button + overall verdict */}
               <div className="p-4 border-b space-y-3">
                 <div className="flex items-center gap-2">

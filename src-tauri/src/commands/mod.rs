@@ -15,6 +15,7 @@ pub use bitbucket::{
 pub use claude::{
     assess_ticket_quality, generate_standup_briefing, generate_sprint_retrospective,
     generate_workload_suggestions, review_pr,
+    get_claude_models,
     // Agent pipeline
     run_grooming_agent, run_impact_analysis, run_triage_turn, finalize_implementation_plan,
     run_implementation_guidance, run_test_suggestions, run_plan_review,
@@ -30,4 +31,4 @@ pub use knowledge::{
     delete_knowledge_entry, export_knowledge_markdown, load_knowledge_entries, save_knowledge_entry,
 };
 pub use skills::{load_agent_skills, save_agent_skill, delete_agent_skill};
-pub use validate::{validate_anthropic, validate_bitbucket, validate_jira, test_anthropic_stored, test_jira_stored, test_bitbucket_stored, debug_jira_endpoints};
+pub use validate::{validate_anthropic, validate_bitbucket, validate_jira, test_anthropic_stored, test_jira_stored, test_bitbucket_stored, debug_jira_endpoints, import_claude_pro_token};

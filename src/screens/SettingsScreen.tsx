@@ -29,6 +29,8 @@ import {
   saveCredential,
   getActiveSprint,
   getOpenPrs,
+  importClaudeProToken,
+  getClaudeModels,
 } from "@/lib/tauri";
 
 // ── Theme section ─────────────────────────────────────────────────────────────
@@ -202,12 +204,46 @@ function AnthropicSection({ isConfigured, onSaved }: { isConfigured: boolean; on
   const [apiKey, setApiKey] = useState("");
   const [status, setStatus] = useState<SectionStatus>({ state: "idle", message: "" });
   const [testResult, setTestResult] = useState<TestResult>("untested");
+  const [importing, setImporting] = useState(false);
+  const [models, setModels] = useState<[string, string][]>([]);
+  const [selectedModel, setSelectedModel] = useState("");
+
+  useEffect(() => {
+    getClaudeModels().then(setModels).catch(() => {});
+    getNonSecretConfig().then(cfg => {
+      if (cfg.claude_model) setSelectedModel(cfg.claude_model);
+    }).catch(() => {});
+  }, []);
+
+  async function handleModelChange(modelId: string) {
+    setSelectedModel(modelId);
+    try {
+      await saveCredential("claude_model", modelId);
+    } catch { /* non-critical */ }
+  }
 
   function startEditing() {
     setApiKey(isConfigured ? MASKED_SENTINEL : "");
     setStatus({ state: "idle", message: "" });
     setTestResult("untested");
     setEditing(true);
+  }
+
+  async function handleImportClaudePro() {
+    setImporting(true);
+    setStatus({ state: "loading", message: "Reading Claude Pro token from keychain…" });
+    try {
+      const msg = await importClaudeProToken();
+      setTestResult("success");
+      setStatus({ state: "success", message: msg });
+      setEditing(false);
+      onSaved();
+    } catch (err) {
+      setTestResult("error");
+      setStatus({ state: "error", message: String(err) });
+    } finally {
+      setImporting(false);
+    }
   }
 
   async function handleSave() {
@@ -274,9 +310,18 @@ function AnthropicSection({ isConfigured, onSaved }: { isConfigured: boolean; on
       </CardHeader>
       <CardContent className="space-y-3">
         {!editing ? (
-          <div className="flex gap-2">
+          <div className="flex flex-wrap gap-2">
             <Button variant="outline" size="sm" onClick={startEditing}>
               {isConfigured ? "Update key" : "Add key"}
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleImportClaudePro}
+              disabled={importing || status.state === "loading"}
+              className="gap-1.5"
+            >
+              {importing ? <><Loader2 className="h-3 w-3 animate-spin" /> Importing…</> : "Use Claude Pro / Max"}
             </Button>
             {isConfigured && (
               <Button variant="ghost" size="sm" className="text-muted-foreground gap-1" onClick={handleReset}>
@@ -289,7 +334,7 @@ function AnthropicSection({ isConfigured, onSaved }: { isConfigured: boolean; on
             <CredentialField
               id="settings-anthropic-key"
               label="API Key"
-              placeholder="sk-ant-api03-…"
+              placeholder="sk-ant-api03-… or sk-ant-oat01-…"
               masked
               value={apiKey}
               onChange={(v) => { setApiKey(v); setTestResult("untested"); }}
@@ -307,6 +352,25 @@ function AnthropicSection({ isConfigured, onSaved }: { isConfigured: boolean; on
           </div>
         )}
         <SectionMessage {...status} />
+        {/* Model picker — visible when Anthropic is configured */}
+        {isConfigured && models.length > 0 && (
+          <div className="space-y-1.5 pt-2 border-t">
+            <label className="text-xs font-medium text-muted-foreground">Claude Model</label>
+            <select
+              value={selectedModel}
+              onChange={e => handleModelChange(e.target.value)}
+              className="w-full rounded-md border border-input bg-background px-3 py-1.5 text-xs text-foreground shadow-sm focus:outline-none focus:ring-1 focus:ring-ring"
+            >
+              {!selectedModel && <option value="">— select a model —</option>}
+              {models.map(([id, label]) => (
+                <option key={id} value={id}>{label}</option>
+              ))}
+            </select>
+            <p className="text-[11px] text-muted-foreground">
+              Used for all AI features. Sonnet is recommended for quality; Haiku is faster and lower cost.
+            </p>
+          </div>
+        )}
       </CardContent>
     </Card>
   );

@@ -15,6 +15,7 @@ import {
   getNonSecretConfig,
   getCredentialStatus,
   setMockMode,
+  importClaudeProToken,
 } from "@/lib/tauri";
 
 const MASKED_SENTINEL = "••••••••";
@@ -133,6 +134,7 @@ function AnthropicStep({
   const [saving, setSaving] = useState(false);
   const [testState, setTestState] = useState<ValidationState>("idle");
   const [testMessage, setTestMessage] = useState("");
+  const [importing, setImporting] = useState(false);
 
   // On mount, check if a key is already stored and reflect that in the UI
   useEffect(() => {
@@ -143,6 +145,24 @@ function AnthropicStep({
       }
     }).catch(() => {});
   }, []);
+
+  async function handleImportClaudePro() {
+    setImporting(true);
+    setTestState("loading");
+    setTestMessage("Reading Claude Pro token from keychain…");
+    try {
+      const msg = await importClaudeProToken();
+      setApiKey(MASKED_SENTINEL);
+      setSaved(true);
+      setTestState("success");
+      setTestMessage(msg);
+    } catch (err) {
+      setTestState("error");
+      setTestMessage(String(err));
+    } finally {
+      setImporting(false);
+    }
+  }
 
   async function handleSaveAndTest() {
     if (!apiKey.trim() || apiKey === MASKED_SENTINEL) return;
@@ -195,15 +215,46 @@ function AnthropicStep({
         </p>
       </div>
 
+      {/* Claude Pro / Max import */}
+      <div className="rounded-lg border bg-card p-4 space-y-3">
+        <div>
+          <p className="text-sm font-medium">Use Claude Pro or Max subscription</p>
+          <p className="text-xs text-muted-foreground mt-0.5">
+            If you have a Claude Pro or Max subscription, import your credentials from
+            the Claude Code CLI instead of using a pay-per-token API key.
+          </p>
+        </div>
+        <ol className="text-xs text-muted-foreground space-y-0.5 list-decimal list-inside">
+          <li>Run <code className="bg-muted px-1 rounded">claude</code> in your terminal</li>
+          <li>Choose <strong className="text-foreground">Log in with Claude.ai</strong></li>
+          <li>Click the button below</li>
+        </ol>
+        <Button
+          variant="outline"
+          size="sm"
+          className="w-full gap-2"
+          onClick={handleImportClaudePro}
+          disabled={importing || testState === "loading"}
+        >
+          {importing ? <><Loader2 className="h-3.5 w-3.5 animate-spin" /> Importing…</> : "Import from Claude Pro / Max"}
+        </Button>
+      </div>
+
+      <div className="relative flex items-center gap-3">
+        <div className="flex-1 h-px bg-border" />
+        <span className="text-xs text-muted-foreground shrink-0">or use an API key</span>
+        <div className="flex-1 h-px bg-border" />
+      </div>
+
       <CredentialField
         id="anthropic-key"
         label="API Key"
-        placeholder="sk-ant-api03-…"
+        placeholder="sk-ant-api03-… or sk-ant-oat01-…"
         masked
         value={apiKey}
         onChange={(v) => { setApiKey(v); setSaved(false); setTestState("idle"); setTestMessage(""); }}
-        disabled={saving || testState === "loading"}
-        helperText={saved && apiKey === MASKED_SENTINEL ? "Key already saved — clear to enter a new one" : "Find this at platform.claude.com → API Keys"}
+        disabled={saving || importing || testState === "loading"}
+        helperText={saved && apiKey === MASKED_SENTINEL ? "Credential already saved — clear to enter a new one" : "API key from platform.anthropic.com, or OAuth token from claude /login"}
       />
 
       <ValidationMessage state={testState} message={testMessage} />
@@ -227,7 +278,7 @@ function AnthropicStep({
           <Button
             className="flex-1"
             onClick={handleSaveAndTest}
-            disabled={saving || testState === "loading"}
+            disabled={saving || importing || testState === "loading"}
           >
             {saving ? <><Loader2 className="h-4 w-4 animate-spin" /> Saving…</> : "Save key"}
           </Button>
@@ -237,7 +288,7 @@ function AnthropicStep({
             <Button
               variant="outline"
               onClick={handleTest}
-              disabled={!canTest || testState === "loading"}
+              disabled={!canTest || importing || testState === "loading"}
             >
               {testState === "loading" ? <Loader2 className="h-4 w-4 animate-spin" /> : "Test connection"}
             </Button>
