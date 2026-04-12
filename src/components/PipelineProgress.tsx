@@ -24,9 +24,9 @@ export const PIPELINE_STEPS = [
 // PIPELINE MODE  (activeStep = 0-7)
 // ──────────────────────────────────
 //  Eight nodes on R_CIRC=1066 circle centred at (ACTIVE_X, CY=1104).
-//  Meridian arcs both have their top at y=55 (17 px below nodes at y=38),
-//  keeping nodes above the arcs just as in logo mode.
-//  Outer arc: r=R_CIRC (same curvature as nodes), shifted so top = y=55.
+//  Meridian arcs both have their top at PIPE_ARC_TOP (~24 px below nodes at y=38),
+//  leaving a visible gap under the pipeline halo (r≈18 + stroke) so it does not touch the arcs.
+//  Outer arc: r=R_CIRC (same curvature as nodes), shifted so top = PIPE_ARC_TOP.
 //  Inner arc: elongated ellipse (rx≈472, ry≈891) matching logo proportions —
 //  narrower than outer, fans out to ~344 px at viewBox bottom vs ~710 px outer.
 //
@@ -49,7 +49,9 @@ const SAT_R   = 6.5;
 const ACT_R   = 10;
 const PIPE_HR = 18;
 const LOGO_HR = 16;
-const LABEL_Y = 100;
+/** Shared stroke-opacity for the JSX halo in both logo and pipeline modes (avoids fade-out during mode transitions). */
+const HALO_STROKE_OP = 0.55;
+const LABEL_Y = 110;
 
 const STEP_MS = 580;
 const MODE_MS = 700;
@@ -68,8 +70,8 @@ const MODE_MS = 700;
 //   outer → cx=478.7  cy=140.4  rx=80.2  ry=80.2
 //
 // Pipeline-mode values:
-//   outer matches R_CIRC node circle exactly (top at NODE_Y=38, same as active node)
-//   inner r=1044 keeps its top at y=60 (same as logo-mode inner top)
+//   outer is the R_CIRC circle whose top is PIPE_ARC_TOP (below the active node / halo)
+//   inner ellipse shares that top y; geometry matches logo proportions scaled to R_CIRC
 
 interface MA { cx: number; cy: number; rx: number; ry: number; }
 
@@ -81,17 +83,17 @@ const MARC1_LOGO_L: MA = { cx: 119.3, cy: 127.6, rx:  35.5, ry:  67.0 };
 const MARC2_LOGO_L: MA = { cx: 118.7, cy: 140.4, rx:  80.2, ry:  80.2 };
 // Pipeline-mode arcs (component space, centred on ACTIVE_X)
 //
-// Both arcs have their topmost point at y=55 (17 px below the nodes at y=38),
-// so the nodes sit clearly ABOVE the meridian lines — matching the compact view.
+// Both arcs share the same top y = PIPE_ARC_TOP, placed low enough that the
+// active-node halo (NODE_Y + PIPE_HR + half stroke ≈ 57) clears the arc tops.
 //
 // Outer (r=R_CIRC): same curvature as the node circle, shifted down so its top
-// is at y=55.  At y=116 (viewBox bottom) it spans x ≈ [45, 755].
+// is at PIPE_ARC_TOP.  At y=116 (viewBox bottom) it spans x ≈ [45, 755].
 //
 // Inner: elongated ellipse preserving the logo-mode aspect ratio
 //   rx_logo/rx_outer_logo = 35.5/80.2 ≈ 0.443  →  rx = 1066 × 0.443 ≈ 472
 //   ry_logo/ry_outer_logo = 67.0/80.2 ≈ 0.836  →  ry = 1066 × 0.836 ≈ 891
 // At y=116 it spans x ≈ [228, 572], clearly narrower than the outer arc.
-const PIPE_ARC_TOP  = 55;                                    // y of both arc tops
+const PIPE_ARC_TOP  = 63;                                    // y of both arc tops (was 55; lowered arcs for halo clearance)
 const MARC1_PIPE:   MA = { cx: ACTIVE_X, cy: PIPE_ARC_TOP + 891, rx: 472,    ry: 891    };
 const MARC2_PIPE:   MA = { cx: ACTIVE_X, cy: PIPE_ARC_TOP + R_CIRC, rx: R_CIRC, ry: R_CIRC };
 
@@ -110,43 +112,64 @@ const MARC2_PIPE:   MA = { cx: ACTIVE_X, cy: PIPE_ARC_TOP + R_CIRC, rx: R_CIRC, 
 // ±3   538.3   86.7    227.1 / 10.3    176.5
 // ±4   550.8  105.2    249.8 / −12.4   210.2
 //
-// LOGO_NODES[0]  → center dot (used as active-node start for pipeline anim)
-// LOGO_NODES[1]  → k=+1 right satellite (step s+1 start)
-// LOGO_NODES[2]  → k=+2 right satellite (step s+2 start)
-// LEFT_SHOW[1]   → k=−1 left satellite  (step s−1 park)
-// LEFT_SHOW[0]   → k=−2 left satellite  (step s−2 park)
-// k=±3 and k=±4  → purely decorative; no pipeline node maps to them.
+// LOGO_NODES[0]  → center dot        (step s   start / end)
+// LOGO_NODES[1]  → k=+1 right sat   (step s+1 start / end)
+// LOGO_NODES[2]  → k=+2 right sat   (step s+2 start / end)
+// LOGO_NODES[3]  → k=+3 right sat   (step s+3 start / end)
+// LOGO_NODES[4]  → k=+4 right sat   (step s+4 start / end)
+// LEFT_SHOW[3]   → k=−1 left sat    (left[] decorative, index 3)
+// LEFT_SHOW[2]   → k=−2 left sat    (left[] decorative, index 2)
+// LEFT_SHOW[1]   → k=−3 left sat    (left[] decorative, index 1)
+// LEFT_SHOW[0]   → k=−4 left sat    (left[] decorative, index 0)
+// LEFT_PIPE[i]   → fixed arc positions for left[] circles in pipeline mode (rel −4…−1)
 
 interface NS { cx: number; cy: number; r: number; op: number; }
 
+// [0] center, [1] k=+1, [2] k=+2, [3] k=+3, [4] k=+4, [5–7] parking
 const LOGO_NODES: NS[] = [
-  { cx: 480,  cy: 38, r: 9.5,   op: 0 },
-  { cx: 511,  cy: 43, r: 6,     op: 0 },
-  { cx: 533,  cy: 58, r: 6,     op: 0 },
-  { cx: 1080, cy: 73, r: DOT_R, op: 0 },
-  { cx: 1180, cy: 73, r: DOT_R, op: 0 },
-  { cx: 1280, cy: 73, r: DOT_R, op: 0 },
-  { cx: 1380, cy: 73, r: DOT_R, op: 0 },
-  { cx: 1480, cy: 73, r: DOT_R, op: 0 },
+  { cx: 480,   cy: 38,   r: 9.5,   op: 0 },
+  { cx: 511,   cy: 43,   r: 6,     op: 0 },
+  { cx: 533,   cy: 58,   r: 6,     op: 0 },
+  { cx: 555.6, cy: 74.9, r: 6,     op: 0 },
+  { cx: 571.0, cy: 99.3, r: 6,     op: 0 },
+  { cx: 1280,  cy: 73,   r: DOT_R, op: 0 },
+  { cx: 1380,  cy: 73,   r: DOT_R, op: 0 },
+  { cx: 1480,  cy: 73,   r: DOT_R, op: 0 },
 ];
+// [0] k=−4, [1] k=−3, [2] k=−2, [3] k=−1 (farthest first)
 const LEFT_SHOW: NS[] = [
-  { cx: 427, cy: 57, r: SAT_R, op: 0 },
-  { cx: 449, cy: 43, r: SAT_R, op: 0 },
+  { cx: 387.6, cy: 96.8, r: SAT_R, op: 0 },
+  { cx: 403.5, cy: 73.0, r: SAT_R, op: 0 },
+  { cx: 427,   cy: 57,   r: SAT_R, op: 0 },
+  { cx: 449,   cy: 43,   r: SAT_R, op: 0 },
 ];
 const LOGO_NODES_L: NS[] = [
-  { cx: 120,  cy: 38, r: 9.5,   op: 0 },
-  { cx: 151,  cy: 43, r: 6,     op: 0 },
-  { cx: 173,  cy: 58, r: 6,     op: 0 },
-  { cx:  720, cy: 73, r: DOT_R, op: 0 },
-  { cx:  820, cy: 73, r: DOT_R, op: 0 },
-  { cx:  920, cy: 73, r: DOT_R, op: 0 },
-  { cx: 1020, cy: 73, r: DOT_R, op: 0 },
-  { cx: 1120, cy: 73, r: DOT_R, op: 0 },
+  { cx: 120,   cy: 38,   r: 9.5,   op: 0 },
+  { cx: 151,   cy: 43,   r: 6,     op: 0 },
+  { cx: 173,   cy: 58,   r: 6,     op: 0 },
+  { cx: 195.6, cy: 74.9, r: 6,     op: 0 },
+  { cx: 211.0, cy: 99.3, r: 6,     op: 0 },
+  { cx:  920,  cy: 73,   r: DOT_R, op: 0 },
+  { cx: 1020,  cy: 73,   r: DOT_R, op: 0 },
+  { cx: 1120,  cy: 73,   r: DOT_R, op: 0 },
 ];
 const LEFT_SHOW_L: NS[] = [
-  { cx:  67, cy: 57, r: SAT_R, op: 0 },
-  { cx:  89, cy: 43, r: SAT_R, op: 0 },
+  { cx:  27.6, cy: 96.8, r: SAT_R, op: 0 },
+  { cx:  43.5, cy: 73.0, r: SAT_R, op: 0 },
+  { cx:  67,   cy: 57,   r: SAT_R, op: 0 },
+  { cx:  89,   cy: 43,   r: SAT_R, op: 0 },
 ];
+
+// Arc positions for the 4 left decorative circles at a given floating step.
+// Treated as virtual step indices −4…−1 (before step 0), so they rotate with
+// the arc as the active step advances — giving the same rotation effect as the
+// pipeline nodes rather than staying at fixed screen positions.
+function leftPipePositions(sFloat: number): NS[] {
+  return [-4, -3, -2, -1].map(absIdx => {
+    const a = (-90 + (absIdx - sFloat) * ANGLE_DEG) * RAD;
+    return { cx: ACTIVE_X + R_CIRC * Math.cos(a), cy: CY + R_CIRC * Math.sin(a), r: SAT_R, op: 0.2 };
+  });
+}
 
 // ── Animation state ───────────────────────────────────────────────────────────
 
@@ -216,14 +239,11 @@ function lerpPipelineAlongArc(
       op: lerp(p0.op, p1.op, t),
     };
   });
-  const lp0 = pipePos(sFloat - 2, sFloat);
-  const lp1 = pipePos(sFloat - 1, sFloat);
   return {
     nodes,
-    left: [
-      { cx: lp0.cx, cy: lp0.cy, r: lp0.r, op: lerp(fromS.left[0].op, toS.left[0].op, t) },
-      { cx: lp1.cx, cy: lp1.cy, r: lp1.r, op: lerp(fromS.left[1].op, toS.left[1].op, t) },
-    ],
+    // Left decorative circles track virtual steps −4…−1 on the same arc,
+    // so they rotate with the arc as sFloat advances.
+    left: leftPipePositions(sFloat),
     hCx:    lerp(fromS.hCx,    toS.hCx,    t),
     hCy:    lerp(fromS.hCy,    toS.hCy,    t),
     hR:     lerp(fromS.hR,     toS.hR,     t),
@@ -243,7 +263,7 @@ function pipePos(i: number, s: number): NS {
     cx: ACTIVE_X + R_CIRC * Math.cos(a),
     cy: CY       + R_CIRC * Math.sin(a),
     r:  rel === 0 ? ACT_R : DOT_R,
-    op: rel === 0 ? 1 : Math.abs(rel) <= 2 ? 0.38 : Math.abs(rel) === 3 ? 0.15 : 0,
+    op: rel === 0 ? 1 : rel < 0 ? 0.2 : Math.abs(rel) <= 2 ? 0.38 : Math.abs(rel) === 3 ? 0.15 : 0,
   };
 }
 
@@ -253,7 +273,7 @@ function getTarget(step: number | undefined, n: number, logoLeft = false): S {
     return {
       nodes:  (logoLeft ? LOGO_NODES_L : LOGO_NODES).slice(0, n),
       left:   (logoLeft ? LEFT_SHOW_L  : LEFT_SHOW).slice(),
-      hCx: cx, hCy: NODE_Y, hR: LOGO_HR, hSOp: 0,
+      hCx: cx, hCy: NODE_Y, hR: LOGO_HR, hSOp: HALO_STROKE_OP,
       logoOp: 1,
       mArcOp: 1,
       mArc1: logoLeft ? MARC1_LOGO_L : MARC1_LOGO,
@@ -261,18 +281,18 @@ function getTarget(step: number | undefined, n: number, logoLeft = false): S {
     };
   }
   const s   = step;
-  const lp0 = pipePos(s - 2, s);
-  const lp1 = pipePos(s - 1, s);
   return {
     nodes: Array.from({ length: n }, (_, i) => pipePos(i, s)),
-    left: [{ ...lp0, op: 0 }, { ...lp1, op: 0 }],
-    hCx: ACTIVE_X, hCy: NODE_Y, hR: PIPE_HR, hSOp: 0.55,
+    left: leftPipePositions(s),
+    hCx: ACTIVE_X, hCy: NODE_Y, hR: PIPE_HR, hSOp: HALO_STROKE_OP,
     logoOp: 0,
-    mArcOp: 0.5,
+    mArcOp: 1.0,
     mArc1: MARC1_PIPE,
     mArc2: MARC2_PIPE,
   };
 }
+
+const _PARKING: NS = { cx: 2000, cy: 73, r: DOT_R, op: 0 };
 
 function buildLogoToPipelineFrom(s: number, n: number, logoLeft: boolean): S {
   const logo    = logoLeft ? LOGO_NODES_L : LOGO_NODES;
@@ -281,27 +301,21 @@ function buildLogoToPipelineFrom(s: number, n: number, logoLeft: boolean): S {
   const starts: NS[] = new Array(n);
   const inner   = new Set<number>();
 
-  // Left-side satellites: park at their logo positions but invisible.
-  // They "go away" — no pipeline node maps to them.
-  if (s >= 2) { starts[s - 2] = { ...leftPos[0], op: 0 }; inner.add(s - 2); }
-  if (s >= 1) { starts[s - 1] = { ...leftPos[1], op: 0 }; inner.add(s - 1); }
-
-  // Center logo dot → active node: start fully visible so it visibly moves.
+  // 5 right-side logo dots → their pipeline step targets (start visible).
   starts[s] = { ...logo[0], op: 1 }; inner.add(s);
-  // Right inner satellite → next step node: start visible, will dim as it moves.
   if (s + 1 < n) { starts[s + 1] = { ...logo[1], op: 0.85 }; inner.add(s + 1); }
-  // Right outer satellite → step s+2 node: same.
   if (s + 2 < n) { starts[s + 2] = { ...logo[2], op: 0.85 }; inner.add(s + 2); }
+  if (s + 3 < n) { starts[s + 3] = { ...logo[3], op: 0.85 }; inner.add(s + 3); }
+  if (s + 4 < n) { starts[s + 4] = { ...logo[4], op: 0.85 }; inner.add(s + 4); }
 
-  const outer: number[] = [];
-  for (let j = 0; j < n; j++) if (!inner.has(j)) outer.push(j);
-  outer.sort((a, b) => a - b);
-  for (let k = 0; k < outer.length; k++) starts[outer[k]] = { ...logo[3 + k] };
+  // All remaining pipeline nodes (past steps, far-future) — park off-screen invisible.
+  for (let j = 0; j < n; j++) if (!inner.has(j)) starts[j] = { ..._PARKING };
 
-  // logoOp: 0 — the logo group is immediately replaced by the pipeline node
-  // circles which start at the same visual positions (seamless swap), then
-  // each circle animates independently to its pipeline target.
-  return { ...base, nodes: starts, logoOp: 0 };
+  // 4 left-side logo satellites → LEFT_PIPE arc positions.
+  // Start at their logo positions, fully visible (seamless swap from logo group).
+  const leftStarts: NS[] = leftPos.map(lp => ({ ...lp, op: 0.85 }));
+
+  return { ...base, nodes: starts, left: leftStarts, logoOp: 0 };
 }
 
 /**
@@ -315,22 +329,28 @@ function buildLogoToPipelineFrom(s: number, n: number, logoLeft: boolean): S {
 function buildPipelineToLogoTarget(s: number, n: number, logoLeft: boolean): S {
   const logo    = logoLeft ? LOGO_NODES_L : LOGO_NODES;
   const leftPos = logoLeft ? LEFT_SHOW_L  : LEFT_SHOW;
-  const logoBase = getTarget(undefined, n, logoLeft);
 
-  // Default: all nodes end at their logo parking positions, invisible.
-  const targets: NS[] = logoBase.nodes.map(nd => ({ ...nd }));
+  // All nodes default to parking (invisible).
+  const targets: NS[] = Array.from({ length: n }, () => ({ ..._PARKING }));
 
-  // Active node → center dot position, fully visible.
+  // 5 right-side pipeline nodes → their logo dot end positions.
   targets[s] = { ...logo[0], op: 1 };
-  // Next two nodes → right satellites, visible (will have dimmed as they moved).
   if (s + 1 < n) targets[s + 1] = { ...logo[1], op: 0.85 };
   if (s + 2 < n) targets[s + 2] = { ...logo[2], op: 0.85 };
+  if (s + 3 < n) targets[s + 3] = { ...logo[3], op: 0.85 };
+  if (s + 4 < n) targets[s + 4] = { ...logo[4], op: 0.85 };
+
+  // 4 left decorative circles → their logo satellite end positions (brighten as they return).
+  const leftTargets: NS[] = leftPos.map(lp => ({ ...lp, op: 0.85 }));
 
   return {
-    ...logoBase,
     nodes: targets,
-    left: [{ ...leftPos[0], op: 0 }, { ...leftPos[1], op: 0 }],
+    left: leftTargets,
+    hCx: logoLeft ? 120 : 480, hCy: NODE_Y, hR: LOGO_HR, hSOp: HALO_STROKE_OP,
     logoOp: 0, // stays hidden; snapRef applies the true logo state at end
+    mArcOp: 1,
+    mArc1: logoLeft ? MARC1_LOGO_L : MARC1_LOGO,
+    mArc2: logoLeft ? MARC2_LOGO_L : MARC2_LOGO,
   };
 }
 
@@ -356,7 +376,7 @@ export function PipelineProgress({
 
   // ── DOM refs ──────────────────────────────────────────────────────────────
   const nodeRefs     = useRef<(SVGCircleElement   | null)[]>(Array(n).fill(null));
-  const leftRefs     = useRef<(SVGCircleElement   | null)[]>(Array(2).fill(null));
+  const leftRefs     = useRef<(SVGCircleElement   | null)[]>(Array(4).fill(null));
   const haloRef      = useRef<SVGCircleElement    | null>(null);
   const logoGroupRef = useRef<SVGGElement         | null>(null);
   const meridianRef  = useRef<SVGGElement         | null>(null);
@@ -533,7 +553,7 @@ export function PipelineProgress({
       {/* ── Meridian arcs ─────────────────────────────────────────────────────
           Logo mode:    compact ellipses matching Meridian_no_bg.svg proportions.
           Pipeline mode: outer expands to the R_CIRC node circle (nodes sit on it);
-                         inner arc stays near y=60, matching its logo-mode top.
+                         inner arc top aligns with PIPE_ARC_TOP (below the halo).
           cx/cy/rx/ry are all animated directly by apply().                     */}
       <g ref={meridianRef} opacity={Math.max(0, Math.min(1, init.mArcOp))}>
         <ellipse
@@ -553,7 +573,7 @@ export function PipelineProgress({
       </g>
 
       {/* ── Logo circles — fade out when pipeline activates ───────────────────
-          Centre dot + halo ring + original 4 satellites (unchanged), plus
+          Centre dot + satellites (halo ring is only the shared <circle> below).
           4 additional satellites at k=±3 and k=±4 continuing the same orbit
           at ~16° angular spacing from the outer arc centre (479, 140).
           All same size (r=10.822 SVG) and same opacity (0.85).              */}
@@ -563,8 +583,6 @@ export function PipelineProgress({
         opacity={Math.max(0, Math.min(1, init.logoOp))}
       >
         <circle cx="121.052" cy="87.969" r="17.211" style={{ fill: "hsl(var(--primary))" }} />
-        <circle cx="121.052" cy="87.969" r="29.728" strokeWidth={2.7}
-          style={{ fill: "none", stroke: "hsl(var(--primary))", strokeOpacity: 0.54 }} />
         {/* original left satellites */}
         <circle cx="64.542"  cy="96.615"  r="10.822" opacity={0.85} style={{ fill: "hsl(var(--primary))" }} />
         <circle cx="24.205"  cy="123.082" r="10.822" opacity={0.85} style={{ fill: "hsl(var(--primary))" }} />
