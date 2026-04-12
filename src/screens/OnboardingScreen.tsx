@@ -76,7 +76,7 @@ function WelcomeStep({ onNext, onMockMode }: { onNext: () => void; onMockMode?: 
     <div className="space-y-6">
       <div className="space-y-2 text-center">
         <div className="flex justify-center mb-3">
-          <MeridianLogo size={52} />
+          <MeridianLogo style={{ width: '220px' }} />
         </div>
         <h1 className="text-3xl font-bold tracking-tight">Welcome to Meridian</h1>
         <p className="text-muted-foreground max-w-sm mx-auto">

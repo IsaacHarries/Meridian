@@ -1,6 +1,5 @@
 import { useEffect, useState, useMemo } from "react";
 import { AlertTriangle, Settings, TrendingUp, CheckSquare, GitPullRequest } from "lucide-react";
-import { MeridianLogo } from "@/components/MeridianLogo";
 import { PipelineProgress, PIPELINE_STEPS } from "@/components/PipelineProgress";
 
 const QUIPS = [

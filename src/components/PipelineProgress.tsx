@@ -108,10 +108,7 @@ const LEFT_SHOW: NS[] = [
   { cx: 428, cy: 72, r: 6, op: 0.85 },  // outer-left (symmetric to slot 2)
   { cx: 451, cy: 51, r: 6, op: 0.85 },  // inner-left (symmetric to slot 1)
 ];
-const LEFT_HIDE: NS[] = [
-  { cx: -180, cy: 48, r: DOT_R, op: 0 },
-  { cx: -90,  cy: 40, r: DOT_R, op: 0 },
-];
+// Note: LEFT_HIDE removed — pipeline mode now uses phantom clock-face nodes instead.
 
 // ── Left-aligned logo geometry (cluster centred at x=120, shifted −360 from centre) ──
 // Same relative positions and proportions as the centred layout, just placed near the
