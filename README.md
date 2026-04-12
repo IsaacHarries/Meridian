@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="public/meridian-logo.svg" alt="Meridian" width="480" />
+  <img src="public/meridian-readme.svg" alt="Meridian" width="240" height="240" />
 </div>
 
 # Meridian

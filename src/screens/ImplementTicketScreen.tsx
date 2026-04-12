@@ -671,8 +671,8 @@ function TriageChat({ history, input, onInputChange, onSend, onFinalize, sending
   }, [history]);
 
   return (
-    <div className="flex flex-col h-full">
-      <div className="flex-1 overflow-y-auto space-y-3 pr-1 mb-3">
+    <div className="flex flex-col gap-3">
+      <div className="space-y-3 pr-1">
         {history.map((msg, i) => (
           <div key={i} className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
             <div className={`max-w-[85%] rounded-lg px-3 py-2.5 text-sm leading-relaxed ${
@@ -840,7 +840,7 @@ function PipelineSidebar({ currentStage, completedStages, activeStage, pendingAp
   };
 
   return (
-    <div className="w-48 shrink-0 border-r bg-muted/20 p-3 space-y-1">
+    <div className="min-h-0 w-48 shrink-0 overflow-y-auto border-r bg-muted/20 p-3 space-y-1">
       {STAGE_ORDER.map((stage) => {
         const done = completedStages.has(stage);
         const active = activeStage === stage;
@@ -1416,9 +1416,9 @@ export function ImplementTicketScreen({ credStatus, onBack }: ImplementTicketScr
   // ── Render ──────────────────────────────────────────────────────────────────
 
   return (
-    <div className="min-h-screen flex flex-col">
+    <div className="flex h-dvh min-h-0 flex-col overflow-hidden">
       {/* Header */}
-      <header className={cn(APP_HEADER_BAR, "z-20")}>
+      <header className={cn(APP_HEADER_BAR, "z-20 shrink-0")}>
         <div className={cn(APP_HEADER_ROW_PANEL, "relative")}>
           {/* Back + title — left (same slot as other panels) */}
           <div className="relative z-10 flex min-w-0 shrink-0 items-center gap-2">
@@ -1453,10 +1453,8 @@ export function ImplementTicketScreen({ credStatus, onBack }: ImplementTicketScr
               <PipelineProgress
                 activeStep={currentStage === "select" ? undefined : stageToStep(viewingStage)}
                 logoAlign="center"
-                className={`block h-full min-h-0 transition-opacity duration-300 ease-out ${
-                  currentStage === "select"
-                    ? "w-auto max-h-14 opacity-30"
-                    : "w-full opacity-100"
+                className={`block h-full min-h-0 opacity-100 transition-opacity duration-300 ease-out ${
+                  currentStage === "select" ? "w-auto max-h-14" : "w-full"
                 }`}
               />
             </div>
@@ -1466,7 +1464,7 @@ export function ImplementTicketScreen({ credStatus, onBack }: ImplementTicketScr
 
       {/* Ticket info bar — shown once a ticket is selected */}
       {selectedIssue && (
-        <div className="px-4 py-1.5 border-b bg-muted/20 flex items-center gap-2 min-w-0">
+        <div className="shrink-0 px-4 py-1.5 border-b bg-muted/20 flex items-center gap-2 min-w-0">
           <JiraTicketLink ticketKey={selectedIssue.key} url={selectedIssue.url} />
           <span className="text-xs text-muted-foreground truncate flex-1">— {selectedIssue.summary}</span>
           <Button variant="outline" size="sm" className="shrink-0" onClick={() => selectedIssue.url && openUrl(selectedIssue.url)}>
@@ -1477,74 +1475,78 @@ export function ImplementTicketScreen({ credStatus, onBack }: ImplementTicketScr
 
       {/* Credential warnings */}
       {(!jiraAvailable || !claudeAvailable) && (
-        <div className="px-4 py-2 bg-amber-50 dark:bg-amber-950/30 border-b border-amber-200 dark:border-amber-900 text-xs text-amber-800 dark:text-amber-200">
+        <div className="shrink-0 px-4 py-2 bg-amber-50 dark:bg-amber-950/30 border-b border-amber-200 dark:border-amber-900 text-xs text-amber-800 dark:text-amber-200">
           {!jiraAvailable && "JIRA credentials not configured. "}
           {!claudeAvailable && "Anthropic API key not configured — agents unavailable."}
         </div>
       )}
 
-      {/* Body — centred card */}
-      <div className="flex-1 flex flex-col p-4 overflow-hidden">
-        <div className="flex-1 max-w-3xl w-full mx-auto bg-background/60 rounded-xl overflow-hidden flex flex-col">
+      {/* Body — centred card; fills viewport below chrome so only the stage panel scrolls */}
+      <div className="flex min-h-0 flex-1 flex-col overflow-hidden p-4">
+        <div className="mx-auto flex min-h-0 w-full max-w-3xl flex-1 flex-col overflow-hidden rounded-xl bg-background/60">
           {currentStage === "select" ? (
-            <div className="p-6">
+            <div className="min-h-0 flex-1 overflow-y-auto p-6">
               <TicketSelector sprintIssues={sprintIssues} loading={loadingIssues} onSelect={startPipeline} />
             </div>
           ) : (
-            <div className="flex flex-1 overflow-hidden">
-          {/* Pipeline sidebar */}
-          <PipelineSidebar
-            currentStage={currentStage}
-            completedStages={completedStages}
-            activeStage={viewingStage}
-            pendingApproval={pendingApproval}
-            onClickStage={setViewingStage}
-          />
+            <div className="flex min-h-0 flex-1 overflow-hidden">
+              <PipelineSidebar
+                currentStage={currentStage}
+                completedStages={completedStages}
+                activeStage={viewingStage}
+                pendingApproval={pendingApproval}
+                onClickStage={setViewingStage}
+              />
 
-          {/* Stage content */}
-          <div className="flex-1 overflow-y-auto p-5">
-            <div className="max-w-2xl">
-              {/* Stage header */}
-              <div className="flex items-center justify-between mb-4">
-                <div>
-                  <h2 className="text-base font-semibold">
-                    {viewingStage === "triage" && !completedStages.has("plan")
-                      ? "Triage"
-                      : viewingStage === "triage" || viewingStage === "plan"
-                      ? "Implementation Plan"
-                      : STAGE_LABELS[viewingStage as keyof typeof STAGE_LABELS]}
-                  </h2>
-                  {currentStage === "complete" && viewingStage === "retro" && (
-                    <p className="text-xs text-green-600 font-medium mt-0.5 flex items-center gap-1">
-                      <CheckCircle2 className="h-3 w-3" /> Pipeline complete
-                    </p>
-                  )}
+              <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+                <div className="max-w-2xl shrink-0 px-5 pt-5">
+                  <div className="mb-2 flex items-center justify-between">
+                    <div>
+                      <h2 className="text-base font-semibold">
+                        {viewingStage === "triage" && !completedStages.has("plan")
+                          ? "Triage"
+                          : viewingStage === "triage" || viewingStage === "plan"
+                            ? "Implementation Plan"
+                            : STAGE_LABELS[viewingStage as keyof typeof STAGE_LABELS]}
+                      </h2>
+                      {currentStage === "complete" && viewingStage === "retro" && (
+                        <p className="mt-0.5 flex items-center gap-1 text-xs font-medium text-green-600">
+                          <CheckCircle2 className="h-3 w-3" /> Pipeline complete
+                        </p>
+                      )}
+                    </div>
+                    {completedStages.has(viewingStage as Stage) &&
+                      viewingStage !== "triage" &&
+                      viewingStage !== "plan" && (
+                        <CopyButton
+                          text={
+                            JSON.stringify(
+                              viewingStage === "grooming"
+                                ? grooming
+                                : viewingStage === "impact"
+                                  ? impact
+                                  : viewingStage === "guidance"
+                                    ? guidance
+                                    : viewingStage === "tests"
+                                      ? tests
+                                      : viewingStage === "review"
+                                        ? review
+                                        : null,
+                              null,
+                              2
+                            ) ?? ""
+                          }
+                          label="Copy JSON"
+                        />
+                      )}
+                  </div>
                 </div>
-                {completedStages.has(viewingStage as Stage) &&
-                  viewingStage !== "triage" &&
-                  viewingStage !== "plan" && (
-                  <CopyButton
-                    text={JSON.stringify(
-                      viewingStage === "grooming" ? grooming :
-                      viewingStage === "impact" ? impact :
-                      viewingStage === "guidance" ? guidance :
-                      viewingStage === "tests" ? tests :
-                      viewingStage === "review" ? review : null,
-                      null, 2
-                    ) ?? ""}
-                    label="Copy JSON"
-                  />
-                )}
-              </div>
-
-              {/* Stage content */}
-              <div className={viewingStage === "triage" && !completedStages.has("plan") ? "h-[calc(100vh-200px)]" : ""}>
-                {renderStageContent(viewingStage)}
+                <div className="min-h-0 flex-1 overflow-y-auto px-5 pb-5">
+                  <div className="max-w-2xl">{renderStageContent(viewingStage)}</div>
+                </div>
               </div>
             </div>
-          </div>
-        </div>
-      )}
+          )}
         </div>
       </div>
     </div>

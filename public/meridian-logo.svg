@@ -1,23 +1,36 @@
 <?xml version="1.0" encoding="utf-8"?>
-<svg width="100%" viewBox="0 0 240 250" role="img" xmlns="http://www.w3.org/2000/svg">
+<svg width="100%" viewBox="0 0 240 240" role="img" xmlns="http://www.w3.org/2000/svg">
   <title style="fill:rgb(0, 0, 0);stroke:none;color:rgb(255, 255, 255);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto">Meridian app icon — arc ends at background edges</title>
   <desc style="fill:rgb(0, 0, 0);stroke:none;color:rgb(255, 255, 255);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto">A dark rounded square app icon where the arc path ends exactly at the background edges.</desc>
   <defs>
-    <linearGradient id="arcgrad" x1="0" y1="0" x2="1" y2="0">
-      <stop offset="0" stop-color="#fbbf24"/>
-      <stop offset="1" stop-color="#f97316"/>
+    <linearGradient gradientUnits="userSpaceOnUse" x1="119.799" y1="116.961" x2="119.799" y2="297.465" id="gradient-0" gradientTransform="matrix(-0.004751, 1.349992, -1.238104, -0.004356, 376.324089, 47.307214)">
+      <stop offset="0" style="stop-color: rgb(22, 100, 249);"/>
+      <stop offset="1" style="stop-color: rgb(36, 175, 251);"/>
     </linearGradient>
-    <clipPath id="iconclip">
-      <rect x="0" y="0" width="240" height="240" rx="52"/>
+    <linearGradient gradientUnits="userSpaceOnUse" x1="118.8" y1="118.454" x2="118.8" y2="334.46" id="gradient-2" gradientTransform="matrix(0.039767, -1.349414, 1.349957, 0.039782, -192.177622, 420.982899)">
+      <stop offset="0" style="stop-color: rgb(36, 176, 251);"/>
+      <stop offset="1" style="stop-color: rgb(22, 100, 249);"/>
+    </linearGradient>
+    <linearGradient id="ibg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#1c1c1e"/>
+      <stop offset="1" stop-color="#2c2c2e"/>
+    </linearGradient>
+    <linearGradient id="gradient-1" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#1c1c1e"/>
+      <stop offset="1" stop-color="#2c2c2e"/>
+    </linearGradient>
+    <clipPath id="roundedrect-clip">
+      <rect width="240" height="240" rx="52"/>
     </clipPath>
   </defs>
-  <g clip-path="url(#iconclip)" transform="translate(120 120) scale(1.35) translate(-120 -111)" style="fill:rgb(0, 0, 0);stroke:none;color:rgb(255, 255, 255);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto">
-    <path d="M 36.329 175.593 C 79.974 97.874 160.408 97.043 204.452 176.374" fill="none" stroke="url(#arcgrad)" stroke-width="4" stroke-linecap="round" style="fill:none;color:rgb(255, 255, 255);stroke-width:4px;stroke-linecap:round;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"/>
-    <circle cx="45" cy="128" r="8" fill="#fb923c" opacity="0.85" style="fill:rgb(251, 146, 60);stroke:none;color:rgb(255, 255, 255);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:0.85;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"/>
-    <circle cx="77.777" cy="97.194" r="8" fill="#fb923c" opacity="0.85" style="fill:rgb(251, 146, 60);stroke:none;color:rgb(255, 255, 255);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:0.85;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"/>
-    <circle cx="120" cy="76.158" r="11" fill="#f97316" style="fill:rgb(249, 115, 22);stroke:none;color:rgb(255, 255, 255);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"/>
-    <circle cx="162.223" cy="97.194" r="8" fill="#fb923c" opacity="0.85" style="fill:rgb(251, 146, 60);stroke:none;color:rgb(255, 255, 255);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:0.85;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"/>
-    <circle cx="195" cy="128" r="8" fill="#fb923c" opacity="0.85" style="fill:rgb(251, 146, 60);stroke:none;color:rgb(255, 255, 255);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:0.85;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"/>
-    <circle cx="120" cy="76.158" r="19" fill="none" stroke="#f97316" stroke-width="2" stroke-opacity="0.4" style="fill:none;stroke:rgb(249, 115, 22);color:rgb(255, 255, 255);stroke-width:2px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"/>
-  </g>
+  <rect width="240" height="240" rx="52" fill="url(#ibg)" style="stroke: none; color: rgb(255, 255, 255); stroke-width: 1px; stroke-linecap: butt; stroke-linejoin: miter; opacity: 1; font-family: &quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, &quot;Segoe UI&quot;, sans-serif; font-size: 16px; font-weight: 400; text-anchor: start; dominant-baseline: auto;"/>
+  <circle cx="121.052" cy="87.969" r="17.211" style="stroke: none; color: rgb(255, 255, 255); stroke-width: 1.35px; stroke-linecap: butt; stroke-linejoin: miter; opacity: 1; font-family: &quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, &quot;Segoe UI&quot;, sans-serif; font-size: 16px; font-weight: 400; text-anchor: start; dominant-baseline: auto; fill: rgb(22, 127, 249);"/>
+  <circle cx="121.052" cy="87.969" r="29.728" stroke-width="2" style="fill: none; color: rgb(255, 255, 255); stroke-width: 2.7px; stroke-linecap: butt; stroke-linejoin: miter; opacity: 1; font-family: &quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, &quot;Segoe UI&quot;, sans-serif; font-size: 16px; font-weight: 400; text-anchor: start; dominant-baseline: auto; stroke: rgb(29, 138, 250); stroke-opacity: 0.54;" fill="none"/>
+  <circle cx="24.205" cy="123.082" r="10.822" opacity="0.85" style="stroke: none; color: rgb(255, 255, 255); stroke-width: 1.35px; stroke-linecap: butt; stroke-linejoin: miter; opacity: 0.85; font-family: &quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, &quot;Segoe UI&quot;, sans-serif; font-size: 16px; font-weight: 400; text-anchor: start; dominant-baseline: auto; fill: rgb(60, 125, 251);"/>
+  <circle cx="64.542" cy="96.615" r="10.822" opacity="0.85" style="stroke: none; color: rgb(255, 255, 255); stroke-width: 1.35px; stroke-linecap: butt; stroke-linejoin: miter; opacity: 0.85; font-family: &quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, &quot;Segoe UI&quot;, sans-serif; font-size: 16px; font-weight: 400; text-anchor: start; dominant-baseline: auto; fill: rgb(60, 125, 251);"/>
+  <ellipse clip-path="url(#roundedrect-clip)" style="fill: none; stroke-width: 6px; stroke: url(&quot;#gradient-0&quot;); color: rgb(255, 255, 255); stroke-linecap: butt; stroke-linejoin: miter; opacity: 1; font-family: &quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, &quot;Segoe UI&quot;, sans-serif; font-size: 16px; font-weight: 400; text-anchor: start; dominant-baseline: auto;" cx="119.729" cy="250.888" rx="64.527" ry="121.84"/>
+  <path d="" style="fill: none; color: rgb(255, 255, 255); stroke-linejoin: miter; opacity: 1; font-family: &quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, &quot;Segoe UI&quot;, sans-serif; font-size: 16px; font-weight: 400; text-anchor: start; dominant-baseline: auto; stroke-linecap: round; stroke-width: 5.999px; stroke: none;" stroke="url(#gradient-1)" fill="none"/>
+  <ellipse clip-path="url(#roundedrect-clip)" style="stroke-width: 6px; stroke: url(&quot;#gradient-2&quot;); fill: none; color: rgb(255, 255, 255); stroke-linecap: butt; stroke-linejoin: miter; opacity: 1; font-family: &quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, &quot;Segoe UI&quot;, sans-serif; font-size: 16px; font-weight: 400; text-anchor: start; dominant-baseline: auto;" cx="118.632" cy="274.1" rx="145.804" ry="145.804"/>
+  <circle cx="-217.5" cy="124.802" r="10.822" opacity="0.85" style="stroke: none; color: rgb(255, 255, 255); stroke-width: 1.35px; stroke-linecap: butt; stroke-linejoin: miter; opacity: 0.85; font-family: &quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, &quot;Segoe UI&quot;, sans-serif; font-size: 16px; font-weight: 400; text-anchor: start; dominant-baseline: auto; fill: rgb(60, 125, 251);" transform="matrix(-1, 0, 0, 1, 0, 0)"/>
+  <circle cx="-178.16" cy="96.335" r="10.822" opacity="0.85" style="stroke: none; color: rgb(255, 255, 255); stroke-width: 1.35px; stroke-linecap: butt; stroke-linejoin: miter; opacity: 0.85; font-family: &quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, &quot;Segoe UI&quot;, sans-serif; font-size: 16px; font-weight: 400; text-anchor: start; dominant-baseline: auto; fill: rgb(60, 125, 251);" transform="matrix(-1, 0, 0, 1, 0, 0)"/>
 </svg>
