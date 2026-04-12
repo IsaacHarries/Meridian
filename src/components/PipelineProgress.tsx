@@ -52,6 +52,8 @@ export const PIPELINE_STEPS = [
 //  slots. Step-to-step motion keeps fixed pipeline index → same circle element.
 //  The arc and halo also move / fade in sync.  All animation uses a single
 //  requestAnimationFrame loop with easeInOutCubic easing.
+//  Pipeline step changes interpolate the active step in float space so nodes stay
+//  on R_CIRC (Cartesian lerp would cut chords through the arch).
 //  Duration: 700 ms for mode changes, 580 ms for step-to-step advances.
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -66,7 +68,7 @@ const DOT_R     = 7;
 const ACT_R     = 10;
 const PIPE_HR   = 18;   // pipeline halo radius
 const LOGO_HR   = 13;   // logo halo radius (scaled from original SVG r=19*1.35)
-const LABEL_Y   = 82;   // baseline; sits below the pipeline arc (peak y≈60)
+const LABEL_Y   = 100;   // baseline; sits below the pipeline arc (peak y≈60)
 
 const STEP_MS   = 580;
 const MODE_MS   = 700;
@@ -165,6 +167,37 @@ function lerpS(a: S, b: S, t: number): S {
     hCy:    lerp(a.hCy,   b.hCy,   t),
     hR:     lerp(a.hR,    b.hR,    t),
     hSOp:   lerp(a.hSOp,  b.hSOp,  t),
+  };
+}
+
+/** Pipeline-only: move each node along the R_CIRC arc (avoids chord paths through the arch). */
+function lerpPipelineAlongArc(fromS: S, toS: S, t: number, s0: number, s1: number, n: number): S {
+  const sFloat = s0 + (s1 - s0) * t;
+  const nodes = Array.from({ length: n }, (_, i) => {
+    const a = (-90 + (i - sFloat) * ANGLE_DEG) * RAD;
+    const p0 = pipePos(i, s0);
+    const p1 = pipePos(i, s1);
+    return {
+      cx: ACTIVE_X + R_CIRC * Math.cos(a),
+      cy: CY + R_CIRC * Math.sin(a),
+      r:  lerp(p0.r, p1.r, t),
+      op: lerp(p0.op, p1.op, t),
+    };
+  });
+  const lp0 = pipePos(sFloat - 2, sFloat);
+  const lp1 = pipePos(sFloat - 1, sFloat);
+  return {
+    nodes,
+    left: [
+      { cx: lp0.cx, cy: lp0.cy, r: lp0.r, op: lerp(fromS.left[0].op, toS.left[0].op, t) },
+      { cx: lp1.cx, cy: lp1.cy, r: lp1.r, op: lerp(fromS.left[1].op, toS.left[1].op, t) },
+    ],
+    arcOp:  lerp(fromS.arcOp, toS.arcOp, t),
+    arcPts: fromS.arcPts.map((v, i) => lerp(v, toS.arcPts[i], t)),
+    hCx:    lerp(fromS.hCx, toS.hCx, t),
+    hCy:    lerp(fromS.hCy, toS.hCy, t),
+    hR:     lerp(fromS.hR, toS.hR, t),
+    hSOp:   lerp(fromS.hSOp, toS.hSOp, t),
   };
 }
 
@@ -287,6 +320,8 @@ export function PipelineProgress({
   const t0Ref     = useRef(0);
   const durRef    = useRef(0);
   const firstRef  = useRef(true);  // true until the first real activeStep change
+  /** Virtual active step during pipeline mode; used as arc-anim start + survives mid-flight interrupts. */
+  const pipelineStepFloatRef = useRef(0);
 
   // ── DOM applier ───────────────────────────────────────────────────────────
   function apply(s: S) {
@@ -324,6 +359,7 @@ export function PipelineProgress({
     fromRef.current = init;
     tgtRef.current  = init;
     apply(init);
+    if (typeof activeStep === "number") pipelineStepFloatRef.current = activeStep;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -332,6 +368,7 @@ export function PipelineProgress({
     // Skip the very first effect run — initial state already set by useLayoutEffect.
     if (firstRef.current) {
       firstRef.current = false;
+      if (typeof activeStep === "number") pipelineStepFloatRef.current = activeStep;
       return;
     }
 
@@ -347,13 +384,31 @@ export function PipelineProgress({
     t0Ref.current   = performance.now();
     durRef.current  = modeChange ? MODE_MS : STEP_MS;
 
+    const useArc =
+      !modeChange &&
+      typeof activeStep === "number" &&
+      curRef.current.arcOp <= 0.5;
+
+    const s0Arc = pipelineStepFloatRef.current;
+    const s1Arc: number = typeof activeStep === "number" ? activeStep : 0;
+
     if (rafRef.current !== null) cancelAnimationFrame(rafRef.current);
 
     function tick(now: number) {
       const e = eio(Math.min((now - t0Ref.current) / durRef.current, 1));
-      apply(lerpS(fromRef.current, tgtRef.current, e));
-      if (e < 1) rafRef.current = requestAnimationFrame(tick);
-      else       rafRef.current = null;
+      if (useArc) {
+        const sFloat = s0Arc + (s1Arc - s0Arc) * e;
+        pipelineStepFloatRef.current = sFloat;
+        apply(lerpPipelineAlongArc(fromRef.current, tgtRef.current, e, s0Arc, s1Arc, n));
+      } else {
+        apply(lerpS(fromRef.current, tgtRef.current, e));
+      }
+      if (e >= 1) {
+        if (typeof activeStep === "number") pipelineStepFloatRef.current = activeStep;
+        rafRef.current = null;
+      } else {
+        rafRef.current = requestAnimationFrame(tick);
+      }
     }
     rafRef.current = requestAnimationFrame(tick);
 
@@ -456,7 +511,7 @@ export function PipelineProgress({
           textAnchor="middle"
           style={{
             fill: "hsl(var(--primary))",
-            fontSize: "12px",
+            fontSize: "20px",
             fontFamily: "inherit",
             letterSpacing: "0.07em",
             opacity: labelOpaque ? 0.85 : 0,
