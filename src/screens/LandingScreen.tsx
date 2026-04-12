@@ -258,15 +258,21 @@ export function LandingScreen({ credStatus, onOpenSettings, onNavigate }: Landin
 
   return (
     <div className="min-h-screen flex flex-col">
-      <header className="sticky top-0 z-10 border-b bg-background/80 backdrop-blur-sm overflow-hidden">
-        <div className="w-full px-[10px] h-14 flex items-center justify-between">
-          <span className="self-start" style={{ marginTop: '-10px' }}>
+      <header className="sticky top-0 z-10 border-b bg-background/80 backdrop-blur-sm">
+        <div className="w-full px-[10px] h-14 relative flex items-center overflow-hidden">
+          {/* Logo — absolutely centred, identical layout to ImplementTicketScreen */}
+          <div
+            className="absolute inset-0 flex justify-center items-start pointer-events-none overflow-hidden"
+            style={{ marginTop: '-10px' }}
+          >
             <PipelineProgress
               activeStep={demoStep}
-              style={{ width: '66vw', height: '96px' }}
+              style={{ width: '50%', height: '96px', opacity: 0.3 }}
             />
-          </span>
-          <div className="flex items-center gap-1">
+          </div>
+
+          {/* Right: demo controls + settings — sits above the logo layer */}
+          <div className="flex items-center gap-1 ml-auto relative">
             {/* Demo controls — remove when wiring to real pipeline state */}
             <button
               className="text-[10px] text-muted-foreground px-1 hover:text-foreground"

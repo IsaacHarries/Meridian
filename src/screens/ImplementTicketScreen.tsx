@@ -1037,9 +1037,10 @@ export function ImplementTicketScreen({ credStatus, onBack }: ImplementTicketScr
 
   return (
     <div className="min-h-screen flex flex-col">
-      {/* Header — mirrors the landing page header with PipelineProgress */}
+      {/* Header */}
       <div className="border-b bg-background/95 backdrop-blur sticky top-0 z-20">
-        <div className="h-14 flex items-center px-[10px] gap-2 overflow-hidden">
+        <div className="h-14 relative flex items-center px-[10px] gap-2 overflow-hidden">
+          {/* Left: back button + title */}
           <Button
             variant="ghost"
             size="icon"
@@ -1048,12 +1049,18 @@ export function ImplementTicketScreen({ credStatus, onBack }: ImplementTicketScr
           >
             <ArrowLeft className="h-4 w-4" />
           </Button>
-          <span className="flex-1 self-start min-w-0" style={{ marginTop: "-10px" }}>
+          <span className="text-sm font-semibold shrink-0 text-foreground">Implement a Ticket</span>
+
+          {/* Centre: PipelineProgress — absolutely centred, pointer-events-none so back button stays clickable */}
+          <div
+            className="absolute inset-0 flex justify-center items-start pointer-events-none overflow-hidden"
+            style={{ marginTop: "-8px" }}
+          >
             <PipelineProgress
               activeStep={currentStage === "select" ? undefined : stageToStep(viewingStage)}
-              style={{ width: "100%", height: "96px" }}
+              style={{ width: "50%", height: "96px" }}
             />
-          </span>
+          </div>
         </div>
       </div>
 
