@@ -96,13 +96,33 @@ const MARC1_PIPE:   MA = { cx: ACTIVE_X, cy: PIPE_ARC_TOP + 891, rx: 472,    ry:
 const MARC2_PIPE:   MA = { cx: ACTIVE_X, cy: PIPE_ARC_TOP + R_CIRC, rx: R_CIRC, ry: R_CIRC };
 
 // ── Node state ────────────────────────────────────────────────────────────────
+//
+// Logo-mode satellite positions are computed from the outer meridian circle:
+//   cx_outer=478.7  cy_outer=140.4  r_outer=80.2  (component space, centred)
+//
+// Satellites are placed at 16° angular intervals from the top (α = -90 + 16k).
+//   comp_x = cx_outer ± r_outer * sin(16k°)
+//   comp_y = cy_outer  - r_outer * cos(16k°)
+//
+// k   comp_x  comp_y   SVG_x    SVG_y
+// ±1   500.8   63.3    158.9 / 78.5    134.0
+// ±2   521.2   72.4    196.0 / 41.4    150.5
+// ±3   538.3   86.7    227.1 / 10.3    176.5
+// ±4   550.8  105.2    249.8 / −12.4   210.2
+//
+// LOGO_NODES[0]  → center dot (used as active-node start for pipeline anim)
+// LOGO_NODES[1]  → k=+1 right satellite (step s+1 start)
+// LOGO_NODES[2]  → k=+2 right satellite (step s+2 start)
+// LEFT_SHOW[1]   → k=−1 left satellite  (step s−1 park)
+// LEFT_SHOW[0]   → k=−2 left satellite  (step s−2 park)
+// k=±3 and k=±4  → purely decorative; no pipeline node maps to them.
 
 interface NS { cx: number; cy: number; r: number; op: number; }
 
 const LOGO_NODES: NS[] = [
-  { cx: 480, cy: 38, r: 9.5,    op: 0 },
-  { cx: 511, cy: 43, r: 6,      op: 0 },
-  { cx: 533, cy: 58, r: 6,      op: 0 },
+  { cx: 480,  cy: 38, r: 9.5,   op: 0 },
+  { cx: 511,  cy: 43, r: 6,     op: 0 },
+  { cx: 533,  cy: 58, r: 6,     op: 0 },
   { cx: 1080, cy: 73, r: DOT_R, op: 0 },
   { cx: 1180, cy: 73, r: DOT_R, op: 0 },
   { cx: 1280, cy: 73, r: DOT_R, op: 0 },
@@ -114,9 +134,9 @@ const LEFT_SHOW: NS[] = [
   { cx: 449, cy: 43, r: SAT_R, op: 0 },
 ];
 const LOGO_NODES_L: NS[] = [
-  { cx: 120, cy: 38, r: 9.5,    op: 0 },
-  { cx: 151, cy: 43, r: 6,      op: 0 },
-  { cx: 173, cy: 58, r: 6,      op: 0 },
+  { cx: 120,  cy: 38, r: 9.5,   op: 0 },
+  { cx: 151,  cy: 43, r: 6,     op: 0 },
+  { cx: 173,  cy: 58, r: 6,     op: 0 },
   { cx:  720, cy: 73, r: DOT_R, op: 0 },
   { cx:  820, cy: 73, r: DOT_R, op: 0 },
   { cx:  920, cy: 73, r: DOT_R, op: 0 },
@@ -261,18 +281,57 @@ function buildLogoToPipelineFrom(s: number, n: number, logoLeft: boolean): S {
   const starts: NS[] = new Array(n);
   const inner   = new Set<number>();
 
-  if (s >= 2) { starts[s - 2] = { ...leftPos[0] }; inner.add(s - 2); }
-  if (s >= 1) { starts[s - 1] = { ...leftPos[1] }; inner.add(s - 1); }
-  starts[s] = { ...logo[0] }; inner.add(s);
-  if (s + 1 < n) { starts[s + 1] = { ...logo[1] }; inner.add(s + 1); }
-  if (s + 2 < n) { starts[s + 2] = { ...logo[2] }; inner.add(s + 2); }
+  // Left-side satellites: park at their logo positions but invisible.
+  // They "go away" — no pipeline node maps to them.
+  if (s >= 2) { starts[s - 2] = { ...leftPos[0], op: 0 }; inner.add(s - 2); }
+  if (s >= 1) { starts[s - 1] = { ...leftPos[1], op: 0 }; inner.add(s - 1); }
+
+  // Center logo dot → active node: start fully visible so it visibly moves.
+  starts[s] = { ...logo[0], op: 1 }; inner.add(s);
+  // Right inner satellite → next step node: start visible, will dim as it moves.
+  if (s + 1 < n) { starts[s + 1] = { ...logo[1], op: 0.85 }; inner.add(s + 1); }
+  // Right outer satellite → step s+2 node: same.
+  if (s + 2 < n) { starts[s + 2] = { ...logo[2], op: 0.85 }; inner.add(s + 2); }
 
   const outer: number[] = [];
   for (let j = 0; j < n; j++) if (!inner.has(j)) outer.push(j);
   outer.sort((a, b) => a - b);
   for (let k = 0; k < outer.length; k++) starts[outer[k]] = { ...logo[3 + k] };
 
-  return { ...base, nodes: starts };
+  // logoOp: 0 — the logo group is immediately replaced by the pipeline node
+  // circles which start at the same visual positions (seamless swap), then
+  // each circle animates independently to its pipeline target.
+  return { ...base, nodes: starts, logoOp: 0 };
+}
+
+/**
+ * Reverse of buildLogoToPipelineFrom.  Used as the TO state when going
+ * pipeline → logo.  The three "inner" pipeline nodes animate back to their
+ * logo dot positions (center + two right satellites) while all others fade
+ * out.  logoOp stays 0 throughout; a snapRef state (true logo target) is
+ * applied in the same frame when the animation completes so the logo group
+ * snaps in exactly when the moving dots arrive at their final positions.
+ */
+function buildPipelineToLogoTarget(s: number, n: number, logoLeft: boolean): S {
+  const logo    = logoLeft ? LOGO_NODES_L : LOGO_NODES;
+  const leftPos = logoLeft ? LEFT_SHOW_L  : LEFT_SHOW;
+  const logoBase = getTarget(undefined, n, logoLeft);
+
+  // Default: all nodes end at their logo parking positions, invisible.
+  const targets: NS[] = logoBase.nodes.map(nd => ({ ...nd }));
+
+  // Active node → center dot position, fully visible.
+  targets[s] = { ...logo[0], op: 1 };
+  // Next two nodes → right satellites, visible (will have dimmed as they moved).
+  if (s + 1 < n) targets[s + 1] = { ...logo[1], op: 0.85 };
+  if (s + 2 < n) targets[s + 2] = { ...logo[2], op: 0.85 };
+
+  return {
+    ...logoBase,
+    nodes: targets,
+    left: [{ ...leftPos[0], op: 0 }, { ...leftPos[1], op: 0 }],
+    logoOp: 0, // stays hidden; snapRef applies the true logo state at end
+  };
 }
 
 // ── Component ─────────────────────────────────────────────────────────────────
@@ -309,6 +368,8 @@ export function PipelineProgress({
   const curRef               = useRef<S>(getTarget(activeStep, n, logoLeft));
   const fromRef              = useRef<S>(getTarget(activeStep, n, logoLeft));
   const tgtRef               = useRef<S>(getTarget(activeStep, n, logoLeft));
+  /** Applied in the same frame when an animation completes (mode-change snaps). */
+  const snapRef              = useRef<S | null>(null);
   const t0Ref                = useRef(0);
   const durRef               = useRef(0);
   const firstRef             = useRef(true);
@@ -379,12 +440,24 @@ export function PipelineProgress({
     const tgt = getTarget(activeStep, n, logoLeft);
     const modeChange = (curRef.current.logoOp > 0.5) !== (tgt.logoOp > 0.5);
 
+    snapRef.current = null;
+
     if (modeChange && activeStep !== undefined) {
+      // logo → pipeline: nodes start at logo dot positions (see buildLogoToPipelineFrom)
       fromRef.current = buildLogoToPipelineFrom(activeStep, n, logoLeft);
+      tgtRef.current  = tgt;
+    } else if (modeChange && activeStep === undefined) {
+      // pipeline → logo: nodes animate back to logo dot positions; when they
+      // arrive the logo group snaps in (applied via snapRef at animation end)
+      const prevStep  = Math.round(pipelineStepFloatRef.current);
+      fromRef.current = { ...curRef.current };
+      tgtRef.current  = buildPipelineToLogoTarget(prevStep, n, logoLeft);
+      snapRef.current = getTarget(undefined, n, logoLeft);
     } else {
       fromRef.current = { ...curRef.current };
+      tgtRef.current  = tgt;
     }
-    tgtRef.current = tgt;
+
     t0Ref.current  = performance.now();
     durRef.current = modeChange ? MODE_MS : STEP_MS;
 
@@ -409,6 +482,11 @@ export function PipelineProgress({
       }
       if (e >= 1) {
         if (typeof activeStep === "number") pipelineStepFloatRef.current = activeStep;
+        // Fire the snap: logo group appears, node circles disappear in the same frame.
+        if (snapRef.current) {
+          apply(snapRef.current);
+          snapRef.current = null;
+        }
         rafRef.current = null;
       } else {
         rafRef.current = requestAnimationFrame(tick);
@@ -475,7 +553,10 @@ export function PipelineProgress({
       </g>
 
       {/* ── Logo circles — fade out when pipeline activates ───────────────────
-          Centre dot, halo ring, and four satellites from Meridian_no_bg.svg.  */}
+          Centre dot + halo ring + original 4 satellites (unchanged), plus
+          4 additional satellites at k=±3 and k=±4 continuing the same orbit
+          at ~16° angular spacing from the outer arc centre (479, 140).
+          All same size (r=10.822 SVG) and same opacity (0.85).              */}
       <g
         ref={logoGroupRef}
         transform={`translate(${logoLeft ? 120 : 480} 38) scale(0.55) translate(-121.052 -87.969)`}
@@ -484,12 +565,22 @@ export function PipelineProgress({
         <circle cx="121.052" cy="87.969" r="17.211" style={{ fill: "hsl(var(--primary))" }} />
         <circle cx="121.052" cy="87.969" r="29.728" strokeWidth={2.7}
           style={{ fill: "none", stroke: "hsl(var(--primary))", strokeOpacity: 0.54 }} />
-        <circle cx="64.542" cy="96.615" r="10.822" opacity={0.85} style={{ fill: "hsl(var(--primary))" }} />
-        <circle cx="24.205" cy="123.082" r="10.822" opacity={0.85} style={{ fill: "hsl(var(--primary))" }} />
-        <circle cx="-178.16" cy="96.335" r="10.822" opacity={0.85}
+        {/* original left satellites */}
+        <circle cx="64.542"  cy="96.615"  r="10.822" opacity={0.85} style={{ fill: "hsl(var(--primary))" }} />
+        <circle cx="24.205"  cy="123.082" r="10.822" opacity={0.85} style={{ fill: "hsl(var(--primary))" }} />
+        {/* original right satellites (reflected) */}
+        <circle cx="-178.16" cy="96.335"  r="10.822" opacity={0.85}
           transform="matrix(-1 0 0 1 0 0)" style={{ fill: "hsl(var(--primary))" }} />
-        <circle cx="-217.5" cy="124.802" r="10.822" opacity={0.85}
+        <circle cx="-217.5"  cy="124.802" r="10.822" opacity={0.85}
           transform="matrix(-1 0 0 1 0 0)" style={{ fill: "hsl(var(--primary))" }} />
+        {/* k=−3  comp≈(403.5, 73.0) — orbit radius ~101, angle −138° */}
+        <circle cx="-18.0"   cy="151.6"   r="10.822" opacity={0.85} style={{ fill: "hsl(var(--primary))" }} />
+        {/* k=−4  comp≈(387.6, 96.8) — angle −154° */}
+        <circle cx="-46.9"   cy="194.9"   r="10.822" opacity={0.85} style={{ fill: "hsl(var(--primary))" }} />
+        {/* k=+3  comp≈(555.6, 74.9) — angle −40° */}
+        <circle cx="258.5"   cy="155.1"   r="10.822" opacity={0.85} style={{ fill: "hsl(var(--primary))" }} />
+        {/* k=+4  comp≈(571.0, 99.3) — angle −24° */}
+        <circle cx="286.6"   cy="199.4"   r="10.822" opacity={0.85} style={{ fill: "hsl(var(--primary))" }} />
       </g>
 
       {/* ── Left decorative nodes ─────────────────────────────────────────────*/}
