@@ -1,5 +1,6 @@
 import { ArrowLeft, Construction } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { WorkflowPanelHeader, APP_HEADER_TITLE } from "@/components/appHeaderLayout";
 
 export type WorkflowId =
   | "implement-ticket"
@@ -64,14 +65,16 @@ export function WorkflowScreen({ workflowId, onBack }: WorkflowScreenProps) {
 
   return (
     <div className="min-h-screen">
-      <header className="sticky top-0 z-10 border-b bg-background/80 backdrop-blur-sm">
-        <div className="max-w-5xl mx-auto px-6 h-14 flex items-center gap-3">
-          <Button variant="ghost" size="icon" onClick={onBack}>
-            <ArrowLeft className="h-4 w-4" />
-          </Button>
-          <h1 className="font-semibold">{meta.title}</h1>
-        </div>
-      </header>
+      <WorkflowPanelHeader
+        leading={
+          <>
+            <Button variant="ghost" size="icon" onClick={onBack}>
+              <ArrowLeft className="h-4 w-4" />
+            </Button>
+            <h1 className={APP_HEADER_TITLE}>{meta.title}</h1>
+          </>
+        }
+      />
 
       <main className="max-w-5xl mx-auto px-6 py-16 flex flex-col items-center text-center gap-4 bg-background/60 rounded-xl">
         <div className="rounded-full bg-muted p-4">

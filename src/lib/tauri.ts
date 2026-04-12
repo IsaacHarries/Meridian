@@ -12,9 +12,10 @@ export function openUrl(url: string): void {
 
 // ── Mock mode ─────────────────────────────────────────────────────────────────
 // When enabled, all JIRA and Bitbucket commands return local mock data.
-// Claude API calls still go through normally (Anthropic key must be set).
+// Claude / agent calls still hit the API unless Mock AI responses is enabled.
 
 const MOCK_KEY = "meridian_mock_mode";
+const MOCK_CLAUDE_KEY = "meridian_mock_claude_mode";
 
 export function isMockMode(): boolean {
   return localStorage.getItem(MOCK_KEY) === "true";
@@ -25,6 +26,19 @@ export function setMockMode(enabled: boolean): void {
     localStorage.setItem(MOCK_KEY, "true");
   } else {
     localStorage.removeItem(MOCK_KEY);
+  }
+}
+
+/** When true, agent and briefing commands return canned text/JSON (no Anthropic call). */
+export function isMockClaudeMode(): boolean {
+  return localStorage.getItem(MOCK_CLAUDE_KEY) === "true";
+}
+
+export function setMockClaudeMode(enabled: boolean): void {
+  if (enabled) {
+    localStorage.setItem(MOCK_CLAUDE_KEY, "true");
+  } else {
+    localStorage.removeItem(MOCK_CLAUDE_KEY);
   }
 }
 
@@ -86,11 +100,10 @@ export function bitbucketComplete(s: CredentialStatus) {
 
 export async function getCredentialStatus(): Promise<CredentialStatus> {
   const status = await invoke<CredentialStatus>("credential_status");
+  let merged: CredentialStatus = { ...status };
   if (isMockMode()) {
-    // Override JIRA + Bitbucket fields so the app routes past onboarding.
-    // The Anthropic key must still be real — Claude calls go through normally.
-    return {
-      ...status,
+    merged = {
+      ...merged,
       jiraBaseUrl: true,
       jiraEmail: true,
       jiraApiToken: true,
@@ -101,7 +114,13 @@ export async function getCredentialStatus(): Promise<CredentialStatus> {
       bitbucketRepoSlug: true,
     };
   }
-  return status;
+  if (isMockClaudeMode()) {
+    merged = {
+      ...merged,
+      anthropicApiKey: true,
+    };
+  }
+  return merged;
 }
 
 export async function saveCredential(key: string, value: string): Promise<void> {
@@ -216,18 +235,34 @@ export async function debugJiraEndpoints(): Promise<string> {
 // ── Claude commands ───────────────────────────────────────────────────────────
 
 export async function generateStandupBriefing(standupText: string): Promise<string> {
+  if (isMockClaudeMode()) {
+    const { MOCK_STANDUP_MARKDOWN } = await import("./mockClaudeResponses");
+    return MOCK_STANDUP_MARKDOWN;
+  }
   return invoke<string>("generate_standup_briefing", { standupText });
 }
 
 export async function generateSprintRetrospective(sprintText: string): Promise<string> {
+  if (isMockClaudeMode()) {
+    const { MOCK_SPRINT_RETRO_MARKDOWN } = await import("./mockClaudeResponses");
+    return MOCK_SPRINT_RETRO_MARKDOWN;
+  }
   return invoke<string>("generate_sprint_retrospective", { sprintText });
 }
 
 export async function generateWorkloadSuggestions(workloadText: string): Promise<string> {
+  if (isMockClaudeMode()) {
+    const { MOCK_WORKLOAD_MARKDOWN } = await import("./mockClaudeResponses");
+    return MOCK_WORKLOAD_MARKDOWN;
+  }
   return invoke<string>("generate_workload_suggestions", { workloadText });
 }
 
 export async function assessTicketQuality(ticketText: string): Promise<string> {
+  if (isMockClaudeMode()) {
+    const { MOCK_QUALITY_JSON } = await import("./mockClaudeResponses");
+    return MOCK_QUALITY_JSON;
+  }
   return invoke<string>("assess_ticket_quality", { ticketText });
 }
 
@@ -248,6 +283,10 @@ export interface QualityReport {
 }
 
 export async function reviewPr(reviewText: string): Promise<string> {
+  if (isMockClaudeMode()) {
+    const { MOCK_PR_REVIEW_JSON } = await import("./mockClaudeResponses");
+    return MOCK_PR_REVIEW_JSON;
+  }
   return invoke<string>("review_pr", { reviewText });
 }
 
@@ -704,38 +743,74 @@ export interface TriageMessage {
 // ── Agent pipeline commands ───────────────────────────────────────────────────
 
 export async function runGroomingAgent(ticketText: string): Promise<string> {
+  if (isMockClaudeMode()) {
+    const { MOCK_GROOMING_JSON } = await import("./mockClaudeResponses");
+    return MOCK_GROOMING_JSON;
+  }
   return invoke<string>("run_grooming_agent", { ticketText });
 }
 
 export async function runImpactAnalysis(ticketText: string, groomingJson: string): Promise<string> {
+  if (isMockClaudeMode()) {
+    const { MOCK_IMPACT_JSON } = await import("./mockClaudeResponses");
+    return MOCK_IMPACT_JSON;
+  }
   return invoke<string>("run_impact_analysis", { ticketText, groomingJson });
 }
 
 export async function runTriageTurn(contextText: string, historyJson: string): Promise<string> {
+  if (isMockClaudeMode()) {
+    const { MOCK_TRIAGE_ASSISTANT_REPLY } = await import("./mockClaudeResponses");
+    return MOCK_TRIAGE_ASSISTANT_REPLY;
+  }
   return invoke<string>("run_triage_turn", { contextText, historyJson });
 }
 
 export async function finalizeImplementationPlan(contextText: string, conversationJson: string): Promise<string> {
+  if (isMockClaudeMode()) {
+    const { MOCK_IMPLEMENTATION_PLAN_JSON } = await import("./mockClaudeResponses");
+    return MOCK_IMPLEMENTATION_PLAN_JSON;
+  }
   return invoke<string>("finalize_implementation_plan", { contextText, conversationJson });
 }
 
 export async function runImplementationGuidance(ticketText: string, planJson: string): Promise<string> {
+  if (isMockClaudeMode()) {
+    const { MOCK_GUIDANCE_JSON } = await import("./mockClaudeResponses");
+    return MOCK_GUIDANCE_JSON;
+  }
   return invoke<string>("run_implementation_guidance", { ticketText, planJson });
 }
 
 export async function runTestSuggestions(planJson: string, guidanceJson: string): Promise<string> {
+  if (isMockClaudeMode()) {
+    const { MOCK_TESTS_JSON } = await import("./mockClaudeResponses");
+    return MOCK_TESTS_JSON;
+  }
   return invoke<string>("run_test_suggestions", { planJson, guidanceJson });
 }
 
 export async function runPlanReview(planJson: string, guidanceJson: string, testJson: string): Promise<string> {
+  if (isMockClaudeMode()) {
+    const { MOCK_PLAN_REVIEW_JSON } = await import("./mockClaudeResponses");
+    return MOCK_PLAN_REVIEW_JSON;
+  }
   return invoke<string>("run_plan_review", { planJson, guidanceJson, testJson });
 }
 
 export async function runPrDescriptionGen(ticketText: string, planJson: string, reviewJson: string): Promise<string> {
+  if (isMockClaudeMode()) {
+    const { MOCK_PR_DESCRIPTION_JSON } = await import("./mockClaudeResponses");
+    return MOCK_PR_DESCRIPTION_JSON;
+  }
   return invoke<string>("run_pr_description_gen", { ticketText, planJson, reviewJson });
 }
 
 export async function runRetrospectiveAgent(ticketText: string, planJson: string, reviewJson: string): Promise<string> {
+  if (isMockClaudeMode()) {
+    const { MOCK_RETROSPECTIVE_JSON } = await import("./mockClaudeResponses");
+    return MOCK_RETROSPECTIVE_JSON;
+  }
   return invoke<string>("run_retrospective_agent", { ticketText, planJson, reviewJson });
 }
 

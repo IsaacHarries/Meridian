@@ -13,6 +13,7 @@ import {
   Settings2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { WorkflowPanelHeader, APP_HEADER_TITLE } from "@/components/appHeaderLayout";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { JiraTicketLink } from "@/components/JiraTicketLink";
@@ -641,15 +642,19 @@ export function StandupScreen({ credStatus, onBack }: StandupScreenProps) {
 
   return (
     <div className="min-h-screen">
-      <header className="sticky top-0 z-10 border-b bg-background/80 backdrop-blur-sm">
-        <div className="max-w-3xl mx-auto px-6 h-14 flex items-center gap-3">
-          <Button variant="ghost" size="icon" onClick={onBack}>
-            <ArrowLeft className="h-4 w-4" />
-          </Button>
-          <div className="flex-1">
-            <h1 className="font-semibold leading-none">Daily Standup</h1>
-            <p className="text-xs text-muted-foreground mt-0.5">{today}</p>
-          </div>
+      <WorkflowPanelHeader
+        leading={
+          <>
+            <Button variant="ghost" size="icon" onClick={onBack}>
+              <ArrowLeft className="h-4 w-4" />
+            </Button>
+            <div className="min-w-0">
+              <h1 className={`${APP_HEADER_TITLE} leading-none`}>Daily Standup</h1>
+              <p className="mt-0.5 truncate text-xs text-muted-foreground">{today}</p>
+            </div>
+          </>
+        }
+        trailing={
           <Button
             variant="ghost"
             size="icon"
@@ -659,8 +664,8 @@ export function StandupScreen({ credStatus, onBack }: StandupScreenProps) {
           >
             <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
           </Button>
-        </div>
-      </header>
+        }
+      />
 
       <main className="max-w-3xl mx-auto px-6 py-8 space-y-4 bg-background/60 rounded-xl">
         {loading && (

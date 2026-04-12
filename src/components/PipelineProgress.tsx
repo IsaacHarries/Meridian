@@ -47,9 +47,11 @@ export const PIPELINE_STEPS = [
 // TRANSITION
 // ──────────
 //  When activeStep flips undefined ↔ number the component morphs smoothly:
-//  each node animates from its logo position to its clock-face position (or
-//  back). The arc and halo also move / fade in sync.  All animation uses a
-//  single requestAnimationFrame loop with easeInOutCubic easing.
+//  the five visible logo dots map to the inner five clock positions for the
+//  active step (indices s−2…s+2); remaining indices start from hidden logo
+//  slots. Step-to-step motion keeps fixed pipeline index → same circle element.
+//  The arc and halo also move / fade in sync.  All animation uses a single
+//  requestAnimationFrame loop with easeInOutCubic easing.
 //  Duration: 700 ms for mode changes, 580 ms for step-to-step advances.
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -188,16 +190,65 @@ function getTarget(step: number | undefined, n: number, logoLeft = false): S {
       hCx:    logoLeft ? 120 : 480, hCy: 36, hR: LOGO_HR, hSOp: 0.4,
     };
   }
+  const s = step;
+  // Inner two “phantom” slots sit at pipeline indices (s−2, s−1). Using
+  // pipePos(s−2, s) keeps rel at −2/−1 so they stay aligned with the clock
+  // (pipePos(−2, s) wrongly used rel = −2 − s).
+  const lp0 = pipePos(s - 2, s);
+  const lp1 = pipePos(s - 1, s);
   return {
-    nodes:  Array.from({ length: n }, (_, i) => pipePos(i, step)),
-    // Treat phantoms as virtual nodes with fixed indices −2 and −1.
-    // Using pipePos(-2, step) / pipePos(-1, step) means rel decreases as step
-    // advances, so the phantoms rotate and fade out exactly like real nodes.
-    left:   [pipePos(-2, step), pipePos(-1, step)],
+    nodes:  Array.from({ length: n }, (_, i) => pipePos(i, s)),
+    // Same geometry as nodes[s−2]/[s−1] but hidden — the 8 node circles carry
+    // those steps; left elements only fade out after the logo→pipeline morph.
+    left: [
+      { ...lp0, op: 0 },
+      { ...lp1, op: 0 },
+    ],
     arcOp:  0.5,             // visible but subdued so nodes remain the focal point
     arcPts: [...PIPE_ARC_C], // matches the R_CIRC=1066 node-circle curvature
     hCx:    ACTIVE_X, hCy: NODE_Y, hR: PIPE_HR, hSOp: 0.55,
   };
+}
+
+/**
+ * Snapshot for the start of logo → pipeline: each pipeline index j begins at the
+ * compact-logo dot that will become that step’s clock position (inner five map to
+ * left + centre cluster; the rest start on the hidden logo slots).
+ */
+function buildLogoToPipelineFrom(s: number, n: number, logoLeft: boolean): S {
+  const logo = logoLeft ? LOGO_NODES_L : LOGO_NODES;
+  const leftPos = logoLeft ? LEFT_SHOW_L : LEFT_SHOW;
+  const base = getTarget(undefined, n, logoLeft);
+  const starts: NS[] = new Array(n);
+  const inner = new Set<number>();
+
+  if (s >= 2) {
+    starts[s - 2] = { ...leftPos[0] };
+    inner.add(s - 2);
+  }
+  if (s >= 1) {
+    starts[s - 1] = { ...leftPos[1] };
+    inner.add(s - 1);
+  }
+  starts[s] = { ...logo[0] };
+  inner.add(s);
+  if (s + 1 < n) {
+    starts[s + 1] = { ...logo[1] };
+    inner.add(s + 1);
+  }
+  if (s + 2 < n) {
+    starts[s + 2] = { ...logo[2] };
+    inner.add(s + 2);
+  }
+
+  const outer: number[] = [];
+  for (let j = 0; j < n; j++) if (!inner.has(j)) outer.push(j);
+  outer.sort((a, b) => a - b);
+  for (let k = 0; k < outer.length; k++) {
+    starts[outer[k]] = { ...logo[3 + k] };
+  }
+
+  return { ...base, nodes: starts };
 }
 
 // ── Component ─────────────────────────────────────────────────────────────────
@@ -287,7 +338,11 @@ export function PipelineProgress({
     const tgt = getTarget(activeStep, n, logoLeft);
     const modeChange = (curRef.current.arcOp > 0.5) !== (tgt.arcOp > 0.5);
 
-    fromRef.current = { ...curRef.current };
+    if (modeChange && activeStep !== undefined) {
+      fromRef.current = buildLogoToPipelineFrom(activeStep, n, logoLeft);
+    } else {
+      fromRef.current = { ...curRef.current };
+    }
     tgtRef.current  = tgt;
     t0Ref.current   = performance.now();
     durRef.current  = modeChange ? MODE_MS : STEP_MS;

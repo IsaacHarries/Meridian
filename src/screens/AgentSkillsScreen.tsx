@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { ArrowLeft, Save, Trash2, BookOpen, Code2, Wrench, Eye } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { WorkflowPanelHeader, APP_HEADER_TITLE } from "@/components/appHeaderLayout";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -152,19 +153,22 @@ export function AgentSkillsScreen({ onBack }: Props) {
   return (
     <div className="min-h-screen flex flex-col">
       {/* Header */}
-      <header className="border-b border-border px-6 py-4 flex items-center gap-4">
-        <Button variant="ghost" size="sm" onClick={onBack} className="gap-2">
-          <ArrowLeft className="h-4 w-4" />
-          Back
-        </Button>
-        <div>
-          <h1 className="text-lg font-semibold text-foreground">Agent Skills</h1>
-          <p className="text-xs text-muted-foreground">
-            Domain knowledge injected into AI agents to improve their understanding of your
-            team and codebase
-          </p>
-        </div>
-      </header>
+      <WorkflowPanelHeader
+        leading={
+          <>
+            <Button variant="ghost" size="icon" onClick={onBack} aria-label="Back">
+              <ArrowLeft className="h-4 w-4" />
+            </Button>
+            <div className="min-w-0">
+              <h1 className={APP_HEADER_TITLE}>Agent Skills</h1>
+              <p className="text-xs text-muted-foreground">
+                Domain knowledge injected into AI agents to improve their understanding of your
+                team and codebase
+              </p>
+            </div>
+          </>
+        }
+      />
 
       <div className="flex-1 flex flex-col p-4 overflow-hidden">
         <div className="flex-1 max-w-3xl w-full mx-auto bg-background/60 rounded-xl overflow-hidden flex">

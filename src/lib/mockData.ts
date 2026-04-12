@@ -1,5 +1,5 @@
 // ── Mock data for development / demo without JIRA or Bitbucket access ────────
-// Claude API calls still go through normally when mock mode is on.
+// Claude / agent calls use the real API unless Mock AI responses is on (see Settings).
 
 import type {
   JiraSprint,

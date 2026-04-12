@@ -15,6 +15,7 @@ import {
   ExternalLink,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { WorkflowPanelHeader, APP_HEADER_TITLE } from "@/components/appHeaderLayout";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
@@ -484,20 +485,22 @@ export function KnowledgeBaseScreen({ onBack }: KnowledgeBaseScreenProps) {
   return (
     <div className="min-h-screen flex flex-col">
       {/* Header */}
-      <div className="border-b bg-background/95 backdrop-blur sticky top-0 z-10">
-        <div className="max-w-4xl mx-auto px-6 py-4 flex items-center justify-between gap-4">
-          <div className="flex items-center gap-3">
+      <WorkflowPanelHeader
+        leading={
+          <>
             <Button variant="ghost" size="icon" onClick={onBack}>
               <ArrowLeft className="h-4 w-4" />
             </Button>
-            <div>
-              <h1 className="text-lg font-semibold leading-none">Knowledge Base</h1>
-              <p className="text-xs text-muted-foreground mt-0.5">
+            <div className="min-w-0">
+              <h1 className={`${APP_HEADER_TITLE} leading-none`}>Knowledge Base</h1>
+              <p className="mt-0.5 text-xs text-muted-foreground">
                 {entries.length} {entries.length === 1 ? "entry" : "entries"}
               </p>
             </div>
-          </div>
-          <div className="flex items-center gap-2">
+          </>
+        }
+        trailing={
+          <>
             <Button variant="outline" size="sm" onClick={handleExport} title="Copy all as markdown">
               {exportCopied ? (
                 <Check className="h-4 w-4 mr-1.5 text-green-600" />
@@ -509,9 +512,9 @@ export function KnowledgeBaseScreen({ onBack }: KnowledgeBaseScreenProps) {
             <Button size="sm" onClick={openNew}>
               <Plus className="h-4 w-4 mr-1.5" /> New entry
             </Button>
-          </div>
-        </div>
-      </div>
+          </>
+        }
+      />
 
       <div className="flex-1 flex items-center">
         <div className="w-full max-w-4xl mx-auto px-6 py-6 space-y-5 bg-background/60 rounded-xl">

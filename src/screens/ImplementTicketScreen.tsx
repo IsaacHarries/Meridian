@@ -1,5 +1,12 @@
 import { useEffect, useState, useRef, useCallback } from "react";
+import { cn } from "@/lib/utils";
 import { PipelineProgress } from "@/components/PipelineProgress";
+import { HeaderSettingsButton } from "@/components/HeaderSettingsButton";
+import {
+  APP_HEADER_BAR,
+  APP_HEADER_ROW_PANEL,
+  APP_HEADER_TITLE,
+} from "@/components/appHeaderLayout";
 import { JiraTicketLink } from "@/components/JiraTicketLink";
 import {
   ArrowLeft,
@@ -726,6 +733,9 @@ export function ImplementTicketScreen({ credStatus, onBack }: ImplementTicketScr
   // Per-stage error
   const [errors, setErrors] = useState<Partial<Record<Stage, string>>>({});
 
+  /** Fade in header meridian (PipelineProgress) over 1s when this screen mounts. */
+  const [meridianHeaderVisible, setMeridianHeaderVisible] = useState(false);
+
   const ticketText = selectedIssue ? compileTicketText(selectedIssue) : "";
 
   function markComplete(stage: Stage) {
@@ -741,6 +751,11 @@ export function ImplementTicketScreen({ credStatus, onBack }: ImplementTicketScr
     if (!jiraAvailable) { setLoadingIssues(false); return; }
     getMySprintIssues().then(setSprintIssues).catch(() => {}).finally(() => setLoadingIssues(false));
   }, [jiraAvailable]);
+
+  useEffect(() => {
+    const t = window.setTimeout(() => setMeridianHeaderVisible(true), 0);
+    return () => clearTimeout(t);
+  }, []);
 
   // Stable ref for skills — loaded once at pipeline start, used throughout
   const skillsRef = useRef<Partial<Record<SkillType, string>>>({});
@@ -1038,31 +1053,51 @@ export function ImplementTicketScreen({ credStatus, onBack }: ImplementTicketScr
   return (
     <div className="min-h-screen flex flex-col">
       {/* Header */}
-      <div className="border-b bg-background/95 backdrop-blur sticky top-0 z-20">
-        <div className="h-14 relative flex items-center px-[10px] gap-2 overflow-hidden">
-          {/* Left: back button + title */}
-          <Button
-            variant="ghost"
-            size="icon"
-            className="shrink-0"
-            onClick={currentStage === "select" ? onBack : () => { setSelectedIssue(null); setCurrentStage("select"); }}
-          >
-            <ArrowLeft className="h-4 w-4" />
-          </Button>
-          <span className="text-sm font-semibold shrink-0 text-foreground">Implement a Ticket</span>
+      <header className={cn(APP_HEADER_BAR, "z-20")}>
+        <div className={cn(APP_HEADER_ROW_PANEL, "relative")}>
+          {/* Back + title — left (same slot as other panels) */}
+          <div className="relative z-10 flex min-w-0 shrink-0 items-center gap-2">
+            <Button
+              variant="ghost"
+              size="icon"
+              className="shrink-0"
+              onClick={currentStage === "select" ? onBack : () => { setSelectedIssue(null); setCurrentStage("select"); }}
+            >
+              <ArrowLeft className="h-4 w-4" />
+            </Button>
+            <span className={cn(APP_HEADER_TITLE, "shrink-0")}>Implement a Ticket</span>
+          </div>
 
-          {/* Centre: PipelineProgress — absolutely centred, pointer-events-none so back button stays clickable */}
-          <div
-            className="absolute inset-0 flex justify-center items-start pointer-events-none overflow-hidden"
-            style={{ marginTop: "-8px" }}
-          >
-            <PipelineProgress
-              activeStep={currentStage === "select" ? undefined : stageToStep(viewingStage)}
-              style={{ width: "50%", height: "96px" }}
-            />
+          <div className="min-w-0 flex-1" aria-hidden />
+
+          <HeaderSettingsButton className="relative z-30 shrink-0" />
+
+          {/* Meridian mark centred in header; morphs to pipeline ring when a ticket run is active */}
+          <div className="pointer-events-none absolute inset-0 z-0 overflow-hidden">
+            <div
+              className={cn(
+                "absolute bottom-0 left-1/2 flex h-14 min-h-0 -translate-x-1/2 justify-center overflow-hidden",
+                currentStage !== "select" ? "w-1/2 max-w-md" : "w-auto max-w-md",
+                meridianHeaderVisible ? "opacity-100" : "opacity-0"
+              )}
+              style={{
+                transition:
+                  "width 700ms ease-in-out, max-width 700ms ease-in-out, opacity 1000ms ease-out",
+              }}
+            >
+              <PipelineProgress
+                activeStep={currentStage === "select" ? undefined : stageToStep(viewingStage)}
+                logoAlign="center"
+                className={`block h-full min-h-0 transition-opacity duration-300 ease-out ${
+                  currentStage === "select"
+                    ? "w-auto max-h-14 opacity-30"
+                    : "w-full opacity-100"
+                }`}
+              />
+            </div>
           </div>
         </div>
-      </div>
+      </header>
 
       {/* Ticket info bar — shown once a ticket is selected */}
       {selectedIssue && (

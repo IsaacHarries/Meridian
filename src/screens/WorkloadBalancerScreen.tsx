@@ -16,6 +16,7 @@ import {
   Minus,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { WorkflowPanelHeader, APP_HEADER_TITLE } from "@/components/appHeaderLayout";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -496,12 +497,16 @@ export function WorkloadBalancerScreen({ credStatus, onBack }: WorkloadBalancerS
 
   return (
     <div className="min-h-screen flex flex-col">
-      <header className="sticky top-0 z-10 border-b bg-background/80 backdrop-blur-sm">
-        <div className="max-w-5xl mx-auto px-6 h-14 flex items-center gap-3">
-          <Button variant="ghost" size="icon" onClick={onBack}>
-            <ArrowLeft className="h-4 w-4" />
-          </Button>
-          <h1 className="font-semibold flex-1">Team Workload Balancer</h1>
+      <WorkflowPanelHeader
+        leading={
+          <>
+            <Button variant="ghost" size="icon" onClick={onBack}>
+              <ArrowLeft className="h-4 w-4" />
+            </Button>
+            <h1 className={APP_HEADER_TITLE}>Team Workload Balancer</h1>
+          </>
+        }
+        trailing={
           <Button
             variant="ghost"
             size="icon"
@@ -511,8 +516,8 @@ export function WorkloadBalancerScreen({ credStatus, onBack }: WorkloadBalancerS
           >
             <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
           </Button>
-        </div>
-      </header>
+        }
+      />
 
       <main className="flex-1 flex items-center">
         <div className="w-full max-w-5xl mx-auto px-6 py-8 space-y-4 bg-background/60 rounded-xl">

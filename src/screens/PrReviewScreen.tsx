@@ -21,6 +21,7 @@ import {
   ClipboardList,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { WorkflowPanelHeader, APP_HEADER_TITLE } from "@/components/appHeaderLayout";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import {
   type BitbucketPr,
@@ -648,27 +649,32 @@ export function PrReviewScreen({ credStatus, onBack }: PrReviewScreenProps) {
   return (
     <div className="min-h-screen flex flex-col">
       {/* Header */}
-      <div className="border-b bg-background/95 backdrop-blur sticky top-0 z-20">
-        <div className="px-4 py-3 flex items-center gap-3">
-          <Button variant="ghost" size="icon" onClick={selectedPr ? () => { setSelectedPr(null); setReport(null); } : onBack}>
-            <ArrowLeft className="h-4 w-4" />
-          </Button>
-          <div className="flex-1 min-w-0">
-            <h1 className="text-base font-semibold leading-none">PR Review Assistant</h1>
-            {selectedPr && (
-              <p className="text-xs text-muted-foreground mt-0.5 truncate">
-                #{selectedPr.id} — {selectedPr.title}
-              </p>
-            )}
-          </div>
-          {selectedPr && (
-            <div className="flex items-center gap-2 shrink-0">
+      <WorkflowPanelHeader
+        barClassName="z-20"
+        leading={
+          <>
+            <Button variant="ghost" size="icon" onClick={selectedPr ? () => { setSelectedPr(null); setReport(null); } : onBack}>
+              <ArrowLeft className="h-4 w-4" />
+            </Button>
+            <div className="min-w-0">
+              <h1 className={`${APP_HEADER_TITLE} leading-none`}>PR Review Assistant</h1>
+              {selectedPr && (
+                <p className="mt-0.5 truncate text-xs text-muted-foreground">
+                  #{selectedPr.id} — {selectedPr.title}
+                </p>
+              )}
+            </div>
+          </>
+        }
+        trailing={
+          selectedPr ? (
+            <div className="flex shrink-0 items-center gap-2">
               <Button
                 variant="outline"
                 size="sm"
                 onClick={() => selectedPr?.url && openUrl(selectedPr.url)}
               >
-                <ExternalLink className="h-3.5 w-3.5 mr-1" /> Bitbucket
+                <ExternalLink className="mr-1 h-3.5 w-3.5" /> Bitbucket
               </Button>
               {linkedIssue && (
                 <Button
@@ -676,7 +682,7 @@ export function PrReviewScreen({ credStatus, onBack }: PrReviewScreenProps) {
                   size="sm"
                   onClick={() => linkedIssue.url && openUrl(linkedIssue.url)}
                 >
-                  <ExternalLink className="h-3.5 w-3.5 mr-1" /> {linkedIssue.key}
+                  <ExternalLink className="mr-1 h-3.5 w-3.5" /> {linkedIssue.key}
                 </Button>
               )}
               {report && (
@@ -686,9 +692,9 @@ export function PrReviewScreen({ credStatus, onBack }: PrReviewScreenProps) {
                 </Button>
               )}
             </div>
-          )}
-        </div>
-      </div>
+          ) : null
+        }
+      />
 
       {/* Credential warnings */}
       {(!bbAvailable || !claudeAvailable) && (

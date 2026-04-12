@@ -16,6 +16,7 @@ import {
   ChevronRight,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { WorkflowPanelHeader, APP_HEADER_TITLE } from "@/components/appHeaderLayout";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
@@ -414,19 +415,21 @@ export function TicketQualityScreen({ credStatus, onBack }: TicketQualityScreenP
   return (
     <div className="min-h-screen flex flex-col">
       {/* Header */}
-      <div className="border-b bg-background/95 backdrop-blur sticky top-0 z-10">
-        <div className="max-w-5xl mx-auto px-6 py-4 flex items-center gap-3">
-          <Button variant="ghost" size="icon" onClick={onBack}>
-            <ArrowLeft className="h-4 w-4" />
-          </Button>
-          <div>
-            <h1 className="text-lg font-semibold leading-none">Ticket Quality Checker</h1>
-            <p className="text-xs text-muted-foreground mt-0.5">
-              Assess tickets for sprint readiness before planning
-            </p>
-          </div>
-        </div>
-      </div>
+      <WorkflowPanelHeader
+        leading={
+          <>
+            <Button variant="ghost" size="icon" onClick={onBack}>
+              <ArrowLeft className="h-4 w-4" />
+            </Button>
+            <div className="min-w-0">
+              <h1 className={`${APP_HEADER_TITLE} leading-none`}>Ticket Quality Checker</h1>
+              <p className="mt-0.5 text-xs text-muted-foreground">
+                Assess tickets for sprint readiness before planning
+              </p>
+            </div>
+          </>
+        }
+      />
 
       <div className="flex-1 flex items-center">
         <div className="w-full max-w-5xl mx-auto px-6 py-6 bg-background/60 rounded-xl">

@@ -4,6 +4,8 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { CredentialField } from "@/components/CredentialField";
 import { MeridianLogo } from "@/components/MeridianLogo";
+import { HeaderSettingsButton } from "@/components/HeaderSettingsButton";
+import { APP_HEADER_BAR, APP_HEADER_ROW_LANDING } from "@/components/appHeaderLayout";
 import { ScopeList, JIRA_PERMISSIONS, BITBUCKET_SCOPES } from "@/components/ScopeList";
 import {
   saveCredential,
@@ -16,6 +18,7 @@ import {
   getNonSecretConfig,
   getCredentialStatus,
   setMockMode,
+  setMockClaudeMode,
   importClaudeProToken,
 } from "@/lib/tauri";
 
@@ -115,7 +118,7 @@ function WelcomeStep({ onNext, onMockMode }: { onNext: () => void; onMockMode?: 
             className="w-full flex items-center justify-center gap-2 text-xs text-muted-foreground hover:text-foreground transition-colors py-1"
           >
             <FlaskRound className="h-3.5 w-3.5" />
-            Try with mock data (no JIRA or Bitbucket needed)
+            Try with mock data (no API keys needed)
           </button>
         </div>
       )}
@@ -629,6 +632,7 @@ export function OnboardingScreen({ onComplete, onMockMode }: OnboardingScreenPro
 
   function handleMockMode() {
     setMockMode(true);
+    setMockClaudeMode(true);
     onMockMode?.();
     onComplete();
   }
@@ -641,16 +645,23 @@ export function OnboardingScreen({ onComplete, onMockMode }: OnboardingScreenPro
   ];
 
   return (
-    <div className="min-h-screen flex items-center justify-center p-6">
-      <div className="w-full max-w-md bg-background/60 rounded-xl p-6">
-        {step > 0 && (
-          <div className="mb-6 flex justify-center">
-            <StepIndicator current={step} total={TOTAL_STEPS} />
-          </div>
-        )}
-        <Card>
-          <CardContent className="pt-6 pb-6">{steps[step]}</CardContent>
-        </Card>
+    <div className="flex min-h-screen flex-col">
+      <header className={APP_HEADER_BAR}>
+        <div className={APP_HEADER_ROW_LANDING}>
+          <HeaderSettingsButton className="relative z-10 shrink-0" />
+        </div>
+      </header>
+      <div className="flex flex-1 items-center justify-center p-6">
+        <div className="w-full max-w-md rounded-xl bg-background/60 p-6">
+          {step > 0 && (
+            <div className="mb-6 flex justify-center">
+              <StepIndicator current={step} total={TOTAL_STEPS} />
+            </div>
+          )}
+          <Card>
+            <CardContent className="pt-6 pb-6">{steps[step]}</CardContent>
+          </Card>
+        </div>
       </div>
     </div>
   );

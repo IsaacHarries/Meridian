@@ -1,6 +1,8 @@
 import { useEffect, useState, useMemo } from "react";
-import { AlertTriangle, Settings, TrendingUp, CheckSquare, GitPullRequest } from "lucide-react";
-import { PipelineProgress, PIPELINE_STEPS } from "@/components/PipelineProgress";
+import { AlertTriangle, TrendingUp, CheckSquare, GitPullRequest } from "lucide-react";
+import { HeaderSettingsButton } from "@/components/HeaderSettingsButton";
+import { APP_HEADER_BAR, APP_HEADER_ROW_LANDING } from "@/components/appHeaderLayout";
+import { useOpenSettings } from "@/context/OpenSettingsContext";
 
 const QUIPS = [
   "It works on my machine...",
@@ -46,19 +48,13 @@ import type { WorkflowId } from "@/screens/WorkflowScreen";
 
 interface LandingScreenProps {
   credStatus: CredentialStatus;
-  onOpenSettings: () => void;
   onNavigate: (workflow: WorkflowId) => void;
 }
 
 // ── Missing credentials banner ────────────────────────────────────────────────
 
-function MissingCredentialsBanner({
-  credStatus,
-  onOpenSettings,
-}: {
-  credStatus: CredentialStatus;
-  onOpenSettings: () => void;
-}) {
+function MissingCredentialsBanner({ credStatus }: { credStatus: CredentialStatus }) {
+  const openSettings = useOpenSettings();
   const missing: string[] = [];
   if (!anthropicComplete(credStatus)) missing.push("Anthropic");
   if (!jiraComplete(credStatus)) missing.push("JIRA");
@@ -76,7 +72,7 @@ function MissingCredentialsBanner({
       <Button
         variant="outline"
         size="sm"
-        onClick={onOpenSettings}
+        onClick={openSettings}
         className="shrink-0 border-amber-500/40 text-amber-600 dark:text-amber-400 hover:bg-amber-500/10"
       >
         Configure
@@ -244,54 +240,26 @@ const WORKFLOW_CARDS: {
 
 // ── Landing screen ────────────────────────────────────────────────────────────
 
-export function LandingScreen({ credStatus, onOpenSettings, onNavigate }: LandingScreenProps) {
+export function LandingScreen({ credStatus, onNavigate }: LandingScreenProps) {
   const quip = useMemo(
     () => QUIPS[Math.floor(Math.random() * QUIPS.length)],
     []
   );
-  // Demo: cycle through pipeline steps to preview the animation.
-  // Replace with real pipeline state when wiring up Workflow 1.
-  const [demoStep, setDemoStep] = useState<number | undefined>(undefined);
   const allComplete =
     anthropicComplete(credStatus) && jiraComplete(credStatus) && bitbucketComplete(credStatus);
 
   return (
     <div className="min-h-screen flex flex-col">
-      <header className="sticky top-0 z-10 border-b bg-background/80 backdrop-blur-sm">
-        <div className="w-full px-[10px] h-14 relative flex items-center overflow-hidden">
-          {/* Logo — absolutely centred, identical layout to ImplementTicketScreen */}
-          <div
-            className="absolute inset-0 flex justify-center items-start pointer-events-none overflow-hidden"
-            style={{ marginTop: '-10px' }}
-          >
-            <PipelineProgress
-              activeStep={demoStep}
-              style={{ width: '50%', height: '96px', opacity: 0.3 }}
-            />
-          </div>
-
-          {/* Right: demo controls + settings — sits above the logo layer */}
-          <div className="flex items-center gap-1 ml-auto relative">
-            {/* Demo controls — remove when wiring to real pipeline state */}
-            <button
-              className="text-[10px] text-muted-foreground px-1 hover:text-foreground"
-              onClick={() => setDemoStep(s => s === undefined ? 0 : s > 0 ? s - 1 : undefined)}
-            >←</button>
-            <button
-              className="text-[10px] text-muted-foreground px-1 hover:text-foreground"
-              onClick={() => setDemoStep(s => (s ?? -1) < PIPELINE_STEPS.length - 1 ? (s ?? -1) + 1 : s)}
-            >→</button>
-            <Button variant="ghost" size="icon" onClick={onOpenSettings}>
-              <Settings className="h-4 w-4" />
-            </Button>
-          </div>
+      <header className={APP_HEADER_BAR}>
+        <div className={APP_HEADER_ROW_LANDING}>
+          <HeaderSettingsButton className="relative z-10 shrink-0" />
         </div>
       </header>
 
       <main className="flex-1 flex items-center">
           <div className="w-full max-w-5xl mx-auto px-6 py-8 space-y-8 bg-background/60 rounded-xl">
             {!allComplete && (
-              <MissingCredentialsBanner credStatus={credStatus} onOpenSettings={onOpenSettings} />
+              <MissingCredentialsBanner credStatus={credStatus} />
             )}
 
             <div className="space-y-3">

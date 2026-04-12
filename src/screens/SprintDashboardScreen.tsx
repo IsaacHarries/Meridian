@@ -14,6 +14,7 @@ import {
   ExternalLink,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { WorkflowPanelHeader, APP_HEADER_TITLE } from "@/components/appHeaderLayout";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -1087,12 +1088,16 @@ export function SprintDashboardScreen({ onBack }: SprintDashboardScreenProps) {
 
   return (
     <div className="min-h-screen">
-      <header className="sticky top-0 z-10 border-b bg-background/80 backdrop-blur-sm">
-        <div className="max-w-5xl mx-auto px-6 h-14 flex items-center gap-3">
-          <Button variant="ghost" size="icon" onClick={onBack}>
-            <ArrowLeft className="h-4 w-4" />
-          </Button>
-          <h1 className="font-semibold flex-1">Sprint Dashboard</h1>
+      <WorkflowPanelHeader
+        leading={
+          <>
+            <Button variant="ghost" size="icon" onClick={onBack}>
+              <ArrowLeft className="h-4 w-4" />
+            </Button>
+            <h1 className={APP_HEADER_TITLE}>Sprint Dashboard</h1>
+          </>
+        }
+        trailing={
           <Button
             variant="ghost"
             size="icon"
@@ -1102,8 +1107,8 @@ export function SprintDashboardScreen({ onBack }: SprintDashboardScreenProps) {
           >
             <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
           </Button>
-        </div>
-      </header>
+        }
+      />
 
       <main className="max-w-5xl mx-auto px-6 py-8 bg-background/60 rounded-xl">
         {loading && !allData && (

@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
+import { OpenSettingsProvider } from "@/context/OpenSettingsContext";
 import { ThemeProvider } from "@/providers/ThemeProvider";
 import { Loader2 } from "lucide-react";
 import { type CredentialStatus, credentialStatusComplete, getCredentialStatus } from "@/lib/tauri";
@@ -61,10 +62,11 @@ function AppInner() {
       .catch(() => setScreen("onboarding"));
   }, []);
 
-  function openSettings() {
+  const openSettings = useCallback(() => {
+    if (screen === "settings") return;
     setScreenBeforeSettings(screen);
     setScreen("settings");
-  }
+  }, [screen]);
 
   function closeSettings() {
     getCredentialStatus()
@@ -85,72 +87,44 @@ function AppInner() {
       .catch(() => setScreen("landing"));
   }
 
-  if (screen === "loading") return <LoadingScreen />;
-
-  if (screen === "onboarding") {
-    return <OnboardingScreen onComplete={completeOnboarding} />;
-  }
-
-  if (screen === "settings") {
-    return (
-      <SettingsScreen
-        onClose={closeSettings}
-        onNavigate={(id) => setScreen(id as Screen)}
-      />
-    );
-  }
-
-  if (screen === "sprint-dashboard") {
-    return <SprintDashboardScreen onBack={() => setScreen("landing")} />;
-  }
-
-  if (screen === "retrospectives") {
-    return <RetrospectivesScreen onBack={() => setScreen("landing")} />;
-  }
-
-  if (screen === "standup" && credStatus) {
-    return <StandupScreen credStatus={credStatus} onBack={() => setScreen("landing")} />;
-  }
-
-  if (screen === "workload-balancer" && credStatus) {
-    return <WorkloadBalancerScreen credStatus={credStatus} onBack={() => setScreen("landing")} />;
-  }
-
-  if (screen === "knowledge-base") {
-    return <KnowledgeBaseScreen onBack={() => setScreen("landing")} />;
-  }
-
-  if (screen === "ticket-quality" && credStatus) {
-    return <TicketQualityScreen credStatus={credStatus} onBack={() => setScreen("landing")} />;
-  }
-
-  if (screen === "review-pr" && credStatus) {
-    return <PrReviewScreen credStatus={credStatus} onBack={() => setScreen("landing")} />;
-  }
-
-  if (screen === "implement-ticket" && credStatus) {
-    return <ImplementTicketScreen credStatus={credStatus} onBack={() => setScreen("landing")} />;
-  }
-
-  if (screen === "agent-skills") {
-    return <AgentSkillsScreen onBack={() => setScreen("landing")} />;
-  }
-
-  if (isWorkflowId(screen)) {
-    return <WorkflowScreen workflowId={screen} onBack={() => setScreen("landing")} />;
-  }
-
-  if (credStatus) {
-    return (
-      <LandingScreen
-        credStatus={credStatus}
-        onOpenSettings={openSettings}
-        onNavigate={(id) => setScreen(id)}
-      />
-    );
-  }
-
-  return <LoadingScreen />;
+  return (
+    <OpenSettingsProvider openSettings={openSettings}>
+      {screen === "loading" ? (
+        <LoadingScreen />
+      ) : screen === "onboarding" ? (
+        <OnboardingScreen onComplete={completeOnboarding} />
+      ) : screen === "settings" ? (
+        <SettingsScreen
+          onClose={closeSettings}
+          onNavigate={(id) => setScreen(id as Screen)}
+        />
+      ) : screen === "sprint-dashboard" ? (
+        <SprintDashboardScreen onBack={() => setScreen("landing")} />
+      ) : screen === "retrospectives" ? (
+        <RetrospectivesScreen onBack={() => setScreen("landing")} />
+      ) : screen === "standup" && credStatus ? (
+        <StandupScreen credStatus={credStatus} onBack={() => setScreen("landing")} />
+      ) : screen === "workload-balancer" && credStatus ? (
+        <WorkloadBalancerScreen credStatus={credStatus} onBack={() => setScreen("landing")} />
+      ) : screen === "knowledge-base" ? (
+        <KnowledgeBaseScreen onBack={() => setScreen("landing")} />
+      ) : screen === "ticket-quality" && credStatus ? (
+        <TicketQualityScreen credStatus={credStatus} onBack={() => setScreen("landing")} />
+      ) : screen === "review-pr" && credStatus ? (
+        <PrReviewScreen credStatus={credStatus} onBack={() => setScreen("landing")} />
+      ) : screen === "implement-ticket" && credStatus ? (
+        <ImplementTicketScreen credStatus={credStatus} onBack={() => setScreen("landing")} />
+      ) : screen === "agent-skills" ? (
+        <AgentSkillsScreen onBack={() => setScreen("landing")} />
+      ) : isWorkflowId(screen) ? (
+        <WorkflowScreen workflowId={screen} onBack={() => setScreen("landing")} />
+      ) : credStatus ? (
+        <LandingScreen credStatus={credStatus} onNavigate={(id) => setScreen(id)} />
+      ) : (
+        <LoadingScreen />
+      )}
+    </OpenSettingsProvider>
+  );
 }
 
 function GlobalBackground() {

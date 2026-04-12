@@ -1,10 +1,18 @@
 import { useState, useEffect, useRef, useMemo } from "react";
 import { useTheme } from "@/providers/ThemeProvider";
 import { type AccentColor, ACCENT_LABELS, ACCENT_SWATCH } from "@/lib/theme";
-import { isMockMode, setMockMode } from "@/lib/tauri";
+import { cn } from "@/lib/utils";
+import {
+  isMockMode,
+  setMockMode,
+  isMockClaudeMode,
+  setMockClaudeMode,
+} from "@/lib/tauri";
 import { BACKGROUNDS, CATEGORY_LABELS, BackgroundRenderer, type BgCategory, getBackgroundId, setBackgroundId } from "@/lib/backgrounds";
 import { CheckCircle, AlertCircle, Loader2, X, RotateCcw, FlaskConical, Sparkles, ChevronRight, FlaskRound } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { HeaderSettingsButton } from "@/components/HeaderSettingsButton";
+import { APP_HEADER_BAR, APP_HEADER_ROW_PANEL, APP_HEADER_TITLE } from "@/components/appHeaderLayout";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -1449,7 +1457,9 @@ function MockModeSection({ onToggle }: { onToggle: () => void }) {
             </div>
             <p className="text-xs text-muted-foreground leading-relaxed">
               Replace JIRA and Bitbucket API calls with realistic local mock data. Useful for
-              testing without API access. Claude AI calls still use your real Anthropic key.
+              testing without API access. Claude still calls the API unless{" "}
+              <span className="font-medium text-foreground">Mock AI responses</span> is enabled
+              below.
             </p>
           </div>
           <Button
@@ -1464,6 +1474,62 @@ function MockModeSection({ onToggle }: { onToggle: () => void }) {
         {enabled && (
           <p className="text-xs text-amber-600 mt-3 pl-13 ml-13">
             Restart or navigate back to landing to reload data with mock mode active.
+          </p>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+function MockClaudeModeSection({ onToggle }: { onToggle: () => void }) {
+  const [enabled, setEnabled] = useState(isMockClaudeMode());
+
+  function toggle() {
+    const next = !enabled;
+    setMockClaudeMode(next);
+    setEnabled(next);
+    onToggle();
+  }
+
+  return (
+    <Card>
+      <CardContent className="py-4">
+        <div className="flex items-start gap-4">
+          <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-violet-500/10 shrink-0">
+            <FlaskConical className="h-4 w-4 text-violet-500" />
+          </div>
+          <div className="flex-1">
+            <div className="flex items-center gap-2 mb-1">
+              <p className="text-sm font-medium">Mock AI responses</p>
+              {enabled && (
+                <Badge className="bg-violet-500/15 text-violet-600 border-violet-500/30 text-xs">
+                  Active
+                </Badge>
+              )}
+            </div>
+            <p className="text-xs text-muted-foreground leading-relaxed">
+              Return canned Claude / agent output for pipelines, standup, retros, workload, ticket
+              quality, and PR review — no Anthropic API calls. JIRA and Bitbucket are unaffected
+              (use Mock Data Mode for those).
+            </p>
+          </div>
+          <Button
+            variant={enabled ? "default" : "outline"}
+            size="sm"
+            onClick={toggle}
+            className={
+              enabled
+                ? "bg-violet-600 hover:bg-violet-700 text-white shrink-0"
+                : "shrink-0"
+            }
+          >
+            {enabled ? "Disable" : "Enable"}
+          </Button>
+        </div>
+        {enabled && (
+          <p className="text-xs text-violet-600 dark:text-violet-400 mt-3 pl-13 ml-13">
+            Credential status treats Anthropic as configured while this is on. Re-run workflows to
+            see mock output.
           </p>
         )}
       </CardContent>
@@ -1619,12 +1685,16 @@ export function SettingsScreen({ onClose, onNavigate }: SettingsScreenProps) {
 
   return (
     <div className="min-h-screen">
-      <header className="sticky top-0 z-10 border-b bg-background/80 backdrop-blur-sm">
-        <div className="max-w-2xl mx-auto px-6 h-14 flex items-center justify-between">
-          <h1 className="font-semibold">Settings</h1>
-          <Button variant="ghost" size="icon" onClick={onClose}>
-            <X className="h-4 w-4" />
-          </Button>
+      <header className={APP_HEADER_BAR}>
+        <div className={APP_HEADER_ROW_PANEL}>
+          <h1 className={cn(APP_HEADER_TITLE, "shrink-0")}>Settings</h1>
+          <div className="min-w-0 flex-1" aria-hidden />
+          <div className="flex shrink-0 items-center gap-1">
+            <HeaderSettingsButton />
+            <Button variant="ghost" size="icon" onClick={onClose} aria-label="Close settings">
+              <X className="h-4 w-4" />
+            </Button>
+          </div>
         </div>
       </header>
 
@@ -1678,6 +1748,7 @@ export function SettingsScreen({ onClose, onNavigate }: SettingsScreenProps) {
                 Development
               </h2>
               <MockModeSection onToggle={handleMockToggle} />
+              <MockClaudeModeSection onToggle={handleMockToggle} />
             </section>
 
             <section className="space-y-3">
