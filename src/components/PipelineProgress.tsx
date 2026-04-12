@@ -190,9 +190,10 @@ function getTarget(step: number | undefined, n: number, logoLeft = false): S {
   }
   return {
     nodes:  Array.from({ length: n }, (_, i) => pipePos(i, step)),
-    // Phantom nodes at rel=−2/−1 fill the left side even on step 0 where no real
-    // pipeline nodes have rotated there yet.
-    left:   [pipePos(step - 2, step), pipePos(step - 1, step)],
+    // Treat phantoms as virtual nodes with fixed indices −2 and −1.
+    // Using pipePos(-2, step) / pipePos(-1, step) means rel decreases as step
+    // advances, so the phantoms rotate and fade out exactly like real nodes.
+    left:   [pipePos(-2, step), pipePos(-1, step)],
     arcOp:  0.5,             // visible but subdued so nodes remain the focal point
     arcPts: [...PIPE_ARC_C], // matches the R_CIRC=1066 node-circle curvature
     hCx:    ACTIVE_X, hCy: NODE_Y, hR: PIPE_HR, hSOp: 0.55,
