@@ -3,7 +3,6 @@ import { CheckCircle, XCircle, Loader2, ExternalLink, ArrowRight, ChevronLeft, F
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { CredentialField } from "@/components/CredentialField";
-import { MeridianLogo } from "@/components/MeridianLogo";
 import { HeaderSettingsButton } from "@/components/HeaderSettingsButton";
 import { APP_HEADER_BAR, APP_HEADER_ROW_LANDING } from "@/components/appHeaderLayout";
 import { ScopeList, JIRA_PERMISSIONS, BITBUCKET_SCOPES } from "@/components/ScopeList";
@@ -78,9 +77,6 @@ function WelcomeStep({ onNext, onMockMode }: { onNext: () => void; onMockMode?: 
   return (
     <div className="space-y-6">
       <div className="space-y-2 text-center">
-        <div className="flex justify-center mb-3">
-          <MeridianLogo style={{ width: '220px' }} />
-        </div>
         <h1 className="text-3xl font-bold tracking-tight">Welcome to Meridian</h1>
         <p className="text-muted-foreground max-w-sm mx-auto">
           Your personal engineering productivity hub. Let's connect your tools to get started.

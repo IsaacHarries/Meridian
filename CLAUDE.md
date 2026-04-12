@@ -10,7 +10,10 @@ Built for individual use — not distributed.
 ## Core Philosophy
 
 - Each agent has a single, focused responsibility
-- Human remains in the loop at the critical decision point (implementation planning)
+- Human remains in the loop at **every step** of the implementation pipeline — no step advances automatically
+- Each agent presents its findings and waits for explicit user approval before the next agent runs
+- The user can converse with the agent at any step: ask questions, provide clarifications, correct misunderstandings, or abort the pipeline entirely
+- Agents may surface blocking issues that must be resolved before the pipeline can proceed (e.g. incomplete ticket data)
 - Code is never written before a plan is agreed upon
 - Nothing is merged without tests and a review pass
 - The system improves over time via Agent Skills that encode accumulated knowledge
@@ -71,6 +74,11 @@ user gets immediate context without having to navigate into the Sprint Dashboard
 See **Agent Pipeline** section below for the full sub-agent breakdown.
 This is the primary workflow — a pipeline of 8 sub-agents taking a ticket from grooming
 through to a raised PR.
+
+The pipeline is **fully human-gated**: each agent completes its work, presents a summary
+to the user, and waits for explicit confirmation before the next agent runs. At every
+checkpoint the user can ask follow-up questions, request changes, provide additional
+context, or abort the pipeline. Agents never chain automatically.
 
 ---
 
@@ -420,11 +428,39 @@ and feeds into Agent Skills.
 - Synthesize a structured understanding of: what the ticket is asking for, relevant existing
   code, and any ambiguities or gaps in the ticket description
 
+**Blocking conditions** — surface these as hard blockers before presenting any analysis.
+The pipeline must not advance until the user confirms each blocker is resolved:
+- **Missing or empty description**: the ticket has no description or the description is
+  blank / placeholder text only — cannot groom a ticket with no stated intent
+- **Missing acceptance criteria**: the ticket (if type is Story or Task) has no acceptance
+  criteria defined — implementation cannot be planned without a definition of done
+- **Missing story points**: the ticket is typed as a Story or Task and has no story point
+  estimate — flag this as a readiness gap and ask the user whether to proceed or update the ticket first
+- **Ambiguous or contradictory description**: the description exists but is internally
+  contradictory or too vague to derive a clear intent — surface the specific ambiguity and
+  ask the user to clarify before proceeding
+
+When a blocker is detected, display it clearly in the UI and open a conversation thread
+so the user can either resolve it (e.g. update the ticket in JIRA and re-fetch) or
+explicitly override and continue at their own risk.
+
+**Human-in-the-Loop checkpoint**:
+After completing its analysis (and resolving any blockers), the Grooming Agent presents
+its full findings to the user:
+- Ticket summary and interpreted intent
+- Relevant files/modules identified and why
+- Any ambiguities or gaps still present
+- A conversation interface for the user to ask questions or add context
+
+The user must explicitly approve ("looks good, proceed") or provide corrections before
+the Impact Analysis Agent is invoked. There is no automatic handoff.
+
 **Outputs** (passed to Impact Analysis Agent):
 - Ticket summary
 - List of relevant files/modules with brief explanation of relevance
 - Identified ambiguities
 - Raw content of relevant code sections
+- Any user clarifications provided during the checkpoint conversation
 
 ---
 
@@ -432,7 +468,7 @@ and feeds into Agent Skills.
 **Purpose**: Understand the blast radius of the planned change before planning begins.
 
 **Inputs**:
-- Output from Grooming Agent
+- Output from Grooming Agent (including any user clarifications from the checkpoint)
 
 **Behavior**:
 - Analyze which other modules, services, or files call or depend on the code likely to be
@@ -443,32 +479,51 @@ and feeds into Agent Skills.
 - Flag anything that could break, regress, or require coordinated changes
 - Assess risk level of the change (low / medium / high) with justification
 
+**Human-in-the-Loop checkpoint**:
+After completing its analysis, the Impact Analysis Agent presents its findings to the user:
+- Dependency map and affected areas
+- Risk assessment with justification
+- Notable Git history context (e.g. "this file was heavily refactored 2 weeks ago")
+- A conversation interface for the user to ask questions, flag additional constraints, or
+  correct any misidentified dependencies
+
+The user must explicitly approve before the Triage Agent is invoked.
+
 **Outputs** (passed to Triage Agent):
 - Dependency map of affected code
 - Risk assessment with justification
 - Git history insights on relevant files
 - List of files that may need consistent updates alongside the primary change
+- Any user clarifications or constraints added during the checkpoint conversation
 
 ---
 
-### 3. Triage Agent (Human-in-the-Loop)
+### 3. Triage Agent (Planning Checkpoint)
 **Purpose**: Collaborate with the user to produce a specific, agreed-upon implementation plan.
 
 **Inputs**:
-- Output from Grooming Agent
-- Output from Impact Analysis Agent
+- Output from Grooming Agent (including checkpoint clarifications)
+- Output from Impact Analysis Agent (including checkpoint clarifications)
 
 **Behavior**:
 - Present a structured briefing to the user: ticket understanding, relevant code, impact
   analysis, and risk level
 - Propose a high-level implementation approach
-- Use the AskUserQuestion tool to surface uncertainties and ask targeted clarifying questions
+- Surface uncertainties and ask targeted clarifying questions
 - Incorporate user clarifications and course-corrections
-- Iterate until consensus is reached
-- Produce a final, structured implementation plan
+- Iterate — this is a back-and-forth conversation, not a one-shot proposal. The agent
+  should not produce a final plan until the user explicitly agrees it is complete
+- Produce a final, structured implementation plan only once the user confirms it
 
-**Human-in-the-loop**: This is the primary checkpoint. The user can clarify requirements,
-correct misunderstandings, adjust the approach, or flag constraints the agent is unaware of.
+**Human-in-the-Loop checkpoint**:
+This is the deepest collaborative checkpoint in the pipeline — the implementation plan
+is the contract for everything that follows. The user should feel free to iterate as many
+times as needed: push back on the proposed approach, add constraints, ask "what if" questions,
+or request that the agent reconsider a particular decision. The Implementation Agent will
+follow this plan precisely, so ambiguities should be resolved here.
+
+The user explicitly confirms the plan ("approved, let's build it") before the
+Implementation Agent is invoked.
 
 **Outputs** (passed to Implementation Agent):
 Structured implementation plan including:
@@ -493,8 +548,19 @@ Structured implementation plan including:
 - Use Read, Edit, Write, Bash, Glob, and Grep tools to navigate and modify the codebase
   locally
 - Respect existing patterns, naming conventions, and architecture decisions
-- If a deviation from the plan is necessary, pause and surface it to the user before proceeding
+- If a deviation from the plan is necessary, pause immediately and surface it to the user
+  before proceeding — do not make unilateral decisions mid-implementation
 - Do not write tests (that is the Test Generation Agent's responsibility)
+
+**Human-in-the-Loop checkpoint**:
+Once implementation is complete, the agent presents a diff-style summary of every change
+made, noting any deviations from the plan and the reasons for them. The user reviews the
+changes and can:
+- Ask questions about specific changes
+- Request that certain changes be undone or revised before proceeding
+- Approve and advance to the Test Generation Agent
+
+No automatic handoff to the Test Generation Agent.
 
 **Outputs**:
 - Modified/created source files
@@ -520,6 +586,15 @@ Structured implementation plan including:
 **Note**: Kept intentionally separate from the Implementation Agent to prevent an agent from
 writing tests that simply validate its own assumptions.
 
+**Human-in-the-Loop checkpoint**:
+Once tests are written, the agent presents a summary of what was tested, what was
+intentionally omitted, and why. The user can:
+- Ask why specific scenarios were or were not covered
+- Request additional tests for cases the agent missed
+- Approve and advance to the Code Review Agent
+
+No automatic handoff to the Code Review Agent.
+
 **Outputs**:
 - Test files
 - Summary of test coverage and any areas deliberately not covered (with reasoning)
@@ -542,6 +617,17 @@ writing tests that simply validate its own assumptions.
 - Assess test coverage quality
 - Flag anything a human reviewer is likely to push back on
 - Provide an overall confidence level: Ready for review / Needs attention / Requires rework
+
+**Human-in-the-Loop checkpoint**:
+The agent presents the full structured review report to the user. For any blocking finding,
+the pipeline should not advance until the user has either directed that it be fixed or
+explicitly overridden it. The user can:
+- Ask the agent to elaborate on any finding
+- Direct specific findings back to the Implementation or Test agents for remediation
+- Accept all findings and advance to the PR Description Agent
+
+No automatic handoff to the PR Description Agent — and if blocking findings exist,
+the user must actively choose to override them.
 
 **Outputs**:
 - Structured review report with categorized findings (blocking / non-blocking / suggestions)
@@ -569,6 +655,15 @@ writing tests that simply validate its own assumptions.
 - Note any deviations from the original plan and the reasoning
 - Follow any PR template conventions used by the team if provided
 
+**Human-in-the-Loop checkpoint**:
+The agent presents the draft PR description to the user for review. The user can:
+- Ask for edits to tone, content, or structure
+- Add additional context the agent didn't capture
+- Approve the description and confirm whether to raise the PR via Bitbucket API or
+  copy it to clipboard for manual submission
+
+The PR is never raised automatically — explicit user confirmation is always required.
+
 **Outputs**:
 - Complete PR description ready to paste or submit via Bitbucket API
 - (Optional stretch goal) Raise the PR automatically via Bitbucket API pending user approval
@@ -584,6 +679,8 @@ writing tests that simply validate its own assumptions.
 - Final implemented code
 - Code review findings
 - Any deviations noted along the way
+- All checkpoint conversation threads from the pipeline run (capturing user clarifications
+  and corrections that weren't in the original ticket)
 
 **Behavior**:
 - Compare the original plan to what was actually built — identify where and why they diverged
@@ -592,6 +689,11 @@ writing tests that simply validate its own assumptions.
 - Produce recommendations for updating Agent Skills to encode new learnings
 - Over time, this agent makes the grooming and triage agents progressively smarter about the
   specific codebase and team conventions
+
+**Human-in-the-Loop checkpoint**:
+The agent presents its retrospective summary and suggested Skill updates to the user. The
+user can review each suggested update and choose to accept, edit, or discard it before
+anything is written to the Knowledge Base or Agent Skills. Nothing is committed automatically.
 
 **Outputs**:
 - Retrospective summary
@@ -616,30 +718,35 @@ Custom Skills that load domain expertise into agents automatically:
 
 ## Full Pipeline Summary
 
+Every step requires explicit user approval before the next agent runs.
+The user can converse with each agent at its checkpoint — ask questions, provide
+clarifications, request changes, or abort.
+
 ```
 JIRA API
     ↓
 [1. Grooming Agent]
-    ↓
+    — blocker checks (AC, description, story points) —
+    ↓ USER checkpoint: review findings, resolve blockers, approve
 [2. Impact Analysis Agent]
-    ↓
-[3. Triage Agent] ←→ USER (clarification loop)
-    ↓ (agreed plan)
+    ↓ USER checkpoint: review blast radius & risk, approve
+[3. Triage Agent] ←→ USER (iterative planning conversation)
+    ↓ USER explicitly approves final implementation plan
 [4. Implementation Agent]
-    ↓
+    ↓ USER checkpoint: review diff, request revisions, approve
 [5. Test Generation Agent]
-    ↓
+    ↓ USER checkpoint: review test coverage, request additions, approve
 [6. Code Review Agent]
-    ↓
+    ↓ USER checkpoint: review findings, direct fixes or override blockers, approve
 [7. PR Description Agent]
-    ↓
-USER approves → PR raised to Bitbucket
+    ↓ USER checkpoint: review & edit PR description, confirm submission
+USER confirms → PR raised to Bitbucket
 
 (After merge)
     ↓
 [8. Retrospective/Learning Agent]
-    ↓
-Skills updated
+    ↓ USER checkpoint: review retrospective, approve Skill updates
+Skills / Knowledge Base updated
 ```
 
 ---

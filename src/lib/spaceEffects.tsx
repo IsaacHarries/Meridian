@@ -23,6 +23,127 @@ const EV_WORMHOLE      = "m-fire-wormhole";
 const EV_SHOOTING_STAR = "meridian-ss-fire";
 const EV_CLEAR         = "m-clear-all";
 const EV_ENABLED       = "m-effects-enabled";
+/** Same event name used by the FX drawer to stay in sync with the overlay. */
+export const SPACE_FX_TOGGLES_EVENT = "m-space-fx-kinds" as const;
+
+const FX_KINDS_LS = "meridian-space-fx-kinds";
+
+/** Background animation channels (auto-spawn + manual triggers respect these). */
+export type SpaceEffectKind =
+  | "shootingStars"
+  | "comets"
+  | "pulsars"
+  | "meteors"
+  | "wormholes"
+  | "blackHole"
+  | "novas";
+
+export const SPACE_EFFECT_KINDS: SpaceEffectKind[] = [
+  "shootingStars",
+  "comets",
+  "pulsars",
+  "meteors",
+  "wormholes",
+  "blackHole",
+  "novas",
+];
+
+export const SPACE_FX_KIND_META: Record<
+  SpaceEffectKind,
+  { icon: string; short: string }
+> = {
+  shootingStars: { icon: "✦", short: "stars" },
+  comets:        { icon: "☄", short: "comet" },
+  pulsars:       { icon: "✷", short: "pulsar" },
+  meteors:       { icon: "⁂", short: "meteors" },
+  wormholes:     { icon: "⊕", short: "wormhole" },
+  blackHole:     { icon: "◉", short: "black hole" },
+  novas:         { icon: "※", short: "supernova" },
+};
+
+const DEFAULT_KIND_TOGGLES: Record<SpaceEffectKind, boolean> = {
+  shootingStars: true,
+  comets:        true,
+  pulsars:       true,
+  meteors:       true,
+  wormholes:     true,
+  blackHole:     true,
+  novas:         true,
+};
+
+function loadKindToggles(): Record<SpaceEffectKind, boolean> {
+  try {
+    const raw = localStorage.getItem(FX_KINDS_LS);
+    if (!raw) return { ...DEFAULT_KIND_TOGGLES };
+    const o = JSON.parse(raw) as Partial<Record<SpaceEffectKind, boolean>>;
+    return { ...DEFAULT_KIND_TOGGLES, ...o };
+  } catch {
+    return { ...DEFAULT_KIND_TOGGLES };
+  }
+}
+
+let kindTogglesCache = loadKindToggles();
+
+export function getSpaceEffectKindToggles(): Record<SpaceEffectKind, boolean> {
+  return { ...kindTogglesCache };
+}
+
+export function setSpaceEffectKindEnabled(kind: SpaceEffectKind, on: boolean) {
+  if (kindTogglesCache[kind] === on) return;
+  kindTogglesCache = { ...kindTogglesCache, [kind]: on };
+  try {
+    localStorage.setItem(FX_KINDS_LS, JSON.stringify(kindTogglesCache));
+  } catch {
+    /* ignore quota */
+  }
+  window.dispatchEvent(
+    new CustomEvent(SPACE_FX_TOGGLES_EVENT, { detail: { ...kindTogglesCache } })
+  );
+}
+
+export function toggleSpaceEffectKind(kind: SpaceEffectKind) {
+  setSpaceEffectKindEnabled(kind, !kindTogglesCache[kind]);
+}
+
+// ── Black hole gravity (user preference, persisted) ─────────────────────────
+
+const BH_GRAVITY_PREF_LS = "meridian-bh-gravity-enabled";
+
+/** Drawer + overlay stay in sync when this preference changes */
+export const SPACE_FX_BH_GRAVITY_EVENT = "m-space-fx-bh-gravity" as const;
+
+function loadBhGravityPreference(): boolean {
+  try {
+    const v = localStorage.getItem(BH_GRAVITY_PREF_LS);
+    if (v === null) return true;
+    return v === "1" || v === "true";
+  } catch {
+    return true;
+  }
+}
+
+let bhGravityPreferenceCache = loadBhGravityPreference();
+
+export function getBhGravityEnabled(): boolean {
+  return bhGravityPreferenceCache;
+}
+
+export function setBhGravityEnabled(on: boolean) {
+  if (bhGravityPreferenceCache === on) return;
+  bhGravityPreferenceCache = on;
+  try {
+    localStorage.setItem(BH_GRAVITY_PREF_LS, on ? "1" : "0");
+  } catch {
+    /* ignore */
+  }
+  window.dispatchEvent(
+    new CustomEvent(SPACE_FX_BH_GRAVITY_EVENT, { detail: on })
+  );
+}
+
+export function toggleBhGravityEnabled() {
+  setBhGravityEnabled(!bhGravityPreferenceCache);
+}
 
 export const fireSupernova    = () => window.dispatchEvent(new CustomEvent(EV_NOVA));
 export const fireBlackHole    = () => window.dispatchEvent(new CustomEvent(EV_BH));
@@ -1176,11 +1297,60 @@ export function SpaceEffectsOverlay({ bgId }: { bgId: string }) {
   const space = isSpaceBg(bgId);
   const [st, setSt] = React.useState<State>(EMPTY);
   const [enabled, setEnabled] = React.useState(true);
+  const [kinds, setKinds] = React.useState<Record<SpaceEffectKind, boolean>>(() =>
+    loadKindToggles()
+  );
   // Gravity turns off the moment the BH starts vanishing, even though the
   // visual fade-out continues for another ~2.8 s.
   const [bhGravityActive, setBhGravityActive] = React.useState(false);
+  /** User toggle from FX drawer — when false, BH still renders but does not pull other effects */
+  const [bhGravityUserEnabled, setBhGravityUserEnabled] = React.useState(() =>
+    loadBhGravityPreference()
+  );
+
+  const kindsRef = React.useRef(kinds);
+  kindsRef.current = kinds;
+  const enabledRef = React.useRef(enabled);
+  enabledRef.current = enabled;
 
   const onBHVanishing = React.useCallback(() => setBhGravityActive(false), []);
+
+  React.useEffect(() => {
+    const h = (e: Event) =>
+      setKinds({ ...(e as CustomEvent<Record<SpaceEffectKind, boolean>>).detail });
+    window.addEventListener(SPACE_FX_TOGGLES_EVENT, h);
+    return () => window.removeEventListener(SPACE_FX_TOGGLES_EVENT, h);
+  }, []);
+
+  React.useEffect(() => {
+    const h = (e: Event) =>
+      setBhGravityUserEnabled((e as CustomEvent<boolean>).detail);
+    window.addEventListener(SPACE_FX_BH_GRAVITY_EVENT, h);
+    return () => window.removeEventListener(SPACE_FX_BH_GRAVITY_EVENT, h);
+  }, []);
+
+  // Dismiss running instances when a channel is turned off
+  React.useEffect(() => {
+    setSt((p) => ({
+      ...p,
+      novas:         kinds.novas ? p.novas : [],
+      comets:        kinds.comets ? p.comets : [],
+      pulsars:       kinds.pulsars ? p.pulsars : [],
+      meteors:       kinds.meteors ? p.meteors : [],
+      wormholes:     kinds.wormholes ? p.wormholes : [],
+      shootingStars: kinds.shootingStars ? p.shootingStars : [],
+      bh:            kinds.blackHole ? p.bh : null,
+    }));
+    if (!kinds.blackHole) setBhGravityActive(false);
+  }, [
+    kinds.shootingStars,
+    kinds.comets,
+    kinds.pulsars,
+    kinds.meteors,
+    kinds.wormholes,
+    kinds.blackHole,
+    kinds.novas,
+  ]);
 
   const addNova    = React.useCallback(() => setSt(p => ({ ...p, novas:    [...p.novas, mkNova()] })), []);
   const addBH      = React.useCallback((x?: number, y?: number) => setSt(p => {
@@ -1249,13 +1419,29 @@ export function SpaceEffectsOverlay({ bgId }: { bgId: string }) {
       if (!on) setSt(EMPTY);
     };
     const pairs: [string, () => void][] = [
-      [EV_NOVA,          () => { if (enabled) addNova(); }],
-      [EV_BH,            () => { if (enabled) replaceBH(); }],
-      [EV_COMET,         () => { if (enabled) addComet(); }],
-      [EV_PULSAR,        () => { if (enabled) replacePulsar(); }],
-      [EV_METEORS,       () => { if (enabled) addMeteors(); }],
-      [EV_WORMHOLE,      () => { if (enabled) replaceWH(); }],
-      [EV_SHOOTING_STAR, () => { if (enabled) addShootingStars(1 + Math.floor(Math.random() * 3)); }],
+      [EV_NOVA, () => {
+        if (enabledRef.current && kindsRef.current.novas) addNova();
+      }],
+      [EV_BH, () => {
+        if (enabledRef.current && kindsRef.current.blackHole) replaceBH();
+      }],
+      [EV_COMET, () => {
+        if (enabledRef.current && kindsRef.current.comets) addComet();
+      }],
+      [EV_PULSAR, () => {
+        if (enabledRef.current && kindsRef.current.pulsars) replacePulsar();
+      }],
+      [EV_METEORS, () => {
+        if (enabledRef.current && kindsRef.current.meteors) addMeteors();
+      }],
+      [EV_WORMHOLE, () => {
+        if (enabledRef.current && kindsRef.current.wormholes) replaceWH();
+      }],
+      [EV_SHOOTING_STAR, () => {
+        if (enabledRef.current && kindsRef.current.shootingStars) {
+          addShootingStars(1 + Math.floor(Math.random() * 3));
+        }
+      }],
     ];
     pairs.forEach(([ev, fn]) => window.addEventListener(ev, fn));
     window.addEventListener(EV_CLEAR, clearAll);
@@ -1265,7 +1451,7 @@ export function SpaceEffectsOverlay({ bgId }: { bgId: string }) {
       window.removeEventListener(EV_CLEAR, clearAll);
       window.removeEventListener(EV_ENABLED, onEnabled);
     };
-  }, [enabled, addNova, addBH, replaceBH, addComet, addPulsar, replacePulsar, addMeteors, addWH, replaceWH, addShootingStars]);
+  }, [addNova, replaceBH, addComet, replacePulsar, addMeteors, replaceWH, addShootingStars]);
 
   // Auto-schedule random effects when on a space background and effects are enabled
   React.useEffect(() => {
@@ -1281,22 +1467,24 @@ export function SpaceEffectsOverlay({ bgId }: { bgId: string }) {
       timers.push(setTimeout(tick, minMs + r() * (maxMs - minMs)));
     };
 
-    sched(addComet,        18_000,  55_000);
-    sched(addPulsar,       55_000, 160_000);
-    sched(addMeteors,      80_000, 220_000);
-    sched(addWH,        3_600_000, 7_200_000);
+    sched(() => { if (kindsRef.current.comets) addComet(); }, 18_000, 55_000);
+    sched(() => { if (kindsRef.current.pulsars) addPulsar(); }, 55_000, 160_000);
+    sched(() => { if (kindsRef.current.meteors) addMeteors(); }, 80_000, 220_000);
+    sched(() => { if (kindsRef.current.wormholes) addWH(); }, 3_600_000, 7_200_000);
     // Shooting stars: every 2.5–8 s, occasionally 2 at once
-    sched(() => addShootingStars(Math.random() < 0.25 ? 2 : 1), 2_500, 8_000);
+    sched(() => {
+      if (!kindsRef.current.shootingStars) return;
+      addShootingStars(Math.random() < 0.25 ? 2 : 1);
+    }, 2_500, 8_000);
 
     // Black hole: daily 10% check
     const rec = getBHRec();
-    if (rec.show) {
-      // Small delay so it appears after background settles
+    if (rec.show && kindsRef.current.blackHole) {
       timers.push(setTimeout(() => addBH(rec.x, rec.y), 4000));
     }
 
     return () => timers.forEach(clearTimeout);
-  }, [space, enabled, addNova, addComet, addPulsar, addMeteors, addWH, addBH, addShootingStars]);
+  }, [space, enabled, addComet, addPulsar, addMeteors, addWH, addBH, addShootingStars]);
 
   const rmNova    = (id: number) => setSt(p => ({ ...p, novas:         p.novas.filter(x => x.id !== id) }));
   const rmComet   = (id: number) => setSt(p => ({ ...p, comets:        p.comets.filter(x => x.id !== id) }));
@@ -1309,7 +1497,13 @@ export function SpaceEffectsOverlay({ bgId }: { bgId: string }) {
   if (!space && empty) return null;
 
   return (
-    <BHContext.Provider value={st.bh && bhGravityActive ? { x: st.bh.x, y: st.bh.y } : null}>
+    <BHContext.Provider
+      value={
+        st.bh && bhGravityActive && bhGravityUserEnabled
+          ? { x: st.bh.x, y: st.bh.y }
+          : null
+      }
+    >
       <div style={{ position: "absolute", inset: 0, overflow: "hidden", pointerEvents: "none" }}>
         {st.novas.map(n =>
           <NovaEl key={n.id} nova={n} onDone={() => rmNova(n.id)} />

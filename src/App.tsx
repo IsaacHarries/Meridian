@@ -6,8 +6,22 @@ import { type CredentialStatus, credentialStatusComplete, getCredentialStatus } 
 import { BackgroundRenderer, getBackgroundId, useBgChangeListener } from "@/lib/backgrounds";
 import {
   SpaceEffectsOverlay,
-  fireShootingStar, fireBlackHole, fireComet, firePulsar,
-  fireMeteorShower, fireWormhole, clearAllEffects, setEffectsEnabled,
+  fireShootingStar,
+  fireBlackHole,
+  fireComet,
+  firePulsar,
+  fireSupernova,
+  fireMeteorShower,
+  fireWormhole,
+  clearAllEffects,
+  setEffectsEnabled,
+  SPACE_FX_TOGGLES_EVENT,
+  SPACE_FX_BH_GRAVITY_EVENT,
+  getSpaceEffectKindToggles,
+  getBhGravityEnabled,
+  toggleSpaceEffectKind,
+  toggleBhGravityEnabled,
+  type SpaceEffectKind,
 } from "@/lib/spaceEffects";
 import { OnboardingScreen } from "@/screens/OnboardingScreen";
 import { SettingsScreen } from "@/screens/SettingsScreen";
@@ -149,9 +163,29 @@ function GlobalForeground() {
   );
 }
 
+const FX_ENABLED_EVENT = "m-effects-enabled";
+
 function GlobalFxDrawer({ hideUI, onToggleHideUI }: { hideUI: boolean; onToggleHideUI: () => void }) {
   const [open, setOpen] = useState(false);
   const [on, setOn] = useState(true);
+  const [kinds, setKinds] = useState<Record<SpaceEffectKind, boolean>>(getSpaceEffectKindToggles);
+  const [bhGravityOn, setBhGravityOn] = useState(() => getBhGravityEnabled());
+
+  useEffect(() => {
+    const syncEnabled = (e: Event) => setOn((e as CustomEvent<boolean>).detail);
+    const syncKinds = (e: Event) =>
+      setKinds({ ...(e as CustomEvent<Record<SpaceEffectKind, boolean>>).detail });
+    const syncGrav = (e: Event) =>
+      setBhGravityOn((e as CustomEvent<boolean>).detail);
+    window.addEventListener(FX_ENABLED_EVENT, syncEnabled);
+    window.addEventListener(SPACE_FX_TOGGLES_EVENT, syncKinds);
+    window.addEventListener(SPACE_FX_BH_GRAVITY_EVENT, syncGrav);
+    return () => {
+      window.removeEventListener(FX_ENABLED_EVENT, syncEnabled);
+      window.removeEventListener(SPACE_FX_TOGGLES_EVENT, syncKinds);
+      window.removeEventListener(SPACE_FX_BH_GRAVITY_EVENT, syncGrav);
+    };
+  }, []);
 
   function toggle() {
     const next = !on;
@@ -159,86 +193,138 @@ function GlobalFxDrawer({ hideUI, onToggleHideUI }: { hideUI: boolean; onToggleH
     setEffectsEnabled(next);
   }
 
-  const EASE = "280ms cubic-bezier(0.4,0,0.2,1)";
+  const spawnRows: { kind: SpaceEffectKind; icon: string; label: string; fn: () => void }[] = [
+    { kind: "shootingStars", icon: "✦", label: "shooting star", fn: fireShootingStar },
+    { kind: "comets", icon: "☄", label: "comet", fn: fireComet },
+    { kind: "meteors", icon: "⁂", label: "meteor shower", fn: fireMeteorShower },
+    { kind: "blackHole", icon: "◉", label: "black hole", fn: fireBlackHole },
+    { kind: "pulsars", icon: "✷", label: "pulsar", fn: firePulsar },
+    { kind: "novas", icon: "※", label: "supernova", fn: fireSupernova },
+    { kind: "wormholes", icon: "⊕", label: "wormhole", fn: fireWormhole },
+  ];
+
+  const chk =
+    "h-3.5 w-3.5 shrink-0 rounded border border-white/25 bg-black/50 accent-zinc-500 focus:ring-1 focus:ring-white/20 focus:ring-offset-0";
+
+  const gravityFootnote =
+    "When on, comets, stars, and other effects drift toward an active black hole. The hole still appears if enabled above; this only toggles the pull.";
 
   return (
-    <div className="fixed bottom-4 right-4 z-50 flex items-center justify-end pointer-events-none">
-      {/* Panel — slides out to the left from behind the tab */}
+    <div className="pointer-events-none fixed bottom-2 right-3 z-50 flex max-w-[calc(100%-1.5rem)] items-center gap-2 sm:right-4 sm:max-w-[calc(100%-2rem)]">
+      {/* Drawer grows left from the fx chip; same row, max-width clip */}
       <div
-        className="pointer-events-auto flex flex-wrap items-center gap-1.5 bg-black/50 backdrop-blur-md border border-white/12 rounded-2xl px-4 py-2.5 mr-2"
+        className={`min-w-0 overflow-hidden transition-[max-width] ${
+          open ? "max-w-[min(calc(100vw-5.5rem),92vw)]" : "max-w-0"
+        }`}
         style={{
-          opacity: open ? 1 : 0,
-          transform: open ? "translateX(0) scaleX(1)" : "translateX(12px) scaleX(0.92)",
-          transformOrigin: "right center",
-          transition: `opacity ${EASE}, transform ${EASE}`,
-          pointerEvents: open ? "auto" : "none",
+          transitionDuration: "280ms",
+          transitionTimingFunction: "cubic-bezier(0.4,0,0.2,1)",
         }}
       >
-        {/* Effects toggle */}
-        <button
-          onClick={toggle}
-          className={`rounded-full border px-3 py-1 text-xs transition-colors ${
-            on
-              ? "bg-white/20 border-white/35 text-white/90 hover:bg-white/30"
-              : "bg-white/5 border-white/15 text-white/40 hover:bg-white/10"
-          }`}
-        >
-          {on ? "⬤ on" : "○ off"}
-        </button>
-        {/* Clear all */}
-        <button
-          onClick={clearAllEffects}
-          className="rounded-full bg-red-500/20 border border-red-400/30 px-3 py-1 text-xs text-red-300/80 hover:bg-red-500/30 transition-colors"
-        >
-          ✕ clear
-        </button>
-        <div className="w-px bg-white/15 self-stretch mx-0.5" />
-        {/* Hide UI */}
-        <button
-          onClick={onToggleHideUI}
-          className={`rounded-full border px-3 py-1 text-xs transition-colors ${
-            hideUI
-              ? "bg-white/20 border-white/35 text-white/90 hover:bg-white/30"
-              : "bg-white/5 border-white/15 text-white/50 hover:bg-white/10"
-          }`}
-        >
-          {hideUI ? "◨ show ui" : "◧ hide ui"}
-        </button>
-        <div className="w-px bg-white/15 self-stretch mx-0.5" />
-        {/* Spawn buttons */}
-        {(
-          [
-            ["✦", "shooting star", fireShootingStar],
-            ["☄", "comet",         fireComet],
-            ["⁂", "meteor shower", fireMeteorShower],
-            ["◉", "black hole",    fireBlackHole],
-            ["✷", "supernova",     firePulsar],
-            ["⊕", "wormhole",      fireWormhole],
-          ] as [string, string, () => void][]
-        ).map(([icon, label, fn]) => (
-          <button
-            key={label}
-            onClick={fn}
-            className="rounded-full bg-white/10 border border-white/20 px-3 py-1 text-xs text-white/70 hover:bg-white/20 transition-colors"
+        <div className="pointer-events-auto w-max max-w-[min(calc(100vw-5.5rem),92vw)] rounded-l-2xl border border-white/12 border-r-transparent bg-black/50 py-2 pl-3 pr-2 backdrop-blur-md sm:pl-4">
+          <div
+            id="fx-drawer-panel"
+            aria-hidden={!open}
+            className="flex max-w-full flex-nowrap items-center gap-x-1.5 overflow-x-auto overflow-y-hidden [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+            role="group"
+            aria-label="Space effects"
           >
-            {icon} {label}
-          </button>
-        ))}
+            <button
+              type="button"
+              onClick={toggle}
+              className={`shrink-0 rounded-full border px-2.5 py-1 text-xs transition-colors ${
+                on
+                  ? "bg-white/20 border-white/35 text-white/90 hover:bg-white/30"
+                  : "bg-white/5 border-white/15 text-white/40 hover:bg-white/10"
+              }`}
+            >
+              {on ? "⬤ on" : "○ off"}
+            </button>
+            <button
+              type="button"
+              onClick={clearAllEffects}
+              className="shrink-0 rounded-full border border-red-400/30 bg-red-500/20 px-2.5 py-1 text-xs text-red-300/80 transition-colors hover:bg-red-500/30"
+            >
+              ✕ clear
+            </button>
+            <div className="h-5 w-px shrink-0 bg-white/15" />
+            <button
+              type="button"
+              onClick={onToggleHideUI}
+              className={`shrink-0 rounded-full border px-2.5 py-1 text-xs transition-colors ${
+                hideUI
+                  ? "bg-white/20 border-white/35 text-white/90 hover:bg-white/30"
+                  : "bg-white/5 border-white/15 text-white/50 hover:bg-white/10"
+              }`}
+            >
+              {hideUI ? "◨ show ui" : "◧ hide ui"}
+            </button>
+            <div className="h-5 w-px shrink-0 bg-white/15" />
+            <label
+              className="flex shrink-0 cursor-pointer items-center gap-1.5 rounded-md py-0.5 hover:bg-white/[0.04]"
+              title={gravityFootnote}
+            >
+              <input
+                type="checkbox"
+                checked={bhGravityOn}
+                onChange={() => toggleBhGravityEnabled()}
+                className={chk}
+                aria-label="gravity"
+                aria-describedby="fx-gravity-footnote"
+              />
+              <span id="fx-gravity-footnote" className="sr-only">
+                {gravityFootnote}
+              </span>
+              <span className="whitespace-nowrap text-xs font-medium text-white/80">gravity</span>
+            </label>
+            <div className="h-5 w-px shrink-0 bg-white/15" />
+            {spawnRows.map(({ kind, icon, label, fn }) => {
+              const enabledKind = kinds[kind];
+              const canSpawn = on && enabledKind;
+              return (
+                <div key={label} className="inline-flex shrink-0 items-center gap-1">
+                  <input
+                    type="checkbox"
+                    checked={enabledKind}
+                    onChange={() => toggleSpaceEffectKind(kind)}
+                    className={chk}
+                    title={enabledKind ? `disable ${label}` : `enable ${label}`}
+                    aria-label={enabledKind ? `Disable ${label}` : `Enable ${label}`}
+                  />
+                  <button
+                    type="button"
+                    disabled={!canSpawn}
+                    onClick={fn}
+                    title={`spawn ${label}`}
+                    className={`whitespace-nowrap rounded-full border px-2 py-0.5 text-[11px] transition-colors ${
+                      canSpawn
+                        ? "border-white/20 bg-white/10 text-white/70 hover:bg-white/20"
+                        : "cursor-not-allowed border-white/10 bg-white/[0.04] text-white/25"
+                    }`}
+                  >
+                    {icon} {label}
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        </div>
       </div>
 
-      {/* Tab button — always visible in the corner */}
       <button
-        onClick={() => setOpen(o => !o)}
-        className="pointer-events-auto rounded-xl bg-black/50 backdrop-blur-md border border-white/12 px-3 py-2 text-[10px] text-white/50 hover:text-white/80 hover:bg-black/65 transition-colors flex items-center gap-1.5 select-none shrink-0"
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        aria-expanded={open}
+        aria-controls="fx-drawer-panel"
+        className="pointer-events-auto flex h-8 w-14 shrink-0 select-none items-center justify-center gap-1 rounded-lg border border-white/12 bg-black/55 text-[10px] text-white/50 shadow-lg shadow-black/30 backdrop-blur-md hover:bg-black/70 hover:text-white/80"
       >
         <span
-          style={{
-            display: "inline-block",
-            transform: open ? "rotate(180deg)" : "rotate(0deg)",
-            transition: `transform ${EASE}`,
-          }}
-        >◀</span>
-        fx
+          className="inline-block"
+          style={{ transform: open ? "rotate(180deg)" : "rotate(0deg)" }}
+        >
+          ◀
+        </span>
+        <span>fx</span>
       </button>
     </div>
   );

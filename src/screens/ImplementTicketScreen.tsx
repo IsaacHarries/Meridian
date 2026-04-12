@@ -148,6 +148,72 @@ function newId() {
 
 function isoNow() { return new Date().toISOString(); }
 
+// ── Grooming blocker detection ────────────────────────────────────────────────
+
+interface GroomingBlocker {
+  id: string;
+  severity: "blocking" | "warning";
+  message: string;
+  detail: string;
+}
+
+function detectGroomingBlockers(issue: JiraIssue, grooming: GroomingOutput): GroomingBlocker[] {
+  const blockers: GroomingBlocker[] = [];
+  const type = issue.issueType.toLowerCase();
+  const isTaskOrStory = type === "story" || type === "task";
+
+  if (!issue.description || issue.description.trim().length < 10) {
+    blockers.push({
+      id: "no-description",
+      severity: "blocking",
+      message: "Missing description",
+      detail: "This ticket has no description. Implementation intent cannot be determined — update JIRA before proceeding.",
+    });
+  }
+
+  if (isTaskOrStory && grooming.acceptance_criteria.length === 0) {
+    blockers.push({
+      id: "no-ac",
+      severity: "blocking",
+      message: "No acceptance criteria",
+      detail: `${issue.issueType} tickets must have acceptance criteria before implementation begins. There is no definition of done.`,
+    });
+  }
+
+  if (isTaskOrStory && issue.storyPoints == null) {
+    blockers.push({
+      id: "no-points",
+      severity: "warning",
+      message: "No story point estimate",
+      detail: `This ${issue.issueType} has no story point estimate. Consider updating JIRA before starting implementation.`,
+    });
+  }
+
+  return blockers;
+}
+
+function BlockerBanner({ blockers }: { blockers: GroomingBlocker[] }) {
+  if (blockers.length === 0) return null;
+  const hasBlocking = blockers.some((b) => b.severity === "blocking");
+  return (
+    <div className={`rounded-md border p-3 space-y-2 ${hasBlocking ? "border-red-300 bg-red-50 dark:border-red-800 dark:bg-red-950/30" : "border-amber-300 bg-amber-50 dark:border-amber-800 dark:bg-amber-950/30"}`}>
+      <div className={`flex items-center gap-2 text-sm font-medium ${hasBlocking ? "text-red-700 dark:text-red-300" : "text-amber-700 dark:text-amber-300"}`}>
+        <AlertTriangle className="h-4 w-4 shrink-0" />
+        {hasBlocking ? "Blocking issues — resolve before proceeding" : "Warnings — review before proceeding"}
+      </div>
+      {blockers.map((b) => (
+        <div key={b.id} className="pl-6 space-y-0.5">
+          <div className={`flex items-center gap-1.5 text-xs font-medium ${b.severity === "blocking" ? "text-red-700 dark:text-red-300" : "text-amber-700 dark:text-amber-300"}`}>
+            <span className={`px-1.5 py-0.5 rounded ${b.severity === "blocking" ? "bg-red-100 dark:bg-red-900" : "bg-amber-100 dark:bg-amber-900"}`}>{b.severity}</span>
+            {b.message}
+          </div>
+          <p className={`text-xs ${b.severity === "blocking" ? "text-red-600 dark:text-red-400" : "text-amber-600 dark:text-amber-400"}`}>{b.detail}</p>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 // ── Small display components ──────────────────────────────────────────────────
 
 function RiskBadge({ level }: { level: "low" | "medium" | "high" }) {
@@ -458,6 +524,133 @@ function RetroPanel({ data, onSaveToKb, kbSaved }: RetroPanelProps) {
   );
 }
 
+// ── Checkpoint footer (approval gate + follow-up chat) ───────────────────────
+
+const NEXT_STAGE_LABEL: Partial<Record<Stage, string>> = {
+  grooming: "Proceed to Impact Analysis",
+  impact: "Proceed to Triage",
+  plan: "Proceed to Implementation Guidance",
+  guidance: "Proceed to Test Suggestions",
+  tests: "Proceed to Code Review",
+  review: "Proceed to PR Description",
+  pr: "Proceed to Retrospective",
+  retro: "Mark Pipeline Complete",
+};
+
+interface CheckpointFooterProps {
+  stage: Stage;
+  onProceed: () => void;
+  proceeding: boolean;
+  hasBlockingIssues?: boolean;
+  chat: TriageMessage[];
+  input: string;
+  onInputChange: (v: string) => void;
+  onSend: () => void;
+  sending: boolean;
+}
+
+function CheckpointFooter({
+  stage, onProceed, proceeding, hasBlockingIssues,
+  chat, input, onInputChange, onSend, sending,
+}: CheckpointFooterProps) {
+  const [chatOpen, setChatOpen] = useState(false);
+  const bottomRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (chatOpen) bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [chat, chatOpen]);
+
+  const nextLabel = NEXT_STAGE_LABEL[stage] ?? "Proceed";
+
+  return (
+    <div className="mt-5 border-t pt-4 space-y-3">
+      {/* Collapsible follow-up chat */}
+      <div>
+        <button
+          onClick={() => setChatOpen(!chatOpen)}
+          className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors"
+        >
+          <ChevronRight className={`h-3.5 w-3.5 transition-transform ${chatOpen ? "rotate-90" : ""}`} />
+          Ask a follow-up question
+          {chat.length > 0 && (
+            <span className="ml-1 px-1.5 py-0.5 rounded-full bg-muted text-xs font-medium">
+              {Math.ceil(chat.length / 2)}
+            </span>
+          )}
+        </button>
+
+        {chatOpen && (
+          <div className="mt-2 space-y-2">
+            {chat.length > 0 && (
+              <div className="space-y-2 max-h-64 overflow-y-auto pr-1">
+                {chat.map((msg, i) => (
+                  <div key={i} className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
+                    <div className={`max-w-[85%] rounded-lg px-3 py-2 text-sm leading-relaxed ${
+                      msg.role === "user" ? "bg-primary text-primary-foreground" : "bg-muted text-foreground"
+                    }`}>
+                      <p className="whitespace-pre-wrap">{msg.content}</p>
+                    </div>
+                  </div>
+                ))}
+                {sending && (
+                  <div className="flex justify-start">
+                    <div className="bg-muted rounded-lg px-3 py-2 flex items-center gap-2 text-sm text-muted-foreground">
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" /> Thinking…
+                    </div>
+                  </div>
+                )}
+                <div ref={bottomRef} />
+              </div>
+            )}
+            <div className="flex gap-2">
+              <Textarea
+                value={input}
+                onChange={(e) => onInputChange(e.target.value)}
+                placeholder="Ask about these findings…"
+                className="min-h-[52px] resize-none text-sm"
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && input.trim()) {
+                    e.preventDefault();
+                    onSend();
+                  }
+                }}
+                disabled={sending || proceeding}
+              />
+              <Button size="icon" onClick={onSend} disabled={!input.trim() || sending || proceeding} title="Send (⌘↵)">
+                <Send className="h-4 w-4" />
+              </Button>
+            </div>
+            <p className="text-xs text-muted-foreground">⌘↵ to send</p>
+          </div>
+        )}
+      </div>
+
+      {/* Approval button row */}
+      <div className="flex items-center justify-between gap-3">
+        {hasBlockingIssues && (
+          <p className="text-xs text-amber-600 dark:text-amber-400 flex items-center gap-1.5">
+            <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
+            Blocking issues present — proceeding not recommended
+          </p>
+        )}
+        <Button
+          onClick={onProceed}
+          disabled={proceeding}
+          variant={hasBlockingIssues ? "outline" : "default"}
+          className="gap-2 ml-auto"
+        >
+          {proceeding ? (
+            <Loader2 className="h-4 w-4 animate-spin" />
+          ) : (
+            <ChevronRight className="h-4 w-4" />
+          )}
+          {hasBlockingIssues ? `Proceed anyway: ${nextLabel}` : nextLabel}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 // ── Triage chat UI ────────────────────────────────────────────────────────────
 
 interface TriageChatProps {
@@ -629,10 +822,11 @@ interface PipelineSidebarProps {
   currentStage: Stage;
   completedStages: Set<Stage>;
   activeStage: Stage;
+  pendingApproval: Stage | null;
   onClickStage: (stage: Stage) => void;
 }
 
-function PipelineSidebar({ currentStage, completedStages, activeStage, onClickStage }: PipelineSidebarProps) {
+function PipelineSidebar({ currentStage, completedStages, activeStage, pendingApproval, onClickStage }: PipelineSidebarProps) {
   const icons: Record<string, React.ReactNode> = {
     grooming: <BookOpen className="h-3.5 w-3.5" />,
     impact: <Shield className="h-3.5 w-3.5" />,
@@ -650,8 +844,9 @@ function PipelineSidebar({ currentStage, completedStages, activeStage, onClickSt
       {STAGE_ORDER.map((stage) => {
         const done = completedStages.has(stage);
         const active = activeStage === stage;
-        const running = currentStage === stage && !done;
-        const reachable = done || active || running;
+        const running = currentStage === stage && !done && pendingApproval !== stage;
+        const pending = pendingApproval === stage;
+        const reachable = done || active || running || pending;
         return (
           <button
             key={stage}
@@ -660,6 +855,8 @@ function PipelineSidebar({ currentStage, completedStages, activeStage, onClickSt
             className={`w-full flex items-center gap-2 px-2.5 py-2 rounded-md text-left text-xs transition-colors ${
               active
                 ? "bg-primary text-primary-foreground font-medium"
+                : pending
+                ? "bg-amber-50 dark:bg-amber-950/30 text-amber-700 dark:text-amber-300 font-medium hover:bg-amber-100 dark:hover:bg-amber-950/50 cursor-pointer"
                 : done
                 ? "text-foreground hover:bg-muted/60 cursor-pointer"
                 : "text-muted-foreground cursor-default opacity-50"
@@ -667,6 +864,8 @@ function PipelineSidebar({ currentStage, completedStages, activeStage, onClickSt
           >
             {running ? (
               <Loader2 className="h-3.5 w-3.5 animate-spin shrink-0" />
+            ) : pending ? (
+              <AlertTriangle className="h-3.5 w-3.5 text-amber-500 shrink-0" />
             ) : done ? (
               <CheckCircle2 className="h-3.5 w-3.5 text-green-500 shrink-0" />
             ) : (
@@ -733,10 +932,33 @@ export function ImplementTicketScreen({ credStatus, onBack }: ImplementTicketScr
   // Per-stage error
   const [errors, setErrors] = useState<Partial<Record<Stage, string>>>({});
 
+  // Approval gate — which stage is waiting for user approval before advancing
+  const [pendingApproval, setPendingApproval] = useState<Stage | null>(null);
+  const [proceeding, setProceeding] = useState(false);
+
+  // Grooming blockers
+  const [groomingBlockers, setGroomingBlockers] = useState<GroomingBlocker[]>([]);
+
+  // Checkpoint conversations (follow-up chat at each stage's approval gate)
+  const [checkpointChats, setCheckpointChats] = useState<Partial<Record<Stage, TriageMessage[]>>>({});
+  const [checkpointInput, setCheckpointInput] = useState("");
+  const [checkpointSending, setCheckpointSending] = useState(false);
+
+  // Refs for pipeline data — avoids stale closures in async stage functions
+  const groomingRef = useRef<GroomingOutput | null>(null);
+  const impactRef = useRef<ImpactOutput | null>(null);
+  const planRef = useRef<ImplementationPlan | null>(null);
+  const guidanceRef = useRef<GuidanceOutput | null>(null);
+  const testsRef = useRef<TestOutput | null>(null);
+  const reviewRef = useRef<PlanReviewOutput | null>(null);
+  const ticketTextRef = useRef<string>("");
+
   /** Fade in header meridian (PipelineProgress) over 1s when this screen mounts. */
   const [meridianHeaderVisible, setMeridianHeaderVisible] = useState(false);
 
   const ticketText = selectedIssue ? compileTicketText(selectedIssue) : "";
+  // Keep ref in sync with the current ticket text
+  ticketTextRef.current = ticketText;
 
   function markComplete(stage: Stage) {
     setCompletedStages((prev) => new Set([...prev, stage]));
@@ -760,86 +982,87 @@ export function ImplementTicketScreen({ credStatus, onBack }: ImplementTicketScr
   // Stable ref for skills — loaded once at pipeline start, used throughout
   const skillsRef = useRef<Partial<Record<SkillType, string>>>({});
 
-  // Start pipeline when ticket selected
+  // Start pipeline — runs Grooming only, then waits for user approval
   const startPipeline = useCallback(async (issue: JiraIssue) => {
     setSelectedIssue(issue);
     setCurrentStage("grooming");
     setViewingStage("grooming");
     setCompletedStages(new Set());
+    setPendingApproval(null);
+    setGroomingBlockers([]);
+    setCheckpointChats({});
+    setCheckpointInput("");
     setGrooming(null); setImpact(null); setPlan(null);
     setGuidance(null); setTests(null); setReview(null);
     setPrDescription(null); setRetrospective(null);
     setTriageHistory([]); setTriageInput(""); setErrors({});
+    groomingRef.current = null; impactRef.current = null;
+    planRef.current = null; guidanceRef.current = null;
+    testsRef.current = null; reviewRef.current = null;
 
     const text = compileTicketText(issue);
+    ticketTextRef.current = text;
 
-    // Load skills once — injected into each agent's context
     try {
       skillsRef.current = await loadAgentSkills();
     } catch { skillsRef.current = {}; }
 
-    const skills = skillsRef.current;
-
     // Agent 1: Grooming
-    let groomingData: GroomingOutput | null = null;
     try {
-      const groomingInput = prependSkill(text, skills.grooming, "GROOMING CONVENTIONS");
+      const groomingInput = prependSkill(text, skillsRef.current.grooming, "GROOMING CONVENTIONS");
       const raw = await runGroomingAgent(groomingInput);
-      groomingData = parseAgentJson<GroomingOutput>(raw);
-      if (!groomingData) throw new Error("Could not parse grooming output");
-      setGrooming(groomingData);
+      const data = parseAgentJson<GroomingOutput>(raw);
+      if (!data) throw new Error("Could not parse grooming output");
+      groomingRef.current = data;
+      setGrooming(data);
       markComplete("grooming");
+      // Detect blockers before presenting to user
+      setGroomingBlockers(detectGroomingBlockers(issue, data));
+      // ── CHECKPOINT: wait for user approval ──
+      setPendingApproval("grooming");
     } catch (e) {
       setError("grooming", String(e));
-      setCurrentStage("grooming");
-      return;
     }
-
-    // Agent 2: Impact Analysis
-    setCurrentStage("impact");
-    setViewingStage("impact");
-    let impactData: ImpactOutput | null = null;
-    try {
-      const impactInput = prependSkill(text, skills.patterns, "CODEBASE PATTERNS");
-      const raw = await runImpactAnalysis(impactInput, JSON.stringify(groomingData));
-      impactData = parseAgentJson<ImpactOutput>(raw);
-      if (!impactData) throw new Error("Could not parse impact output");
-      setImpact(impactData);
-      markComplete("impact");
-    } catch (e) {
-      setError("impact", String(e));
-      setCurrentStage("impact");
-      return;
-    }
-
-    // Agent 3: Triage — kick off first turn
-    setCurrentStage("triage");
-    setViewingStage("triage");
-    await startTriageTurn(text, [], groomingData, impactData, skills);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  async function startTriageTurn(
-    text: string,
-    history: TriageMessage[],
-    groomingData: GroomingOutput | null,
-    impactData: ImpactOutput | null,
-    skills: Partial<Record<SkillType, string>>,
-  ) {
-    const contextText = compilePipelineContext(text, groomingData, impactData, skills);
+  // ── Individual stage runners (each called after user approves the previous) ──
+
+  async function runImpactStage() {
+    setCurrentStage("impact");
+    setViewingStage("impact");
+    try {
+      const impactInput = prependSkill(ticketTextRef.current, skillsRef.current.patterns, "CODEBASE PATTERNS");
+      const raw = await runImpactAnalysis(impactInput, JSON.stringify(groomingRef.current));
+      const data = parseAgentJson<ImpactOutput>(raw);
+      if (!data) throw new Error("Could not parse impact output");
+      impactRef.current = data;
+      setImpact(data);
+      markComplete("impact");
+      // ── CHECKPOINT ──
+      setPendingApproval("impact");
+    } catch (e) {
+      setError("impact", String(e));
+    }
+  }
+
+  async function runTriageStage() {
+    setCurrentStage("triage");
+    setViewingStage("triage");
+    const contextText = compilePipelineContext(
+      ticketTextRef.current, groomingRef.current, impactRef.current, skillsRef.current
+    );
     setTriageSending(true);
     try {
       const initialMessage = "Please analyse this ticket and propose a concrete implementation approach. Ask any clarifying questions you need answered before we can finalise the plan.";
-      const histJson = JSON.stringify(
-        history.length > 0 ? history : [{ role: "user", content: initialMessage }]
+      const response = await runTriageTurn(
+        contextText,
+        JSON.stringify([{ role: "user", content: initialMessage }])
       );
-      const response = await runTriageTurn(contextText, histJson);
-      const newHistory: TriageMessage[] = [
-        ...history,
-        ...(history.length === 0 ? [{ role: "user" as const, content: initialMessage }] : []),
+      setTriageHistory([
+        { role: "user" as const, content: initialMessage },
         { role: "assistant" as const, content: response },
-      ];
-      setTriageHistory(newHistory);
+      ]);
     } catch (e) {
       setError("triage", String(e));
     } finally {
@@ -855,7 +1078,9 @@ export function ImplementTicketScreen({ credStatus, onBack }: ImplementTicketScr
     setTriageInput("");
     setTriageSending(true);
     try {
-      const contextText = compilePipelineContext(ticketText, grooming, impact, skillsRef.current);
+      const contextText = compilePipelineContext(
+        ticketTextRef.current, groomingRef.current, impactRef.current, skillsRef.current
+      );
       const response = await runTriageTurn(contextText, JSON.stringify(newHistory));
       setTriageHistory([...newHistory, { role: "assistant", content: response }]);
     } catch (e) {
@@ -869,15 +1094,19 @@ export function ImplementTicketScreen({ credStatus, onBack }: ImplementTicketScr
     setTriaFinalizing(true);
     setCurrentStage("plan");
     try {
-      const contextText = compilePipelineContext(ticketText, grooming, impact, skillsRef.current);
+      const contextText = compilePipelineContext(
+        ticketTextRef.current, groomingRef.current, impactRef.current, skillsRef.current
+      );
       const raw = await finalizeImplementationPlan(contextText, JSON.stringify(triageHistory));
       const data = parseAgentJson<ImplementationPlan>(raw);
       if (!data) throw new Error("Could not parse plan output");
+      planRef.current = data;
       setPlan(data);
       markComplete("triage");
       markComplete("plan");
       setViewingStage("plan");
-      await runPostPlanAgents(data);
+      // ── CHECKPOINT: user reviews the plan before implementation begins ──
+      setPendingApproval("plan");
     } catch (e) {
       setError("plan", String(e));
     } finally {
@@ -885,89 +1114,162 @@ export function ImplementTicketScreen({ credStatus, onBack }: ImplementTicketScr
     }
   }
 
-  async function runPostPlanAgents(planData: ImplementationPlan) {
+  async function runGuidanceStage() {
     const skills = skillsRef.current;
-    const planJson = JSON.stringify(planData);
-
-    // Agent 4: Implementation guidance
+    const planJson = JSON.stringify(planRef.current);
     setCurrentStage("guidance");
     setViewingStage("guidance");
-    let guidanceData: GuidanceOutput | null = null;
     try {
       const guidanceInput = prependSkill(
-        prependSkill(ticketText, skills.patterns, "CODEBASE PATTERNS"),
+        prependSkill(ticketTextRef.current, skills.patterns, "CODEBASE PATTERNS"),
         skills.implementation, "IMPLEMENTATION STANDARDS"
       );
       const raw = await runImplementationGuidance(guidanceInput, planJson);
-      guidanceData = parseAgentJson<GuidanceOutput>(raw);
-      if (!guidanceData) throw new Error("Could not parse guidance output");
-      setGuidance(guidanceData);
+      const data = parseAgentJson<GuidanceOutput>(raw);
+      if (!data) throw new Error("Could not parse guidance output");
+      guidanceRef.current = data;
+      setGuidance(data);
       markComplete("guidance");
+      // ── CHECKPOINT ──
+      setPendingApproval("guidance");
     } catch (e) {
       setError("guidance", String(e));
-      return;
     }
+  }
 
-    // Agent 5: Test suggestions
+  async function runTestsStage() {
+    const planJson = JSON.stringify(planRef.current);
     setCurrentStage("tests");
     setViewingStage("tests");
-    let testData: TestOutput | null = null;
     try {
-      const raw = await runTestSuggestions(planJson, JSON.stringify(guidanceData));
-      testData = parseAgentJson<TestOutput>(raw);
-      if (!testData) throw new Error("Could not parse test output");
-      setTests(testData);
+      const raw = await runTestSuggestions(planJson, JSON.stringify(guidanceRef.current));
+      const data = parseAgentJson<TestOutput>(raw);
+      if (!data) throw new Error("Could not parse test output");
+      testsRef.current = data;
+      setTests(data);
       markComplete("tests");
+      // ── CHECKPOINT ──
+      setPendingApproval("tests");
     } catch (e) {
       setError("tests", String(e));
-      return;
     }
+  }
 
-    // Agent 6: Plan review
+  async function runReviewStage() {
+    const skills = skillsRef.current;
+    const planJson = JSON.stringify(planRef.current);
     setCurrentStage("review");
     setViewingStage("review");
-    let reviewData: PlanReviewOutput | null = null;
     try {
       const reviewPlanJson = skills.review
         ? `=== REVIEW STANDARDS (follow these) ===\n${skills.review}\n\n${planJson}`
         : planJson;
-      const raw = await runPlanReview(reviewPlanJson, JSON.stringify(guidanceData), JSON.stringify(testData));
-      reviewData = parseAgentJson<PlanReviewOutput>(raw);
-      if (!reviewData) throw new Error("Could not parse review output");
-      setReview(reviewData);
+      const raw = await runPlanReview(
+        reviewPlanJson, JSON.stringify(guidanceRef.current), JSON.stringify(testsRef.current)
+      );
+      const data = parseAgentJson<PlanReviewOutput>(raw);
+      if (!data) throw new Error("Could not parse review output");
+      reviewRef.current = data;
+      setReview(data);
       markComplete("review");
+      // ── CHECKPOINT ──
+      setPendingApproval("review");
     } catch (e) {
       setError("review", String(e));
-      return;
     }
+  }
 
-    // Agent 7: PR description
+  async function runPrStage() {
+    const planJson = JSON.stringify(planRef.current);
     setCurrentStage("pr");
     setViewingStage("pr");
     try {
-      const raw = await runPrDescriptionGen(ticketText, planJson, JSON.stringify(reviewData));
+      const raw = await runPrDescriptionGen(
+        ticketTextRef.current, planJson, JSON.stringify(reviewRef.current)
+      );
       const data = parseAgentJson<PrDescriptionOutput>(raw);
       if (!data) throw new Error("Could not parse PR description output");
       setPrDescription(data);
       markComplete("pr");
+      // ── CHECKPOINT ──
+      setPendingApproval("pr");
     } catch (e) {
       setError("pr", String(e));
-      return;
     }
+  }
 
-    // Agent 8: Retrospective
+  async function runRetroStage() {
+    const planJson = JSON.stringify(planRef.current);
     setCurrentStage("retro");
     setViewingStage("retro");
     try {
-      const raw = await runRetrospectiveAgent(ticketText, planJson, JSON.stringify(reviewData));
+      const raw = await runRetrospectiveAgent(
+        ticketTextRef.current, planJson, JSON.stringify(reviewRef.current)
+      );
       const data = parseAgentJson<RetrospectiveOutput>(raw);
       if (!data) throw new Error("Could not parse retrospective output");
       setRetrospective(data);
       markComplete("retro");
-      setCurrentStage("complete");
+      // ── CHECKPOINT ──
+      setPendingApproval("retro");
     } catch (e) {
       setError("retro", String(e));
     }
+  }
+
+  // Dispatch from one approval gate to the next stage runner
+  async function proceedFromStage(stage: Stage) {
+    setPendingApproval(null);
+    setProceeding(true);
+    try {
+      switch (stage) {
+        case "grooming":   await runImpactStage(); break;
+        case "impact":     await runTriageStage(); break;
+        case "plan":       await runGuidanceStage(); break;
+        case "guidance":   await runTestsStage(); break;
+        case "tests":      await runReviewStage(); break;
+        case "review":     await runPrStage(); break;
+        case "pr":         await runRetroStage(); break;
+        case "retro":      setCurrentStage("complete"); break;
+      }
+    } finally {
+      setProceeding(false);
+    }
+  }
+
+  // Follow-up chat at any stage's checkpoint (uses runTriageTurn with stage context)
+  async function sendCheckpointMessage(stage: Stage) {
+    const msg = checkpointInput.trim();
+    if (!msg) return;
+    setCheckpointInput("");
+
+    const stageOutput =
+      stage === "grooming" ? groomingRef.current :
+      stage === "impact"   ? impactRef.current :
+      stage === "plan"     ? planRef.current :
+      stage === "guidance" ? guidanceRef.current :
+      stage === "tests"    ? testsRef.current :
+      stage === "review"   ? reviewRef.current :
+      stage === "pr"       ? prDescription :
+      stage === "retro"    ? retrospective : null;
+
+    const context = [
+      compilePipelineContext(ticketTextRef.current, groomingRef.current, impactRef.current, skillsRef.current),
+      stageOutput ? `=== ${(STAGE_LABELS[stage as keyof typeof STAGE_LABELS] ?? stage).toUpperCase()} OUTPUT ===\n${JSON.stringify(stageOutput, null, 2)}` : "",
+    ].filter(Boolean).join("\n\n");
+
+    const prev = checkpointChats[stage] ?? [];
+    const newHistory: TriageMessage[] = [...prev, { role: "user" as const, content: msg }];
+    setCheckpointChats((c) => ({ ...c, [stage]: newHistory }));
+    setCheckpointSending(true);
+    try {
+      const response = await runTriageTurn(context, JSON.stringify(newHistory));
+      setCheckpointChats((c) => ({
+        ...c,
+        [stage]: [...(c[stage] ?? newHistory), { role: "assistant" as const, content: response }],
+      }));
+    } catch { /* silently drop — chat is non-critical */ }
+    finally { setCheckpointSending(false); }
   }
 
   async function saveToKnowledgeBase(entries: RetroKbEntry[]) {
@@ -990,6 +1292,28 @@ export function ImplementTicketScreen({ credStatus, onBack }: ImplementTicketScr
 
   // ── Stage content renderer ──────────────────────────────────────────────────
 
+  function renderCheckpoint(stage: Stage) {
+    // Only show the checkpoint footer if this is the current pending stage
+    // (or a past stage — user can revisit and still chat)
+    if (!completedStages.has(stage)) return null;
+    const isPending = pendingApproval === stage;
+    const isRetro = stage === "retro";
+    const hasReviewBlockers = stage === "review" && review?.findings.some(f => f.severity === "blocking");
+    return (
+      <CheckpointFooter
+        stage={stage}
+        onProceed={() => isRetro ? proceedFromStage(stage) : proceedFromStage(stage)}
+        proceeding={proceeding && pendingApproval === null && currentStage !== stage}
+        hasBlockingIssues={stage === "grooming" ? groomingBlockers.some(b => b.severity === "blocking") : hasReviewBlockers ?? false}
+        chat={checkpointChats[stage] ?? []}
+        input={isPending || viewingStage === stage ? checkpointInput : ""}
+        onInputChange={(v) => setCheckpointInput(v)}
+        onSend={() => sendCheckpointMessage(stage)}
+        sending={checkpointSending && viewingStage === stage}
+      />
+    );
+  }
+
   function renderStageContent(stage: Stage) {
     const err = errors[stage];
     if (err) {
@@ -1003,15 +1327,31 @@ export function ImplementTicketScreen({ credStatus, onBack }: ImplementTicketScr
 
     if (stage === "grooming") {
       if (!grooming) return <div className="flex items-center gap-2 text-sm text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" /> Running grooming analysis…</div>;
-      return <GroomingPanel data={grooming} />;
+      return (
+        <>
+          <GroomingPanel data={grooming} />
+          {groomingBlockers.length > 0 && <div className="mt-3"><BlockerBanner blockers={groomingBlockers} /></div>}
+          {renderCheckpoint(stage)}
+        </>
+      );
     }
     if (stage === "impact") {
       if (!impact) return <div className="flex items-center gap-2 text-sm text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" /> Running impact analysis…</div>;
-      return <ImpactPanel data={impact} />;
+      return (
+        <>
+          <ImpactPanel data={impact} />
+          {renderCheckpoint(stage)}
+        </>
+      );
     }
     if (stage === "triage" || stage === "plan") {
       if (plan && completedStages.has("plan")) {
-        return <PlanPanel data={plan} />;
+        return (
+          <>
+            <PlanPanel data={plan} />
+            {renderCheckpoint("plan")}
+          </>
+        );
       }
       return (
         <TriageChat
@@ -1027,23 +1367,48 @@ export function ImplementTicketScreen({ credStatus, onBack }: ImplementTicketScr
     }
     if (stage === "guidance") {
       if (!guidance) return <div className="flex items-center gap-2 text-sm text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" /> Generating implementation guidance…</div>;
-      return <GuidancePanel data={guidance} />;
+      return (
+        <>
+          <GuidancePanel data={guidance} />
+          {renderCheckpoint(stage)}
+        </>
+      );
     }
     if (stage === "tests") {
       if (!tests) return <div className="flex items-center gap-2 text-sm text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" /> Generating test suggestions…</div>;
-      return <TestsPanel data={tests} />;
+      return (
+        <>
+          <TestsPanel data={tests} />
+          {renderCheckpoint(stage)}
+        </>
+      );
     }
     if (stage === "review") {
       if (!review) return <div className="flex items-center gap-2 text-sm text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" /> Reviewing the plan…</div>;
-      return <ReviewPanel data={review} />;
+      return (
+        <>
+          <ReviewPanel data={review} />
+          {renderCheckpoint(stage)}
+        </>
+      );
     }
     if (stage === "pr") {
       if (!prDescription) return <div className="flex items-center gap-2 text-sm text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" /> Generating PR description…</div>;
-      return <PrPanel data={prDescription} />;
+      return (
+        <>
+          <PrPanel data={prDescription} />
+          {renderCheckpoint(stage)}
+        </>
+      );
     }
     if (stage === "retro") {
       if (!retrospective) return <div className="flex items-center gap-2 text-sm text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" /> Running retrospective…</div>;
-      return <RetroPanel data={retrospective} onSaveToKb={saveToKnowledgeBase} kbSaved={kbSaved} />;
+      return (
+        <>
+          <RetroPanel data={retrospective} onSaveToKb={saveToKnowledgeBase} kbSaved={kbSaved} />
+          {currentStage !== "complete" && renderCheckpoint(stage)}
+        </>
+      );
     }
     return null;
   }
@@ -1132,6 +1497,7 @@ export function ImplementTicketScreen({ credStatus, onBack }: ImplementTicketScr
             currentStage={currentStage}
             completedStages={completedStages}
             activeStage={viewingStage}
+            pendingApproval={pendingApproval}
             onClickStage={setViewingStage}
           />
 
