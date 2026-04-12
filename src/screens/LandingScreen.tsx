@@ -29,7 +29,7 @@ const QUIPS = [
   "Technically it's not deprecated, just discouraged...",
 ];
 import { Button } from "@/components/ui/button";
-import { fireShootingStar } from "@/lib/backgrounds";
+import { fireShootingStar } from "@/lib/spaceEffects";
 import { fireBlackHole, fireComet, firePulsar, fireMeteorShower, fireWormhole, clearAllEffects, setEffectsEnabled } from "@/lib/spaceEffects";
 import {
   type CredentialStatus,

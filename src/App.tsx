@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from "react";
 import { ThemeProvider } from "@/providers/ThemeProvider";
 import { Loader2 } from "lucide-react";
 import { type CredentialStatus, credentialStatusComplete, getCredentialStatus } from "@/lib/tauri";
-import { BackgroundRenderer, ShootingStarOverlay, getBackgroundId, useBgChangeListener } from "@/lib/backgrounds";
+import { BackgroundRenderer, getBackgroundId, useBgChangeListener } from "@/lib/backgrounds";
 import { SpaceEffectsOverlay } from "@/lib/spaceEffects";
 import { OnboardingScreen } from "@/screens/OnboardingScreen";
 import { SettingsScreen } from "@/screens/SettingsScreen";
@@ -166,7 +166,6 @@ function GlobalForeground() {
   useBgChangeListener(handleChange);
   return (
     <div aria-hidden className="fixed inset-0 overflow-hidden pointer-events-none select-none z-[0]">
-      <ShootingStarOverlay bgId={bgId} />
       <SpaceEffectsOverlay bgId={bgId} />
     </div>
   );

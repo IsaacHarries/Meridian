@@ -14,14 +14,15 @@ const uid = () => _id++;
 
 // ── Fire events (used by test buttons) ────────────────────────────────────────
 
-const EV_NOVA     = "m-fire-nova";
-const EV_BH       = "m-fire-bh";
-const EV_COMET    = "m-fire-comet";
-const EV_PULSAR   = "m-fire-pulsar";
-const EV_METEORS  = "m-fire-meteors";
-const EV_WORMHOLE = "m-fire-wormhole";
-const EV_CLEAR    = "m-clear-all";
-const EV_ENABLED  = "m-effects-enabled";
+const EV_NOVA          = "m-fire-nova";
+const EV_BH            = "m-fire-bh";
+const EV_COMET         = "m-fire-comet";
+const EV_PULSAR        = "m-fire-pulsar";
+const EV_METEORS       = "m-fire-meteors";
+const EV_WORMHOLE      = "m-fire-wormhole";
+const EV_SHOOTING_STAR = "meridian-ss-fire";
+const EV_CLEAR         = "m-clear-all";
+const EV_ENABLED       = "m-effects-enabled";
 
 export const fireSupernova    = () => window.dispatchEvent(new CustomEvent(EV_NOVA));
 export const fireBlackHole    = () => window.dispatchEvent(new CustomEvent(EV_BH));
@@ -29,6 +30,7 @@ export const fireComet        = () => window.dispatchEvent(new CustomEvent(EV_CO
 export const firePulsar       = () => window.dispatchEvent(new CustomEvent(EV_PULSAR));
 export const fireMeteorShower = () => window.dispatchEvent(new CustomEvent(EV_METEORS));
 export const fireWormhole     = () => window.dispatchEvent(new CustomEvent(EV_WORMHOLE));
+export const fireShootingStar = () => window.dispatchEvent(new CustomEvent(EV_SHOOTING_STAR));
 export const clearAllEffects  = () => window.dispatchEvent(new CustomEvent(EV_CLEAR));
 export const setEffectsEnabled = (on: boolean) => window.dispatchEvent(new CustomEvent(EV_ENABLED, { detail: on }));
 
@@ -126,6 +128,13 @@ function ensureKF() {
       from { opacity: 0; }
       to   { opacity: 1; }
     }
+    /* ── Shooting Star ── */
+    @keyframes meridian-ss {
+      0%   { transform: translate(0,0); opacity: 0; }
+      8%   { opacity: 1; }
+      80%  { opacity: 0.8; }
+      100% { transform: translate(var(--ss-tx),var(--ss-ty)); opacity: 0; }
+    }
     /* ── Comet ── */
     @keyframes m-comet {
       0%   { transform: translate(0,0); opacity: 0; }
@@ -164,6 +173,16 @@ function ensureKF() {
     @keyframes m-se-vanish {
       to { opacity: 0; scale: 0; }
     }
+    /* ── Black-hole suck-in ──
+       --grav-x/y: gravity drift offset at capture time (element's current displaced position).
+       --bh-tx/ty: BH position relative to the element's original spawn point.
+       The animation starts at the gravity-drifted position and pulls into the BH.
+    */
+    @keyframes m-bh-suck {
+      0%   { transform: translate(var(--grav-x, 0px), var(--grav-y, 0px)) scale(1);    opacity: 1; }
+      60%  { transform: translate(var(--bh-tx), var(--bh-ty))              scale(0.18); opacity: 0.7; }
+      100% { transform: translate(var(--bh-tx), var(--bh-ty))              scale(0);    opacity: 0; }
+    }
   `;
   document.head.appendChild(s);
 }
@@ -179,12 +198,20 @@ const CLOUD_DUR  = 6000;  // cloud collapse duration (ms)
 function NovaEl({ nova, onDone, onNearDone }: { nova: Nova; onDone: () => void; onNearDone?: () => void }) {
   const [phase, setPhase] = React.useState<"blast" | "cloud">("blast");
   const [vanishing, setVanishing] = React.useState(false);
+  const { captured, gravRef, suckStyle } = useBHGravity(nova.x, nova.y);
 
   // Mount cloud elements while the blast is still fading out
   React.useEffect(() => {
     const t = setTimeout(() => setPhase("cloud"), CLOUD_START);
     return () => clearTimeout(t);
   }, []);
+
+  // When captured by a black hole, skip normal lifecycle and call onDone after suck completes
+  React.useEffect(() => {
+    if (!captured) return;
+    const t = setTimeout(onDone, SUCK_DUR + 100);
+    return () => clearTimeout(t);
+  }, [captured, onDone]);
 
   // Auto-dismiss after cloud collapses; vanish exits early.
   // onNearDone fires at 65% through the collapse so callers can overlap
@@ -213,7 +240,11 @@ function NovaEl({ nova, onDone, onNearDone }: { nova: Nova; onDone: () => void; 
   };
 
   return (
-    <div data-space-dismissable="true" onClick={() => !vanishing && setVanishing(true)} style={{ position: "absolute", left: `${nova.x}%`, top: `${nova.y}%`, cursor: "pointer", pointerEvents: "auto", animation: vanishing ? "m-se-vanish 0.4s ease-in forwards" : undefined }}>
+    <div ref={gravRef} data-space-dismissable="true" onClick={() => !captured && !vanishing && setVanishing(true)} style={{
+      position: "absolute", left: `${nova.x}%`, top: `${nova.y}%`,
+      cursor: "pointer", pointerEvents: "auto",
+      ...(captured ? suckStyle : vanishing ? { animation: "m-se-vanish 0.4s ease-in forwards" } : {}),
+    } as React.CSSProperties}>
 
       {/* ── Blast phase ── */}
       {/* Wide radial flash */}
@@ -353,6 +384,181 @@ interface BHDayRec { date: string; show: boolean; x: number; y: number; }
 const BH_LS = "meridian-bh-day";
 const BH_DUR = 10 * 60_000; // 10 minutes on-screen
 
+// Context that broadcasts the active BH position to all animation elements.
+// When non-null, animations switch to a "suck-in" mode where they fly toward
+// the BH and shrink to nothing instead of playing their normal animation.
+const BHContext = React.createContext<{ x: number; y: number } | null>(null);
+
+const SUCK_DUR = 1400; // ms — duration of the suck-in animation
+
+// How close a stationary object must drift before suck-in fires (px).
+const CAPTURE_RADIUS_PX = 50;
+// Capture radius for fast-moving elements checked via visual bounding rect (px).
+// Smaller so only passes through the visible dark core trigger a capture.
+const MOVING_CAPTURE_RADIUS_PX = 60;
+// Gravitational constant — gentle pull that builds gradually as objects get closer.
+const G_CONST = 1200;
+// Hard cap on drift velocity (px/s).
+const MAX_DRIFT_SPEED = 300;
+
+/**
+ * Gravity simulation hook — two modes:
+ *
+ * Default (moving = false) — for stationary elements (nova, pulsar, wormhole):
+ *   - Always runs the rAF loop when a BH is active.
+ *   - Runs a Newtonian physics loop, updating `element.style.translate` directly.
+ *   - Captures when the drifted position crosses CAPTURE_RADIUS_PX.
+ *
+ * moving = true — for elements with their own CSS animation (comet, meteor, star):
+ *   - Always runs the rAF loop when a BH is active.
+ *   - Reads the element's actual visual bounding rect each frame (respects the
+ *     CSS animation's current translation).
+ *   - No gravity drift applied — just instant capture when the visual position
+ *     crosses MOVING_CAPTURE_RADIUS_PX.  Fast movers don't need a slow pull.
+ */
+function useBHGravity(myX: number, myY: number, opts?: { moving?: boolean; trackRef?: React.RefObject<HTMLDivElement> }): {
+  captured: boolean;
+  gravRef: React.RefObject<HTMLDivElement>;
+  suckStyle: React.CSSProperties;
+  captureAngle: number;
+} {
+  const moving = opts?.moving ?? false;
+  const bh = React.useContext(BHContext);
+  const divRef = React.useRef<HTMLDivElement>(null);
+  const physRef    = React.useRef({ x: 0, y: 0, vx: 0, vy: 0 });
+  const captureRef = React.useRef({ gravX: 0, gravY: 0, bhTx: 0, bhTy: 0, angle: 0 });
+  const frameRef   = React.useRef<number>(0);
+  const prevTsRef  = React.useRef<number>(0);
+  const [captured, setCaptured] = React.useState(false);
+
+  React.useEffect(() => {
+    if (!bh || captured) return;
+
+    const bhPx  = (bh.x / 100) * window.innerWidth;
+    const bhPy  = (bh.y / 100) * window.innerHeight;
+    const origX = (myX  / 100) * window.innerWidth;
+    const origY = (myY  / 100) * window.innerHeight;
+
+    prevTsRef.current = 0;
+
+    function tick(ts: number) {
+      if (!prevTsRef.current) {
+        prevTsRef.current = ts;
+        frameRef.current = requestAnimationFrame(tick);
+        return;
+      }
+
+      if (moving) {
+        // ── Fast-mover mode ──────────────────────────────────────────────────
+        // Use the element's live bounding rect so we track its CSS-animated position.
+        const el = divRef.current;
+        if (!el) { frameRef.current = requestAnimationFrame(tick); return; }
+
+        // trackRef (e.g. comet nucleus) is used for proximity detection so that
+        // the capture point is the leading edge, not the bounding-box center.
+        // Fall back to the outer div if no trackRef is provided.
+        const probeEl = opts?.trackRef?.current ?? el;
+        const probeRect = probeEl.getBoundingClientRect();
+        const probeX = probeRect.left + probeRect.width  / 2;
+        const probeY = probeRect.top  + probeRect.height / 2;
+        const dx = bhPx - probeX;
+        const dy = bhPy - probeY;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+
+        if (dist < MOVING_CAPTURE_RADIUS_PX) {
+          // Read the CSS animation's current translation via the computed transform
+          // matrix. This gives the outer div's exact origin offset from spawn —
+          // using the bounding-rect centre instead would cause a visual snap because
+          // the rect is enlarged by the element's children (tail, streak, etc.).
+          const t = window.getComputedStyle(el).transform;
+          const matrix = t && t !== "none" ? new DOMMatrix(t) : new DOMMatrix();
+          const gravX = matrix.m41;
+          const gravY = matrix.m42;
+          captureRef.current = {
+            gravX,
+            gravY,
+            bhTx: bhPx - origX,
+            bhTy: bhPy - origY,
+            angle: Math.atan2(dy, dx) * (180 / Math.PI),
+          };
+          setCaptured(true);
+          return;
+        }
+        frameRef.current = requestAnimationFrame(tick);
+      } else {
+        // ── Stationary mode ──────────────────────────────────────────────────
+        const dt = Math.min((ts - prevTsRef.current) / 1000, 0.05);
+        prevTsRef.current = ts;
+
+        const s    = physRef.current;
+        const curX = origX + s.x;
+        const curY = origY + s.y;
+        const dx   = bhPx - curX;
+        const dy   = bhPy - curY;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+
+        if (dist < CAPTURE_RADIUS_PX) {
+          captureRef.current = {
+            gravX: s.x, gravY: s.y,
+            bhTx: s.x + dx, bhTy: s.y + dy,
+            angle: Math.atan2(dy, dx) * (180 / Math.PI),
+          };
+          setCaptured(true);
+          return;
+        }
+
+        const acc = G_CONST / (dist * dist);
+        s.vx += (dx / dist) * acc * dt;
+        s.vy += (dy / dist) * acc * dt;
+        const speed = Math.sqrt(s.vx * s.vx + s.vy * s.vy);
+        if (speed > MAX_DRIFT_SPEED) {
+          s.vx = (s.vx / speed) * MAX_DRIFT_SPEED;
+          s.vy = (s.vy / speed) * MAX_DRIFT_SPEED;
+        }
+        s.x += s.vx * dt;
+        s.y += s.vy * dt;
+
+        if (divRef.current) {
+          (divRef.current.style as unknown as Record<string, string>).translate =
+            `${s.x}px ${s.y}px`;
+        }
+        frameRef.current = requestAnimationFrame(tick);
+      }
+    }
+
+    frameRef.current = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(frameRef.current);
+  }, [bh, captured, moving, myX, myY]);
+
+  // Reset everything when the BH disappears
+  React.useEffect(() => {
+    if (bh) return;
+    cancelAnimationFrame(frameRef.current);
+    physRef.current = { x: 0, y: 0, vx: 0, vy: 0 };
+    prevTsRef.current = 0;
+    setCaptured(false);
+    if (divRef.current) {
+      (divRef.current.style as unknown as Record<string, string>).translate = "";
+    }
+  }, [bh]);
+
+  const suckStyle: React.CSSProperties = captured
+    ? {
+        translate: "none",
+        animationName: "m-bh-suck",
+        animationDuration: `${SUCK_DUR}ms`,
+        animationTimingFunction: "ease-in",
+        animationFillMode: "forwards",
+        "--grav-x": `${captureRef.current.gravX}px`,
+        "--grav-y": `${captureRef.current.gravY}px`,
+        "--bh-tx":  `${captureRef.current.bhTx}px`,
+        "--bh-ty":  `${captureRef.current.bhTy}px`,
+      } as React.CSSProperties
+    : {};
+
+  return { captured, gravRef: divRef, suckStyle, captureAngle: captureRef.current.angle };
+}
+
 function getBHRec(): BHDayRec {
   const today = new Date().toDateString();
   try {
@@ -372,20 +578,25 @@ function getBHRec(): BHDayRec {
   return rec;
 }
 
-function BHEl({ bh, onDone }: { bh: BH; onDone: () => void }) {
+function BHEl({ bh, onDone, onVanishing }: { bh: BH; onDone: () => void; onVanishing: () => void }) {
   const APPEAR = 3500;
   const VANISH = 2800;
   const [vanishing, setVanishing] = React.useState(false);
+
+  const startVanish = React.useCallback(() => {
+    setVanishing(true);
+    onVanishing();
+  }, [onVanishing]);
 
   React.useEffect(() => {
     if (vanishing) {
       const t = setTimeout(onDone, VANISH);
       return () => clearTimeout(t);
     }
-    const t1 = setTimeout(() => setVanishing(true), bh.duration - VANISH);
+    const t1 = setTimeout(startVanish, bh.duration - VANISH);
     const t2 = setTimeout(onDone, bh.duration + 200);
     return () => { clearTimeout(t1); clearTimeout(t2); };
-  }, [bh.duration, onDone, vanishing]);
+  }, [bh.duration, onDone, vanishing, startVanish]);
 
   const fadeAnim: React.CSSProperties = {
     animationName: vanishing ? "m-bh-vanish" : "m-bh-appear",
@@ -395,7 +606,7 @@ function BHEl({ bh, onDone }: { bh: BH; onDone: () => void }) {
   };
 
   return (
-    <div data-space-dismissable="true" onClick={() => !vanishing && setVanishing(true)} style={{ position: "absolute", left: `${bh.x}%`, top: `${bh.y}%`, transform: "translate(-50%, -50%)", cursor: "pointer", pointerEvents: "auto" }}>
+    <div data-space-dismissable="true" onClick={() => !vanishing && startVanish()} style={{ position: "absolute", left: `${bh.x}%`, top: `${bh.y}%`, transform: "translate(-50%, -50%)", cursor: "pointer", pointerEvents: "auto" }}>
       {/* Rotation wrapper — separate from fade so keyframe scale() doesn't overwrite rotate() */}
       <div style={{ transform: `rotate(${bh.rotation}deg)` }}>
         <div style={fadeAnim}>
@@ -426,8 +637,10 @@ interface Comet { id: number; x: number; y: number; angle: number; tail: number;
 function CometEl({ comet, onDone }: { comet: Comet; onDone: () => void }) {
   const { x, y, angle, tail, duration, tx, ty } = comet;
   const HEAD = 3;
-  const coneHalf = tail * 0.30; // half-height at widest (trailing) end
+  const coneHalf = tail * 0.30;
   const [vanishing, setVanishing] = React.useState(false);
+  const nucleusRef = React.useRef<HTMLDivElement>(null);
+  const { captured, gravRef, suckStyle } = useBHGravity(x, y, { moving: true, trackRef: nucleusRef });
 
   React.useEffect(() => {
     if (vanishing) {
@@ -438,11 +651,17 @@ function CometEl({ comet, onDone }: { comet: Comet; onDone: () => void }) {
     return () => clearTimeout(t);
   }, [duration, onDone, vanishing]);
 
+  React.useEffect(() => {
+    if (!captured) return;
+    const t = setTimeout(onDone, SUCK_DUR + 100);
+    return () => clearTimeout(t);
+  }, [captured, onDone]);
+
   return (
-    <div data-space-dismissable="true" onClick={() => !vanishing && setVanishing(true)} style={{
+    <div ref={gravRef} data-space-dismissable="true" onClick={() => !captured && !vanishing && setVanishing(true)} style={{
       position: "absolute", left: `${x}%`, top: `${y}%`,
       willChange: "transform, opacity",
-      ...(vanishing ? {
+      ...(captured ? suckStyle : vanishing ? {
         animation: "m-se-vanish 0.3s ease-in forwards"
       } : {
         animationName: "m-comet", animationDuration: `${duration}ms`,
@@ -453,7 +672,10 @@ function CometEl({ comet, onDone }: { comet: Comet; onDone: () => void }) {
       "--cx-tx": `${tx}px`,
       "--cx-ty": `${ty}px`,
     } as unknown as React.CSSProperties}>
-      <div style={{ transform: `rotate(${angle}deg)`, transformOrigin: "left center" }}>
+      <div style={{
+        transform: `rotate(${angle}deg)`,
+        transformOrigin: "left center",
+      }}>
         {/* Cone tail — wide at trailing end, points toward nucleus */}
         <div style={{
           position: "absolute",
@@ -465,7 +687,7 @@ function CometEl({ comet, onDone }: { comet: Comet; onDone: () => void }) {
           clipPath: "polygon(100% 50%, 0% 0%, 0% 100%)",
         }} />
         {/* Nucleus */}
-        <div style={{
+        <div ref={nucleusRef} style={{
           position: "absolute",
           width: `${HEAD * 2}px`, height: `${HEAD * 2}px`,
           left: `${tail - HEAD}px`, top: `${-HEAD}px`,
@@ -504,8 +726,20 @@ function PulsarEl({ pulsar, onDone }: { pulsar: Pulsar; onDone: () => void }) {
   const [vanishing, setVanishing] = React.useState(false);
   const { x, y, duration, period } = pulsar;
   const BEAM_LEN = 600;
+  const { captured, gravRef, suckStyle } = useBHGravity(x, y);
 
-  // Pulsar emerges after the gas cloud finishes collapsing (novaDone fires)
+  // Stable callbacks so NovaEl's useEffect dependency array never sees a new
+  // reference — inline lambdas would reset the cloud timers on every re-render
+  // of PulsarEl (e.g. triggered by meteors completing during a shower).
+  const handleNovaNearDone = React.useCallback(() => setShowPulsar(true), []);
+  const handleNovaDone     = React.useCallback(() => setNovaDone(true), []);
+
+  // Pulsar emerges after the gas cloud finishes collapsing (novaDone fires).
+  // Also serves as a fallback when the nova is cut short by the black hole —
+  // onNearDone is never called in that path, so we catch it here instead.
+  React.useEffect(() => {
+    if (novaDone) setShowPulsar(true);
+  }, [novaDone]);
 
   React.useEffect(() => {
     if (!showPulsar) return;
@@ -516,6 +750,13 @@ function PulsarEl({ pulsar, onDone }: { pulsar: Pulsar; onDone: () => void }) {
     const t = setTimeout(onDone, duration + 200);
     return () => clearTimeout(t);
   }, [duration, onDone, showPulsar, vanishing]);
+
+  // When captured, skip normal lifecycle for the pulsar phase
+  React.useEffect(() => {
+    if (!captured || !showPulsar) return;
+    const t = setTimeout(onDone, SUCK_DUR + 100);
+    return () => clearTimeout(t);
+  }, [captured, showPulsar, onDone]);
 
   const beamStyle = (delay: string): React.CSSProperties => ({
     position: "absolute",
@@ -533,14 +774,14 @@ function PulsarEl({ pulsar, onDone }: { pulsar: Pulsar; onDone: () => void }) {
 
   return (
     <>
-      {!novaDone && <NovaEl nova={{ id: pulsar.id, x, y }} onNearDone={() => setShowPulsar(true)} onDone={() => setNovaDone(true)} />}
+      {!novaDone && <NovaEl nova={{ id: pulsar.id, x, y }} onNearDone={handleNovaNearDone} onDone={handleNovaDone} />}
       {showPulsar && (
-        <div data-space-dismissable="true" onClick={() => !vanishing && setVanishing(true)} style={{
+        <div ref={gravRef} data-space-dismissable="true" onClick={() => !captured && !vanishing && setVanishing(true)} style={{
           position: "absolute", left: `${x}%`, top: `${y}%`,
           transform: `rotate(${pulsar.id * 47}deg)`,
-          animation: vanishing ? "m-se-vanish 0.3s ease-in forwards" : "m-pulsar-fade-in 3s ease-out forwards",
+          ...(captured ? suckStyle : { animation: vanishing ? "m-se-vanish 0.3s ease-in forwards" : "m-pulsar-fade-in 3s ease-out forwards" }),
           cursor: "pointer", pointerEvents: "auto",
-        }}>
+        } as React.CSSProperties}>
           {/* Single light beam */}
           <div style={beamStyle("0ms")} />
           {/* Pulsing core */}
@@ -581,6 +822,7 @@ function MeteorEl({ meteor, onDone }: { meteor: Meteor; onDone: () => void }) {
   const tx = Math.cos(rad) * travel;
   const ty = Math.sin(rad) * travel;
   const [vanishing, setVanishing] = React.useState(false);
+  const { captured, gravRef, suckStyle } = useBHGravity(x, y, { moving: true });
 
   React.useEffect(() => {
     if (vanishing) {
@@ -591,10 +833,16 @@ function MeteorEl({ meteor, onDone }: { meteor: Meteor; onDone: () => void }) {
     return () => clearTimeout(t);
   }, [duration, delay, onDone, vanishing]);
 
+  React.useEffect(() => {
+    if (!captured) return;
+    const t = setTimeout(onDone, SUCK_DUR + 100);
+    return () => clearTimeout(t);
+  }, [captured, onDone]);
+
   return (
-    <div data-space-dismissable="true" onClick={() => !vanishing && setVanishing(true)} style={{
+    <div ref={gravRef} data-space-dismissable="true" onClick={() => !captured && !vanishing && setVanishing(true)} style={{
       position: "absolute", left: `${x}%`, top: `${y}%`,
-      ...(vanishing ? {
+      ...(captured ? suckStyle : vanishing ? {
         animation: "m-se-vanish 0.3s ease-in forwards"
       } : {
         animationName: "m-meteor", animationDuration: `${duration}ms`,
@@ -648,6 +896,7 @@ function WormholeEl({ wh, onDone }: { wh: WH; onDone: () => void }) {
   const [vanishing, setVanishing] = React.useState(false);
   const canvasRef = React.useRef<HTMLCanvasElement>(null);
   const frameRef = React.useRef<number>(0);
+  const { captured, gravRef, suckStyle } = useBHGravity(x, y);
 
   React.useEffect(() => {
     if (vanishing) {
@@ -658,6 +907,12 @@ function WormholeEl({ wh, onDone }: { wh: WH; onDone: () => void }) {
     const t2 = setTimeout(onDone, duration + 200);
     return () => { clearTimeout(t1); clearTimeout(t2); };
   }, [duration, onDone, vanishing]);
+
+  React.useEffect(() => {
+    if (!captured) return;
+    const t = setTimeout(onDone, SUCK_DUR + 100);
+    return () => clearTimeout(t);
+  }, [captured, onDone]);
 
   // Canvas-based gravitational lensing
   React.useEffect(() => {
@@ -771,9 +1026,13 @@ function WormholeEl({ wh, onDone }: { wh: WH; onDone: () => void }) {
   const SIZE = Math.round(S * 3.2);
 
   return (
-    <div data-space-dismissable="true" onClick={() => !vanishing && setVanishing(true)} style={{ position: "absolute", left: `${x}%`, top: `${y}%`, transform: "translate(-50%, -50%)", cursor: "pointer", pointerEvents: "auto" }}>
+    <div ref={gravRef} data-space-dismissable="true" onClick={() => !captured && !vanishing && setVanishing(true)} style={{
+      position: "absolute", left: `${x}%`, top: `${y}%`, transform: "translate(-50%, -50%)",
+      cursor: "pointer", pointerEvents: "auto",
+      ...(captured ? suckStyle : {}),
+    } as React.CSSProperties}>
       <div style={{
-        animationName: vanishing ? "m-wh-vanish" : "m-wh-appear",
+        animationName: captured ? undefined : vanishing ? "m-wh-vanish" : "m-wh-appear",
         animationDuration: vanishing ? `${VANISH}ms` : `${APPEAR}ms`,
         animationTimingFunction: "ease-out",
         animationFillMode: "forwards",
@@ -794,6 +1053,111 @@ function mkWH(): WH {
   };
 }
 
+// ── 7. Shooting Star ──────────────────────────────────────────────────────────
+
+interface SStar {
+  id: number;
+  x: number;
+  y: number;
+  angle: number;
+  length: number;
+  travel: number;
+  duration: number;
+  delay: number;
+}
+
+let ssIdCounter = 0;
+
+function ShootingStarEl({ star, onDone }: { star: SStar; onDone: () => void }) {
+  const { x, y, angle, length, travel, duration, delay } = star;
+  const rad = (angle * Math.PI) / 180;
+  const tx = Math.cos(rad) * travel;
+  const ty = Math.sin(rad) * travel;
+  const [vanishing, setVanishing] = React.useState(false);
+  const headRef = React.useRef<HTMLDivElement>(null);
+  const { captured, gravRef, suckStyle } = useBHGravity(x, y, { moving: true, trackRef: headRef });
+
+  React.useEffect(() => {
+    if (vanishing) {
+      const t = setTimeout(onDone, 300);
+      return () => clearTimeout(t);
+    }
+    const t = setTimeout(onDone, duration + delay + 300);
+    return () => clearTimeout(t);
+  }, [duration, delay, onDone, vanishing]);
+
+  React.useEffect(() => {
+    if (!captured) return;
+    const t = setTimeout(onDone, SUCK_DUR + 100);
+    return () => clearTimeout(t);
+  }, [captured, onDone]);
+
+  // Leading-edge offset from the outer div's origin (tail end)
+  const headX = Math.cos(rad) * length;
+  const headY = Math.sin(rad) * length;
+
+  return (
+    <div
+      ref={gravRef}
+      data-space-dismissable="true"
+      onClick={() => !captured && !vanishing && setVanishing(true)}
+      style={{
+        position: "absolute",
+        left: `${x}%`,
+        top: `${y}%`,
+        ...(captured ? suckStyle : vanishing ? {
+          animation: "m-se-vanish 0.3s ease-in forwards",
+        } : {
+          animationName: "meridian-ss",
+          animationDuration: `${duration}ms`,
+          animationDelay: `${delay}ms`,
+          animationTimingFunction: "ease-out",
+          animationFillMode: "both",
+        }),
+        cursor: "pointer",
+        pointerEvents: "auto",
+        "--ss-tx": `${tx}px`,
+        "--ss-ty": `${ty}px`,
+      } as unknown as React.CSSProperties}
+    >
+      <div style={{
+        width: `${length}px`,
+        height: "1.5px",
+        background: "linear-gradient(90deg, transparent 0%, rgba(200,220,255,0.6) 60%, rgba(255,255,255,0.95) 100%)",
+        borderRadius: "9999px",
+        transform: `rotate(${angle}deg)`,
+        transformOrigin: "left center",
+        boxShadow: "0 0 4px 1px rgba(180,210,255,0.25)",
+      }} />
+      {/* Zero-size anchor at the bright leading tip for BH proximity detection */}
+      <div ref={headRef} style={{
+        position: "absolute",
+        width: 0, height: 0,
+        left: `${headX}px`,
+        top: `${headY}px`,
+        pointerEvents: "none",
+      }} />
+    </div>
+  );
+}
+
+function mkShootingStars(count: number): SStar[] {
+  const r = Math.random;
+  return Array.from({ length: count }, (_, i) => {
+    const angle = 25 + r() * 30;
+    return {
+      id: ssIdCounter++,
+      x: 5 + r() * 60,
+      y: 3 + r() * 38,
+      angle,
+      length: 60 + r() * 110,
+      travel: 350 + r() * 400,
+      duration: 500 + r() * 400,
+      delay: i * (70 + r() * 110),
+    };
+  });
+}
+
 // ── SpaceEffectsOverlay ───────────────────────────────────────────────────────
 
 interface State {
@@ -803,24 +1167,38 @@ interface State {
   pulsars: Pulsar[];
   meteors: Meteor[];
   wormholes: WH[];
+  shootingStars: SStar[];
 }
 
-const EMPTY: State = { novas: [], bh: null, comets: [], pulsars: [], meteors: [], wormholes: [] };
+const EMPTY: State = { novas: [], bh: null, comets: [], pulsars: [], meteors: [], wormholes: [], shootingStars: [] };
 
 export function SpaceEffectsOverlay({ bgId }: { bgId: string }) {
   const space = isSpaceBg(bgId);
   const [st, setSt] = React.useState<State>(EMPTY);
   const [enabled, setEnabled] = React.useState(true);
+  // Gravity turns off the moment the BH starts vanishing, even though the
+  // visual fade-out continues for another ~2.8 s.
+  const [bhGravityActive, setBhGravityActive] = React.useState(false);
+
+  const onBHVanishing = React.useCallback(() => setBhGravityActive(false), []);
 
   const addNova    = React.useCallback(() => setSt(p => ({ ...p, novas:    [...p.novas, mkNova()] })), []);
-  const addBH      = React.useCallback((x?: number, y?: number) => setSt(p => p.bh ? p : ({ ...p, bh: mkBH(x, y) })), []);
-  const replaceBH  = React.useCallback(() => setSt(p => ({ ...p, bh: mkBH() })), []);
+  const addBH      = React.useCallback((x?: number, y?: number) => setSt(p => {
+    if (p.bh) return p;
+    setBhGravityActive(true);
+    return { ...p, bh: mkBH(x, y) };
+  }), []);
+  const replaceBH  = React.useCallback(() => setSt(p => {
+    setBhGravityActive(true);
+    return { ...p, bh: mkBH() };
+  }), []);
   const addComet   = React.useCallback(() => setSt(p => ({ ...p, comets:   [...p.comets, mkComet()] })), []);
   const addPulsar     = React.useCallback(() => setSt(p => p.pulsars.length > 0 ? p : ({ ...p, pulsars: [mkPulsar()] })), []);
   const replacePulsar = React.useCallback(() => setSt(p => ({ ...p, pulsars: [mkPulsar()] })), []);
   const addMeteors = React.useCallback(() => setSt(p => ({ ...p, meteors:  [...p.meteors, ...mkMeteors()] })), []);
   const addWH      = React.useCallback(() => setSt(p => ({ ...p, wormholes:[...p.wormholes, mkWH()] })), []);
   const replaceWH  = React.useCallback(() => setSt(p => ({ ...p, wormholes: [mkWH()] })), []);
+  const addShootingStars = React.useCallback((count: number) => setSt(p => ({ ...p, shootingStars: [...p.shootingStars, ...mkShootingStars(count)] })), []);
 
   // Forward clicks through the UI layer to animation elements underneath.
   // Because GlobalForeground sits at z-[0] behind the z-[1] content wrapper,
@@ -828,15 +1206,33 @@ export function SpaceEffectsOverlay({ bgId }: { bgId: string }) {
   // trusted document click in capture phase, find any [data-space-dismissable]
   // element at that point via elementsFromPoint, and dispatch a synthetic click
   // on it so React's onClick handler fires normally.
+  //
+  // We stop before forwarding if any real interactive UI element (button, link,
+  // input, etc.) appears in front of the space element — those must win.
   React.useEffect(() => {
+    const INTERACTIVE = new Set(["BUTTON", "A", "INPUT", "SELECT", "TEXTAREA", "LABEL", "SUMMARY"]);
+    function isInteractive(el: Element): boolean {
+      const h = el as HTMLElement;
+      return (
+        INTERACTIVE.has(h.tagName) ||
+        h.role === "button" ||
+        h.getAttribute("role") === "button" ||
+        h.tabIndex >= 0 ||
+        h.isContentEditable
+      );
+    }
+
     function handleClick(e: MouseEvent) {
       if (!e.isTrusted) return;
       const els = document.elementsFromPoint(e.clientX, e.clientY);
-      const target = els.find(
-        (el) => (el as HTMLElement).dataset?.spaceDismissable === "true"
-      ) as HTMLElement | undefined;
-      if (target) {
-        target.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+      // Walk front-to-back; if we hit an interactive element before a space
+      // element, the real UI gets the click — don't forward.
+      for (const el of els) {
+        if ((el as HTMLElement).dataset?.spaceDismissable === "true") {
+          el.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+          break;
+        }
+        if (isInteractive(el)) break;
       }
     }
     document.addEventListener("click", handleClick, true);
@@ -853,12 +1249,13 @@ export function SpaceEffectsOverlay({ bgId }: { bgId: string }) {
       if (!on) setSt(EMPTY);
     };
     const pairs: [string, () => void][] = [
-      [EV_NOVA,     () => { if (enabled) addNova(); }],
-      [EV_BH,       () => { if (enabled) replaceBH(); }],
-      [EV_COMET,    () => { if (enabled) addComet(); }],
-      [EV_PULSAR,   () => { if (enabled) replacePulsar(); }],
-      [EV_METEORS,  () => { if (enabled) addMeteors(); }],
-      [EV_WORMHOLE, () => { if (enabled) replaceWH(); }],
+      [EV_NOVA,          () => { if (enabled) addNova(); }],
+      [EV_BH,            () => { if (enabled) replaceBH(); }],
+      [EV_COMET,         () => { if (enabled) addComet(); }],
+      [EV_PULSAR,        () => { if (enabled) replacePulsar(); }],
+      [EV_METEORS,       () => { if (enabled) addMeteors(); }],
+      [EV_WORMHOLE,      () => { if (enabled) replaceWH(); }],
+      [EV_SHOOTING_STAR, () => { if (enabled) addShootingStars(1 + Math.floor(Math.random() * 3)); }],
     ];
     pairs.forEach(([ev, fn]) => window.addEventListener(ev, fn));
     window.addEventListener(EV_CLEAR, clearAll);
@@ -868,7 +1265,7 @@ export function SpaceEffectsOverlay({ bgId }: { bgId: string }) {
       window.removeEventListener(EV_CLEAR, clearAll);
       window.removeEventListener(EV_ENABLED, onEnabled);
     };
-  }, [enabled, addNova, addBH, replaceBH, addComet, addPulsar, replacePulsar, addMeteors, addWH, replaceWH]);
+  }, [enabled, addNova, addBH, replaceBH, addComet, addPulsar, replacePulsar, addMeteors, addWH, replaceWH, addShootingStars]);
 
   // Auto-schedule random effects when on a space background and effects are enabled
   React.useEffect(() => {
@@ -884,10 +1281,12 @@ export function SpaceEffectsOverlay({ bgId }: { bgId: string }) {
       timers.push(setTimeout(tick, minMs + r() * (maxMs - minMs)));
     };
 
-    sched(addComet,   18_000,  55_000);
-    sched(addPulsar,  55_000, 160_000);
-    sched(addMeteors, 80_000, 220_000);
-    sched(addWH,      3_600_000, 7_200_000);
+    sched(addComet,        18_000,  55_000);
+    sched(addPulsar,       55_000, 160_000);
+    sched(addMeteors,      80_000, 220_000);
+    sched(addWH,        3_600_000, 7_200_000);
+    // Shooting stars: every 2.5–8 s, occasionally 2 at once
+    sched(() => addShootingStars(Math.random() < 0.25 ? 2 : 1), 2_500, 8_000);
 
     // Black hole: daily 10% check
     const rec = getBHRec();
@@ -897,38 +1296,44 @@ export function SpaceEffectsOverlay({ bgId }: { bgId: string }) {
     }
 
     return () => timers.forEach(clearTimeout);
-  }, [space, enabled, addNova, addComet, addPulsar, addMeteors, addWH, addBH]);
+  }, [space, enabled, addNova, addComet, addPulsar, addMeteors, addWH, addBH, addShootingStars]);
 
-  const rmNova    = (id: number) => setSt(p => ({ ...p, novas:     p.novas.filter(x => x.id !== id) }));
-  const rmComet   = (id: number) => setSt(p => ({ ...p, comets:    p.comets.filter(x => x.id !== id) }));
-  const rmPulsar  = (id: number) => setSt(p => ({ ...p, pulsars:   p.pulsars.filter(x => x.id !== id) }));
-  const rmMeteor  = (id: number) => setSt(p => ({ ...p, meteors:   p.meteors.filter(x => x.id !== id) }));
-  const rmWH      = (id: number) => setSt(p => ({ ...p, wormholes: p.wormholes.filter(x => x.id !== id) }));
+  const rmNova    = (id: number) => setSt(p => ({ ...p, novas:         p.novas.filter(x => x.id !== id) }));
+  const rmComet   = (id: number) => setSt(p => ({ ...p, comets:        p.comets.filter(x => x.id !== id) }));
+  const rmPulsar  = (id: number) => setSt(p => ({ ...p, pulsars:       p.pulsars.filter(x => x.id !== id) }));
+  const rmMeteor  = (id: number) => setSt(p => ({ ...p, meteors:       p.meteors.filter(x => x.id !== id) }));
+  const rmWH      = (id: number) => setSt(p => ({ ...p, wormholes:     p.wormholes.filter(x => x.id !== id) }));
+  const rmStar    = (id: number) => setSt(p => ({ ...p, shootingStars: p.shootingStars.filter(x => x.id !== id) }));
 
-  const empty = !st.bh && !st.novas.length && !st.comets.length && !st.pulsars.length && !st.meteors.length && !st.wormholes.length;
+  const empty = !st.bh && !st.novas.length && !st.comets.length && !st.pulsars.length && !st.meteors.length && !st.wormholes.length && !st.shootingStars.length;
   if (!space && empty) return null;
 
   return (
-    <div style={{ position: "absolute", inset: 0, overflow: "hidden", pointerEvents: "none" }}>
-      {st.novas.map(n =>
-        <NovaEl key={n.id} nova={n} onDone={() => rmNova(n.id)} />
-      )}
-      {st.bh &&
-        <BHEl bh={st.bh} onDone={() => setSt(p => ({ ...p, bh: null }))} />
-      }
-      {st.comets.map(c =>
-        <CometEl key={c.id} comet={c} onDone={() => rmComet(c.id)} />
-      )}
-      {st.pulsars.map(p =>
-        <PulsarEl key={p.id} pulsar={p} onDone={() => rmPulsar(p.id)} />
-      )}
-      {st.meteors.map(m =>
-        <MeteorEl key={m.id} meteor={m} onDone={() => rmMeteor(m.id)} />
-      )}
-      {st.wormholes.map(w =>
-        <WormholeEl key={w.id} wh={w} onDone={() => rmWH(w.id)} />
-      )}
-    </div>
+    <BHContext.Provider value={st.bh && bhGravityActive ? { x: st.bh.x, y: st.bh.y } : null}>
+      <div style={{ position: "absolute", inset: 0, overflow: "hidden", pointerEvents: "none" }}>
+        {st.novas.map(n =>
+          <NovaEl key={n.id} nova={n} onDone={() => rmNova(n.id)} />
+        )}
+        {st.bh &&
+          <BHEl bh={st.bh} onVanishing={onBHVanishing} onDone={() => { setSt(p => ({ ...p, bh: null })); setBhGravityActive(false); }} />
+        }
+        {st.comets.map(c =>
+          <CometEl key={c.id} comet={c} onDone={() => rmComet(c.id)} />
+        )}
+        {st.pulsars.map(p =>
+          <PulsarEl key={p.id} pulsar={p} onDone={() => rmPulsar(p.id)} />
+        )}
+        {st.meteors.map(m =>
+          <MeteorEl key={m.id} meteor={m} onDone={() => rmMeteor(m.id)} />
+        )}
+        {st.wormholes.map(w =>
+          <WormholeEl key={w.id} wh={w} onDone={() => rmWH(w.id)} />
+        )}
+        {st.shootingStars.map(s =>
+          <ShootingStarEl key={s.id} star={s} onDone={() => rmStar(s.id)} />
+        )}
+      </div>
+    </BHContext.Provider>
   );
 }
 
