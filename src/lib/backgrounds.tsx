@@ -1046,6 +1046,7 @@ function ShootingStarEl({ star, onDone }: { star: SStar; onDone: () => void }) {
 
   return (
     <div
+      data-space-dismissable="true"
       onClick={() => !vanishing && setVanishing(true)}
       style={{
         position: "absolute",
@@ -1064,7 +1065,7 @@ function ShootingStarEl({ star, onDone }: { star: SStar; onDone: () => void }) {
         pointerEvents: "auto",
         "--ss-tx": `${tx}px`,
         "--ss-ty": `${ty}px`,
-      } as React.CSSProperties}
+      } as unknown as React.CSSProperties}
     >
       <div
         style={{

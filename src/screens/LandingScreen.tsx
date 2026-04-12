@@ -30,7 +30,7 @@ const QUIPS = [
 ];
 import { Button } from "@/components/ui/button";
 import { fireShootingStar } from "@/lib/backgrounds";
-import { fireSupernova, fireBlackHole, fireComet, firePulsar, fireMeteorShower, fireWormhole, clearAllEffects, setEffectsEnabled } from "@/lib/spaceEffects";
+import { fireBlackHole, fireComet, firePulsar, fireMeteorShower, fireWormhole, clearAllEffects, setEffectsEnabled } from "@/lib/spaceEffects";
 import {
   type CredentialStatus,
   type JiraSprint,
