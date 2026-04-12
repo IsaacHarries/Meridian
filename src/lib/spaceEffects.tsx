@@ -54,7 +54,7 @@ export const SPACE_FX_KIND_META: Record<
 > = {
   shootingStars: { icon: "✦", short: "stars" },
   comets:        { icon: "☄", short: "comet" },
-  pulsars:       { icon: "✷", short: "pulsar" },
+  pulsars:       { icon: "※", short: "supernova" },
   meteors:       { icon: "⁂", short: "meteors" },
   wormholes:     { icon: "⊕", short: "wormhole" },
   blackHole:     { icon: "◉", short: "black hole" },
@@ -1316,8 +1316,23 @@ export function SpaceEffectsOverlay({ bgId }: { bgId: string }) {
   const onBHVanishing = React.useCallback(() => setBhGravityActive(false), []);
 
   React.useEffect(() => {
-    const h = (e: Event) =>
-      setKinds({ ...(e as CustomEvent<Record<SpaceEffectKind, boolean>>).detail });
+    const h = (e: Event) => {
+      const detail = { ...(e as CustomEvent<Record<SpaceEffectKind, boolean>>).detail };
+      setKinds(detail);
+      // Same turn as the drawer toggle — clear live instances for any channel now off
+      // (avoids races vs a separate effect and stale kindsRef in scheduled spawns).
+      setSt((p) => ({
+        ...p,
+        novas:         detail.novas ? p.novas : [],
+        comets:        detail.comets ? p.comets : [],
+        pulsars:       detail.pulsars ? p.pulsars : [],
+        meteors:       detail.meteors ? p.meteors : [],
+        wormholes:     detail.wormholes ? p.wormholes : [],
+        shootingStars: detail.shootingStars ? p.shootingStars : [],
+        bh:            detail.blackHole ? p.bh : null,
+      }));
+      if (!detail.blackHole) setBhGravityActive(false);
+    };
     window.addEventListener(SPACE_FX_TOGGLES_EVENT, h);
     return () => window.removeEventListener(SPACE_FX_TOGGLES_EVENT, h);
   }, []);
@@ -1328,29 +1343,6 @@ export function SpaceEffectsOverlay({ bgId }: { bgId: string }) {
     window.addEventListener(SPACE_FX_BH_GRAVITY_EVENT, h);
     return () => window.removeEventListener(SPACE_FX_BH_GRAVITY_EVENT, h);
   }, []);
-
-  // Dismiss running instances when a channel is turned off
-  React.useEffect(() => {
-    setSt((p) => ({
-      ...p,
-      novas:         kinds.novas ? p.novas : [],
-      comets:        kinds.comets ? p.comets : [],
-      pulsars:       kinds.pulsars ? p.pulsars : [],
-      meteors:       kinds.meteors ? p.meteors : [],
-      wormholes:     kinds.wormholes ? p.wormholes : [],
-      shootingStars: kinds.shootingStars ? p.shootingStars : [],
-      bh:            kinds.blackHole ? p.bh : null,
-    }));
-    if (!kinds.blackHole) setBhGravityActive(false);
-  }, [
-    kinds.shootingStars,
-    kinds.comets,
-    kinds.pulsars,
-    kinds.meteors,
-    kinds.wormholes,
-    kinds.blackHole,
-    kinds.novas,
-  ]);
 
   const addNova    = React.useCallback(() => setSt(p => ({ ...p, novas:    [...p.novas, mkNova()] })), []);
   const addBH      = React.useCallback((x?: number, y?: number) => setSt(p => {

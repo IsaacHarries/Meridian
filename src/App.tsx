@@ -10,7 +10,6 @@ import {
   fireBlackHole,
   fireComet,
   firePulsar,
-  fireSupernova,
   fireMeteorShower,
   fireWormhole,
   clearAllEffects,
@@ -198,8 +197,7 @@ function GlobalFxDrawer({ hideUI, onToggleHideUI }: { hideUI: boolean; onToggleH
     { kind: "comets", icon: "☄", label: "comet", fn: fireComet },
     { kind: "meteors", icon: "⁂", label: "meteor shower", fn: fireMeteorShower },
     { kind: "blackHole", icon: "◉", label: "black hole", fn: fireBlackHole },
-    { kind: "pulsars", icon: "✷", label: "pulsar", fn: firePulsar },
-    { kind: "novas", icon: "※", label: "supernova", fn: fireSupernova },
+    { kind: "pulsars", icon: "※", label: "supernova", fn: firePulsar },
     { kind: "wormholes", icon: "⊕", label: "wormhole", fn: fireWormhole },
   ];
 
