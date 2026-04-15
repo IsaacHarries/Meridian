@@ -245,6 +245,19 @@ const review: ReviewReport = {
         },
       ],
     },
+    testing: {
+      assessment: "New rate-limit middleware logic is not covered by any tests in the diff.",
+      findings: [
+        {
+          severity: "non_blocking",
+          title: "No tests for rate-limit middleware",
+          description:
+            "The new `check_limit` function adds non-trivial branching logic but no unit or integration tests are present in the diff.",
+          file: "src/middleware/rate_limit.rs",
+          line_range: "38-65",
+        },
+      ],
+    },
   },
 };
 

@@ -1,5 +1,72 @@
 import { invoke } from "@tauri-apps/api/core";
 import { openUrl as tauriOpenUrl } from "@tauri-apps/plugin-opener";
+import { toast } from "sonner";
+
+// ── Local LLM error detection ─────────────────────────────────────────────────
+
+/**
+ * Returns true when an error string looks like the local LLM server is not
+ * reachable (i.e. Ollama is not running).
+ */
+function isLocalLlmConnectionError(err: string): boolean {
+  const e = err.toLowerCase();
+  return (
+    e.includes("could not connect to local llm") ||
+    e.includes("make sure ollama") ||
+    e.includes("make sure lm studio") ||
+    (e.includes("local llm") && (e.includes("connect") || e.includes("reach") || e.includes("refused")))
+  );
+}
+
+/**
+ * Detect which local LLM URL is configured so we can include it in the toast.
+ * We read it from the credential store key that `local_llm_url` was saved under.
+ * Falls back to "localhost:11434" if unknown.
+ */
+let _cachedLocalLlmUrl: string | null = null;
+export function setLocalLlmUrlCache(url: string) {
+  _cachedLocalLlmUrl = url;
+}
+
+/**
+ * Show a persistent toast explaining that the Ollama server is not running,
+ * including the command needed to start it.
+ */
+function showLocalLlmDownToast(_err: string) {
+  const urlHint = _cachedLocalLlmUrl ?? "http://localhost:11434";
+  // Determine whether this looks like an Ollama URL vs LM Studio etc.
+  const isOllama =
+    urlHint.includes("11434") ||
+    urlHint.includes("ollama") ||
+    !urlHint.includes("1234");
+
+  const startCmd = isOllama ? "ollama serve" : "Start LM Studio and enable the local server";
+  const description = isOllama
+    ? `Could not connect to ${urlHint}. Start the server with: ${startCmd}`
+    : `Could not connect to ${urlHint}. ${startCmd}.`;
+
+  toast.error("Local LLM server is not running", {
+    description,
+    duration: 12_000,
+    id: "local-llm-down", // deduplicate — only show once at a time
+  });
+}
+
+/**
+ * Wrapper around invoke that automatically detects local-LLM-server-down errors
+ * and shows a helpful toast. Re-throws the error so callers still see it.
+ */
+async function invokeWithLlmCheck<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
+  try {
+    return await invoke<T>(cmd, args);
+  } catch (e) {
+    const err = String(e);
+    if (isLocalLlmConnectionError(err)) {
+      showLocalLlmDownToast(err);
+    }
+    throw e;
+  }
+}
 
 /**
  * Open a URL in the user's default system browser.
@@ -60,7 +127,6 @@ export interface CredentialStatus {
 
 export function credentialStatusComplete(s: CredentialStatus) {
   return (
-    s.anthropicApiKey &&
     s.jiraBaseUrl &&
     s.jiraEmail &&
     s.jiraApiToken &&
@@ -74,6 +140,11 @@ export function credentialStatusComplete(s: CredentialStatus) {
 
 export function anthropicComplete(s: CredentialStatus) {
   return s.anthropicApiKey;
+}
+
+/** True when at least one AI provider (Anthropic, Gemini, or local LLM) is configured. */
+export function aiProviderComplete(s: CredentialStatus) {
+  return s.anthropicApiKey || s.geminiApiKey || s.localLlmUrl;
 }
 
 /** All three auth credentials are present (board ID not required). */
@@ -239,7 +310,7 @@ export async function generateStandupBriefing(standupText: string): Promise<stri
     const { MOCK_STANDUP_MARKDOWN } = await import("./mockClaudeResponses");
     return MOCK_STANDUP_MARKDOWN;
   }
-  return invoke<string>("generate_standup_briefing", { standupText });
+  return invokeWithLlmCheck<string>("generate_standup_briefing", { standupText });
 }
 
 export async function generateSprintRetrospective(sprintText: string): Promise<string> {
@@ -247,7 +318,7 @@ export async function generateSprintRetrospective(sprintText: string): Promise<s
     const { MOCK_SPRINT_RETRO_MARKDOWN } = await import("./mockClaudeResponses");
     return MOCK_SPRINT_RETRO_MARKDOWN;
   }
-  return invoke<string>("generate_sprint_retrospective", { sprintText });
+  return invokeWithLlmCheck<string>("generate_sprint_retrospective", { sprintText });
 }
 
 export async function generateWorkloadSuggestions(workloadText: string): Promise<string> {
@@ -255,7 +326,7 @@ export async function generateWorkloadSuggestions(workloadText: string): Promise
     const { MOCK_WORKLOAD_MARKDOWN } = await import("./mockClaudeResponses");
     return MOCK_WORKLOAD_MARKDOWN;
   }
-  return invoke<string>("generate_workload_suggestions", { workloadText });
+  return invokeWithLlmCheck<string>("generate_workload_suggestions", { workloadText });
 }
 
 export async function assessTicketQuality(ticketText: string): Promise<string> {
@@ -263,7 +334,7 @@ export async function assessTicketQuality(ticketText: string): Promise<string> {
     const { MOCK_QUALITY_JSON } = await import("./mockClaudeResponses");
     return MOCK_QUALITY_JSON;
   }
-  return invoke<string>("assess_ticket_quality", { ticketText });
+  return invokeWithLlmCheck<string>("assess_ticket_quality", { ticketText });
 }
 
 // ── Ticket quality types ──────────────────────────────────────────────────────
@@ -287,7 +358,17 @@ export async function reviewPr(reviewText: string): Promise<string> {
     const { MOCK_PR_REVIEW_JSON } = await import("./mockClaudeResponses");
     return MOCK_PR_REVIEW_JSON;
   }
-  return invoke<string>("review_pr", { reviewText });
+  return invokeWithLlmCheck<string>("review_pr", { reviewText });
+}
+
+/** Signal the backend to stop an in-progress PR review between chunks. */
+export async function cancelReview(): Promise<void> {
+  return invoke<void>("cancel_review");
+}
+
+/** Conversational follow-up chat about a completed PR review. */
+export async function chatPrReview(contextText: string, historyJson: string): Promise<string> {
+  return invokeWithLlmCheck<string>("chat_pr_review", { contextText, historyJson });
 }
 
 // ── PR review report types ────────────────────────────────────────────────────
@@ -305,20 +386,38 @@ export interface ReviewLens {
   findings: ReviewFinding[];
 }
 
+export interface BugTestSteps {
+  description: string;
+  happy_path: string[];
+  sad_path: string[];
+}
+
 export interface ReviewReport {
   overall: "approve" | "request_changes" | "needs_discussion";
   summary: string;
+  bug_test_steps?: BugTestSteps | null;
   lenses: {
     acceptance_criteria: ReviewLens;
     security: ReviewLens;
     logic: ReviewLens;
     quality: ReviewLens;
+    testing: ReviewLens;
   };
 }
 
 export function parseReviewReport(raw: string): ReviewReport | null {
   try {
-    const cleaned = raw.replace(/^```(?:json)?\n?/m, "").replace(/\n?```$/m, "").trim();
+    // Strip markdown fences if present
+    let cleaned = raw.replace(/^```(?:json)?\n?/m, "").replace(/\n?```$/m, "").trim();
+
+    // Sanitise bare unquoted line_range values produced by some models, e.g.:
+    //   "line_range": L96-L127   →   "line_range": "L96-L127"
+    // Matches: "line_range": followed by whitespace and a non-null, non-quote, non-digit token
+    cleaned = cleaned.replace(
+      /"line_range"\s*:\s*(?!null\b|")(L[\w\-]+)/g,
+      '"line_range": "$1"'
+    );
+
     return JSON.parse(cleaned) as ReviewReport;
   } catch {
     return null;
@@ -352,12 +451,18 @@ export interface JiraUser {
   emailAddress: string | null;
 }
 
+export interface DescriptionSection {
+  heading: string | null;
+  content: string;
+}
+
 export interface JiraIssue {
   id: string;
   key: string;
   url: string;
   summary: string;
   description: string | null;
+  descriptionSections: DescriptionSection[];
   status: string;
   statusCategory: string;
   assignee: JiraUser | null;
@@ -370,6 +475,16 @@ export interface JiraIssue {
   epicSummary: string | null;
   created: string;
   updated: string;
+  /** Auto-detected from custom field display name — no configuration required. */
+  acceptanceCriteria: string | null;
+  stepsToReproduce: string | null;
+  observedBehavior: string | null;
+  expectedBehavior: string | null;
+  /**
+   * All non-empty custom fields keyed by human-readable display name.
+   * Only populated by get_issue (full detail fetch). Empty for list/sprint fetches.
+   */
+  namedFields: Record<string, string>;
 }
 
 // ── JIRA commands ─────────────────────────────────────────────────────────────
@@ -468,6 +583,30 @@ export async function searchJiraIssues(
   return invoke<JiraIssue[]>("search_jira_issues", { jql, maxResults });
 }
 
+/** Diagnostic: fetch ALL fields for one issue with human-readable names.
+ *  Uses ?expand=names so field IDs are mapped to display names without admin access.
+ *  Returns custom fields sorted by name, standard fields first. */
+export interface RawIssueField {
+  id: string;
+  name: string;
+  value: string;
+}
+
+export async function getRawIssueFields(issueKey: string): Promise<RawIssueField[]> {
+  return invoke<RawIssueField[]>("get_raw_issue_fields", { issueKey });
+}
+
+export interface JiraFieldMeta {
+  id: string;
+  name: string;
+  fieldType: string | null;
+}
+
+/** Fetch all field definitions from the JIRA workspace (id + name + type). */
+export async function getJiraFields(): Promise<JiraFieldMeta[]> {
+  return invoke<JiraFieldMeta[]>("get_jira_fields");
+}
+
 // ── Bitbucket types ───────────────────────────────────────────────────────────
 
 export interface BitbucketUser {
@@ -505,6 +644,7 @@ export interface BitbucketTask {
   id: number;
   content: string;
   resolved: boolean;
+  commentId: number | null;
 }
 
 export interface BitbucketInlineContext {
@@ -531,6 +671,15 @@ export async function getOpenPrs(): Promise<BitbucketPr[]> {
     return OPEN_PRS;
   }
   return invoke<BitbucketPr[]>("get_open_prs");
+}
+
+/** Open PRs authored by the configured Bitbucket user (for the Address PR Comments workflow). */
+export async function getMyOpenPrs(): Promise<BitbucketPr[]> {
+  if (isMockMode()) {
+    const { OPEN_PRS } = await import("./mockData");
+    return OPEN_PRS;
+  }
+  return invoke<BitbucketPr[]>("get_my_open_prs");
 }
 
 export async function getMergedPrs(sinceIso?: string): Promise<BitbucketPr[]> {
@@ -588,6 +737,73 @@ export async function getPrTasks(prId: number): Promise<BitbucketTask[]> {
   return invoke<BitbucketTask[]>("get_pr_tasks", { prId });
 }
 
+/** Approve a PR as the authenticated user. Requires pullrequest:write scope. */
+export async function approvePr(prId: number): Promise<void> {
+  return invoke<void>("approve_pr", { prId });
+}
+
+/** Remove your approval from a PR. */
+export async function unapprovePr(prId: number): Promise<void> {
+  return invoke<void>("unapprove_pr", { prId });
+}
+
+/** Mark a PR as 'Needs work' (request changes). */
+export async function requestChangesPr(prId: number): Promise<void> {
+  return invoke<void>("request_changes_pr", { prId });
+}
+
+/** Remove your 'Needs work' status from a PR. */
+export async function unrequestChangesPr(prId: number): Promise<void> {
+  return invoke<void>("unrequest_changes_pr", { prId });
+}
+
+/**
+ * Post a comment on a PR.
+ * - General comment: omit `inlinePath` / `inlineToLine`.
+ * - Inline comment: provide `inlinePath` (file path in the diff) and `inlineToLine` (new-side line number).
+ * - Reply: provide `parentId` (the comment id to reply to).
+ */
+export async function postPrComment(
+  prId: number,
+  content: string,
+  inlinePath?: string,
+  inlineToLine?: number,
+  parentId?: number,
+): Promise<BitbucketComment> {
+  return invoke<BitbucketComment>("post_pr_comment", {
+    prId,
+    content,
+    inlinePath: inlinePath ?? null,
+    inlineToLine: inlineToLine ?? null,
+    parentId: parentId ?? null,
+  });
+}
+
+/** Create a task linked to a specific comment on a PR. */
+export async function createPrTask(
+  prId: number,
+  commentId: number,
+  content: string,
+): Promise<BitbucketTask> {
+  return invoke<BitbucketTask>("create_pr_task", { prId, commentId, content });
+}
+
+export async function resolvePrTask(
+  prId: number,
+  taskId: number,
+  resolved: boolean,
+): Promise<BitbucketTask> {
+  return invoke<BitbucketTask>("resolve_pr_task", { prId, taskId, resolved });
+}
+
+export async function deletePrComment(prId: number, commentId: number): Promise<void> {
+  return invoke<void>("delete_pr_comment", { prId, commentId });
+}
+
+export async function updatePrComment(prId: number, commentId: number, content: string): Promise<BitbucketComment> {
+  return invoke<BitbucketComment>("update_pr_comment", { prId, commentId, content });
+}
+
 // ── Knowledge base types ──────────────────────────────────────────────────────
 
 export interface KnowledgeEntry {
@@ -632,6 +848,37 @@ export interface GroomingOutput {
   dependencies: string[];
   estimated_complexity: "low" | "medium" | "high";
   grooming_notes: string;
+  suggested_edits: SuggestedEdit[];
+  clarifying_questions: string[];
+}
+
+export type SuggestedEditField =
+  | "description"
+  | "acceptance_criteria"
+  | "steps_to_reproduce"
+  | "observed_behavior"
+  | "expected_behavior"
+  | "summary";
+
+export type SuggestedEditStatus = "pending" | "approved" | "declined";
+
+export interface SuggestedEdit {
+  /** Stable ID used to correlate edits across chat turns */
+  id: string;
+  field: SuggestedEditField;
+  section: string;
+  /** The current text in the ticket, or null if this section is missing entirely */
+  current: string | null;
+  suggested: string;
+  reasoning: string;
+  /** Client-side status — not returned by the agent */
+  status: SuggestedEditStatus;
+}
+
+export interface GroomingChatResponse {
+  message: string;
+  updated_edits: Omit<SuggestedEdit, "status">[];
+  updated_questions: string[];
 }
 
 export interface ImpactOutput {
@@ -742,12 +989,35 @@ export interface TriageMessage {
 
 // ── Agent pipeline commands ───────────────────────────────────────────────────
 
-export async function runGroomingAgent(ticketText: string): Promise<string> {
+export async function runGroomingAgent(ticketText: string, fileContents: string): Promise<string> {
   if (isMockClaudeMode()) {
     const { MOCK_GROOMING_JSON } = await import("./mockClaudeResponses");
     return MOCK_GROOMING_JSON;
   }
-  return invoke<string>("run_grooming_agent", { ticketText });
+  return invokeWithLlmCheck<string>("run_grooming_agent", { ticketText, fileContents });
+}
+
+/** Phase-1 probe: ask the agent which files to read before full grooming. */
+export async function runGroomingFileProbe(ticketText: string): Promise<string> {
+  if (isMockClaudeMode()) {
+    return JSON.stringify({ files: [], grep_patterns: [] });
+  }
+  return invokeWithLlmCheck<string>("run_grooming_file_probe", { ticketText });
+}
+
+/**
+ * Grooming conversation turn — returns structured JSON:
+ * { message, updated_edits, updated_questions }
+ */
+export async function runGroomingChatTurn(contextText: string, historyJson: string): Promise<string> {
+  if (isMockClaudeMode()) {
+    return JSON.stringify({
+      message: "I've updated my understanding. The suggested edits reflect the agreed wording. Feel free to ask any more questions or approve the grooming to proceed.",
+      updated_edits: [],
+      updated_questions: [],
+    });
+  }
+  return invokeWithLlmCheck<string>("run_grooming_chat_turn", { contextText, historyJson });
 }
 
 export async function runImpactAnalysis(ticketText: string, groomingJson: string): Promise<string> {
@@ -755,7 +1025,7 @@ export async function runImpactAnalysis(ticketText: string, groomingJson: string
     const { MOCK_IMPACT_JSON } = await import("./mockClaudeResponses");
     return MOCK_IMPACT_JSON;
   }
-  return invoke<string>("run_impact_analysis", { ticketText, groomingJson });
+  return invokeWithLlmCheck<string>("run_impact_analysis", { ticketText, groomingJson });
 }
 
 export async function runTriageTurn(contextText: string, historyJson: string): Promise<string> {
@@ -763,7 +1033,15 @@ export async function runTriageTurn(contextText: string, historyJson: string): P
     const { MOCK_TRIAGE_ASSISTANT_REPLY } = await import("./mockClaudeResponses");
     return MOCK_TRIAGE_ASSISTANT_REPLY;
   }
-  return invoke<string>("run_triage_turn", { contextText, historyJson });
+  return invokeWithLlmCheck<string>("run_triage_turn", { contextText, historyJson });
+}
+
+export async function updateJiraIssue(
+  issueKey: string,
+  summary: string | null,
+  description: string,
+): Promise<void> {
+  return invoke("update_jira_issue", { issueKey, summary, description });
 }
 
 export async function finalizeImplementationPlan(contextText: string, conversationJson: string): Promise<string> {
@@ -771,7 +1049,7 @@ export async function finalizeImplementationPlan(contextText: string, conversati
     const { MOCK_IMPLEMENTATION_PLAN_JSON } = await import("./mockClaudeResponses");
     return MOCK_IMPLEMENTATION_PLAN_JSON;
   }
-  return invoke<string>("finalize_implementation_plan", { contextText, conversationJson });
+  return invokeWithLlmCheck<string>("finalize_implementation_plan", { contextText, conversationJson });
 }
 
 export async function runImplementationGuidance(ticketText: string, planJson: string): Promise<string> {
@@ -779,7 +1057,7 @@ export async function runImplementationGuidance(ticketText: string, planJson: st
     const { MOCK_GUIDANCE_JSON } = await import("./mockClaudeResponses");
     return MOCK_GUIDANCE_JSON;
   }
-  return invoke<string>("run_implementation_guidance", { ticketText, planJson });
+  return invokeWithLlmCheck<string>("run_implementation_guidance", { ticketText, planJson });
 }
 
 export async function runTestSuggestions(planJson: string, guidanceJson: string): Promise<string> {
@@ -787,7 +1065,7 @@ export async function runTestSuggestions(planJson: string, guidanceJson: string)
     const { MOCK_TESTS_JSON } = await import("./mockClaudeResponses");
     return MOCK_TESTS_JSON;
   }
-  return invoke<string>("run_test_suggestions", { planJson, guidanceJson });
+  return invokeWithLlmCheck<string>("run_test_suggestions", { planJson, guidanceJson });
 }
 
 export async function runPlanReview(planJson: string, guidanceJson: string, testJson: string): Promise<string> {
@@ -795,7 +1073,7 @@ export async function runPlanReview(planJson: string, guidanceJson: string, test
     const { MOCK_PLAN_REVIEW_JSON } = await import("./mockClaudeResponses");
     return MOCK_PLAN_REVIEW_JSON;
   }
-  return invoke<string>("run_plan_review", { planJson, guidanceJson, testJson });
+  return invokeWithLlmCheck<string>("run_plan_review", { planJson, guidanceJson, testJson });
 }
 
 export async function runPrDescriptionGen(ticketText: string, planJson: string, reviewJson: string): Promise<string> {
@@ -803,7 +1081,7 @@ export async function runPrDescriptionGen(ticketText: string, planJson: string, 
     const { MOCK_PR_DESCRIPTION_JSON } = await import("./mockClaudeResponses");
     return MOCK_PR_DESCRIPTION_JSON;
   }
-  return invoke<string>("run_pr_description_gen", { ticketText, planJson, reviewJson });
+  return invokeWithLlmCheck<string>("run_pr_description_gen", { ticketText, planJson, reviewJson });
 }
 
 export async function runRetrospectiveAgent(ticketText: string, planJson: string, reviewJson: string): Promise<string> {
@@ -811,10 +1089,162 @@ export async function runRetrospectiveAgent(ticketText: string, planJson: string
     const { MOCK_RETROSPECTIVE_JSON } = await import("./mockClaudeResponses");
     return MOCK_RETROSPECTIVE_JSON;
   }
-  return invoke<string>("run_retrospective_agent", { ticketText, planJson, reviewJson });
+  return invokeWithLlmCheck<string>("run_retrospective_agent", { ticketText, planJson, reviewJson });
 }
 
-// ── Agent skills commands ─────────────────────────────────────────────────────
+// ── Repo / worktree types & commands ─────────────────────────────────────────
+
+export interface WorktreeInfo {
+  path: string;
+  branch: string;
+  headCommit: string;
+  headMessage: string;
+}
+
+/** Validate the configured worktree path is a valid git repository. */
+export async function validateWorktree(): Promise<WorktreeInfo> {
+  return invoke<WorktreeInfo>("validate_worktree");
+}
+
+/**
+ * Fetch from origin and hard-reset the worktree to the configured base branch.
+ * Returns the new HEAD info.
+ */
+export async function syncWorktree(): Promise<WorktreeInfo> {
+  return invoke<WorktreeInfo>("sync_worktree");
+}
+
+/** Find files matching a glob pattern (relative to the worktree root). */
+export async function globRepoFiles(pattern: string): Promise<string[]> {
+  return invoke<string[]>("glob_repo_files", { pattern });
+}
+
+/**
+ * Search file contents with an extended regex.
+ * @param path Optional subdirectory to restrict the search to.
+ */
+export async function grepRepoFiles(pattern: string, path?: string): Promise<string[]> {
+  return invoke<string[]>("grep_repo_files", { pattern, path: path ?? null });
+}
+
+/** Read a single file from the worktree (path relative to root). */
+export async function readRepoFile(path: string): Promise<string> {
+  return invoke<string>("read_repo_file", { path });
+}
+
+/** Get the git diff of the worktree against the configured base branch. */
+export async function getRepoDiff(): Promise<string> {
+  return invoke<string>("get_repo_diff");
+}
+
+/** Get recent commits in the worktree. */
+export async function getRepoLog(maxCommits: number): Promise<string> {
+  return invoke<string>("get_repo_log", { maxCommits });
+}
+
+/** Get the git log for a specific file (to understand history). */
+export async function getFileHistory(path: string, maxCommits: number): Promise<string> {
+  return invoke<string>("get_file_history", { path, maxCommits });
+}
+
+/**
+ * Check out a branch in the configured worktree (fetch + checkout/reset).
+ * Used by the PR Review Assistant before analysis.
+ */
+export async function checkoutWorktreeBranch(branch: string): Promise<WorktreeInfo> {
+  return invoke<WorktreeInfo>("checkout_worktree_branch", { branch });
+}
+
+/**
+ * Validate the PR review worktree path (falls back to the main worktree if no
+ * dedicated PR review path is configured).
+ */
+export async function validatePrReviewWorktree(): Promise<WorktreeInfo> {
+  return invoke<WorktreeInfo>("validate_pr_review_worktree");
+}
+
+/**
+ * Check out a branch in the PR review worktree (fetch + checkout/reset).
+ * Uses `pr_review_worktree_path` if set, otherwise falls back to `repo_worktree_path`.
+ */
+export async function checkoutPrReviewBranch(branch: string): Promise<WorktreeInfo> {
+  return invoke<WorktreeInfo>("checkout_pr_review_branch", { branch });
+}
+
+/**
+ * Open a new macOS Terminal window in the PR review worktree directory and
+ * run the supplied shell command. The window stays open so the user can
+ * interact with the running process.
+ */
+export async function runInTerminal(command: string): Promise<void> {
+  return invoke<void>("run_in_terminal", { command });
+}
+
+// ── PR Address worktree commands ──────────────────────────────────────────────
+
+/**
+ * Validate the PR address worktree path.
+ * Falls back to pr_review_worktree_path → repo_worktree_path.
+ */
+export async function validatePrAddressWorktree(): Promise<WorktreeInfo> {
+  return invoke<WorktreeInfo>("validate_pr_address_worktree");
+}
+
+/**
+ * Check out a branch in the PR address worktree (fetch + checkout/reset).
+ */
+export async function checkoutPrAddressBranch(branch: string): Promise<WorktreeInfo> {
+  return invoke<WorktreeInfo>("checkout_pr_address_branch", { branch });
+}
+
+/** Read a file from the PR address worktree (relative path). */
+export async function readPrAddressFile(path: string): Promise<string> {
+  return invoke<string>("read_pr_address_file", { path });
+}
+
+/**
+ * Write a file in the PR address worktree (relative path).
+ * Sandboxed to the worktree root.
+ */
+export async function writePrAddressFile(path: string, content: string): Promise<void> {
+  return invoke<void>("write_pr_address_file", { path, content });
+}
+
+/** Get the current diff of the PR address worktree (staged + unstaged vs HEAD). */
+export async function getPrAddressDiff(): Promise<string> {
+  return invoke<string>("get_pr_address_diff");
+}
+
+/** Stage all changes and commit in the PR address worktree. Returns the new short SHA. */
+export async function commitPrAddressChanges(message: string): Promise<string> {
+  return invoke<string>("commit_pr_address_changes", { message });
+}
+
+/** Push the current branch of the PR address worktree to origin. */
+export async function pushPrAddressBranch(): Promise<void> {
+  return invoke<void>("push_pr_address_branch");
+}
+
+// ── Address PR Comments — Claude commands ─────────────────────────────────────
+
+/**
+ * Analyse reviewer comments on a PR and produce a structured fix plan.
+ * Streams reasoning to the `address-pr-stream` event.
+ * Returns a JSON array of fix proposals.
+ */
+export async function analyzePrComments(reviewText: string): Promise<string> {
+  return invoke<string>("analyze_pr_comments", { reviewText });
+}
+
+/**
+ * Multi-turn chat for the Address PR Comments workflow.
+ */
+export async function chatAddressPr(
+  contextText: string,
+  historyJson: string,
+): Promise<string> {
+  return invoke<string>("chat_address_pr", { contextText, historyJson });
+}
 
 export type SkillType = "grooming" | "patterns" | "implementation" | "review";
 
@@ -837,4 +1267,54 @@ export function parseAgentJson<T>(raw: string): T | null {
   } catch {
     return null;
   }
+}
+
+// ── Store cache (file-backed persistence) ─────────────────────────────────────
+
+/**
+ * Write a store's serialised JSON to a file in the app data directory.
+ * Replaces localStorage — no size limit.
+ */
+export async function saveStoreCache(key: string, json: string): Promise<void> {
+  return invoke("save_store_cache", { key, json });
+}
+
+/**
+ * Read a previously saved store cache. Returns null if the file doesn't exist yet.
+ */
+export async function loadStoreCache(key: string): Promise<string | null> {
+  return invoke<string | null>("load_store_cache", { key });
+}
+
+/**
+ * Delete a single store cache file.
+ */
+export async function deleteStoreCache(key: string): Promise<void> {
+  return invoke("delete_store_cache", { key });
+}
+
+/**
+ * Return the size in bytes of each cache file, keyed by cache key name.
+ * Used to display cache usage in Settings.
+ */
+export async function getStoreCacheInfo(): Promise<Record<string, number>> {
+  return invoke<Record<string, number>>("get_store_cache_info");
+}
+
+/**
+ * Delete all store cache files. This is the "Clear Cache" action.
+ */
+export async function clearAllStoreCaches(): Promise<void> {
+  return invoke("clear_all_store_caches");
+}
+
+// ── URL fetch ─────────────────────────────────────────────────────────────────
+
+/**
+ * Fetch the text content of a URL from the Tauri backend.
+ * HTML pages are stripped to plain text. Content is capped at ~100 KB.
+ * Throws a string error message on failure.
+ */
+export async function fetchUrlContent(url: string): Promise<string> {
+  return invoke<string>("fetch_url_content", { url });
 }

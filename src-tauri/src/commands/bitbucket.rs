@@ -1,5 +1,10 @@
 use crate::bitbucket::{BitbucketClient, BitbucketComment, BitbucketPr, BitbucketTask};
 use crate::commands::credentials::get_credential;
+use crate::commands::preferences::get_pref;
+
+fn get_config(key: &str) -> Option<String> {
+    get_pref(key).or_else(|| get_credential(key))
+}
 
 fn bitbucket_client() -> Result<BitbucketClient, String> {
     let workspace = get_credential("bitbucket_workspace")
@@ -8,7 +13,7 @@ fn bitbucket_client() -> Result<BitbucketClient, String> {
         .ok_or("Bitbucket username (email) not configured. Check Settings.")?;
     let access_token = get_credential("bitbucket_access_token")
         .ok_or("Bitbucket access token not configured. Check Settings.")?;
-    let repo_slug = get_credential("bitbucket_repo_slug")
+    let repo_slug = get_config("bitbucket_repo_slug")
         .ok_or("Bitbucket repository not configured. Check Settings → Configuration.")?;
 
     BitbucketClient::new(workspace, repo_slug, username, access_token)
@@ -38,17 +43,17 @@ pub async fn get_prs_for_review() -> Result<Vec<BitbucketPr>, String> {
 }
 
 /// Open PRs authored by the configured Bitbucket user.
+/// Uses the jira_account_id credential (shared Atlassian account_id) to identify
+/// the user — no extra API call needed, and no additional scopes required.
 #[tauri::command]
 pub async fn get_my_open_prs() -> Result<Vec<BitbucketPr>, String> {
     let client = bitbucket_client()?;
-    // Use the dedicated bitbucket_username (the account's nickname/username as it
-    // appears in the API) for author matching. Fall back to bitbucket_email in case
-    // the user hasn't set a separate username — though the email will rarely match
-    // the API nickname field.
-    let username = get_credential("bitbucket_username")
-        .or_else(|| get_credential("bitbucket_email"))
-        .ok_or("Bitbucket username not configured. Check Settings.")?;
-    client.get_my_open_prs_by_username(&username).await
+    // JIRA and Bitbucket share the same Atlassian account_id. We store it
+    // during JIRA credential validation, so we can use it here without
+    // hitting the Bitbucket /user endpoint (which requires Account: Read scope).
+    let account_id = get_credential("jira_account_id")
+        .ok_or("Could not determine your Bitbucket account. Please validate your JIRA credentials in Settings first — this stores your shared Atlassian account ID.")?;
+    client.get_my_open_prs_by_username(&account_id).await
 }
 
 /// Full detail for a single PR.

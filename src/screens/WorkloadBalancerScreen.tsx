@@ -14,6 +14,8 @@ import {
   TrendingUp,
   TrendingDown,
   Minus,
+  EyeOff,
+  Eye,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { WorkflowPanelHeader, APP_HEADER_TITLE } from "@/components/appHeaderLayout";
@@ -24,12 +26,14 @@ import {
   type JiraIssue,
   type BitbucketPr,
   type CredentialStatus,
-  anthropicComplete,
-  getActiveSprint,
-  getActiveSprintIssues,
+  aiProviderComplete,
+  getAllActiveSprintIssues,
   getOpenPrs,
   generateWorkloadSuggestions,
 } from "@/lib/tauri";
+import { classifyWorkloads } from "@/lib/workloadClassifier";
+import { getIgnoredDevs, setIgnoredDevs } from "@/lib/preferences";
+import { useWorkloadAlertStore } from "@/stores/workloadAlertStore";
 
 interface WorkloadBalancerScreenProps {
   credStatus: CredentialStatus;
@@ -64,7 +68,7 @@ interface DevWorkload {
   remainingPts: number;
   totalPts: number;
   donePts: number;
-  reviewCount: number;      // open PRs where this dev is a reviewer
+  reviewCount: number;
   loadStatus: LoadStatus;
 }
 
@@ -72,6 +76,10 @@ function buildWorkloads(
   issues: JiraIssue[],
   openPrs: BitbucketPr[]
 ): DevWorkload[] {
+  // Use the shared classifier for loadStatus — guarantees badge and screen always agree
+  const classified = classifyWorkloads(issues, openPrs);
+  const statusMap = new Map(classified.map((d) => [d.name, d.loadStatus]));
+
   const map = new Map<string, JiraIssue[]>();
   for (const issue of issues) {
     const name = issue.assignee?.displayName ?? "Unassigned";
@@ -79,7 +87,7 @@ function buildWorkloads(
     map.get(name)!.push(issue);
   }
 
-  const raw = Array.from(map.entries()).map(([name, devIssues]) => ({
+  const raw: DevWorkload[] = Array.from(map.entries()).map(([name, devIssues]) => ({
     name,
     issues: devIssues,
     remainingPts: remainingPoints(devIssues),
@@ -88,25 +96,14 @@ function buildWorkloads(
     reviewCount: openPrs.filter((pr) =>
       pr.reviewers.some((r) => r.user.displayName === name)
     ).length,
-    loadStatus: "balanced" as LoadStatus,
+    loadStatus: (statusMap.get(name) ?? "balanced") as LoadStatus,
   }));
-
-  // Classify load relative to team average remaining ticket count
-  const withWork = raw.filter((d) => d.totalPts > 0);
-  if (withWork.length > 1) {
-    const avgTickets =
-      withWork.reduce((s, d) => s + d.issues.filter((i) => !isDone(i)).length, 0) / withWork.length;
-    for (const d of raw) {
-      const remainingTickets = d.issues.filter((i) => !isDone(i)).length;
-      if (remainingTickets > avgTickets * 1.4) d.loadStatus = "overloaded";
-      else if (remainingTickets < avgTickets * 0.6 && avgTickets > 0) d.loadStatus = "underutilised";
-    }
-  }
 
   return raw.sort((a, b) =>
     b.issues.filter((i) => !isDone(i)).length - a.issues.filter((i) => !isDone(i)).length
   );
 }
+
 
 // ── Format for Claude ─────────────────────────────────────────────────────────
 
@@ -176,19 +173,23 @@ const STATUS_COLORS: Record<LoadStatus, { bar: string; badge: string; icon: Reac
 function DevCard({
   dev,
   maxTickets,
+  ignored,
+  onToggleIgnored,
 }: {
   dev: DevWorkload;
   maxTickets: number;
+  ignored: boolean;
+  onToggleIgnored: () => void;
 }) {
   const [expanded, setExpanded] = useState(false);
-  const colors = STATUS_COLORS[dev.loadStatus];
+  const colors = STATUS_COLORS[ignored ? "balanced" : dev.loadStatus];
   const Icon = colors.icon;
   const remaining = dev.issues.filter((i) => !isDone(i));
   const done = dev.issues.filter(isDone);
   const remainingPct = maxTickets > 0 ? (remaining.length / maxTickets) * 100 : 0;
 
   return (
-    <Card>
+    <Card className={ignored ? "opacity-50" : ""}>
       <button
         onClick={() => setExpanded((e) => !e)}
         className="w-full px-4 py-3 text-left hover:bg-muted/30 transition-colors rounded-t-lg"
@@ -198,19 +199,24 @@ function DevCard({
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-2 mb-2">
               <span className="font-medium text-sm">{dev.name}</span>
-              <Badge variant={colors.badge as "destructive" | "success" | "secondary"} className="text-[10px] gap-0.5">
-                <Icon className="h-2.5 w-2.5" />
-                {dev.loadStatus === "overloaded"
-                  ? "Overloaded"
-                  : dev.loadStatus === "underutilised"
-                  ? "Under-utilised"
-                  : "Balanced"}
-              </Badge>
+              {!ignored && (
+                <Badge variant={colors.badge as "destructive" | "success" | "secondary"} className="text-[10px] gap-0.5">
+                  <Icon className="h-2.5 w-2.5" />
+                  {dev.loadStatus === "overloaded"
+                    ? "Overloaded"
+                    : dev.loadStatus === "underutilised"
+                    ? "Under-utilised"
+                    : "Balanced"}
+                </Badge>
+              )}
+              {ignored && (
+                <span className="text-[10px] text-muted-foreground">Not tracked</span>
+              )}
             </div>
-            {/* Capacity bar: background = total committed, fill = remaining */}
+            {/* Capacity bar */}
             <div className="h-2.5 rounded-full bg-muted overflow-hidden">
               <div
-                className={`h-full rounded-full transition-all ${colors.bar}`}
+                className={`h-full rounded-full transition-all ${ignored ? "bg-muted-foreground/30" : colors.bar}`}
                 style={{ width: `${remainingPct}%` }}
               />
             </div>
@@ -232,6 +238,15 @@ function DevCard({
               </p>
             )}
           </div>
+
+          {/* Tracking toggle */}
+          <button
+            onClick={(e) => { e.stopPropagation(); onToggleIgnored(); }}
+            title={ignored ? "Start tracking" : "Stop tracking"}
+            className="shrink-0 p-1 rounded hover:bg-muted/60 transition-colors text-muted-foreground hover:text-foreground"
+          >
+            {ignored ? <Eye className="h-3.5 w-3.5" /> : <EyeOff className="h-3.5 w-3.5" />}
+          </button>
 
           {expanded ? (
             <ChevronDown className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
@@ -329,7 +344,7 @@ function SuggestionsPanel({
       <CardContent className="space-y-3">
         {!claudeAvailable && (
           <p className="text-xs text-muted-foreground">
-            Configure your Anthropic API key in Settings to get AI rebalancing suggestions.
+            Configure an AI provider in Settings to get AI rebalancing suggestions.
           </p>
         )}
 
@@ -443,17 +458,35 @@ function SummaryStrip({
 // ── Main screen ───────────────────────────────────────────────────────────────
 
 export function WorkloadBalancerScreen({ credStatus, onBack }: WorkloadBalancerScreenProps) {
-  const [sprint, setSprint] = useState<JiraSprint | null>(null);
-  const [workloads, setWorkloads] = useState<DevWorkload[]>([]);
-  const [unstartedTickets, setUnstartedTickets] = useState<JiraIssue[]>([]);
+  const [allSprints, setAllSprints] = useState<Array<{ sprint: JiraSprint; issues: JiraIssue[] }>>([]);
+  const [selectedSprintIndex, setSelectedSprintIndex] = useState(0);
+  const [openPrs, setOpenPrs] = useState<BitbucketPr[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [ignoredDevs, setIgnoredDevsState] = useState<Set<string>>(new Set());
 
   const [suggestions, setSuggestions] = useState<string | null>(null);
   const [suggestionsLoading, setSuggestionsLoading] = useState(false);
   const [suggestionsError, setSuggestionsError] = useState<string | null>(null);
 
-  const claudeAvailable = anthropicComplete(credStatus);
+  const claudeAvailable = aiProviderComplete(credStatus);
+  const checkWorkload = useWorkloadAlertStore((s) => s.checkWorkload);
+
+  // Load ignored devs from preferences on mount
+  useEffect(() => {
+    getIgnoredDevs().then(setIgnoredDevsState).catch(() => {});
+  }, []);
+
+  const toggleIgnoredDev = useCallback(async (name: string) => {
+    setIgnoredDevsState((prev) => {
+      const next = new Set(prev);
+      if (next.has(name)) next.delete(name); else next.add(name);
+      // Persist, then immediately refresh the alert store so the landing badge
+      // reflects the new ignored list without waiting for the next poll.
+      setIgnoredDevs(next).then(() => checkWorkload()).catch(() => {});
+      return next;
+    });
+  }, [checkWorkload]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -461,21 +494,29 @@ export function WorkloadBalancerScreen({ credStatus, onBack }: WorkloadBalancerS
     setSuggestions(null);
     setSuggestionsError(null);
     try {
-      const [sprintData, issues, openPrs] = await Promise.all([
-        getActiveSprint(),
-        getActiveSprintIssues(),
+      const [sprintIssuesPairs, prs] = await Promise.all([
+        getAllActiveSprintIssues(),
         getOpenPrs().catch(() => [] as BitbucketPr[]),
       ]);
-      const built = buildWorkloads(issues, openPrs);
-      setSprint(sprintData);
-      setWorkloads(built);
-      setUnstartedTickets(issues.filter(isUnstarted));
+      setAllSprints(sprintIssuesPairs.map(([sprint, issues]) => ({ sprint, issues })));
+      setOpenPrs(prs);
+      setSelectedSprintIndex(0);
     } catch (e) {
       setError(String(e));
     } finally {
       setLoading(false);
     }
   }, []);
+
+  const selected = allSprints[selectedSprintIndex] ?? null;
+  const sprint = selected?.sprint ?? null;
+  const issues = selected?.issues ?? [];
+  const workloads = buildWorkloads(issues, openPrs).sort((a, b) => {
+    const aIgnored = ignoredDevs.has(a.name) ? 1 : 0;
+    const bIgnored = ignoredDevs.has(b.name) ? 1 : 0;
+    return aIgnored - bIgnored; // ignored sink to bottom; original order preserved within each group
+  });
+  const unstartedTickets = issues.filter(isUnstarted);
 
   const analyse = useCallback(async () => {
     setSuggestionsLoading(true);
@@ -491,9 +532,17 @@ export function WorkloadBalancerScreen({ credStatus, onBack }: WorkloadBalancerS
     }
   }, [sprint, workloads, unstartedTickets]);
 
+  // Reset suggestions when switching sprints
+  const handleSelectSprint = useCallback((idx: number) => {
+    setSelectedSprintIndex(idx);
+    setSuggestions(null);
+    setSuggestionsError(null);
+  }, []);
+
   useEffect(() => { load(); }, [load]);
 
   const maxTickets = Math.max(...workloads.map((d) => d.issues.filter((i) => !isDone(i)).length), 1);
+  const multiSprint = allSprints.length > 1;
 
   return (
     <div className="min-h-screen flex flex-col">
@@ -538,9 +587,34 @@ export function WorkloadBalancerScreen({ credStatus, onBack }: WorkloadBalancerS
           </div>
         )}
 
-        {!loading && !error && (
+        {!loading && !error && allSprints.length === 0 && (
+          <div className="text-center py-24 text-muted-foreground text-sm">
+            No active sprints found for the configured board.
+          </div>
+        )}
+
+        {!loading && !error && allSprints.length > 0 && (
           <>
-            <SummaryStrip sprint={sprint} workloads={workloads} />
+            {/* Sprint selector tabs — only shown when there are multiple active sprints */}
+            {multiSprint && (
+              <div className="flex gap-2 flex-wrap">
+                {allSprints.map(({ sprint: s }, idx) => (
+                  <button
+                    key={s.id}
+                    onClick={() => handleSelectSprint(idx)}
+                    className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors border ${
+                      idx === selectedSprintIndex
+                        ? "bg-primary text-primary-foreground border-primary"
+                        : "bg-background text-muted-foreground border-border hover:bg-muted"
+                    }`}
+                  >
+                    {s.name}
+                  </button>
+                ))}
+              </div>
+            )}
+
+            <SummaryStrip sprint={sprint} workloads={workloads.filter((d) => !ignoredDevs.has(d.name))} />
 
             <div className="grid gap-4 lg:grid-cols-[1fr_360px] items-start">
               {/* Capacity bars */}
@@ -554,7 +628,7 @@ export function WorkloadBalancerScreen({ credStatus, onBack }: WorkloadBalancerS
                   </p>
                 ) : (
                   workloads.map((dev) => (
-                    <DevCard key={dev.name} dev={dev} maxTickets={maxTickets} />
+                    <DevCard key={dev.name} dev={dev} maxTickets={maxTickets} ignored={ignoredDevs.has(dev.name)} onToggleIgnored={() => toggleIgnoredDev(dev.name)} />
                   ))
                 )}
               </div>

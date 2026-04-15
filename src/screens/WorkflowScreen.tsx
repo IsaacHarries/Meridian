@@ -10,7 +10,8 @@ export type WorkflowId =
   | "standup"
   | "workload-balancer"
   | "ticket-quality"
-  | "knowledge-base";
+  | "knowledge-base"
+  | "address-pr-comments";
 
 const WORKFLOW_META: Record<WorkflowId, { title: string; description: string; step: number }> = {
   "implement-ticket": {
@@ -52,6 +53,11 @@ const WORKFLOW_META: Record<WorkflowId, { title: string; description: string; st
     title: "Knowledge Base",
     description: "Searchable log of decisions, patterns, and retrospective learnings.",
     step: 9,
+  },
+  "address-pr-comments": {
+    title: "Address PR Comments",
+    description: "AI-assisted workflow to read reviewer comments and apply fixes to your PRs.",
+    step: 13,
   },
 };
 

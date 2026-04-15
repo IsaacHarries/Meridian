@@ -74,15 +74,17 @@ const SKILL_DEFS: SkillDef[] = [
     label: "Review Standards",
     icon: <Eye className="h-4 w-4" />,
     description:
-      "What good looks like for this codebase. Used by the Plan Review Agent to enforce team-specific review criteria beyond the generic checklist.",
-    usedBy: ["Plan Review Agent"],
+      "What good looks like for this codebase. Used by the PR Review Agent when analysing diffs and by the PR Review Chat when you ask it to write or suggest code. Encode team-specific review criteria, testing frameworks, and implementation conventions the AI must follow.",
+    usedBy: ["PR Review Agent", "PR Review Chat", "Plan Review Agent"],
     placeholder: `Example:
 - All new Tauri commands must be registered in both lib.rs and commands/mod.rs — a missing registration is a blocking finding.
 - New API types on the frontend must have a corresponding TypeScript interface in tauri.ts.
 - Any change to a Rust command signature must be matched with a corresponding update to the TypeScript wrapper.
 - PRs that touch authentication or credential storage require a security-focused review pass.
 - Test coverage is required for any new business logic. UI-only changes do not require tests.
-- PR descriptions must reference the JIRA ticket key (e.g. PROJ-123) in the title or first line.`,
+- PR descriptions must reference the JIRA ticket key (e.g. PROJ-123) in the title or first line.
+- This project uses Vitest for all unit and integration tests — never suggest Jest syntax. Use \`import { describe, test, expect, vi } from "vitest"\` for all test files.
+- Test files follow the *.spec.ts naming convention and live alongside the source file they test.`,
   },
 ];
 

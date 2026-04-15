@@ -52,6 +52,8 @@
 @layer base {
   * {
     @apply border-border;
+    --tw-ring-shadow: 0 0 #0000;
+    --tw-ring-offset-shadow: 0 0 #0000;
   }
   body {
     @apply bg-background text-foreground;

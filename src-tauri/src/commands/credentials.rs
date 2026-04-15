@@ -154,18 +154,11 @@ const ALLOWED_KEYS: &[&str] = &[
     "jira_base_url",
     "jira_email",
     "jira_api_token",
-    "jira_board_id",
     "jira_account_id",
     "bitbucket_workspace",
     "bitbucket_email",
     "bitbucket_access_token",
     "bitbucket_username",
-    "bitbucket_repo_slug",
-    "repo_worktree_path",
-    "repo_base_branch",
-    "pr_review_worktree_path",
-    "pr_address_worktree_path",
-    "pr_review_terminal",
 ];
 
 /// Keys whose values may be returned to the frontend (not secrets).
@@ -178,17 +171,10 @@ const NON_SECRET_KEYS: &[&str] = &[
     "local_llm_model",
     "jira_base_url",
     "jira_email",
-    "jira_board_id",
     "jira_account_id",
     "bitbucket_workspace",
     "bitbucket_email",
     "bitbucket_username",
-    "bitbucket_repo_slug",
-    "repo_worktree_path",
-    "repo_base_branch",
-    "pr_review_worktree_path",
-    "pr_address_worktree_path",
-    "pr_review_terminal",
 ];
 
 // ── Internal helpers (used by other backend modules) ──────────────────────────
@@ -240,7 +226,9 @@ impl CredentialStatus {
 
 #[tauri::command]
 pub fn credential_status() -> Result<CredentialStatus, String> {
+    use super::preferences::get_pref;
     let has = |k: &str| cred_get(k).is_some();
+    let has_config = |k: &str| get_pref(k).is_some() || cred_get(k).is_some();
     Ok(CredentialStatus {
         anthropic_api_key: has("anthropic_api_key"),
         gemini_api_key:    has("gemini_api_key"),
@@ -248,11 +236,11 @@ pub fn credential_status() -> Result<CredentialStatus, String> {
         jira_base_url:     has("jira_base_url"),
         jira_email:        has("jira_email"),
         jira_api_token:    has("jira_api_token"),
-        jira_board_id:     has("jira_board_id"),
+        jira_board_id:     has_config("jira_board_id"),
         bitbucket_workspace:    has("bitbucket_workspace"),
         bitbucket_email:        has("bitbucket_email"),
         bitbucket_access_token: has("bitbucket_access_token"),
-        bitbucket_repo_slug:    has("bitbucket_repo_slug"),
+        bitbucket_repo_slug:    has_config("bitbucket_repo_slug"),
     })
 }
 

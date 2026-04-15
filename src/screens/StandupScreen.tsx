@@ -22,7 +22,7 @@ import {
   type JiraIssue,
   type BitbucketPr,
   type CredentialStatus,
-  anthropicComplete,
+  aiProviderComplete,
   getActiveSprint,
   getActiveSprintIssues,
   getOpenPrs,
@@ -468,7 +468,7 @@ function AiBriefingPanel({
       <CardContent className="space-y-3">
         {!claudeAvailable && (
           <p className="text-xs text-muted-foreground">
-            Configure your Anthropic API key in Settings to generate AI-written briefings.
+            Configure an AI provider in Settings to generate AI-written briefings.
           </p>
         )}
 
@@ -582,7 +582,7 @@ export function StandupScreen({ credStatus, onBack }: StandupScreenProps) {
   const [briefingLoading, setBriefingLoading] = useState(false);
   const [briefingError, setBriefingError] = useState<string | null>(null);
 
-  const claudeAvailable = anthropicComplete(credStatus);
+  const claudeAvailable = aiProviderComplete(credStatus);
 
   const load = useCallback(async () => {
     setLoading(true);

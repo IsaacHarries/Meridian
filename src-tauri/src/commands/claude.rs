@@ -1,10 +1,22 @@
 use reqwest::Client;
 use serde_json::json;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use super::credentials::{get_credential, store_credential};
 use super::skills::get_skill;
 use crate::http::make_corporate_client;
+
+// ── Review cancellation flag ─────────────────────────────────────────────────
+// Set to true by `cancel_review`; polled in the chunk loop so the review stops
+// cleanly between chunks without interrupting an in-flight HTTP request.
+
+static REVIEW_CANCELLED: AtomicBool = AtomicBool::new(false);
+
+#[tauri::command]
+pub fn cancel_review() {
+    REVIEW_CANCELLED.store(true, Ordering::Relaxed);
+}
 
 // ── OAuth token refresh ─────────────────────────────────────────────────────
 
@@ -437,7 +449,10 @@ fn local_llm_base_url() -> Option<String> {
 /// Build an HTTP client that does NOT enforce HTTPS — local servers run on plain HTTP.
 fn make_local_client() -> Result<Client, String> {
     Client::builder()
-        .timeout(Duration::from_secs(120)) // local models can be slow
+        // Only time out on the initial connection, not on the response body.
+        // Ollama can take many minutes to generate a long review; a total-request
+        // timeout would fire mid-stream and produce "error decoding response body".
+        .connect_timeout(Duration::from_secs(15))
         .danger_accept_invalid_certs(true)  // self-signed certs are common
         .build()
         .map_err(|e| format!("HTTP client error: {e}"))
@@ -648,6 +663,9 @@ async fn complete_multi_local_streaming(
     let mut buffer = String::new();
 
     while let Some(chunk) = stream.next().await {
+        if REVIEW_CANCELLED.load(Ordering::Relaxed) {
+            return Err("Review cancelled by user.".to_string());
+        }
         let chunk = chunk.map_err(|e| format!("Stream read error: {e}"))?;
         buffer.push_str(&String::from_utf8_lossy(&chunk));
 
@@ -665,7 +683,6 @@ async fn complete_multi_local_streaming(
                         full_text.push_str(text);
                         let _ = app.emit(stream_event, serde_json::json!({
                             "delta": text,
-                            "text": &full_text,
                         }));
                     }
                 }
@@ -739,6 +756,9 @@ async fn complete_multi_claude_streaming(
     let mut buffer = String::new();
 
     while let Some(chunk) = stream.next().await {
+        if REVIEW_CANCELLED.load(Ordering::Relaxed) {
+            return Err("Review cancelled by user.".to_string());
+        }
         let chunk = chunk.map_err(|e| format!("Stream read error: {e}"))?;
         buffer.push_str(&String::from_utf8_lossy(&chunk));
 
@@ -759,7 +779,6 @@ async fn complete_multi_claude_streaming(
                                     full_text.push_str(text);
                                     let _ = app.emit(stream_event, serde_json::json!({
                                         "delta": text,
-                                        "text": &full_text,
                                     }));
                                 }
                             }
@@ -916,6 +935,9 @@ async fn complete_local_streaming(
     let mut buffer = String::new(); // accumulate partial SSE lines
 
     while let Some(chunk) = stream.next().await {
+        if REVIEW_CANCELLED.load(Ordering::Relaxed) {
+            return Err("Review cancelled by user.".to_string());
+        }
         let chunk = chunk.map_err(|e| format!("Stream read error: {e}"))?;
         let text = String::from_utf8_lossy(&chunk);
         buffer.push_str(&text);
@@ -940,7 +962,6 @@ async fn complete_local_streaming(
                         // Emit the accumulated text so far as the progress message
                         let _ = app.emit(stream_event, serde_json::json!({
                             "delta": delta,
-                            "text": &full_text,
                         }));
                     }
                 }
@@ -1459,6 +1480,9 @@ async fn complete_claude_streaming(
     let mut buffer = String::new();
 
     while let Some(chunk) = stream.next().await {
+        if REVIEW_CANCELLED.load(Ordering::Relaxed) {
+            return Err("Review cancelled by user.".to_string());
+        }
         let chunk = chunk.map_err(|e| format!("Stream read error: {e}"))?;
         buffer.push_str(&String::from_utf8_lossy(&chunk));
 
@@ -1484,7 +1508,6 @@ async fn complete_claude_streaming(
                                     full_text.push_str(text);
                                     let _ = app.emit(stream_event, serde_json::json!({
                                         "delta": text,
-                                        "text": &full_text,
                                     }));
                                 }
                             }
@@ -3106,10 +3129,15 @@ fn split_review_into_chunks(review_text: &str, chunk_chars: usize) -> Vec<String
         return vec![review_text.to_string()];
     };
 
-    // Split the diff body into per-file sections
+    // Annotate the diff body with new-file line numbers so the model doesn't
+    // have to count hunk offsets itself (which LLMs do unreliably).
+    let annotated_diff = annotate_diff_with_line_numbers(&diff_body);
+
+    // Split the annotated diff body into per-file sections
     let mut file_sections: Vec<String> = vec![];
     let mut current = String::new();
-    for line in diff_body.lines() {
+    for line in annotated_diff.lines() {
+        // The annotation preserves "diff --git" as the first token of file headers
         if line.starts_with("diff --git") && !current.is_empty() {
             file_sections.push(current.clone());
             current.clear();
@@ -3151,6 +3179,55 @@ fn split_review_into_chunks(review_text: &str, chunk_chars: usize) -> Vec<String
     }
 
     chunks
+}
+
+/// Annotate every line of a unified diff with its actual new-file line number.
+///
+/// Each `+` (added) and ` ` (context) line is prefixed with `[Lnnn] ` where
+/// `nnn` is the 1-based line number in the new version of the file. `-` (deleted)
+/// lines are prefixed with `[del] ` so the model knows they are not in the new
+/// file and must not be cited. `@@` hunk headers and `diff`/`---`/`+++` metadata
+/// lines are left unchanged.
+///
+/// This eliminates the need for the model to count hunk offsets itself, which is
+/// error-prone and a major source of wrong line number citations.
+fn annotate_diff_with_line_numbers(diff: &str) -> String {
+    let mut out = String::with_capacity(diff.len() + diff.lines().count() * 8);
+    let mut new_line: u32 = 0; // current line number in the new file
+
+    for line in diff.lines() {
+        // Hunk header: @@ -old_start,old_count +new_start,new_count @@
+        if line.starts_with("@@") {
+            // Parse +new_start from the hunk header
+            // Format: @@ -A,B +C,D @@ optional context
+            if let Some(plus_pos) = line.find('+') {
+                let rest = &line[plus_pos + 1..];
+                let end = rest.find(|c: char| !c.is_ascii_digit()).unwrap_or(rest.len());
+                if let Ok(n) = rest[..end].parse::<u32>() {
+                    new_line = n;
+                }
+            }
+            out.push_str(line);
+        } else if line.starts_with('+') && !line.starts_with("+++") {
+            // Added line — label with its new-file line number, then advance
+            out.push_str(&format!("[L{}] {}", new_line, &line[1..]));
+            new_line += 1;
+        } else if line.starts_with(' ') {
+            // Context line — present in both old and new file
+            out.push_str(&format!("[L{}] {}", new_line, &line[1..]));
+            new_line += 1;
+        } else if line.starts_with('-') && !line.starts_with("---") {
+            // Deleted line — not in the new file, must not be cited
+            out.push_str(&format!("[del] {}", &line[1..]));
+            // old_line would advance here but we don't track it
+        } else {
+            // diff --git, --- a/..., +++ b/..., index ..., Binary files, etc.
+            out.push_str(line);
+        }
+        out.push('\n');
+    }
+
+    out
 }
 
 /// The per-chunk findings prompt. Returns a flat JSON array of findings across
@@ -3212,8 +3289,18 @@ const CHUNK_SYSTEM: &str = "You are a senior engineer performing a thorough, pre
     - Only raise a testing finding if the added code is non-trivial business logic with no \
       corresponding test ANYWHERE visible in the diff. Each finding must cite the specific \
       untested file and line range.\n\
-    - Do not flag: generated code, config files, type/interface definitions, trivial one-liners, \
-      or code that is purely declarative.\n\
+    - Do not flag: generated code, type/interface definitions, trivial one-liners, or code \
+      that is purely declarative.\n\
+    - CRITICAL — do NOT flag any of the following for missing tests — they are configuration, \
+      not testable logic: config files (*.json, *.yaml, *.yml, *.toml, *.ini, *.env), \
+      build/task definitions (project.json, nx.json, Makefile, Taskfile.yml, justfile, \
+      Cargo.toml, package.json, build.gradle, pom.xml, pyproject.toml, *.csproj, CMakeLists.txt, \
+      Dockerfile, docker-compose.yml, .github/**, CI/CD pipeline files), \
+      lock files (*.lock, package-lock.json, yarn.lock, pnpm-lock.yaml), \
+      style/asset files (*.css, *.scss, *.svg, *.png, *.ico, *.md, *.txt), \
+      schema/migration files, and any file whose primary content is declarative configuration \
+      rather than executable logic. Targets, scripts, or commands defined inside these files \
+      do not require unit tests — they are wiring, not business logic.\n\
     - Severity: missing tests for new business logic = non_blocking (not blocking) unless the \
       code is safety-critical or the diff description explicitly promises tests.\n\
     - @tags annotation: if the LINKED JIRA TICKET has Type: Bug and a ticket key is present \
@@ -3240,7 +3327,16 @@ const CHUNK_SYSTEM: &str = "You are a senior engineer performing a thorough, pre
     - Return [] if you find no real issues in this chunk.\n\
     - Do not invent generic advice. Every finding must be grounded in something you actually \
       observe in the diff.\n\
-    - file and line_range must be a quoted JSON string or JSON null — never a bare word.";
+    - file and line_range must be a quoted JSON string or JSON null — never a bare word.\n\
+    \n\
+    === HOW TO CITE LINE NUMBERS ===\n\
+    Every added line in this diff has been pre-labelled with its exact new-file line number.\n\
+    Format: [Lnnn] <line content>  — where nnn is the 1-based line number in the new file.\n\
+    Deleted lines are labelled [del] and are NOT in the new file — never cite them.\n\
+    Context (unchanged) lines are also labelled [Lnnn] so you can orient yourself.\n\
+    To cite a finding: read the [Lnnn] label directly off the relevant line(s).\n\
+    For a single line use \\\"Lnnn\\\". For a range use \\\"Lstart-Lend\\\".\n\
+    Do NOT count or estimate — use exactly the number shown on the label.";
 
 /// The synthesis prompt. Takes all chunk findings and the PR header and
 /// returns the final structured 5-lens ReviewReport JSON.
@@ -3253,6 +3349,11 @@ const SYNTHESIS_SYSTEM: &str = "You are a senior engineer synthesising a thoroug
     {\n\
       \"overall\": \"approve\" | \"request_changes\" | \"needs_discussion\",\n\
       \"summary\": \"<two to four sentences: overall verdict, key strengths, and key concerns>\",\n\
+      \"bug_test_steps\": null | {\n\
+        \"description\": \"<one sentence describing what the bug was and what the fix addresses>\",\n\
+        \"happy_path\": [\"<step 1>\", \"<step 2>\", ...],\n\
+        \"sad_path\": [\"<step 1>\", \"<step 2>\", ...]\n\
+      },\n\
       \"lenses\": {\n\
         \"acceptance_criteria\": {\n\
           \"assessment\": \"<one sentence summary>\",\n\
@@ -3273,7 +3374,22 @@ const SYNTHESIS_SYSTEM: &str = "You are a senior engineer synthesising a thoroug
     \n\
     === SYNTHESIS RULES ===\n\
     \n\
-    SUMMARY field:\n\
+    BUG TEST STEPS (bug_test_steps field):\n\
+    - ONLY populate this field when the linked JIRA ticket type is \"Bug\". Set to JSON null for \
+      all other ticket types or when no ticket is linked.\n\
+    - When the ticket IS a Bug: produce concrete, numbered manual test steps a developer can \
+      follow in the application to verify the fix works. Base these on the ticket description, \
+      acceptance criteria, and the diff.\n\
+    - happy_path: steps to verify the bug is fixed — the scenario that should now work correctly. \
+      Each step must be a specific user action (e.g. \"Open the app and navigate to Settings\", \
+      \"Enter an invalid email address in the Email field and click Save\"). \
+      End with the expected result (e.g. \"Verify that a validation error message appears\").\n\
+    - sad_path: steps for related negative/edge-case scenarios that should still behave correctly \
+      (boundary conditions, invalid input, error states). These confirm the fix didn't break \
+      adjacent behaviour. Each step should be equally specific.\n\
+    - Steps must be actionable by a human tester without access to the codebase — describe UI \
+      interactions, not code. Aim for 3–6 steps per path.\n\
+    \n    SUMMARY field:\n\
     - Lead with the overall verdict.\n\
     - Explicitly note what is done WELL in this PR (good design decisions, solid test coverage, \
       clean propagation of renames, performance improvements, etc.) — a good review is balanced.\n\
@@ -3297,8 +3413,18 @@ const SYNTHESIS_SYSTEM: &str = "You are a senior engineer synthesising a thoroug
     - Do not mark untested code as blocking unless the PR description explicitly promised tests \
       or the code is safety-critical.\n\
     - Consolidate all untested-code findings. Each must identify the specific file and line \
-      range of the untested code. Do not flag trivial code, generated files, config, or \
-      type definitions.\n\
+      range of the untested code.\n\
+    - CRITICAL — silently drop any testing finding whose file is a configuration or build \
+      artefact, not executable business logic. This includes: config files (*.json, *.yaml, \
+      *.yml, *.toml, *.ini, *.env), build/task definitions (project.json, nx.json, Makefile, \
+      Taskfile.yml, justfile, Cargo.toml, package.json, build.gradle, pom.xml, pyproject.toml, \
+      *.csproj, CMakeLists.txt, Dockerfile, docker-compose.yml, .github/**, CI/CD pipeline \
+      files), lock files, style/asset files (*.css, *.scss, *.svg, *.png, *.ico, *.md, *.txt), \
+      schema/migration files, and any file whose content is declarative configuration rather \
+      than executable logic. Scripts, targets, or commands defined inside these files do not \
+      require unit tests — they are wiring, not business logic. If a chunk-pass finding \
+      references one of these file types, remove it during synthesis.\n\
+    - Also drop trivial code, generated files, type definitions.\n\
     - @tags annotation: if the linked JIRA ticket is a Bug type with a known key, check \
       whether new or modified unit tests in the diff carry a \\\"@tags <TICKET-KEY>\\\" annotation. \
       If missing, include a consolidated non_blocking finding. Omit if not a Bug, no key, \
@@ -3329,7 +3455,14 @@ const SYNTHESIS_SYSTEM: &str = "You are a senior engineer synthesising a thoroug
     - overall is request_changes if any blocking finding remains after calibration, approve if \
       none, needs_discussion if uncertain.\n\
     - Every field value must be valid JSON. file and line_range must be a quoted JSON string \
-      or literal JSON null — never a bare word like L96-L127.";
+      or literal JSON null — never a bare word like L96-L127.\n\
+    \n\
+    LINE NUMBER CITATIONS:\n\
+    - When the diff is provided directly (single-chunk mode), every line is pre-labelled \
+      [Lnnn] with its exact new-file line number. Read the label — do NOT count or estimate.\n\
+    - When findings are passed in from the chunk-pass, preserve the line_range values from \
+      those findings exactly. Do not modify or re-derive them.\n\
+    - Deleted lines are labelled [del] — never cite a [del] line in a line_range.";
 
 /// Sort findings by severity (blocking first, then non_blocking, then nitpick)
 /// and greedily include them up to `max_chars`. Returns the capped JSON array
@@ -3417,6 +3550,8 @@ fn build_review_system_prompt(app: &tauri::AppHandle) -> String {
 #[tauri::command]
 pub async fn review_pr(app: tauri::AppHandle, review_text: String) -> Result<String, String> {
     use tauri::Emitter;
+    // Reset the cancellation flag at the start of every new review.
+    REVIEW_CANCELLED.store(false, Ordering::Relaxed);
     let (client, api_key) = llm_client().await?;
 
     // Determine the chunk size based on the active provider.
@@ -3445,6 +3580,15 @@ pub async fn review_pr(app: tauri::AppHandle, review_text: String) -> Result<Str
         let mut all_findings: Vec<serde_json::Value> = vec![];
 
         for (i, chunk) in chunks.iter().enumerate() {
+            // Check for cancellation before starting each chunk
+            if REVIEW_CANCELLED.load(Ordering::Relaxed) {
+                let _ = app.emit("pr-review-progress", serde_json::json!({
+                    "phase": "cancelled",
+                    "message": "Review cancelled."
+                }));
+                return Err("Review cancelled by user.".to_string());
+            }
+
             let _ = app.emit("pr-review-progress", serde_json::json!({
                 "phase": "analysis",
                 "message": format!("Reviewing chunk {}/{total} ({} chars)…", i + 1, chunk.len())
@@ -3487,6 +3631,15 @@ pub async fn review_pr(app: tauri::AppHandle, review_text: String) -> Result<Str
     };
 
     // ── Synthesis pass (always streamed) ─────────────────────────────────────
+    // Check for cancellation before the synthesis pass too
+    if REVIEW_CANCELLED.load(Ordering::Relaxed) {
+        let _ = app.emit("pr-review-progress", serde_json::json!({
+            "phase": "cancelled",
+            "message": "Review cancelled."
+        }));
+        return Err("Review cancelled by user.".to_string());
+    }
+
     let synthesis_user = if needs_chunking {
         let _ = app.emit("pr-review-stream-reset", serde_json::json!({}));
 
@@ -3530,14 +3683,22 @@ pub async fn review_pr(app: tauri::AppHandle, review_text: String) -> Result<Str
             "phase": "analysis",
             "message": "Analysing diff across five review lenses…"
         }));
-        // For single-chunk diffs, pass the full diff directly to synthesis.
+        // For single-chunk diffs, pass the full diff directly to synthesis,
+        // with the diff annotated so the model can read line numbers directly.
         // Prepend a structured instruction so the model applies all five lenses
         // explicitly rather than doing a generic read.
+        let annotated_text = if let Some(pos) = review_text.find("=== DIFF ===") {
+            let header = &review_text[..pos + "=== DIFF ===".len()];
+            let diff_body = &review_text[pos + "=== DIFF ===".len()..];
+            format!("{header}{}", annotate_diff_with_line_numbers(diff_body))
+        } else {
+            review_text.clone()
+        };
         format!(
             "Review this pull request across five lenses: acceptance_criteria, security, \
              logic, quality, and testing. Apply the severity calibration rules from your \
              system prompt carefully — do not inflate severity. Note what is done well in \
-             the summary. Produce the final review report JSON.\n\n{review_text}"
+             the summary. Produce the final review report JSON.\n\n{annotated_text}"
         )
     };
 

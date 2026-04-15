@@ -44,6 +44,11 @@ export const BITBUCKET_SCOPES = {
   note: "Select these when creating the token at bitbucket.org → Workspace settings → Access tokens.",
   scopes: [
     {
+      name: "read:user:bitbucket",
+      reason: "identify the authenticated user (required for Address PR Tasks & Comments)",
+      required: true,
+    },
+    {
       name: "read:repository:bitbucket",
       reason: "list repositories, read commits, branches, and diffs",
       required: true,

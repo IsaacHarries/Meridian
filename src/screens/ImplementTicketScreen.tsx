@@ -1,4 +1,5 @@
-import { useEffect, useState, useRef, useCallback } from "react";
+import { useEffect, useState, useRef, useCallback, useMemo } from "react";
+import { listen } from "@tauri-apps/api/event";
 import { cn } from "@/lib/utils";
 import { PipelineProgress } from "@/components/PipelineProgress";
 import { HeaderSettingsButton } from "@/components/HeaderSettingsButton";
@@ -27,6 +28,7 @@ import {
   ClipboardList,
   GitPullRequest,
   ExternalLink,
+  Bug,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -34,8 +36,10 @@ import { Textarea } from "@/components/ui/textarea";
 import { Input } from "@/components/ui/input";
 import {
   type JiraIssue,
+  type DescriptionSection,
   type CredentialStatus,
   type GroomingOutput,
+  type SuggestedEdit,
   type ImpactOutput,
   type ImplementationPlan,
   type GuidanceOutput,
@@ -45,25 +49,19 @@ import {
   type RetrospectiveOutput,
   type TriageMessage,
   type RetroKbEntry,
-  type SkillType,
-  anthropicComplete,
+  aiProviderComplete,
   jiraComplete,
   getMySprintIssues,
   searchJiraIssues,
   openUrl,
-  runGroomingAgent,
-  runImpactAnalysis,
-  runTriageTurn,
-  finalizeImplementationPlan,
-  runImplementationGuidance,
-  runTestSuggestions,
-  runPlanReview,
-  runPrDescriptionGen,
-  runRetrospectiveAgent,
-  parseAgentJson,
-  saveKnowledgeEntry,
-  loadAgentSkills,
 } from "@/lib/tauri";
+import {
+  useImplementTicketStore,
+  type Stage,
+  type GroomingBlocker,
+} from "@/stores/implementTicketStore";
+import { enrichMessageWithUrls } from "@/lib/urlFetch";
+import { ToolRequestCard, type ToolRequest } from "@/components/ToolRequestCard";
 
 interface ImplementTicketScreenProps {
   credStatus: CredentialStatus;
@@ -72,18 +70,9 @@ interface ImplementTicketScreenProps {
 
 // ── Pipeline stage config ─────────────────────────────────────────────────────
 
-type Stage =
-  | "select"
-  | "grooming"
-  | "impact"
-  | "triage"
-  | "plan"
-  | "guidance"
-  | "tests"
-  | "review"
-  | "pr"
-  | "retro"
-  | "complete";
+// ── Pipeline stage config ─────────────────────────────────────────────────────
+
+// Stage type is re-exported from the store — imported above
 
 const STAGE_LABELS: Record<Exclude<Stage, "select">, string> = {
   grooming: "Grooming",
@@ -103,94 +92,8 @@ const STAGE_ORDER: Exclude<Stage, "select" | "complete">[] = [
 ];
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
-
-function compileTicketText(issue: JiraIssue): string {
-  const lines = [
-    `Ticket: ${issue.key}`,
-    `Title: ${issue.summary}`,
-    `Type: ${issue.issueType}`,
-    issue.storyPoints != null ? `Story points: ${issue.storyPoints}` : null,
-    issue.priority ? `Priority: ${issue.priority}` : null,
-    `Status: ${issue.status}`,
-    issue.epicSummary ? `Epic: ${issue.epicSummary}${issue.epicKey ? ` (${issue.epicKey})` : ""}` : null,
-    issue.labels.length > 0 ? `Labels: ${issue.labels.join(", ")}` : null,
-    issue.assignee ? `Assignee: ${issue.assignee.displayName}` : null,
-    "",
-    issue.description ? `Description:\n${issue.description}` : "Description: (none)",
-  ];
-  return lines.filter(Boolean).join("\n");
-}
-
-function compilePipelineContext(
-  ticketText: string,
-  grooming: GroomingOutput | null,
-  impact: ImpactOutput | null,
-  skills: Partial<Record<SkillType, string>> = {}
-): string {
-  const parts: string[] = [];
-  if (skills.grooming)        parts.push(`=== GROOMING CONVENTIONS (follow these) ===\n${skills.grooming}`);
-  if (skills.patterns)        parts.push(`=== CODEBASE PATTERNS (follow these) ===\n${skills.patterns}`);
-  if (skills.implementation)  parts.push(`=== IMPLEMENTATION STANDARDS (follow these) ===\n${skills.implementation}`);
-  parts.push(`=== TICKET ===\n${ticketText}`);
-  if (grooming) parts.push(`=== GROOMING ANALYSIS ===\n${JSON.stringify(grooming, null, 2)}`);
-  if (impact)   parts.push(`=== IMPACT ANALYSIS ===\n${JSON.stringify(impact, null, 2)}`);
-  return parts.join("\n\n");
-}
-
-function prependSkill(text: string, skill: string | undefined, label: string): string {
-  if (!skill) return text;
-  return `=== ${label} (follow these) ===\n${skill}\n\n${text}`;
-}
-
-function newId() {
-  return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-}
-
-function isoNow() { return new Date().toISOString(); }
-
-// ── Grooming blocker detection ────────────────────────────────────────────────
-
-interface GroomingBlocker {
-  id: string;
-  severity: "blocking" | "warning";
-  message: string;
-  detail: string;
-}
-
-function detectGroomingBlockers(issue: JiraIssue, grooming: GroomingOutput): GroomingBlocker[] {
-  const blockers: GroomingBlocker[] = [];
-  const type = issue.issueType.toLowerCase();
-  const isTaskOrStory = type === "story" || type === "task";
-
-  if (!issue.description || issue.description.trim().length < 10) {
-    blockers.push({
-      id: "no-description",
-      severity: "blocking",
-      message: "Missing description",
-      detail: "This ticket has no description. Implementation intent cannot be determined — update JIRA before proceeding.",
-    });
-  }
-
-  if (isTaskOrStory && grooming.acceptance_criteria.length === 0) {
-    blockers.push({
-      id: "no-ac",
-      severity: "blocking",
-      message: "No acceptance criteria",
-      detail: `${issue.issueType} tickets must have acceptance criteria before implementation begins. There is no definition of done.`,
-    });
-  }
-
-  if (isTaskOrStory && issue.storyPoints == null) {
-    blockers.push({
-      id: "no-points",
-      severity: "warning",
-      message: "No story point estimate",
-      detail: `This ${issue.issueType} has no story point estimate. Consider updating JIRA before starting implementation.`,
-    });
-  }
-
-  return blockers;
-}
+// compileTicketText, compilePipelineContext, detectGroomingBlockers, GroomingBlocker
+// are now imported from the store.
 
 function BlockerBanner({ blockers }: { blockers: GroomingBlocker[] }) {
   if (blockers.length === 0) return null;
@@ -273,25 +176,566 @@ function CopyButton({ text, label = "Copy" }: { text: string; label?: string }) 
   );
 }
 
+// ── JIRA description sections panel ──────────────────────────────────────────
+
+/**
+ * Parse a flat description string into sections by detecting common heading
+ * patterns used in JIRA tickets:
+ *   - "h1." / "h2." / "h3." (Confluence wiki markup)
+ *   - "## Heading" (Markdown)
+ *   - "**Heading**" on its own line (bold heading)
+ *   - "Heading:" on its own line where the heading is 1–5 words (short label)
+ */
+function parseDescriptionText(text: string): DescriptionSection[] {
+  if (!text.trim()) return [];
+
+  const lines = text.split("\n");
+  const sections: DescriptionSection[] = [];
+  let currentHeading: string | null = null;
+  let currentLines: string[] = [];
+
+  const headingPattern = /^(?:h[1-6]\.\s*(.+)|#{1,3}\s+(.+)|(\*{1,2})(.+)\3\s*$)/;
+  // A line that is just a short phrase (1-6 words) ending in ":" and nothing else
+  const labelPattern = /^([A-Z][^:\n]{2,40}):\s*$/;
+
+  function flush() {
+    const content = currentLines.join("\n").trim();
+    if (content || currentHeading !== null) {
+      sections.push({ heading: currentHeading, content });
+    }
+    currentLines = [];
+  }
+
+  for (const line of lines) {
+    const hMatch = line.match(headingPattern);
+    const labelMatch = !hMatch && line.match(labelPattern);
+    const heading = hMatch
+      ? (hMatch[1] || hMatch[2] || hMatch[4] || "").trim()
+      : labelMatch
+      ? labelMatch[1].trim()
+      : null;
+
+    if (heading) {
+      flush();
+      currentHeading = heading;
+    } else {
+      currentLines.push(line);
+    }
+  }
+  flush();
+
+  // Drop empty leading/trailing sections
+  return sections.filter(s => s.heading !== null || s.content.trim().length > 0);
+}
+
+function DescriptionSectionsPanel({
+  sections,
+  fallbackDescription,
+}: {
+  sections: DescriptionSection[];
+  fallbackDescription?: string | null;
+}) {
+  // Use structured sections from ADF if available; otherwise parse the flat text.
+  const resolved: DescriptionSection[] =
+    sections.length > 0
+      ? sections
+      : fallbackDescription
+      ? parseDescriptionText(fallbackDescription)
+      : [];
+
+  if (resolved.length === 0) return null;
+
+  // If there's only one section with no heading it's just prose — show it simply.
+  if (resolved.length === 1 && !resolved[0].heading) {
+    return (
+      <div className="border rounded-md overflow-hidden">
+        <div className="px-3 py-2 bg-muted/30 text-sm font-medium">Description</div>
+        <div className="px-3 py-2">
+          <pre className="text-sm text-muted-foreground whitespace-pre-wrap font-sans leading-relaxed">
+            {resolved[0].content}
+          </pre>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="border rounded-md overflow-hidden divide-y">
+      <div className="px-3 py-2 bg-muted/30 text-sm font-medium flex items-center gap-2">
+        <BookOpen className="h-4 w-4 text-muted-foreground" />
+        Key Details
+      </div>
+      {resolved.map((section, i) => (
+        <CollapsibleSection key={i} heading={section.heading} content={section.content} />
+      ))}
+    </div>
+  );
+}
+
+function CollapsibleSection({ heading, content }: { heading: string | null; content: string }) {
+  const [open, setOpen] = useState(true);
+  if (!heading) {
+    // Preamble prose (before first heading) — always shown inline without toggle
+    const trimmed = content.trim();
+    if (!trimmed) return null;
+    return (
+      <div className="px-3 py-2">
+        <pre className="text-sm text-muted-foreground whitespace-pre-wrap font-sans leading-relaxed">
+          {trimmed}
+        </pre>
+      </div>
+    );
+  }
+  return (
+    <div>
+      <button
+        onClick={() => setOpen(!open)}
+        className="w-full flex items-center gap-2 px-3 py-2 hover:bg-muted/40 transition-colors text-left"
+      >
+        <span className="flex-1 text-sm font-medium">{heading}</span>
+        {open
+          ? <ChevronDown className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+          : <ChevronRight className="h-3.5 w-3.5 text-muted-foreground shrink-0" />}
+      </button>
+      {open && (
+        <div className="px-3 pb-3">
+          <pre className="text-sm text-muted-foreground whitespace-pre-wrap font-sans leading-relaxed">
+            {content.trim()}
+          </pre>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Stage output panels ───────────────────────────────────────────────────────
 
-function GroomingPanel({ data }: { data: GroomingOutput }) {
+/**
+ * Diff two string arrays and return each item tagged as "added", "removed", or "unchanged".
+ * Simple string equality — good enough for AC/ambiguities/dependencies.
+ */
+function diffStringArrays(
+  prev: string[],
+  next: string[]
+): { text: string; status: "added" | "removed" | "unchanged" }[] {
+  const prevSet = new Set(prev);
+  const nextSet = new Set(next);
+  const result: { text: string; status: "added" | "removed" | "unchanged" }[] = [];
+  for (const item of next) {
+    result.push({ text: item, status: prevSet.has(item) ? "unchanged" : "added" });
+  }
+  for (const item of prev) {
+    if (!nextSet.has(item)) result.push({ text: item, status: "removed" });
+  }
+  return result;
+}
+
+interface DiffedListProps {
+  title: string;
+  items: { text: string; status: "added" | "removed" | "unchanged" }[];
+  icon?: React.ReactNode;
+  hasChanges: boolean;
+}
+
+function DiffedCollapsibleList({ title, items, icon, hasChanges }: DiffedListProps) {
+  const [open, setOpen] = useState(true);
+  if (items.length === 0) return null;
+  return (
+    <div className={`border rounded-md overflow-hidden ${hasChanges ? "border-blue-300 dark:border-blue-700" : ""}`}>
+      <button
+        className="w-full flex items-center gap-2 px-3 py-2 bg-muted/30 hover:bg-muted/50 transition-colors text-left"
+        onClick={() => setOpen(!open)}
+      >
+        {icon}
+        <span className="flex-1 text-sm font-medium">{title}</span>
+        {hasChanges && (
+          <span className="text-xs px-1.5 py-0.5 rounded bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-300 font-medium">
+            updated
+          </span>
+        )}
+        <span className="text-xs text-muted-foreground">{items.filter(i => i.status !== "removed").length}</span>
+        {open ? <ChevronDown className="h-4 w-4 text-muted-foreground" /> : <ChevronRight className="h-4 w-4 text-muted-foreground" />}
+      </button>
+      {open && (
+        <ul className="px-3 pb-2 pt-1 space-y-1">
+          {items.map((item, i) => (
+            <li
+              key={i}
+              className={`text-sm flex gap-2 rounded px-1 py-0.5 ${
+                item.status === "added"
+                  ? "bg-green-50 dark:bg-green-950/30 text-green-800 dark:text-green-200"
+                  : item.status === "removed"
+                  ? "bg-red-50 dark:bg-red-950/30 text-red-700 dark:text-red-300 line-through opacity-60"
+                  : "text-muted-foreground"
+              }`}
+            >
+              <span className="shrink-0">
+                {item.status === "added" ? "+" : item.status === "removed" ? "−" : "·"}
+              </span>
+              <span>{item.text}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+// ── Grooming progress banner ──────────────────────────────────────────────────
+
+function GroomingProgressBanner({ message, streamText }: { message: string; streamText: string }) {
+  const [expanded, setExpanded] = useState(false);
+  const scrollRef = useRef<HTMLDivElement>(null);
+
+  // Auto-scroll the stream panel as new tokens arrive
+  useEffect(() => {
+    if (expanded && scrollRef.current) {
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    }
+  }, [streamText, expanded]);
+
+  if (!message) return null;
+
+  return (
+    <div className="border rounded-md overflow-hidden bg-muted/20">
+      {/* Status row */}
+      <div className="flex items-center gap-3 px-4 py-3 text-sm text-muted-foreground">
+        <Loader2 className="h-4 w-4 animate-spin shrink-0 text-primary" />
+        <span className="flex-1 leading-snug">{message}</span>
+        {streamText && (
+          <button
+            onClick={() => setExpanded(e => !e)}
+            className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors shrink-0"
+          >
+            <ChevronDown className={`h-3.5 w-3.5 transition-transform ${expanded ? "rotate-180" : ""}`} />
+            {expanded ? "Hide" : "Show"} output
+          </button>
+        )}
+      </div>
+      {/* Streaming text panel */}
+      {expanded && streamText && (
+        <div
+          ref={scrollRef}
+          className="border-t px-4 py-3 max-h-64 overflow-y-auto font-mono text-xs text-muted-foreground whitespace-pre-wrap leading-relaxed bg-muted/10"
+        >
+          {streamText}
+          <span className="inline-block w-1.5 h-3.5 ml-0.5 bg-primary animate-pulse align-middle" />
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Suggested Edit components ─────────────────────────────────────────────────
+
+function SuggestedEditCard({
+  edit,
+  onApprove,
+  onDecline,
+}: {
+  edit: SuggestedEdit;
+  onApprove: (id: string) => void;
+  onDecline: (id: string) => void;
+}) {
+  const isPending = edit.status === "pending";
+  const isApproved = edit.status === "approved";
+  const isDeclined = edit.status === "declined";
+
+  return (
+    <div className={`border rounded-md overflow-hidden transition-opacity ${isDeclined ? "opacity-40" : ""}`}>
+      {/* Header */}
+      <div className={`px-3 py-2 flex items-center justify-between text-sm font-medium ${
+        isApproved ? "bg-green-50 dark:bg-green-950/30 border-b border-green-200 dark:border-green-800" :
+        isDeclined ? "bg-muted/30 border-b" :
+        "bg-amber-50 dark:bg-amber-950/20 border-b border-amber-200 dark:border-amber-800"
+      }`}>
+        <div className="flex items-center gap-2">
+          {isApproved && <CheckCircle2 className="h-3.5 w-3.5 text-green-600" />}
+          {isDeclined && <Circle className="h-3.5 w-3.5 text-muted-foreground" />}
+          {isPending && <AlertTriangle className="h-3.5 w-3.5 text-amber-500" />}
+          <span className={isDeclined ? "line-through text-muted-foreground" : ""}>{edit.section}</span>
+          {edit.current === null && (
+            <span className="text-xs px-1.5 py-0.5 rounded bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300">missing</span>
+          )}
+        </div>
+        {isPending && (
+          <div className="flex items-center gap-1">
+            <button
+              onClick={() => onApprove(edit.id)}
+              className="flex items-center gap-1 text-xs px-2 py-0.5 rounded bg-green-600 text-white hover:bg-green-700 transition-colors"
+            >
+              <Check className="h-3 w-3" /> Approve
+            </button>
+            <button
+              onClick={() => onDecline(edit.id)}
+              className="flex items-center gap-1 text-xs px-2 py-0.5 rounded border hover:bg-muted transition-colors"
+            >
+              Decline
+            </button>
+          </div>
+        )}
+        {isApproved && (
+          <button onClick={() => onDecline(edit.id)} className="text-xs text-muted-foreground hover:text-foreground transition-colors">
+            Undo
+          </button>
+        )}
+        {isDeclined && (
+          <button onClick={() => onApprove(edit.id)} className="text-xs text-muted-foreground hover:text-foreground transition-colors">
+            Restore
+          </button>
+        )}
+      </div>
+      {/* Diff */}
+      {!isDeclined && (
+        <div className="divide-y text-xs font-mono">
+          {edit.current !== null && (
+            <div className="px-3 py-2 bg-red-50 dark:bg-red-950/20 text-red-700 dark:text-red-300 whitespace-pre-wrap leading-relaxed">
+              <span className="select-none mr-1 opacity-60">−</span>{edit.current}
+            </div>
+          )}
+          <div className="px-3 py-2 bg-green-50 dark:bg-green-950/20 text-green-700 dark:text-green-300 whitespace-pre-wrap leading-relaxed">
+            <span className="select-none mr-1 opacity-60">+</span>{edit.suggested}
+          </div>
+        </div>
+      )}
+      {/* Reasoning */}
+      {!isDeclined && (
+        <div className="px-3 py-2 text-xs text-muted-foreground italic border-t">
+          {edit.reasoning}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ClarifyingQuestionsCard({
+  questions,
+  onDismiss,
+}: {
+  questions: string[];
+  onDismiss: () => void;
+}) {
+  if (questions.length === 0) return null;
+  return (
+    <div className="border border-amber-300 dark:border-amber-700 rounded-md overflow-hidden">
+      <div className="px-3 py-2 bg-amber-50 dark:bg-amber-950/30 flex items-center justify-between">
+        <div className="flex items-center gap-2 text-sm font-medium text-amber-800 dark:text-amber-200">
+          <AlertTriangle className="h-4 w-4" />
+          Questions from the agent
+        </div>
+        <button onClick={onDismiss} className="text-xs text-muted-foreground hover:text-foreground">
+          Dismiss
+        </button>
+      </div>
+      <ul className="divide-y">
+        {questions.map((q, i) => (
+          <li key={i} className="px-3 py-2 text-sm text-amber-900 dark:text-amber-100">
+            {i + 1}. {q}
+          </li>
+        ))}
+      </ul>
+      <div className="px-3 py-2 border-t text-xs text-muted-foreground">
+        Answer these in the chat below ↓
+      </div>
+    </div>
+  );
+}
+
+function FilesReadPanel({ files }: { files: string[] }) {
+  const [open, setOpen] = useState(false);
+  if (files.length === 0) return null;
+  return (
+    <div className="border rounded-md overflow-hidden">
+      <button
+        onClick={() => setOpen(o => !o)}
+        className="w-full px-3 py-2 flex items-center justify-between text-sm bg-muted/20 hover:bg-muted/40 transition-colors"
+      >
+        <div className="flex items-center gap-2 text-muted-foreground">
+          <FileCode className="h-4 w-4" />
+          <span>{files.length} file{files.length !== 1 ? "s" : ""} read from codebase</span>
+        </div>
+        <ChevronDown className={`h-4 w-4 text-muted-foreground transition-transform ${open ? "rotate-180" : ""}`} />
+      </button>
+      {open && (
+        <ul className="divide-y">
+          {files.map((f, i) => (
+            <li key={i} className="px-3 py-1.5 text-xs font-mono text-muted-foreground">{f}</li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+interface GroomingPanelProps {
+  data: GroomingOutput;
+  baseline?: GroomingOutput | null;
+  descriptionSections?: DescriptionSection[];
+  description?: string | null;
+  stepsToReproduce?: string | null;
+  observedBehavior?: string | null;
+  expectedBehavior?: string | null;
+  suggestedEdits: SuggestedEdit[];
+  clarifyingQuestions: string[];
+  filesRead: string[];
+  onApproveEdit: (id: string) => void;
+  onDeclineEdit: (id: string) => void;
+  onDismissQuestions: () => void;
+  onUpdateJira: () => void;
+  jiraUpdateStatus: "idle" | "saving" | "saved" | "error";
+  jiraUpdateError: string;
+}
+
+function GroomingPanel({
+  data, baseline, descriptionSections, description,
+  stepsToReproduce, observedBehavior, expectedBehavior,
+  suggestedEdits, clarifyingQuestions, filesRead,
+  onApproveEdit, onDeclineEdit, onDismissQuestions,
+  onUpdateJira, jiraUpdateStatus, jiraUpdateError,
+}: GroomingPanelProps) {
+  const hasDiff = baseline != null;
+
+  const relevantItems = hasDiff
+    ? diffStringArrays(
+        baseline!.relevant_areas.map(a => `${a.area} — ${a.reason}`),
+        data.relevant_areas.map(a => `${a.area} — ${a.reason}`)
+      )
+    : data.relevant_areas.map(a => ({ text: `${a.area} — ${a.reason}`, status: "unchanged" as const }));
+
+  const ambiguityItems = hasDiff
+    ? diffStringArrays(baseline!.ambiguities, data.ambiguities)
+    : data.ambiguities.map(t => ({ text: t, status: "unchanged" as const }));
+
+  const depItems = hasDiff
+    ? diffStringArrays(baseline!.dependencies, data.dependencies)
+    : data.dependencies.map(t => ({ text: t, status: "unchanged" as const }));
+
+  const summaryChanged = hasDiff && baseline!.ticket_summary !== data.ticket_summary;
+
+  const pendingCount = suggestedEdits.filter(e => e.status === "pending").length;
+  const approvedCount = suggestedEdits.filter(e => e.status === "approved").length;
+
   return (
     <div className="space-y-3">
+      {/* Badges */}
       <div className="flex items-center gap-2 flex-wrap">
         <Badge variant="secondary">{data.ticket_type}</Badge>
         <Badge variant={data.estimated_complexity === "high" ? "destructive" : data.estimated_complexity === "medium" ? "secondary" : "outline"}>
           {data.estimated_complexity} complexity
         </Badge>
+        {approvedCount > 0 && (
+          <span className="text-xs px-2 py-0.5 rounded-full bg-green-100 text-green-700 dark:bg-green-900 dark:text-green-300 font-medium">
+            {approvedCount} approved
+          </span>
+        )}
+        {pendingCount > 0 && (
+          <span className="text-xs px-2 py-0.5 rounded-full bg-amber-100 text-amber-700 dark:bg-amber-900 dark:text-amber-300 font-medium">
+            {pendingCount} pending review
+          </span>
+        )}
       </div>
-      <p className="text-sm leading-relaxed">{data.ticket_summary}</p>
-      <CollapsibleList title="Acceptance Criteria" items={data.acceptance_criteria} icon={<ClipboardList className="h-4 w-4 text-muted-foreground" />} />
-      <CollapsibleList title="Relevant Areas" items={data.relevant_areas.map(a => `${a.area} — ${a.reason}`)} icon={<FileCode className="h-4 w-4 text-muted-foreground" />} />
-      <CollapsibleList title="Ambiguities" items={data.ambiguities} icon={<AlertTriangle className="h-4 w-4 text-amber-500" />} />
-      <CollapsibleList title="Dependencies" items={data.dependencies} />
+
+      {/* Summary */}
+      <div className={`rounded px-2 py-1 -mx-2 ${summaryChanged ? "bg-blue-50 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-800" : ""}`}>
+        <p className="text-sm leading-relaxed">{data.ticket_summary}</p>
+        {summaryChanged && (
+          <p className="text-xs text-muted-foreground line-through mt-0.5">{baseline!.ticket_summary}</p>
+        )}
+      </div>
+
+      {/* Clarifying questions — shown prominently when present */}
+      <ClarifyingQuestionsCard questions={clarifyingQuestions} onDismiss={onDismissQuestions} />
+
+      {/* JIRA description sections */}
+      {(descriptionSections?.length || description) && (
+        <DescriptionSectionsPanel
+          sections={descriptionSections ?? []}
+          fallbackDescription={description}
+        />
+      )}
+
+      {/* Bug-specific custom fields */}
+      {(stepsToReproduce || observedBehavior || expectedBehavior) && (
+        <div className="border rounded-md overflow-hidden divide-y">
+          <div className="px-3 py-2 bg-muted/30 text-sm font-medium flex items-center gap-2">
+            <Bug className="h-4 w-4 text-muted-foreground" />
+            Bug Details
+          </div>
+          {stepsToReproduce && <CollapsibleSection heading="Steps to Reproduce" content={stepsToReproduce} />}
+          {observedBehavior && <CollapsibleSection heading="Observed Behavior" content={observedBehavior} />}
+          {expectedBehavior && <CollapsibleSection heading="Expected Behavior" content={expectedBehavior} />}
+        </div>
+      )}
+
+      {/* Suggested edits — the heart of the new grooming flow */}
+      {suggestedEdits.length > 0 && (
+        <div className="space-y-2">
+          <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+            Suggested ticket improvements
+          </p>
+          {suggestedEdits.map(edit => (
+            <SuggestedEditCard
+              key={edit.id}
+              edit={edit}
+              onApprove={onApproveEdit}
+              onDecline={onDeclineEdit}
+            />
+          ))}
+          {/* Update JIRA — lives here, below the edits */}
+          <div className="flex items-center gap-3 pt-1">
+            <Button
+              size="sm"
+              variant={approvedCount > 0 ? "default" : "outline"}
+              className="gap-1.5"
+              onClick={onUpdateJira}
+              disabled={jiraUpdateStatus === "saving" || approvedCount === 0}
+              title={approvedCount === 0 ? "Approve at least one suggested edit first" : `Push ${approvedCount} approved edit${approvedCount !== 1 ? "s" : ""} to JIRA`}
+            >
+              {jiraUpdateStatus === "saving" ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <ExternalLink className="h-3.5 w-3.5" />
+              )}
+              Update JIRA{approvedCount > 0 ? ` (${approvedCount})` : ""}
+            </Button>
+            {jiraUpdateStatus === "saved" && (
+              <span className="flex items-center gap-1 text-xs text-green-600">
+                <CheckCircle2 className="h-3 w-3" /> Saved to JIRA
+              </span>
+            )}
+            {jiraUpdateStatus === "error" && (
+              <span className="text-xs text-orange-600 leading-tight" title={jiraUpdateError}>
+                {jiraUpdateError.startsWith("Saved.") ? jiraUpdateError : "Error saving — check console"}
+              </span>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Standard grooming analysis */}
+      <DiffedCollapsibleList
+        title="Relevant Areas"
+        items={relevantItems}
+        icon={<FileCode className="h-4 w-4 text-muted-foreground" />}
+        hasChanges={relevantItems.some(i => i.status !== "unchanged")}
+      />
+      <DiffedCollapsibleList
+        title="Ambiguities"
+        items={ambiguityItems}
+        icon={<AlertTriangle className="h-4 w-4 text-amber-500" />}
+        hasChanges={ambiguityItems.some(i => i.status !== "unchanged")}
+      />
+      <DiffedCollapsibleList
+        title="Dependencies"
+        items={depItems}
+        hasChanges={depItems.some(i => i.status !== "unchanged")}
+      />
       {data.grooming_notes && (
         <p className="text-sm text-muted-foreground italic">{data.grooming_notes}</p>
       )}
+
+      {/* Files read from the codebase */}
+      <FilesReadPanel files={filesRead} />
     </div>
   );
 }
@@ -538,7 +982,6 @@ const NEXT_STAGE_LABEL: Partial<Record<Stage, string>> = {
 };
 
 interface CheckpointFooterProps {
-  stage: Stage;
   onProceed: () => void;
   proceeding: boolean;
   hasBlockingIssues?: boolean;
@@ -547,13 +990,22 @@ interface CheckpointFooterProps {
   onInputChange: (v: string) => void;
   onSend: () => void;
   sending: boolean;
+  // grooming stage only
+  groomingChatLabel?: string;
+  toolRequests?: ToolRequest[];
+  onDismissToolRequest?: (id: string) => void;
+  onSavedToolRequest?: (id: string) => void;
 }
 
 function CheckpointFooter({
   stage, onProceed, proceeding, hasBlockingIssues,
   chat, input, onInputChange, onSend, sending,
+  groomingChatLabel,
+  toolRequests = [],
+  onDismissToolRequest,
+  onSavedToolRequest,
 }: CheckpointFooterProps) {
-  const [chatOpen, setChatOpen] = useState(false);
+  const [chatOpen, setChatOpen] = useState(stage === "grooming"); // auto-open for grooming
   const bottomRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -561,17 +1013,18 @@ function CheckpointFooter({
   }, [chat, chatOpen]);
 
   const nextLabel = NEXT_STAGE_LABEL[stage] ?? "Proceed";
+  const chatToggleLabel = groomingChatLabel ?? "Ask a follow-up question";
 
   return (
     <div className="mt-5 border-t pt-4 space-y-3">
-      {/* Collapsible follow-up chat */}
+      {/* Collapsible conversation */}
       <div>
         <button
           onClick={() => setChatOpen(!chatOpen)}
           className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors"
         >
           <ChevronRight className={`h-3.5 w-3.5 transition-transform ${chatOpen ? "rotate-90" : ""}`} />
-          Ask a follow-up question
+          {chatToggleLabel}
           {chat.length > 0 && (
             <span className="ml-1 px-1.5 py-0.5 rounded-full bg-muted text-xs font-medium">
               {Math.ceil(chat.length / 2)}
@@ -592,6 +1045,14 @@ function CheckpointFooter({
                     </div>
                   </div>
                 ))}
+                {toolRequests.filter(r => !r.dismissed).map(r => (
+                  <ToolRequestCard
+                    key={r.id}
+                    request={r}
+                    onDismiss={onDismissToolRequest ?? (() => {})}
+                    onSaved={onSavedToolRequest ?? (() => {})}
+                  />
+                ))}
                 {sending && (
                   <div className="flex justify-start">
                     <div className="bg-muted rounded-lg px-3 py-2 flex items-center gap-2 text-sm text-muted-foreground">
@@ -606,7 +1067,9 @@ function CheckpointFooter({
               <Textarea
                 value={input}
                 onChange={(e) => onInputChange(e.target.value)}
-                placeholder="Ask about these findings…"
+                placeholder={stage === "grooming"
+                  ? "Suggest changes to the ticket, acceptance criteria, or scope…"
+                  : "Ask about these findings…"}
                 className="min-h-[52px] resize-none text-sm"
                 onKeyDown={(e) => {
                   if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && input.trim()) {
@@ -744,9 +1207,10 @@ interface TicketSelectorProps {
   sprintIssues: JiraIssue[];
   loading: boolean;
   onSelect: (issue: JiraIssue) => void;
+  sessionKeys: Set<string>;
 }
 
-function TicketSelector({ sprintIssues, loading, onSelect }: TicketSelectorProps) {
+function TicketSelector({ sprintIssues, loading, onSelect, sessionKeys }: TicketSelectorProps) {
   const [search, setSearch] = useState("");
   const [searchResults, setSearchResults] = useState<JiraIssue[]>([]);
   const [searching, setSearching] = useState(false);
@@ -793,23 +1257,32 @@ function TicketSelector({ sprintIssues, loading, onSelect }: TicketSelectorProps
       ) : (
         <div className="space-y-2">
           {!q && <p className="text-xs text-muted-foreground">Active sprint — {list.length} ticket{list.length !== 1 ? "s" : ""} assigned to you</p>}
-          {list.map((issue) => (
-            <button
-              key={issue.id}
-              onClick={() => onSelect(issue)}
-              className="w-full text-left px-4 py-3 rounded-md border bg-card/60 hover:bg-muted/60 transition-colors"
-            >
-              <div className="flex items-center gap-2 mb-1">
-                <JiraTicketLink ticketKey={issue.key} url={issue.url} />
-                <Badge variant="outline" className="text-xs">{issue.issueType}</Badge>
-                {issue.storyPoints != null && (
-                  <span className="ml-auto text-xs text-muted-foreground">{issue.storyPoints}pt</span>
-                )}
-              </div>
-              <p className="text-sm font-medium leading-snug">{issue.summary}</p>
-              <p className="text-xs text-muted-foreground mt-0.5">{issue.status}</p>
-            </button>
-          ))}
+          {list.map((issue) => {
+            const hasSession = sessionKeys.has(issue.key);
+            return (
+              <button
+                key={issue.id}
+                onClick={() => onSelect(issue)}
+                className="w-full text-left px-4 py-3 rounded-md border bg-card/60 hover:bg-muted/60 transition-colors"
+              >
+                <div className="flex items-center gap-2 mb-1">
+                  <JiraTicketLink ticketKey={issue.key} url={issue.url} />
+                  <Badge variant="outline" className="text-xs">{issue.issueType}</Badge>
+                  {hasSession && (
+                    <Badge variant="secondary" className="text-xs flex items-center gap-1">
+                      <span className="h-1.5 w-1.5 rounded-full bg-primary animate-pulse inline-block" />
+                      In progress
+                    </Badge>
+                  )}
+                  {issue.storyPoints != null && (
+                    <span className="ml-auto text-xs text-muted-foreground">{issue.storyPoints}pt</span>
+                  )}
+                </div>
+                <p className="text-sm font-medium leading-snug">{issue.summary}</p>
+                <p className="text-xs text-muted-foreground mt-0.5">{issue.status}</p>
+              </button>
+            );
+          })}
         </div>
       )}
     </div>
@@ -901,74 +1374,135 @@ function stageToStep(stage: Stage): number | undefined {
 // ── Main screen ───────────────────────────────────────────────────────────────
 
 export function ImplementTicketScreen({ credStatus, onBack }: ImplementTicketScreenProps) {
-  const claudeAvailable = anthropicComplete(credStatus);
+  const claudeAvailable = aiProviderComplete(credStatus);
   const jiraAvailable = jiraComplete(credStatus);
 
-  // Ticket selection
+  // ── Store bindings (persistent state — survives navigation) ──────────────────
+  const {
+    selectedIssue,
+    currentStage,
+    viewingStage,
+    completedStages,
+    pendingApproval,
+    proceeding,
+    grooming,
+    impact,
+    triageHistory,
+    plan,
+    guidance,
+    tests,
+    review,
+    prDescription,
+    retrospective,
+    kbSaved,
+    groomingBlockers,
+    groomingEdits,
+    clarifyingQuestions,
+    filesRead,
+    groomingChat,
+    groomingBaseline,
+    jiraUpdateStatus,
+    jiraUpdateError,
+    groomingProgress,
+    groomingStreamText,
+    checkpointChats,
+    errors,
+    sessions: implementSessions,
+  } = useImplementTicketStore();
+
+  const store = useImplementTicketStore.getState;
+  // Set of issue keys with cached (or active) pipeline sessions
+  const sessionKeys = useMemo(
+    () => new Set([...implementSessions.keys(), ...(selectedIssue ? [selectedIssue.key] : [])]),
+    [implementSessions, selectedIssue]
+  );
+
+  // ── Ephemeral UI state (local — reset on each visit is fine) ─────────────────
   const [sprintIssues, setSprintIssues] = useState<JiraIssue[]>([]);
   const [loadingIssues, setLoadingIssues] = useState(true);
-  const [selectedIssue, setSelectedIssue] = useState<JiraIssue | null>(null);
-
-  // Pipeline state
-  const [currentStage, setCurrentStage] = useState<Stage>("select");
-  const [viewingStage, setViewingStage] = useState<Stage>("grooming");
-  const [completedStages, setCompletedStages] = useState<Set<Stage>>(new Set());
-
-  // Agent outputs
-  const [grooming, setGrooming] = useState<GroomingOutput | null>(null);
-  const [impact, setImpact] = useState<ImpactOutput | null>(null);
-  const [triageHistory, setTriageHistory] = useState<TriageMessage[]>([]);
   const [triageInput, setTriageInput] = useState("");
   const [triageSending, setTriageSending] = useState(false);
   const [triaFinalizing, setTriaFinalizing] = useState(false);
-  const [plan, setPlan] = useState<ImplementationPlan | null>(null);
-  const [guidance, setGuidance] = useState<GuidanceOutput | null>(null);
-  const [tests, setTests] = useState<TestOutput | null>(null);
-  const [review, setReview] = useState<PlanReviewOutput | null>(null);
-  const [prDescription, setPrDescription] = useState<PrDescriptionOutput | null>(null);
-  const [retrospective, setRetrospective] = useState<RetrospectiveOutput | null>(null);
-  const [kbSaved, setKbSaved] = useState(false);
-
-  // Per-stage error
-  const [errors, setErrors] = useState<Partial<Record<Stage, string>>>({});
-
-  // Approval gate — which stage is waiting for user approval before advancing
-  const [pendingApproval, setPendingApproval] = useState<Stage | null>(null);
-  const [proceeding, setProceeding] = useState(false);
-
-  // Grooming blockers
-  const [groomingBlockers, setGroomingBlockers] = useState<GroomingBlocker[]>([]);
-
-  // Checkpoint conversations (follow-up chat at each stage's approval gate)
-  const [checkpointChats, setCheckpointChats] = useState<Partial<Record<Stage, TriageMessage[]>>>({});
   const [checkpointInput, setCheckpointInput] = useState("");
   const [checkpointSending, setCheckpointSending] = useState(false);
-
-  // Refs for pipeline data — avoids stale closures in async stage functions
-  const groomingRef = useRef<GroomingOutput | null>(null);
-  const impactRef = useRef<ImpactOutput | null>(null);
-  const planRef = useRef<ImplementationPlan | null>(null);
-  const guidanceRef = useRef<GuidanceOutput | null>(null);
-  const testsRef = useRef<TestOutput | null>(null);
-  const reviewRef = useRef<PlanReviewOutput | null>(null);
-  const ticketTextRef = useRef<string>("");
-
-  /** Fade in header meridian (PipelineProgress) over 1s when this screen mounts. */
+  const [groomingChatInput, setGroomingChatInput] = useState("");
+  const [groomingChatSending, setGroomingChatSending] = useState(false);
   const [meridianHeaderVisible, setMeridianHeaderVisible] = useState(false);
+  const [chatPaneWidth, setChatPaneWidth] = useState<number>(320);
+  const [toolRequests, setToolRequests] = useState<ToolRequest[]>([]);
+  const isDraggingRef = useRef(false);
+  const dragStartXRef = useRef(0);
+  const dragStartWidthRef = useRef(0);
 
-  const ticketText = selectedIssue ? compileTicketText(selectedIssue) : "";
-  // Keep ref in sync with the current ticket text
-  ticketTextRef.current = ticketText;
+  // ── Resizable grooming split pane ────────────────────────────────────────────
+  const onDividerMouseDown = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    isDraggingRef.current = true;
+    dragStartXRef.current = e.clientX;
+    dragStartWidthRef.current = chatPaneWidth;
+    const onMouseMove = (ev: MouseEvent) => {
+      if (!isDraggingRef.current) return;
+      const delta = dragStartXRef.current - ev.clientX;
+      const next = Math.min(600, Math.max(240, dragStartWidthRef.current + delta));
+      setChatPaneWidth(next);
+    };
+    const onMouseUp = () => {
+      isDraggingRef.current = false;
+      window.removeEventListener("mousemove", onMouseMove);
+      window.removeEventListener("mouseup", onMouseUp);
+    };
+    window.addEventListener("mousemove", onMouseMove);
+    window.addEventListener("mouseup", onMouseUp);
+  }, [chatPaneWidth]);
 
-  function markComplete(stage: Stage) {
-    setCompletedStages((prev) => new Set([...prev, stage]));
-  }
+  // ── Backend event listeners — write directly to store ────────────────────────
+  useEffect(() => {
+    const unlisten = listen<{ phase: string; message: string }>("grooming-progress", (event) => {
+      if (event.payload.phase === "done") {
+        setTimeout(() => useImplementTicketStore.getState()._set({ groomingProgress: "" }), 1200);
+      } else {
+        useImplementTicketStore.getState()._set({ groomingProgress: event.payload.message });
+      }
+    });
+    return () => { unlisten.then(f => f()); };
+  }, []);
 
-  function setError(stage: Stage, err: string) {
-    setErrors((prev) => ({ ...prev, [stage]: err }));
-  }
+  useEffect(() => {
+    const acc = { text: "" };
+    let flushTimer: ReturnType<typeof setTimeout> | null = null;
+    const unlisten = listen<{ delta: string }>("grooming-stream", (event) => {
+      acc.text += event.payload.delta;
+      if (flushTimer !== null) return;
+      flushTimer = setTimeout(() => {
+        flushTimer = null;
+        useImplementTicketStore.getState()._set({ groomingStreamText: acc.text });
+      }, 80);
+    });
+    return () => {
+      if (flushTimer !== null) clearTimeout(flushTimer);
+      unlisten.then(f => f());
+    };
+  }, []);
 
-  // Load sprint issues assigned to the current user
+  useEffect(() => {
+    const unlisten = listen<{
+      name: string; description: string; why_needed: string; example_call: string;
+    }>("agent-tool-request", (event) => {
+      const { name, description, why_needed, example_call } = event.payload;
+      setToolRequests(prev => [...prev, {
+        id: `${Date.now()}-${name}`,
+        name,
+        description,
+        whyNeeded: why_needed,
+        exampleCall: example_call,
+        dismissed: false,
+        saved: false,
+      }]);
+    });
+    return () => { unlisten.then(f => f()); };
+  }, []);
+
+  // ── Load sprint issues ───────────────────────────────────────────────────────
   useEffect(() => {
     if (!jiraAvailable) { setLoadingIssues(false); return; }
     getMySprintIssues().then(setSprintIssues).catch(() => {}).finally(() => setLoadingIssues(false));
@@ -979,337 +1513,89 @@ export function ImplementTicketScreen({ credStatus, onBack }: ImplementTicketScr
     return () => clearTimeout(t);
   }, []);
 
-  // Stable ref for skills — loaded once at pipeline start, used throughout
-  const skillsRef = useRef<Partial<Record<SkillType, string>>>({});
-
-  // Start pipeline — runs Grooming only, then waits for user approval
-  const startPipeline = useCallback(async (issue: JiraIssue) => {
-    setSelectedIssue(issue);
-    setCurrentStage("grooming");
-    setViewingStage("grooming");
-    setCompletedStages(new Set());
-    setPendingApproval(null);
-    setGroomingBlockers([]);
-    setCheckpointChats({});
-    setCheckpointInput("");
-    setGrooming(null); setImpact(null); setPlan(null);
-    setGuidance(null); setTests(null); setReview(null);
-    setPrDescription(null); setRetrospective(null);
-    setTriageHistory([]); setTriageInput(""); setErrors({});
-    groomingRef.current = null; impactRef.current = null;
-    planRef.current = null; guidanceRef.current = null;
-    testsRef.current = null; reviewRef.current = null;
-
-    const text = compileTicketText(issue);
-    ticketTextRef.current = text;
-
-    try {
-      skillsRef.current = await loadAgentSkills();
-    } catch { skillsRef.current = {}; }
-
-    // Agent 1: Grooming
-    try {
-      const groomingInput = prependSkill(text, skillsRef.current.grooming, "GROOMING CONVENTIONS");
-      const raw = await runGroomingAgent(groomingInput);
-      const data = parseAgentJson<GroomingOutput>(raw);
-      if (!data) throw new Error("Could not parse grooming output");
-      groomingRef.current = data;
-      setGrooming(data);
-      markComplete("grooming");
-      // Detect blockers before presenting to user
-      setGroomingBlockers(detectGroomingBlockers(issue, data));
-      // ── CHECKPOINT: wait for user approval ──
-      setPendingApproval("grooming");
-    } catch (e) {
-      setError("grooming", String(e));
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  // ── Individual stage runners (each called after user approves the previous) ──
-
-  async function runImpactStage() {
-    setCurrentStage("impact");
-    setViewingStage("impact");
-    try {
-      const impactInput = prependSkill(ticketTextRef.current, skillsRef.current.patterns, "CODEBASE PATTERNS");
-      const raw = await runImpactAnalysis(impactInput, JSON.stringify(groomingRef.current));
-      const data = parseAgentJson<ImpactOutput>(raw);
-      if (!data) throw new Error("Could not parse impact output");
-      impactRef.current = data;
-      setImpact(data);
-      markComplete("impact");
-      // ── CHECKPOINT ──
-      setPendingApproval("impact");
-    } catch (e) {
-      setError("impact", String(e));
-    }
-  }
-
-  async function runTriageStage() {
-    setCurrentStage("triage");
-    setViewingStage("triage");
-    const contextText = compilePipelineContext(
-      ticketTextRef.current, groomingRef.current, impactRef.current, skillsRef.current
-    );
-    setTriageSending(true);
-    try {
-      const initialMessage = "Please analyse this ticket and propose a concrete implementation approach. Ask any clarifying questions you need answered before we can finalise the plan.";
-      const response = await runTriageTurn(
-        contextText,
-        JSON.stringify([{ role: "user", content: initialMessage }])
-      );
-      setTriageHistory([
-        { role: "user" as const, content: initialMessage },
-        { role: "assistant" as const, content: response },
-      ]);
-    } catch (e) {
-      setError("triage", String(e));
-    } finally {
-      setTriageSending(false);
-    }
-  }
-
+  // ── Triage send (local input, store actions) ─────────────────────────────────
   async function sendTriageMessage() {
     if (!triageInput.trim()) return;
-    const userMsg: TriageMessage = { role: "user", content: triageInput.trim() };
-    const newHistory = [...triageHistory, userMsg];
-    setTriageHistory(newHistory);
+    const input = triageInput.trim();
     setTriageInput("");
     setTriageSending(true);
     try {
-      const contextText = compilePipelineContext(
-        ticketTextRef.current, groomingRef.current, impactRef.current, skillsRef.current
-      );
-      const response = await runTriageTurn(contextText, JSON.stringify(newHistory));
-      setTriageHistory([...newHistory, { role: "assistant", content: response }]);
-    } catch (e) {
-      setError("triage", String(e));
-    } finally {
-      setTriageSending(false);
-    }
+      const enriched = await enrichMessageWithUrls(input);
+      await store().sendTriageMessage(enriched);
+    } catch { /* handled in store */ }
+    finally { setTriageSending(false); }
   }
 
   async function finalizePlan() {
     setTriaFinalizing(true);
-    setCurrentStage("plan");
     try {
-      const contextText = compilePipelineContext(
-        ticketTextRef.current, groomingRef.current, impactRef.current, skillsRef.current
-      );
-      const raw = await finalizeImplementationPlan(contextText, JSON.stringify(triageHistory));
-      const data = parseAgentJson<ImplementationPlan>(raw);
-      if (!data) throw new Error("Could not parse plan output");
-      planRef.current = data;
-      setPlan(data);
-      markComplete("triage");
-      markComplete("plan");
-      setViewingStage("plan");
-      // ── CHECKPOINT: user reviews the plan before implementation begins ──
-      setPendingApproval("plan");
-    } catch (e) {
-      setError("plan", String(e));
+      await store().finalizePlan();
     } finally {
       setTriaFinalizing(false);
     }
   }
 
-  async function runGuidanceStage() {
-    const skills = skillsRef.current;
-    const planJson = JSON.stringify(planRef.current);
-    setCurrentStage("guidance");
-    setViewingStage("guidance");
-    try {
-      const guidanceInput = prependSkill(
-        prependSkill(ticketTextRef.current, skills.patterns, "CODEBASE PATTERNS"),
-        skills.implementation, "IMPLEMENTATION STANDARDS"
-      );
-      const raw = await runImplementationGuidance(guidanceInput, planJson);
-      const data = parseAgentJson<GuidanceOutput>(raw);
-      if (!data) throw new Error("Could not parse guidance output");
-      guidanceRef.current = data;
-      setGuidance(data);
-      markComplete("guidance");
-      // ── CHECKPOINT ──
-      setPendingApproval("guidance");
-    } catch (e) {
-      setError("guidance", String(e));
-    }
-  }
-
-  async function runTestsStage() {
-    const planJson = JSON.stringify(planRef.current);
-    setCurrentStage("tests");
-    setViewingStage("tests");
-    try {
-      const raw = await runTestSuggestions(planJson, JSON.stringify(guidanceRef.current));
-      const data = parseAgentJson<TestOutput>(raw);
-      if (!data) throw new Error("Could not parse test output");
-      testsRef.current = data;
-      setTests(data);
-      markComplete("tests");
-      // ── CHECKPOINT ──
-      setPendingApproval("tests");
-    } catch (e) {
-      setError("tests", String(e));
-    }
-  }
-
-  async function runReviewStage() {
-    const skills = skillsRef.current;
-    const planJson = JSON.stringify(planRef.current);
-    setCurrentStage("review");
-    setViewingStage("review");
-    try {
-      const reviewPlanJson = skills.review
-        ? `=== REVIEW STANDARDS (follow these) ===\n${skills.review}\n\n${planJson}`
-        : planJson;
-      const raw = await runPlanReview(
-        reviewPlanJson, JSON.stringify(guidanceRef.current), JSON.stringify(testsRef.current)
-      );
-      const data = parseAgentJson<PlanReviewOutput>(raw);
-      if (!data) throw new Error("Could not parse review output");
-      reviewRef.current = data;
-      setReview(data);
-      markComplete("review");
-      // ── CHECKPOINT ──
-      setPendingApproval("review");
-    } catch (e) {
-      setError("review", String(e));
-    }
-  }
-
-  async function runPrStage() {
-    const planJson = JSON.stringify(planRef.current);
-    setCurrentStage("pr");
-    setViewingStage("pr");
-    try {
-      const raw = await runPrDescriptionGen(
-        ticketTextRef.current, planJson, JSON.stringify(reviewRef.current)
-      );
-      const data = parseAgentJson<PrDescriptionOutput>(raw);
-      if (!data) throw new Error("Could not parse PR description output");
-      setPrDescription(data);
-      markComplete("pr");
-      // ── CHECKPOINT ──
-      setPendingApproval("pr");
-    } catch (e) {
-      setError("pr", String(e));
-    }
-  }
-
-  async function runRetroStage() {
-    const planJson = JSON.stringify(planRef.current);
-    setCurrentStage("retro");
-    setViewingStage("retro");
-    try {
-      const raw = await runRetrospectiveAgent(
-        ticketTextRef.current, planJson, JSON.stringify(reviewRef.current)
-      );
-      const data = parseAgentJson<RetrospectiveOutput>(raw);
-      if (!data) throw new Error("Could not parse retrospective output");
-      setRetrospective(data);
-      markComplete("retro");
-      // ── CHECKPOINT ──
-      setPendingApproval("retro");
-    } catch (e) {
-      setError("retro", String(e));
-    }
-  }
-
-  // Dispatch from one approval gate to the next stage runner
-  async function proceedFromStage(stage: Stage) {
-    setPendingApproval(null);
-    setProceeding(true);
-    try {
-      switch (stage) {
-        case "grooming":   await runImpactStage(); break;
-        case "impact":     await runTriageStage(); break;
-        case "plan":       await runGuidanceStage(); break;
-        case "guidance":   await runTestsStage(); break;
-        case "tests":      await runReviewStage(); break;
-        case "review":     await runPrStage(); break;
-        case "pr":         await runRetroStage(); break;
-        case "retro":      setCurrentStage("complete"); break;
-      }
-    } finally {
-      setProceeding(false);
-    }
-  }
-
-  // Follow-up chat at any stage's checkpoint (uses runTriageTurn with stage context)
   async function sendCheckpointMessage(stage: Stage) {
     const msg = checkpointInput.trim();
     if (!msg) return;
     setCheckpointInput("");
-
-    const stageOutput =
-      stage === "grooming" ? groomingRef.current :
-      stage === "impact"   ? impactRef.current :
-      stage === "plan"     ? planRef.current :
-      stage === "guidance" ? guidanceRef.current :
-      stage === "tests"    ? testsRef.current :
-      stage === "review"   ? reviewRef.current :
-      stage === "pr"       ? prDescription :
-      stage === "retro"    ? retrospective : null;
-
-    const context = [
-      compilePipelineContext(ticketTextRef.current, groomingRef.current, impactRef.current, skillsRef.current),
-      stageOutput ? `=== ${(STAGE_LABELS[stage as keyof typeof STAGE_LABELS] ?? stage).toUpperCase()} OUTPUT ===\n${JSON.stringify(stageOutput, null, 2)}` : "",
-    ].filter(Boolean).join("\n\n");
-
-    const prev = checkpointChats[stage] ?? [];
-    const newHistory: TriageMessage[] = [...prev, { role: "user" as const, content: msg }];
-    setCheckpointChats((c) => ({ ...c, [stage]: newHistory }));
     setCheckpointSending(true);
     try {
-      const response = await runTriageTurn(context, JSON.stringify(newHistory));
-      setCheckpointChats((c) => ({
-        ...c,
-        [stage]: [...(c[stage] ?? newHistory), { role: "assistant" as const, content: response }],
-      }));
-    } catch { /* silently drop — chat is non-critical */ }
-    finally { setCheckpointSending(false); }
+      const enriched = await enrichMessageWithUrls(msg);
+      await store().sendCheckpointMessage(stage, enriched);
+    } finally {
+      setCheckpointSending(false);
+    }
   }
 
-  async function saveToKnowledgeBase(entries: RetroKbEntry[]) {
-    const now = isoNow();
-    for (const entry of entries) {
-      await saveKnowledgeEntry({
-        id: newId(),
-        entryType: entry.type,
-        title: entry.title,
-        body: entry.body,
-        tags: ["auto-generated", selectedIssue?.key ?? "unknown"],
-        createdAt: now,
-        updatedAt: now,
-        linkedJiraKey: selectedIssue?.key ?? null,
-        linkedPrId: null,
-      });
+  async function sendGroomingChatMessage() {
+    const msg = groomingChatInput.trim();
+    if (!msg) return;
+    setGroomingChatInput("");
+    setGroomingChatSending(true);
+    try {
+      const enriched = await enrichMessageWithUrls(msg);
+      await store().sendGroomingChatMessage(enriched);
+    } finally {
+      setGroomingChatSending(false);
     }
-    setKbSaved(true);
+  }
+
+  function dismissToolRequest(id: string) {
+    setToolRequests(prev => prev.map(r => r.id === id ? { ...r, dismissed: true } : r));
+  }
+  function markToolRequestSaved(id: string) {
+    setToolRequests(prev => prev.map(r => r.id === id ? { ...r, saved: true } : r));
   }
 
   // ── Stage content renderer ──────────────────────────────────────────────────
 
+  // Start pipeline — delegate entirely to store
+  const startPipeline = useCallback((issue: JiraIssue) => {
+    store().startPipeline(issue);
+  }, []);
+
   function renderCheckpoint(stage: Stage) {
+    // Grooming has its own inline conversation UI — skip the generic footer for it
+    if (stage === "grooming") return null;
     // Only show the checkpoint footer if this is the current pending stage
     // (or a past stage — user can revisit and still chat)
     if (!completedStages.has(stage)) return null;
     const isPending = pendingApproval === stage;
-    const isRetro = stage === "retro";
-    const hasReviewBlockers = stage === "review" && review?.findings.some(f => f.severity === "blocking");
     return (
       <CheckpointFooter
         stage={stage}
-        onProceed={() => isRetro ? proceedFromStage(stage) : proceedFromStage(stage)}
+        onProceed={() => store().proceedFromStage(stage)}
         proceeding={proceeding && pendingApproval === null && currentStage !== stage}
-        hasBlockingIssues={stage === "grooming" ? groomingBlockers.some(b => b.severity === "blocking") : hasReviewBlockers ?? false}
+        hasBlockingIssues={stage === "review" && (review?.findings.some(f => f.severity === "blocking") ?? false)}
         chat={checkpointChats[stage] ?? []}
         input={isPending || viewingStage === stage ? checkpointInput : ""}
         onInputChange={(v) => setCheckpointInput(v)}
         onSend={() => sendCheckpointMessage(stage)}
         sending={checkpointSending && viewingStage === stage}
+        toolRequests={toolRequests}
+        onDismissToolRequest={dismissToolRequest}
+        onSavedToolRequest={markToolRequestSaved}
       />
     );
   }
@@ -1326,13 +1612,156 @@ export function ImplementTicketScreen({ credStatus, onBack }: ImplementTicketScr
     }
 
     if (stage === "grooming") {
-      if (!grooming) return <div className="flex items-center gap-2 text-sm text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" /> Running grooming analysis…</div>;
+      if (!grooming) return (
+        <div className="space-y-3 max-w-lg">
+          <GroomingProgressBanner message={groomingProgress || "Running grooming analysis…"} streamText={groomingStreamText} />
+        </div>
+      );
+
+      // Two-column layout: grooming panel on the left, refine chat on the right.
+      // Both columns are independently scrollable and fill the available height.
+      // The parent container's max-w-2xl constraint is lifted for this stage (see render below).
       return (
-        <>
-          <GroomingPanel data={grooming} />
-          {groomingBlockers.length > 0 && <div className="mt-3"><BlockerBanner blockers={groomingBlockers} /></div>}
-          {renderCheckpoint(stage)}
-        </>
+        <div className="flex min-h-0 h-full">
+          {/* ── Left: grooming analysis panel ── */}
+          <div className="flex-1 min-w-0 overflow-y-auto space-y-3 pr-1">
+            <GroomingPanel
+            data={grooming}
+            baseline={groomingBaseline}
+            descriptionSections={selectedIssue?.descriptionSections}
+            description={selectedIssue?.description}
+            stepsToReproduce={selectedIssue?.stepsToReproduce}
+            observedBehavior={selectedIssue?.observedBehavior}
+            expectedBehavior={selectedIssue?.expectedBehavior}
+            suggestedEdits={groomingEdits}
+            clarifyingQuestions={clarifyingQuestions}
+            filesRead={filesRead}
+            onApproveEdit={(id) => store().handleApproveEdit(id)}
+            onDeclineEdit={(id) => store().handleDeclineEdit(id)}
+            onDismissQuestions={() => store()._set({ clarifyingQuestions: [] })}
+            onUpdateJira={() => store().pushGroomingToJira()}
+            jiraUpdateStatus={jiraUpdateStatus}
+            jiraUpdateError={jiraUpdateError}
+          />
+            {groomingBlockers.length > 0 && <BlockerBanner blockers={groomingBlockers} />}
+          </div>
+
+          {/* ── Drag handle ── */}
+          {completedStages.has("grooming") && (
+            <div
+              onMouseDown={onDividerMouseDown}
+              className="w-1.5 shrink-0 mx-2 rounded-full cursor-col-resize hover:bg-muted-foreground/30 active:bg-muted-foreground/50 transition-colors"
+              title="Drag to resize"
+            />
+          )}
+
+          {/* ── Right: refine chat panel ── */}
+          {completedStages.has("grooming") && (
+            <div
+              className="shrink-0 flex flex-col min-h-0 border-l pl-5"
+              style={{ width: chatPaneWidth }}
+            >
+              {/* Header */}
+              <div className="shrink-0 pb-2">
+                <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                  Refine this ticket
+                </p>
+              </div>
+
+              <p className="text-xs text-muted-foreground shrink-0 pb-2">
+                Answer the agent's questions or suggest changes to the ticket.
+              </p>
+
+              {/* Chat history — scrollable, fills available height */}
+              <div className="flex-1 min-h-0 overflow-y-auto space-y-2 pr-1 pb-2">
+                {groomingChat.length === 0 && !groomingChatSending && (
+                  <p className="text-xs text-muted-foreground italic text-center pt-4">
+                    No messages yet. Approve or decline edits on the left, or type a question or suggestion below.
+                  </p>
+                )}
+                {groomingChat.map((msg, i) => (
+                  <div key={i} className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
+                    <div className={`max-w-[90%] rounded-lg px-3 py-2 text-sm leading-relaxed ${
+                      msg.role === "user" ? "bg-primary text-primary-foreground" : "bg-muted text-foreground"
+                    }`}>
+                      <p className="whitespace-pre-wrap">{
+                        msg.role === "assistant"
+                          ? msg.content.replace(/```json[\s\S]*?```/g, "").trim() || msg.content
+                          : msg.content
+                      }</p>
+                    </div>
+                  </div>
+                ))}
+                {/* Tool request cards — shown inline after chat messages */}
+                {toolRequests.filter(r => !r.dismissed).map(r => (
+                  <ToolRequestCard
+                    key={r.id}
+                    request={r}
+                    onDismiss={dismissToolRequest}
+                    onSaved={markToolRequestSaved}
+                  />
+                ))}
+                {groomingChatSending && (
+                  <div className="flex justify-start">
+                    <div className="bg-muted rounded-lg px-3 py-2 flex items-center gap-2 text-sm text-muted-foreground">
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" /> Updating…
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Input — pinned to bottom */}
+              <div className="shrink-0 space-y-2 pt-2 border-t">
+                <div className="flex gap-2">
+                  <Textarea
+                    value={groomingChatInput}
+                    onChange={(e) => setGroomingChatInput(e.target.value)}
+                    placeholder="Suggest changes or ask questions…"
+                    className="min-h-[52px] resize-none text-sm"
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && groomingChatInput.trim()) {
+                        e.preventDefault();
+                        sendGroomingChatMessage();
+                      }
+                    }}
+                    disabled={groomingChatSending || proceeding}
+                  />
+                  <Button
+                    size="icon"
+                    onClick={sendGroomingChatMessage}
+                    disabled={!groomingChatInput.trim() || groomingChatSending || proceeding}
+                    title="Send (⌘↵)"
+                  >
+                    <Send className="h-4 w-4" />
+                  </Button>
+                </div>
+                <p className="text-xs text-muted-foreground">⌘↵ to send</p>
+
+                {/* Proceed button */}
+                <div className="flex items-center justify-between gap-2 border-t pt-2">
+                  {groomingBlockers.some(b => b.severity === "blocking") && (
+                    <p className="text-xs text-amber-600 dark:text-amber-400 flex items-center gap-1">
+                      <AlertTriangle className="h-3 w-3 shrink-0" />
+                      Blocking issues
+                    </p>
+                  )}
+                  <Button
+                    onClick={() => store().proceedFromStage("grooming")}
+                    disabled={proceeding}
+                    variant={groomingBlockers.some(b => b.severity === "blocking") ? "outline" : "default"}
+                    size="sm"
+                    className="gap-1.5 ml-auto text-xs"
+                  >
+                    {proceeding ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ChevronRight className="h-3.5 w-3.5" />}
+                    {groomingBlockers.some(b => b.severity === "blocking")
+                      ? "Proceed anyway"
+                      : "Proceed to Impact Analysis"}
+                  </Button>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
       );
     }
     if (stage === "impact") {
@@ -1405,7 +1834,7 @@ export function ImplementTicketScreen({ credStatus, onBack }: ImplementTicketScr
       if (!retrospective) return <div className="flex items-center gap-2 text-sm text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" /> Running retrospective…</div>;
       return (
         <>
-          <RetroPanel data={retrospective} onSaveToKb={saveToKnowledgeBase} kbSaved={kbSaved} />
+          <RetroPanel data={retrospective} onSaveToKb={(entries) => store().saveToKnowledgeBase(entries)} kbSaved={kbSaved} />
           {currentStage !== "complete" && renderCheckpoint(stage)}
         </>
       );
@@ -1426,7 +1855,32 @@ export function ImplementTicketScreen({ credStatus, onBack }: ImplementTicketScr
               variant="ghost"
               size="icon"
               className="shrink-0"
-              onClick={currentStage === "select" ? onBack : () => { setSelectedIssue(null); setCurrentStage("select"); }}
+              onClick={currentStage === "select" ? onBack : () => {
+                // Save current session into the cache before clearing
+                const cur = store();
+                if (cur.selectedIssue && cur.currentStage !== "select") {
+                  const snap = {
+                    selectedIssue: cur.selectedIssue, currentStage: cur.currentStage,
+                    viewingStage: cur.viewingStage, completedStages: cur.completedStages,
+                    pendingApproval: cur.pendingApproval, proceeding: cur.proceeding,
+                    grooming: cur.grooming, impact: cur.impact, triageHistory: cur.triageHistory,
+                    plan: cur.plan, guidance: cur.guidance, tests: cur.tests,
+                    review: cur.review, prDescription: cur.prDescription,
+                    retrospective: cur.retrospective, groomingBlockers: cur.groomingBlockers,
+                    groomingEdits: cur.groomingEdits, clarifyingQuestions: cur.clarifyingQuestions,
+                    filesRead: cur.filesRead, groomingChat: cur.groomingChat,
+                    groomingBaseline: cur.groomingBaseline, jiraUpdateStatus: cur.jiraUpdateStatus,
+                    jiraUpdateError: cur.jiraUpdateError, groomingProgress: cur.groomingProgress,
+                    groomingStreamText: cur.groomingStreamText, checkpointChats: cur.checkpointChats,
+                    errors: cur.errors, kbSaved: cur.kbSaved, worktreeInfo: cur.worktreeInfo,
+                    ticketText: cur.ticketText, skills: cur.skills, isSessionActive: cur.isSessionActive,
+                  };
+                  const newSessions = new Map(cur.sessions);
+                  newSessions.set(cur.selectedIssue.key, snap);
+                  cur._set({ sessions: newSessions });
+                }
+                cur._set({ selectedIssue: null, currentStage: "select", isSessionActive: false });
+              }}
             >
               <ArrowLeft className="h-4 w-4" />
             </Button>
@@ -1477,16 +1931,16 @@ export function ImplementTicketScreen({ credStatus, onBack }: ImplementTicketScr
       {(!jiraAvailable || !claudeAvailable) && (
         <div className="shrink-0 px-4 py-2 bg-amber-50 dark:bg-amber-950/30 border-b border-amber-200 dark:border-amber-900 text-xs text-amber-800 dark:text-amber-200">
           {!jiraAvailable && "JIRA credentials not configured. "}
-          {!claudeAvailable && "Anthropic API key not configured — agents unavailable."}
+          {!claudeAvailable && "No AI provider configured — add an Anthropic key, Gemini key, or local LLM URL in Settings."}
         </div>
       )}
 
-      {/* Body — centred card; fills viewport below chrome so only the stage panel scrolls */}
-      <div className="flex min-h-0 flex-1 flex-col overflow-hidden p-4">
-        <div className="mx-auto flex min-h-0 w-full max-w-3xl flex-1 flex-col overflow-hidden rounded-xl bg-background/60">
+      {/* Body — full-width card; fills viewport below chrome so only the stage panel scrolls */}
+      <div className={`flex min-h-0 flex-1 flex-col overflow-hidden ${currentStage === "select" ? "p-4" : "px-2 py-2"}`}>
+        <div className={`flex min-h-0 w-full flex-1 flex-col overflow-hidden rounded-xl bg-background/60 ${currentStage === "select" ? "mx-auto max-w-3xl" : ""}`}>
           {currentStage === "select" ? (
             <div className="min-h-0 flex-1 overflow-y-auto p-6">
-              <TicketSelector sprintIssues={sprintIssues} loading={loadingIssues} onSelect={startPipeline} />
+              <TicketSelector sprintIssues={sprintIssues} loading={loadingIssues} onSelect={startPipeline} sessionKeys={sessionKeys} />
             </div>
           ) : (
             <div className="flex min-h-0 flex-1 overflow-hidden">
@@ -1495,11 +1949,11 @@ export function ImplementTicketScreen({ credStatus, onBack }: ImplementTicketScr
                 completedStages={completedStages}
                 activeStage={viewingStage}
                 pendingApproval={pendingApproval}
-                onClickStage={setViewingStage}
+                onClickStage={(s) => store()._set({ viewingStage: s as any })}
               />
 
               <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-                <div className="max-w-2xl shrink-0 px-5 pt-5">
+                <div className="shrink-0 px-5 pt-5">
                   <div className="mb-2 flex items-center justify-between">
                     <div>
                       <h2 className="text-base font-semibold">
@@ -1541,8 +1995,8 @@ export function ImplementTicketScreen({ credStatus, onBack }: ImplementTicketScr
                       )}
                   </div>
                 </div>
-                <div className="min-h-0 flex-1 overflow-y-auto px-5 pb-5">
-                  <div className="max-w-2xl">{renderStageContent(viewingStage)}</div>
+                <div className={`min-h-0 flex-1 ${viewingStage === "grooming" && grooming ? "overflow-hidden px-5 pb-5 flex flex-col" : "overflow-y-auto px-5 pb-5"}`}>
+                  <div className={viewingStage === "grooming" && grooming ? "flex-1 min-h-0" : ""}>{renderStageContent(viewingStage)}</div>
                 </div>
               </div>
             </div>

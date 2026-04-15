@@ -1,9 +1,13 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { OpenSettingsProvider } from "@/context/OpenSettingsContext";
 import { ThemeProvider } from "@/providers/ThemeProvider";
 import { Loader2 } from "lucide-react";
-import { type CredentialStatus, credentialStatusComplete, getCredentialStatus } from "@/lib/tauri";
+import { Toaster, toast } from "sonner";
+import { type CredentialStatus, credentialStatusComplete, getCredentialStatus, getNonSecretConfig, setLocalLlmUrlCache, jiraComplete, bitbucketComplete } from "@/lib/tauri";
+import { useWorkloadAlertStore, POLL_INTERVAL_MS } from "@/stores/workloadAlertStore";
 import { BackgroundRenderer, getBackgroundId, useBgChangeListener } from "@/lib/backgrounds";
+import { hydrateImplementStore } from "@/stores/implementTicketStore";
+import { hydratePrReviewStore } from "@/stores/prReviewStore";
 import {
   SpaceEffectsOverlay,
   fireShootingStar,
@@ -34,6 +38,7 @@ import { KnowledgeBaseScreen } from "@/screens/KnowledgeBaseScreen";
 import { TicketQualityScreen } from "@/screens/TicketQualityScreen";
 import { PrReviewScreen } from "@/screens/PrReviewScreen";
 import { ImplementTicketScreen } from "@/screens/ImplementTicketScreen";
+import { AddressPrCommentsScreen } from "@/screens/AddressPrCommentsScreen";
 import { AgentSkillsScreen } from "@/screens/AgentSkillsScreen";
 
 type Screen = "loading" | "onboarding" | "landing" | "settings" | "agent-skills" | WorkflowId;
@@ -55,6 +60,7 @@ const WORKFLOW_IDS: WorkflowId[] = [
   "workload-balancer",
   "ticket-quality",
   "knowledge-base",
+  "address-pr-comments",
 ];
 
 function isWorkflowId(s: Screen): s is WorkflowId {
@@ -67,13 +73,58 @@ function AppInner() {
   const [screenBeforeSettings, setScreenBeforeSettings] = useState<Screen>("landing");
 
   useEffect(() => {
+    // Hydrate persisted stores from file cache before loading credentials
+    Promise.allSettled([hydrateImplementStore(), hydratePrReviewStore()]);
+
     getCredentialStatus()
       .then((status) => {
         setCredStatus(status);
         setScreen(credentialStatusComplete(status) ? "landing" : "onboarding");
       })
       .catch(() => setScreen("onboarding"));
+    // Pre-load the local LLM URL into the cache so toasts can display it.
+    getNonSecretConfig()
+      .then((cfg) => {
+        const url = cfg["local_llm_url"];
+        if (url) setLocalLlmUrlCache(url);
+      })
+      .catch(() => {});
   }, []);
+
+  const checkWorkload = useWorkloadAlertStore((s) => s.checkWorkload);
+  // Track which overloaded dev names we've already toasted so we don't repeat on
+  // every poll if nothing has changed.
+  const toastedDevsRef = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    // Only poll when both JIRA and Bitbucket credentials are present
+    if (!credStatus || !jiraComplete(credStatus) || !bitbucketComplete(credStatus)) return;
+
+    async function runCheck() {
+      const overloaded = await checkWorkload();
+      const newlyOverloaded = overloaded.filter((name) => !toastedDevsRef.current.has(name));
+      // Remove devs from the toasted set if they're no longer overloaded
+      const currentSet = new Set(overloaded);
+      for (const name of toastedDevsRef.current) {
+        if (!currentSet.has(name)) toastedDevsRef.current.delete(name);
+      }
+      if (newlyOverloaded.length > 0) {
+        for (const name of newlyOverloaded) {
+          toastedDevsRef.current.add(name);
+          toast.warning(`Workload alert: ${name} is overloaded`, {
+            description: "Open the Team Workload Balancer to review and rebalance.",
+            duration: 8000,
+          });
+        }
+      }
+    }
+
+    // Run immediately on mount (or when credentials become available)
+    runCheck();
+
+    const interval = setInterval(runCheck, POLL_INTERVAL_MS);
+    return () => clearInterval(interval);
+  }, [credStatus, checkWorkload]);
 
   const openSettings = useCallback(() => {
     if (screen === "settings") return;
@@ -127,6 +178,8 @@ function AppInner() {
         <PrReviewScreen credStatus={credStatus} onBack={() => setScreen("landing")} />
       ) : screen === "implement-ticket" && credStatus ? (
         <ImplementTicketScreen credStatus={credStatus} onBack={() => setScreen("landing")} />
+      ) : screen === "address-pr-comments" && credStatus ? (
+        <AddressPrCommentsScreen credStatus={credStatus} onBack={() => setScreen("landing")} />
       ) : screen === "agent-skills" ? (
         <AgentSkillsScreen onBack={() => setScreen("landing")} />
       ) : isWorkflowId(screen) ? (
@@ -208,8 +261,24 @@ function GlobalFxDrawer({ hideUI, onToggleHideUI }: { hideUI: boolean; onToggleH
     "When on, comets, stars, and other effects drift toward an active black hole. The hole still appears if enabled above; this only toggles the pull.";
 
   return (
-    <div className="pointer-events-none fixed bottom-2 right-3 z-50 flex max-w-[calc(100%-1.5rem)] items-center gap-2 sm:right-4 sm:max-w-[calc(100%-2rem)]">
-      {/* Drawer grows left from the fx chip; same row, max-width clip */}
+    <div className="pointer-events-none fixed bottom-2 left-3 z-50 flex max-w-[calc(100%-1.5rem)] items-center gap-2 sm:left-4 sm:max-w-[calc(100%-2rem)]">
+      {/* fx chip on the left; drawer grows right */}
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        aria-expanded={open}
+        aria-controls="fx-drawer-panel"
+        className="pointer-events-auto flex h-8 w-14 shrink-0 select-none items-center justify-center gap-1 rounded-lg border border-white/12 bg-black/55 text-[10px] text-white/50 shadow-lg shadow-black/30 backdrop-blur-md hover:bg-black/70 hover:text-white/80"
+      >
+        <span>fx</span>
+        <span
+          className="inline-block"
+          style={{ transform: open ? "rotate(180deg)" : "rotate(0deg)" }}
+        >
+          ▶
+        </span>
+      </button>
+      {/* Drawer grows right from the fx chip; same row, max-width clip */}
       <div
         className={`min-w-0 overflow-hidden transition-[max-width] ${
           open ? "max-w-[min(calc(100vw-5.5rem),92vw)]" : "max-w-0"
@@ -219,7 +288,7 @@ function GlobalFxDrawer({ hideUI, onToggleHideUI }: { hideUI: boolean; onToggleH
           transitionTimingFunction: "cubic-bezier(0.4,0,0.2,1)",
         }}
       >
-        <div className="pointer-events-auto w-max max-w-[min(calc(100vw-5.5rem),92vw)] rounded-l-2xl border border-white/12 border-r-transparent bg-black/50 py-2 pl-3 pr-2 backdrop-blur-md sm:pl-4">
+        <div className="pointer-events-auto w-max max-w-[min(calc(100vw-5.5rem),92vw)] rounded-r-2xl border border-white/12 border-l-transparent bg-black/50 py-2 pr-3 pl-2 backdrop-blur-md sm:pr-4">
           <div
             id="fx-drawer-panel"
             aria-hidden={!open}
@@ -308,22 +377,6 @@ function GlobalFxDrawer({ hideUI, onToggleHideUI }: { hideUI: boolean; onToggleH
           </div>
         </div>
       </div>
-
-      <button
-        type="button"
-        onClick={() => setOpen((o) => !o)}
-        aria-expanded={open}
-        aria-controls="fx-drawer-panel"
-        className="pointer-events-auto flex h-8 w-14 shrink-0 select-none items-center justify-center gap-1 rounded-lg border border-white/12 bg-black/55 text-[10px] text-white/50 shadow-lg shadow-black/30 backdrop-blur-md hover:bg-black/70 hover:text-white/80"
-      >
-        <span
-          className="inline-block"
-          style={{ transform: open ? "rotate(180deg)" : "rotate(0deg)" }}
-        >
-          ◀
-        </span>
-        <span>fx</span>
-      </button>
     </div>
   );
 }
@@ -354,6 +407,15 @@ export default function Root() {
       </div>
       <GlobalForeground />
       <GlobalFxDrawer hideUI={hideUI} onToggleHideUI={() => setHideUI(h => !h)} />
+      <Toaster
+        position="top-right"
+        theme="dark"
+        richColors
+        closeButton
+        toastOptions={{
+          style: { fontFamily: "inherit" },
+        }}
+      />
     </ThemeProvider>
   );
 }

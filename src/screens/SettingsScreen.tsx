@@ -8,8 +8,9 @@ import {
   isMockClaudeMode,
   setMockClaudeMode,
 } from "@/lib/tauri";
+import { getPreferences, setPreference } from "@/lib/preferences";
 import { BACKGROUNDS, CATEGORY_LABELS, BackgroundRenderer, type BgCategory, getBackgroundId, setBackgroundId } from "@/lib/backgrounds";
-import { CheckCircle, AlertCircle, Loader2, X, RotateCcw, FlaskConical, Sparkles, ChevronRight, FlaskRound } from "lucide-react";
+import { CheckCircle, AlertCircle, Loader2, X, RotateCcw, FlaskConical, Sparkles, ChevronRight, FlaskRound, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { HeaderSettingsButton } from "@/components/HeaderSettingsButton";
 import { APP_HEADER_BAR, APP_HEADER_ROW_PANEL, APP_HEADER_TITLE } from "@/components/appHeaderLayout";
@@ -47,7 +48,12 @@ import {
   getOpenPrs,
   importClaudeProToken,
   getClaudeModels,
+  setLocalLlmUrlCache,
+  getStoreCacheInfo,
+  clearAllStoreCaches,
 } from "@/lib/tauri";
+import { useImplementTicketStore, IMPLEMENT_STORE_KEY, INITIAL as IMPLEMENT_INITIAL } from "@/stores/implementTicketStore";
+import { usePrReviewStore, PR_REVIEW_STORE_KEY } from "@/stores/prReviewStore";
 
 // ── Theme section ─────────────────────────────────────────────────────────────
 
@@ -816,7 +822,10 @@ function LocalLlmSection({ isConfigured, onSaved }: { isConfigured: boolean; onS
 
   useEffect(() => {
     getNonSecretConfig().then(cfg => {
-      if (cfg.local_llm_url)   setServerUrl(cfg.local_llm_url);
+      if (cfg.local_llm_url) {
+        setServerUrl(cfg.local_llm_url);
+        setLocalLlmUrlCache(cfg.local_llm_url);
+      }
       if (cfg.local_llm_model) setSelectedModel(cfg.local_llm_model);
     }).catch(() => {});
     if (isConfigured) {
@@ -841,6 +850,7 @@ function LocalLlmSection({ isConfigured, onSaved }: { isConfigured: boolean; onS
     setStatus({ state: "loading", message: "Connecting…" });
     try {
       const msg = await validateLocalLlm(serverUrl.trim(), apiKey.trim());
+      setLocalLlmUrlCache(serverUrl.trim());
       setTestResult("success");
       setStatus({ state: "success", message: msg });
       setEditing(false);
@@ -1272,7 +1282,7 @@ function BitbucketSection({ isConfigured, onSaved }: { isConfigured: boolean; on
           <div className="space-y-3">
             <ScopeList {...BITBUCKET_SCOPES} />
             <CredentialField id="s-bb-ws" label="Workspace slug" placeholder="your-workspace" value={workspace} onChange={(v) => { setWorkspace(v); setTestResult("untested"); }} disabled={status.state === "loading"} helperText="The slug from your Bitbucket workspace URL" />
-            <CredentialField id="s-bb-email" label="Email" placeholder="you@yourcompany.com" value={email} onChange={(v) => { setEmail(v); setTestResult("untested"); }} disabled={status.state === "loading"} helperText="The email address associated with your Bitbucket account" />
+            <CredentialField id="s-bb-email" label="Email" placeholder="you@yourcompany.com" value={email} onChange={(v) => { setEmail(v); setTestResult("untested"); }} disabled={status.state === "loading"} helperText="The email address associated with your Bitbucket account (used for authentication)" />
             <CredentialField id="s-bb-token" label="Access Token" placeholder="ATCTT3x…" masked value={accessToken} onChange={(v) => { setAccessToken(v); setTestResult("untested"); }} disabled={status.state === "loading"} helperText={isConfigured && accessToken === MASKED_SENTINEL ? "Token already saved — clear to enter a new one" : "Workspace or repository HTTP access token"} />
             <div className="flex gap-2">
               <Button size="sm" onClick={handleSave} disabled={!hasInput || status.state === "loading"}>
@@ -1304,14 +1314,27 @@ function ConfigSection({
 }) {
   const [boardId, setBoardId] = useState("");
   const [repoSlug, setRepoSlug] = useState("");
+  const [worktreePath, setWorktreePath] = useState("");
+  const [baseBranch, setBaseBranch] = useState("develop");
+  const [prReviewWorktreePath, setPrReviewWorktreePath] = useState("");
+  const [prAddressWorktreePath, setPrAddressWorktreePath] = useState("");
+  const [prTerminal, setPrTerminal] = useState("iTerm2");
   const [editing, setEditing] = useState(!jiraBoardId || !bitbucketRepoSlug);
   const [status, setStatus] = useState<SectionStatus>({ state: "idle", message: "" });
+  const [worktreeStatus, setWorktreeStatus] = useState<SectionStatus>({ state: "idle", message: "" });
+  const [prWorktreeStatus, setPrWorktreeStatus] = useState<SectionStatus>({ state: "idle", message: "" });
+  const [prAddressWorktreeStatus, setPrAddressWorktreeStatus] = useState<SectionStatus>({ state: "idle", message: "" });
 
   async function startEditing() {
     try {
-      const config = await getNonSecretConfig();
-      setBoardId(config["jira_board_id"] ?? "");
-      setRepoSlug(config["bitbucket_repo_slug"] ?? "");
+      const prefs = await getPreferences();
+      setBoardId(prefs["jira_board_id"] ?? "");
+      setRepoSlug(prefs["bitbucket_repo_slug"] ?? "");
+      setWorktreePath(prefs["repo_worktree_path"] ?? "");
+      setBaseBranch(prefs["repo_base_branch"] || "develop");
+      setPrReviewWorktreePath(prefs["pr_review_worktree_path"] ?? "");
+      setPrAddressWorktreePath(prefs["pr_address_worktree_path"] ?? "");
+      setPrTerminal(prefs["pr_review_terminal"] || "iTerm2");
     } catch {
       setBoardId(""); setRepoSlug("");
     }
@@ -1322,25 +1345,85 @@ function ConfigSection({
   // Auto-load on first mount if already in editing state (incomplete config)
   useEffect(() => {
     if (editing) {
-      getNonSecretConfig().then(config => {
-          setBoardId(prev => prev || (config["jira_board_id"] ?? ""));
-          setRepoSlug(prev => prev || (config["bitbucket_repo_slug"] ?? ""));
+      getPreferences().then(prefs => {
+          setBoardId(prev => prev || (prefs["jira_board_id"] ?? ""));
+          setRepoSlug(prev => prev || (prefs["bitbucket_repo_slug"] ?? ""));
+          setWorktreePath(prev => prev || (prefs["repo_worktree_path"] ?? ""));
+          setBaseBranch(prev => prev || (prefs["repo_base_branch"] || "develop"));
+          setPrReviewWorktreePath(prev => prev || (prefs["pr_review_worktree_path"] ?? ""));
+          setPrAddressWorktreePath(prev => prev || (prefs["pr_address_worktree_path"] ?? ""));
+          setPrTerminal(prev => prev !== "iTerm2" ? prev : (prefs["pr_review_terminal"] || "iTerm2"));
       }).catch(() => {});
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   async function handleSave() {
-    if (!boardId.trim() && !repoSlug.trim()) return;
+    if (!boardId.trim() && !repoSlug.trim() && !worktreePath.trim() && !prReviewWorktreePath.trim() && !prAddressWorktreePath.trim()) return;
     setStatus({ state: "loading", message: "Saving…" });
     try {
-      if (boardId.trim()) await saveCredential("jira_board_id", boardId.trim());
-      if (repoSlug.trim()) await saveCredential("bitbucket_repo_slug", repoSlug.trim());
+      if (boardId.trim()) await setPreference("jira_board_id", boardId.trim());
+      if (repoSlug.trim()) await setPreference("bitbucket_repo_slug", repoSlug.trim());
+      if (worktreePath.trim()) await setPreference("repo_worktree_path", worktreePath.trim());
+      await setPreference("repo_base_branch", baseBranch.trim() || "develop");
+      if (prReviewWorktreePath.trim()) {
+        await setPreference("pr_review_worktree_path", prReviewWorktreePath.trim());
+      } else {
+        await setPreference("pr_review_worktree_path", "");
+      }
+      if (prAddressWorktreePath.trim()) {
+        await setPreference("pr_address_worktree_path", prAddressWorktreePath.trim());
+      } else {
+        await setPreference("pr_address_worktree_path", "");
+      }
+      await setPreference("pr_review_terminal", prTerminal.trim() || "iTerm2");
       setStatus({ state: "success", message: "Configuration saved." });
       setEditing(false);
       onSaved();
     } catch (err) {
       setStatus({ state: "error", message: String(err) });
+    }
+  }
+
+  async function handleValidateWorktree() {
+    setWorktreeStatus({ state: "loading", message: "Validating…" });
+    try {
+      const { validateWorktree } = await import("@/lib/tauri");
+      const info = await validateWorktree();
+      setWorktreeStatus({
+        state: "success",
+        message: `✓ Valid git repo — branch: ${info.branch}, HEAD: ${info.headCommit}`,
+      });
+    } catch (err) {
+      setWorktreeStatus({ state: "error", message: String(err) });
+    }
+  }
+
+  async function handleValidatePrWorktree() {
+    setPrWorktreeStatus({ state: "loading", message: "Validating…" });
+    try {
+      const { validatePrReviewWorktree } = await import("@/lib/tauri");
+      const info = await validatePrReviewWorktree();
+      setPrWorktreeStatus({
+        state: "success",
+        message: `✓ Valid git repo — branch: ${info.branch}, HEAD: ${info.headCommit}`,
+      });
+    } catch (err) {
+      setPrWorktreeStatus({ state: "error", message: String(err) });
+    }
+  }
+
+  async function handleValidatePrAddressWorktree() {
+    setPrAddressWorktreeStatus({ state: "loading", message: "Validating…" });
+    try {
+      const { validatePrAddressWorktree } = await import("@/lib/tauri");
+      const info = await validatePrAddressWorktree();
+      setPrAddressWorktreeStatus({
+        state: "success",
+        message: `✓ Valid git repo — branch: ${info.branch}, HEAD: ${info.headCommit}`,
+      });
+    } catch (err) {
+      setPrAddressWorktreeStatus({ state: "error", message: String(err) });
     }
   }
 
@@ -1392,12 +1475,136 @@ function ConfigSection({
               disabled={status.state === "loading"}
               helperText="The repo slug from your Bitbucket URL: /repositories/workspace/my-repo"
             />
+            <div className="border-t pt-3 mt-1 space-y-3">
+              <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Implementation Worktree</p>
+              <CredentialField
+                id="cfg-worktree-path"
+                label="Worktree Path"
+                placeholder="/Users/you/REPOS/MyRepo-meridian"
+                value={worktreePath}
+                onChange={setWorktreePath}
+                disabled={status.state === "loading"}
+                helperText="Absolute path to a git worktree for the implementation pipeline (Grooming, Impact Analysis, Triage agents). Set up with: git worktree add ../MyRepo-meridian develop"
+              />
+              <CredentialField
+                id="cfg-base-branch"
+                label="Base Branch"
+                placeholder="develop"
+                value={baseBranch}
+                onChange={setBaseBranch}
+                disabled={status.state === "loading"}
+                helperText="The branch the implementation worktree tracks (default: develop)."
+              />
+              {worktreePath.trim() && (
+                <div className="flex items-center gap-2">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={handleValidateWorktree}
+                    disabled={worktreeStatus.state === "loading"}
+                  >
+                    {worktreeStatus.state === "loading" ? (
+                      <Loader2 className="h-3 w-3 animate-spin mr-1" />
+                    ) : null}
+                    Test worktree
+                  </Button>
+                  {worktreeStatus.state !== "idle" && (
+                    <span className={`text-xs ${worktreeStatus.state === "success" ? "text-green-600" : "text-destructive"}`}>
+                      {worktreeStatus.message}
+                    </span>
+                  )}
+                </div>
+              )}
+            </div>
+            <div className="border-t pt-3 mt-1 space-y-3">
+              <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">PR Review Worktree</p>
+              <CredentialField
+                id="cfg-pr-review-worktree-path"
+                label="PR Review Worktree Path"
+                placeholder="/Users/you/REPOS/MyRepo-pr-review"
+                value={prReviewWorktreePath}
+                onChange={setPrReviewWorktreePath}
+                disabled={status.state === "loading"}
+                helperText="Optional dedicated worktree for PR reviews. Branches are checked out here when you open a PR for review, keeping it isolated from your implementation worktree. Leave blank to share the implementation worktree. Set up with: git worktree add ../MyRepo-pr-review develop"
+              />
+              {prReviewWorktreePath.trim() && (
+                <div className="flex items-center gap-2">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={handleValidatePrWorktree}
+                    disabled={prWorktreeStatus.state === "loading"}
+                  >
+                    {prWorktreeStatus.state === "loading" ? (
+                      <Loader2 className="h-3 w-3 animate-spin mr-1" />
+                    ) : null}
+                    Test PR review worktree
+                  </Button>
+                  {prWorktreeStatus.state !== "idle" && (
+                    <span className={`text-xs ${prWorktreeStatus.state === "success" ? "text-green-600" : "text-destructive"}`}>
+                      {prWorktreeStatus.message}
+                    </span>
+                  )}
+                </div>
+              )}
+              <div className="space-y-1.5">
+                <Label htmlFor="cfg-pr-terminal" className="text-xs">Terminal Application</Label>
+                <select
+                  id="cfg-pr-terminal"
+                  value={prTerminal}
+                  onChange={(e) => setPrTerminal(e.target.value)}
+                  disabled={status.state === "loading"}
+                  className="w-full rounded-md border border-input bg-background px-3 py-1.5 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-primary/50 disabled:opacity-50"
+                >
+                  <option value="iTerm2">iTerm2</option>
+                  <option value="Terminal">Terminal</option>
+                  <option value="Warp">Warp</option>
+                  <option value="Kitty">Kitty</option>
+                  <option value="Alacritty">Alacritty</option>
+                </select>
+                <p className="text-[11px] text-muted-foreground">
+                  The terminal app that opens when you press the play button in PR Review.
+                </p>
+              </div>
+            </div>
+            <div className="border-t pt-3 mt-1 space-y-3">
+              <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Address PR Comments Worktree</p>
+              <CredentialField
+                id="cfg-pr-address-worktree-path"
+                label="PR Address Worktree Path"
+                placeholder="/Users/you/REPOS/MyRepo-pr-address"
+                value={prAddressWorktreePath}
+                onChange={setPrAddressWorktreePath}
+                disabled={status.state === "loading"}
+                helperText="Optional dedicated worktree for addressing PR comments. Branches are checked out here when you work through reviewer comments, keeping it isolated from the implementation and review worktrees. Falls back to PR Review worktree, then Implementation worktree. Set up with: git worktree add ../MyRepo-pr-address develop"
+              />
+              {prAddressWorktreePath.trim() && (
+                <div className="flex items-center gap-2">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={handleValidatePrAddressWorktree}
+                    disabled={prAddressWorktreeStatus.state === "loading"}
+                  >
+                    {prAddressWorktreeStatus.state === "loading" ? (
+                      <Loader2 className="h-3 w-3 animate-spin mr-1" />
+                    ) : null}
+                    Test PR address worktree
+                  </Button>
+                  {prAddressWorktreeStatus.state !== "idle" && (
+                    <span className={`text-xs ${prAddressWorktreeStatus.state === "success" ? "text-green-600" : "text-destructive"}`}>
+                      {prAddressWorktreeStatus.message}
+                    </span>
+                  )}
+                </div>
+              )}
+            </div>
             <div className="flex gap-2">
               <Button
                 size="sm"
                 onClick={handleSave}
                 disabled={
-                  (!boardId.trim() && !repoSlug.trim()) || status.state === "loading"
+                  (!boardId.trim() && !repoSlug.trim() && !worktreePath.trim() && !prReviewWorktreePath.trim() && !prAddressWorktreePath.trim()) || status.state === "loading"
                 }
               >
                 {status.state === "loading" ? (
@@ -1426,6 +1633,159 @@ function ConfigSection({
 }
 
 // ── Data test section ─────────────────────────────────────────────────────────
+
+// ── Cache management section ──────────────────────────────────────────────────
+
+const CACHE_KEY_LABELS: Record<string, string> = {
+  [IMPLEMENT_STORE_KEY]: "Implement a Ticket pipeline sessions",
+  [PR_REVIEW_STORE_KEY]: "PR Review sessions",
+};
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+}
+
+function CacheSection() {
+  const [info, setInfo] = useState<Record<string, number> | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [clearing, setClearing] = useState(false);
+  const [confirmed, setConfirmed] = useState(false);
+  const [done, setDone] = useState(false);
+
+  const resetImplementSession = useImplementTicketStore((s) => s.resetSession);
+
+  async function loadInfo() {
+    setLoading(true);
+    try {
+      const result = await getStoreCacheInfo();
+      setInfo(result);
+    } catch { /* non-critical */ }
+    finally { setLoading(false); }
+  }
+
+  useEffect(() => { loadInfo(); }, []);
+
+  const totalBytes = info ? Object.values(info).reduce((a, b) => a + b, 0) : 0;
+  const hasCache = totalBytes > 0;
+
+  async function handleClear() {
+    if (!confirmed) {
+      setConfirmed(true);
+      return;
+    }
+    setClearing(true);
+    try {
+      await clearAllStoreCaches();
+      // Reset in-memory store state too
+      resetImplementSession();
+      useImplementTicketStore.setState({ ...IMPLEMENT_INITIAL, sessions: new Map() });
+      usePrReviewStore.setState({
+        sessions: new Map(),
+        prsForReview: [],
+        allOpenPrs: [],
+        selectedPr: null,
+        isSessionActive: false,
+        prListLoaded: false,
+      });
+      setInfo({});
+      setDone(true);
+      setConfirmed(false);
+    } catch { /* non-critical */ }
+    finally { setClearing(false); }
+  }
+
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <div className="flex items-center justify-between">
+          <div>
+            <CardTitle className="text-base">Session Cache</CardTitle>
+            <CardDescription className="text-xs mt-0.5">
+              Pipeline and PR review sessions are saved to disk so they survive app restarts
+            </CardDescription>
+          </div>
+          {hasCache && (
+            <Badge variant="outline" className="gap-1 text-muted-foreground shrink-0">
+              {formatBytes(totalBytes)}
+            </Badge>
+          )}
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        {loading ? (
+          <div className="flex items-center gap-2 text-xs text-muted-foreground">
+            <Loader2 className="h-3 w-3 animate-spin" /> Loading cache info…
+          </div>
+        ) : info && Object.keys(info).length > 0 ? (
+          <div className="space-y-1.5">
+            {Object.entries(info).map(([key, size]) => (
+              <div key={key} className="flex items-center justify-between text-xs">
+                <span className="text-muted-foreground">
+                  {CACHE_KEY_LABELS[key] ?? key}
+                </span>
+                <span className="font-mono text-muted-foreground">{formatBytes(size)}</span>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="text-xs text-muted-foreground">No session cache on disk.</p>
+        )}
+
+        {done && (
+          <p className="text-xs text-emerald-600 dark:text-emerald-400 flex items-center gap-1">
+            <CheckCircle className="h-3 w-3" /> Cache cleared. All session data has been removed.
+          </p>
+        )}
+
+        <div className="flex items-center gap-2 flex-wrap">
+          {hasCache && (
+            <Button
+              variant={confirmed ? "destructive" : "outline"}
+              size="sm"
+              onClick={handleClear}
+              disabled={clearing}
+              className="gap-1.5"
+            >
+              {clearing ? (
+                <Loader2 className="h-3 w-3 animate-spin" />
+              ) : (
+                <Trash2 className="h-3 w-3" />
+              )}
+              {confirmed ? "Click again to confirm" : "Clear cache"}
+            </Button>
+          )}
+          {confirmed && (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setConfirmed(false)}
+            >
+              Cancel
+            </Button>
+          )}
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => { setDone(false); loadInfo(); }}
+            disabled={loading}
+            className="text-muted-foreground"
+          >
+            Refresh
+          </Button>
+        </div>
+
+        {confirmed && (
+          <p className="text-xs text-amber-600 dark:text-amber-400">
+            This will permanently delete all saved pipeline sessions and PR review data.
+            In-progress work will be lost.
+          </p>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
 
 // ── Mock mode section ─────────────────────────────────────────────────────────
 
@@ -1734,6 +2094,13 @@ export function SettingsScreen({ onClose, onNavigate }: SettingsScreenProps) {
                 bitbucketRepoSlug={credStatus.bitbucketRepoSlug}
                 onSaved={refresh}
               />
+            </section>
+
+            <section className="space-y-3">
+              <h2 className="text-sm font-medium text-muted-foreground uppercase tracking-wider">
+                Session Cache
+              </h2>
+              <CacheSection />
             </section>
 
             <section className="space-y-3">

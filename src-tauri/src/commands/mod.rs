@@ -7,6 +7,7 @@ pub mod credentials;
 pub mod fetch_url;
 pub mod jira;
 pub mod knowledge;
+pub mod preferences;
 pub mod repo;
 pub mod skills;
 pub mod store_cache;
@@ -20,7 +21,7 @@ pub use bitbucket::{
 };
 pub use claude::{
     assess_ticket_quality, generate_standup_briefing, generate_sprint_retrospective,
-    generate_workload_suggestions, review_pr, chat_pr_review,
+    generate_workload_suggestions, review_pr, cancel_review, chat_pr_review,
     analyze_pr_comments, chat_address_pr,
     get_claude_models, get_gemini_models, validate_gemini, test_gemini_stored,
     get_local_models, validate_local_llm, test_local_llm_stored,
@@ -53,6 +54,7 @@ pub use repo::{
     read_pr_address_file, write_pr_address_file,
     get_pr_address_diff, commit_pr_address_changes, push_pr_address_branch,
 };
+pub use preferences::{get_preferences, set_preference, delete_preference};
 pub use skills::{load_agent_skills, save_agent_skill, delete_agent_skill};
 pub use store_cache::{
     save_store_cache, load_store_cache, delete_store_cache,

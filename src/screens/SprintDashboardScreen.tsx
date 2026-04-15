@@ -11,7 +11,6 @@ import {
   User,
   CheckCircle2,
   XCircle,
-  ExternalLink,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { WorkflowPanelHeader, APP_HEADER_TITLE } from "@/components/appHeaderLayout";
@@ -499,22 +498,19 @@ function HealthSummaryCard({
               <div key={pr.id} className="flex items-center gap-2 text-xs py-1 border-b last:border-0">
                 <CheckCircle2 className="h-3 w-3 text-emerald-500 shrink-0" />
                 <span className="font-mono text-muted-foreground shrink-0">#{pr.id}</span>
-                <span className="flex-1 min-w-0 truncate font-medium">{pr.title}</span>
+                <button
+                  onClick={() => pr.url && openUrl(pr.url)}
+                  className="flex-1 min-w-0 truncate font-medium text-left hover:underline hover:text-primary transition-colors"
+                  title="Open in Bitbucket"
+                >
+                  {pr.title}
+                </button>
                 {pr.jiraIssueKey && (
                   <JiraTicketLink ticketKey={pr.jiraIssueKey} url={null} className="shrink-0" />
                 )}
                 <span className="shrink-0 text-emerald-600 dark:text-emerald-400 font-medium">
                   ✅{approvalCount} approvals
                 </span>
-                {pr.url && (
-                  <button
-                    onClick={() => openUrl(pr.url)}
-                    className="shrink-0 text-muted-foreground hover:text-foreground transition-colors"
-                    title="Open in Bitbucket"
-                  >
-                    <ExternalLink className="h-3 w-3" />
-                  </button>
-                )}
               </div>
             ))}
           </div>

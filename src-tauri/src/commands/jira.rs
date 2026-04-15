@@ -1,5 +1,10 @@
 use crate::commands::credentials::get_credential;
+use crate::commands::preferences::get_pref;
 use crate::jira::{CustomFieldConfig, JiraClient, JiraFieldMeta, JiraIssue, JiraSprint, RawIssueField};
+
+fn get_config(key: &str) -> Option<String> {
+    get_pref(key).or_else(|| get_credential(key))
+}
 
 fn jira_client() -> Result<(JiraClient, i64), String> {
     let base_url = get_credential("jira_base_url")
@@ -8,7 +13,7 @@ fn jira_client() -> Result<(JiraClient, i64), String> {
         .ok_or("JIRA email not configured. Check Settings.")?;
     let api_token = get_credential("jira_api_token")
         .ok_or("JIRA API token not configured. Check Settings.")?;
-    let board_id_str = get_credential("jira_board_id")
+    let board_id_str = get_config("jira_board_id")
         .ok_or("JIRA board ID not configured. Check Settings → Configuration.")?;
     let board_id: i64 = board_id_str
         .trim()

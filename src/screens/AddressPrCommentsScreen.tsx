@@ -1,5 +1,5 @@
 import { useEffect, useState, useRef, useCallback } from "react";
-import { ArrowLeft, GitPullRequest, MessageSquare, RefreshCw, GitBranch, Loader2, Check, X, ChevronDown, ChevronRight, Send, ThumbsUp, ThumbsDown, AlertTriangle, GitCommit, Upload } from "lucide-react";
+import { ArrowLeft, GitPullRequest, MessageSquare, CheckSquare, RefreshCw, GitBranch, Loader2, Check, X, ChevronDown, ChevronRight, Send, ThumbsUp, ThumbsDown, AlertTriangle, GitCommit, Upload } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
@@ -128,7 +128,7 @@ function PrListPanel({
     <div className="space-y-3">
       <div className="flex items-center justify-between">
         <p className="text-sm text-muted-foreground">
-          Select one of your open PRs that has reviewer comments to address.
+          Select one of your open PRs to address tasks and reviewer comments.
         </p>
         <Button variant="ghost" size="icon" onClick={onRefresh} disabled={loading}>
           <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
@@ -148,7 +148,7 @@ function PrListPanel({
         </div>
       ) : prs.length === 0 ? (
         <div className="text-center py-10 text-muted-foreground text-sm">
-          No open PRs with reviewer comments found.
+          No open PRs found.
         </div>
       ) : (
         <div className="space-y-2">
@@ -160,10 +160,20 @@ function PrListPanel({
             >
               <div className="flex items-start justify-between gap-2">
                 <span className="text-sm font-medium leading-snug flex-1">{pr.title}</span>
-                <Badge variant="outline" className="shrink-0 text-[10px] gap-1">
-                  <MessageSquare className="h-2.5 w-2.5" />
-                  {pr.commentCount}
-                </Badge>
+                <div className="flex items-center gap-1.5 shrink-0">
+                  {pr.taskCount > 0 && (
+                    <Badge variant="outline" className="text-[10px] gap-1">
+                      <CheckSquare className="h-2.5 w-2.5" />
+                      {pr.taskCount} task{pr.taskCount !== 1 ? "s" : ""}
+                    </Badge>
+                  )}
+                  {pr.commentCount > 0 && (
+                    <Badge variant="outline" className="text-[10px] gap-1">
+                      <MessageSquare className="h-2.5 w-2.5" />
+                      {pr.commentCount} comment{pr.commentCount !== 1 ? "s" : ""}
+                    </Badge>
+                  )}
+                </div>
               </div>
               <div className="flex items-center gap-3 text-xs text-muted-foreground">
                 <span className="flex items-center gap-1">
@@ -292,7 +302,6 @@ export function AddressPrCommentsScreen({ credStatus, onBack }: Props) {
   // ── Selected PR ────────────────────────────────────────────────────────────
   const [selectedPr, setSelectedPr] = useState<BitbucketPr | null>(null);
   const [comments, setComments] = useState<BitbucketComment[]>([]);
-  const [diff, setDiff] = useState<string>("");
 
   // ── Workflow step ──────────────────────────────────────────────────────────
   const [step, setStep] = useState<WorkflowStep>("pr-list");
@@ -304,7 +313,6 @@ export function AddressPrCommentsScreen({ credStatus, onBack }: Props) {
 
   // ── Fix plan ───────────────────────────────────────────────────────────────
   const [fixPlan, setFixPlan] = useState<FixProposal[]>([]);
-  const [fixPlanRaw, setFixPlanRaw] = useState("");
 
   // ── Diff review ───────────────────────────────────────────────────────────
   const [finalDiff, setFinalDiff] = useState("");
@@ -332,7 +340,7 @@ export function AddressPrCommentsScreen({ credStatus, onBack }: Props) {
     try {
       const all = await getMyOpenPrs();
       // Only show PRs that have reviewer comments
-      const withComments = all.filter((pr) => pr.commentCount > 0);
+      const withComments = all;
       setPrs(withComments);
     } catch (e) {
       setPrsError(String(e));
@@ -363,7 +371,6 @@ export function AddressPrCommentsScreen({ credStatus, onBack }: Props) {
         getPrDiff(pr.id),
       ]);
       setComments(fetchedComments);
-      setDiff(fetchedDiff);
 
       setStepMessage(`Checking out branch: ${pr.sourceBranch}…`);
       await checkoutPrAddressBranch(pr.sourceBranch);
@@ -442,7 +449,6 @@ export function AddressPrCommentsScreen({ credStatus, onBack }: Props) {
 
     try {
       const raw = await analyzePrComments(reviewText);
-      setFixPlanRaw(raw);
       const plan = parseFixPlan(raw);
       setFixPlan(plan);
       setChatHistory([
@@ -614,7 +620,7 @@ export function AddressPrCommentsScreen({ credStatus, onBack }: Props) {
             <Button variant="ghost" size="icon" onClick={onBack}>
               <ArrowLeft className="h-4 w-4" />
             </Button>
-            <h1 className={APP_HEADER_TITLE}>Address PR Comments</h1>
+            <h1 className={APP_HEADER_TITLE}>Address PR Tasks & Comments</h1>
           </>
         }
       />
@@ -639,7 +645,7 @@ export function AddressPrCommentsScreen({ credStatus, onBack }: Props) {
           <div className="rounded-xl border bg-card/60 p-4">
             <div className="flex items-center gap-2 mb-4">
               <GitPullRequest className="h-4 w-4 text-muted-foreground" />
-              <h2 className="text-sm font-semibold">Your Open PRs with Reviewer Comments</h2>
+              <h2 className="text-sm font-semibold">Your Open PRs</h2>
             </div>
             <PrListPanel
               prs={prs}
@@ -917,4 +923,8 @@ export function AddressPrCommentsScreen({ credStatus, onBack }: Props) {
     </div>
   );
 }
+
+
+
+
 

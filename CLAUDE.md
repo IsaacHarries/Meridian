@@ -67,6 +67,12 @@ user gets immediate context without having to navigate into the Sprint Dashboard
    - Searchable log of architectural decisions, codebase patterns, and retrospective learnings
    - Navigates to the Knowledge Base view (see below)
 
+9. **Address PR Comments**
+   - Shows the user's own open PRs that have received comments from reviewers
+   - AI agent reads the review comments, checks out the PR branch in a dedicated worktree,
+     analyses each comment, and applies fixes directly to the code
+   - Navigates to the Address PR Comments view (see below)
+
 ---
 
 ## Workflow 1: Implement a Ticket
@@ -388,6 +394,78 @@ and feeds into Agent Skills.
 
 ---
 
+## Workflow 9: Address PR Comments
+
+**Purpose**: Let the AI read reviewer comments on the user's own open PRs, check out the
+PR branch in a dedicated worktree, and apply fixes to the code — keeping the developer
+focused and ensuring no comment is accidentally overlooked.
+
+**Entry point**: Workflow card on the landing page. Shows the user's own open PRs that
+have unresolved reviewer comments.
+
+**Data sources**:
+- Bitbucket API: user's open PRs (filtered by author = current user), PR diff, PR comments
+  (inline and general), PR tasks
+
+**Worktree**:
+- Uses a **dedicated third worktree** (`pr_address_worktree_path`), separate from both the
+  implementation worktree and the PR review worktree. This prevents branch conflicts when
+  all three workflows are in use simultaneously.
+- Falls back to the PR review worktree if the dedicated path is not configured, and then
+  to the main implementation worktree as a last resort.
+- The branch is checked out fresh from `origin/<branch>` before any analysis begins.
+
+**Behavior**:
+1. **PR selection** — list of the user's own open PRs with comment count and age.
+   PRs with no reviewer comments are excluded (nothing to address).
+2. **Comment fetch** — fetch all inline and general comments on the selected PR from
+   Bitbucket API. Filter out the user's own comments (only show reviewer feedback).
+3. **Branch checkout** — check out the PR's source branch in the PR address worktree.
+4. **Agent analysis** — AI agent reads:
+   - The full PR diff
+   - All reviewer comments (inline comments annotated with their file/line context)
+   - The files referenced in inline comments (from the local worktree)
+5. **Fix plan** — agent produces a structured list of proposed fixes:
+   - Per comment: understanding of the issue, proposed change, file(s) affected
+   - Grouped by file for clarity
+   - Overall confidence level per fix (High / Medium / Needs human judgment)
+6. **Human approval checkpoint** — user reviews the fix plan. For each fix the user can:
+   - Approve (include in the automated fix pass)
+   - Skip (agent will not touch it)
+   - Annotate with additional instructions the agent should follow
+7. **Automated fix pass** — agent applies approved fixes directly to the worktree files.
+   Files are written via the Tauri backend (`write_pr_address_file`), sandboxed to the
+   worktree root. The agent cannot create new files outside the PR's changed file set
+   without explicit user approval.
+8. **Diff review** — after fixes are applied, the user reviews a diff of every changed file
+   before committing. They can request the agent revise a particular change or undo it
+   entirely.
+9. **Commit** — user approves the final diff and confirms a commit message. The agent
+   runs `git commit -am "<message>"` in the worktree via a Tauri backend command.
+10. **Push** — user confirms pushing the branch. The agent runs `git push origin <branch>`.
+
+**Human-in-the-Loop checkpoints**:
+- After the fix plan is produced (step 5): user reviews and approves individual fixes
+- After the fix pass (step 7): user reviews the full diff before committing
+- Before commit (step 8): user edits/approves the commit message
+- Before push (step 9): explicit user confirmation required
+
+**UI**:
+- PR list panel with comment counts and age indicators
+- Selected PR panel showing: PR title, source branch, reviewer comments grouped by file
+- Fix plan card per comment: proposed change, affected file/lines, confidence badge
+- Per-fix approve/skip/annotate controls
+- Diff view after fix pass (syntax-highlighted, side-by-side where possible)
+- Commit message editor with AI-suggested message
+- Clear progress indicators for: branch checkout → analysis → fix plan → fixes applied →
+  committed → pushed
+
+**Settings**:
+- `pr_address_worktree_path` — dedicated worktree for this workflow (optional, falls back
+  to `pr_review_worktree_path` or `repo_worktree_path`)
+
+---
+
 ## Tech Stack
 
 ### App Shell
@@ -424,7 +502,9 @@ and feeds into Agent Skills.
 - Parse the ticket: title, description, acceptance criteria, story points, labels, linked tickets
 - Identify which files, modules, and packages in the codebase are likely relevant based on
   the ticket description — do NOT load the entire codebase, be targeted
-- Fetch only the relevant portions of main branch from Bitbucket (via Bitbucket API)
+- Use `glob`, `grep`, and `read_file` tools against the configured **local git worktree**
+  (see Codebase Access below) to pull the relevant portions of the codebase — do NOT use
+  the Bitbucket API for file reads
 - Synthesize a structured understanding of: what the ticket is asking for, relevant existing
   code, and any ambiguities or gaps in the ticket description
 
@@ -473,8 +553,8 @@ the Impact Analysis Agent is invoked. There is no automatic handoff.
 **Behavior**:
 - Analyze which other modules, services, or files call or depend on the code likely to be
   changed
-- Check Git history (via Bitbucket API) for recent changes to the relevant files — understand
-  WHY code was written a certain way before suggesting changes to it
+- Check Git history (`git log`, `git blame`) on the local worktree for recent changes to the
+  relevant files — understand WHY code was written a certain way before suggesting changes to it
 - Identify similar patterns elsewhere in the codebase that may need to be updated consistently
 - Flag anything that could break, regress, or require coordinated changes
 - Assess risk level of the change (low / medium / high) with justification
@@ -815,6 +895,50 @@ are missing or invalid.
 ---
 
 ## Implementation Notes for Claude Code
+
+### Codebase Access
+
+All agents that need to read or write source code operate against a **local git worktree** —
+not via the Bitbucket API. This decision was made deliberately:
+
+**Why a local worktree, not the Bitbucket API**:
+- File reads are instant (local disk), not rate-limited round-trips
+- Agents can freely `glob`, `grep`, and `read_file` without burning API quota
+- `git log` and `git blame` run locally — no Bitbucket history API needed
+- The Implementation agent can write files directly; the PR Description agent diffs them
+- All agents in a pipeline run share a single worktree path — no re-fetching between steps
+
+**Why a worktree, not a second clone**:
+- A git worktree shares the `.git` object store with the user's main checkout — no re-download
+- The worktree checks out the base branch (`develop` by default) independently of whatever
+  branch the user has checked out in their main directory — zero interference
+- Setup is a one-time `git worktree add` command; Meridian can do this automatically on
+  first use if the user provides the base repo path
+
+**Configuration** (stored in Meridian's credential/settings store):
+- `repo_worktree_path` — absolute path to the worktree directory
+  (e.g. `/Users/you/REPOS/MyRepo-meridian`)
+- `repo_base_branch` — branch the worktree tracks (default: `develop`)
+
+**Pipeline startup sequence** (in `startPipeline`):
+1. Validate `repo_worktree_path` is set and is a valid git worktree
+2. Run `git -C <path> fetch origin && git -C <path> reset --hard origin/<base_branch>`
+   to sync the worktree to the latest base branch state
+3. Record `{ worktreePath, headCommit }` in the pipeline session object
+4. Pass `worktreePath` to every agent — they use it as their root for all file operations
+
+**Agent tool access** (Tauri backend commands, path-sandboxed to `worktreePath`):
+- `glob_repo_files(pattern)` — find files by glob pattern
+- `grep_repo_files(pattern, path?)` — search file contents
+- `read_repo_file(path)` — read a file's content
+- `write_repo_file(path, content)` — Implementation agent only
+- `get_repo_diff(base_branch)` — PR Description agent: diff worktree against base
+
+**Prompt caching**: File contents read by the Grooming agent and passed forward are cached
+with `cache_control: { type: "ephemeral" }`. Subsequent agents that receive the same file
+content in their context window get cache hits, significantly reducing cost across the pipeline.
+
+---
 
 ### Build Order
 1.  Scaffold the Tauri + React + TypeScript + shadcn/ui project structure first

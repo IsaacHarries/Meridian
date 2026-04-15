@@ -21,9 +21,8 @@ import {
   type SuggestedEdit,
   type SuggestedEditStatus,
   type RetroKbEntry,
-  type SkillType,
   type WorktreeInfo,
-  type GroomingBlocker,
+  type SkillType,
   getIssue,
   loadAgentSkills,
   syncWorktree,
@@ -45,6 +44,8 @@ import {
   readRepoFile,
   grepRepoFiles,
 } from "@/lib/tauri";
+
+export type { SkillType };
 
 // ── Re-export Stage type so the screen and store share one definition ──────────
 
@@ -219,6 +220,45 @@ function isoNow() {
 
 // ── Store state shape ──────────────────────────────────────────────────────────
 
+// ── Per-ticket cached pipeline session ────────────────────────────────────────
+// All pipeline fields that should survive navigation, keyed by issue key.
+
+export type PipelineSession = Pick<
+  ImplementTicketState,
+  | "selectedIssue"
+  | "currentStage"
+  | "viewingStage"
+  | "completedStages"
+  | "pendingApproval"
+  | "proceeding"
+  | "grooming"
+  | "impact"
+  | "triageHistory"
+  | "plan"
+  | "guidance"
+  | "tests"
+  | "review"
+  | "prDescription"
+  | "retrospective"
+  | "groomingBlockers"
+  | "groomingEdits"
+  | "clarifyingQuestions"
+  | "filesRead"
+  | "groomingChat"
+  | "groomingBaseline"
+  | "jiraUpdateStatus"
+  | "jiraUpdateError"
+  | "groomingProgress"
+  | "groomingStreamText"
+  | "checkpointChats"
+  | "errors"
+  | "kbSaved"
+  | "worktreeInfo"
+  | "ticketText"
+  | "skills"
+  | "isSessionActive"
+>;
+
 interface ImplementTicketState {
   // ── Pipeline identity ────────────────────────────────────────────────────────
   selectedIssue: JiraIssue | null;
@@ -273,6 +313,10 @@ interface ImplementTicketState {
   /** True when a pipeline session is active (ticket selected and pipeline started) */
   isSessionActive: boolean;
 
+  // ── Session cache — one entry per ticket key ──────────────────────────────────
+  /** Cached pipeline sessions keyed by JIRA issue key */
+  sessions: Map<string, PipelineSession>;
+
   // ── Actions ──────────────────────────────────────────────────────────────────
   /** Directly write state — used by event listeners outside React tree */
   _set: (partial: Partial<ImplementTicketState>) => void;
@@ -301,7 +345,7 @@ interface ImplementTicketState {
 
 // ── Initial state (no session) ─────────────────────────────────────────────────
 
-const INITIAL: Omit<
+export const INITIAL: Omit<
   ImplementTicketState,
   | "_set"
   | "resetSession"
@@ -357,7 +401,12 @@ const INITIAL: Omit<
   ticketText: "",
   skills: {},
   isSessionActive: false,
+  sessions: new Map(),
 };
+
+// ── Persistence key ────────────────────────────────────────────────────────────
+
+export const IMPLEMENT_STORE_KEY = "meridian-implement-store";
 
 // ── Store ──────────────────────────────────────────────────────────────────────
 
@@ -367,7 +416,7 @@ export const useImplementTicketStore = create<ImplementTicketState>()(
 
     _set: (partial) => set(partial as Partial<ImplementTicketState>),
 
-    resetSession: () => set({ ...INITIAL }),
+    resetSession: () => set((s) => ({ ...INITIAL, sessions: s.sessions })),
 
     markComplete: (stage) =>
       set((s) => ({ completedStages: new Set([...s.completedStages, stage]) })),
@@ -391,8 +440,61 @@ export const useImplementTicketStore = create<ImplementTicketState>()(
 
     // ── startPipeline ──────────────────────────────────────────────────────────
     startPipeline: async (issue) => {
+      const current = get();
+
+      // ── Save current session into the map before switching ──────────────────
+      if (current.selectedIssue && current.currentStage !== "select") {
+        const snapshot: PipelineSession = {
+          selectedIssue: current.selectedIssue,
+          currentStage: current.currentStage,
+          viewingStage: current.viewingStage,
+          completedStages: current.completedStages,
+          pendingApproval: current.pendingApproval,
+          proceeding: current.proceeding,
+          grooming: current.grooming,
+          impact: current.impact,
+          triageHistory: current.triageHistory,
+          plan: current.plan,
+          guidance: current.guidance,
+          tests: current.tests,
+          review: current.review,
+          prDescription: current.prDescription,
+          retrospective: current.retrospective,
+          groomingBlockers: current.groomingBlockers,
+          groomingEdits: current.groomingEdits,
+          clarifyingQuestions: current.clarifyingQuestions,
+          filesRead: current.filesRead,
+          groomingChat: current.groomingChat,
+          groomingBaseline: current.groomingBaseline,
+          jiraUpdateStatus: current.jiraUpdateStatus,
+          jiraUpdateError: current.jiraUpdateError,
+          groomingProgress: current.groomingProgress,
+          groomingStreamText: current.groomingStreamText,
+          checkpointChats: current.checkpointChats,
+          errors: current.errors,
+          kbSaved: current.kbSaved,
+          worktreeInfo: current.worktreeInfo,
+          ticketText: current.ticketText,
+          skills: current.skills,
+          isSessionActive: current.isSessionActive,
+        };
+        const sessions = new Map(current.sessions);
+        sessions.set(current.selectedIssue.key, snapshot);
+        set({ sessions });
+      }
+
+      // ── Restore an existing session for this ticket ─────────────────────────
+      const existingSession = get().sessions.get(issue.key);
+      if (existingSession && existingSession.currentStage !== "select") {
+        set({ ...existingSession, selectedIssue: issue, isSessionActive: true });
+        return;
+      }
+
+      // ── Fresh start for a new ticket ────────────────────────────────────────
+      const sessions = get().sessions;
       set({
         ...INITIAL,
+        sessions,               // preserve the sessions map across resets
         selectedIssue: issue,
         currentStage: "grooming",
         viewingStage: "grooming",
@@ -740,7 +842,17 @@ export const useImplementTicketStore = create<ImplementTicketState>()(
             [stage]: [...(st.checkpointChats[stage] ?? newHistory), { role: "assistant", content: response }],
           },
         }));
-      } catch { /* non-critical */ }
+      } catch (e) {
+        // Surface the error as an assistant message so the user knows what went wrong
+        // rather than seeing the chat silently go quiet.
+        const errMsg = `⚠️ Something went wrong: ${String(e)}`;
+        set((st) => ({
+          checkpointChats: {
+            ...st.checkpointChats,
+            [stage]: [...(st.checkpointChats[stage] ?? newHistory), { role: "assistant", content: errMsg }],
+          },
+        }));
+      }
     },
 
     // ── Grooming conversation ──────────────────────────────────────────────────
@@ -884,4 +996,63 @@ export const useImplementTicketStore = create<ImplementTicketState>()(
     },
   })
 );
+
+// ── File-backed persistence ────────────────────────────────────────────────────
+
+import { loadCache, saveCache } from "@/lib/storeCache";
+
+/**
+ * Fields that are transient and must NOT be persisted across app restarts.
+ * Streaming progress, in-flight flags etc. reset to defaults on reload.
+ */
+function serializableState(s: ImplementTicketState) {
+  return {
+    ...s,
+    groomingProgress: "",
+    groomingStreamText: "",
+    proceeding: false,
+  };
+}
+
+/**
+ * Hydrate the store from the file cache.
+ * Call this once on app startup (e.g. from App.tsx or a boot hook).
+ */
+export async function hydrateImplementStore(): Promise<void> {
+  const cached = await loadCache<ImplementTicketState>(IMPLEMENT_STORE_KEY);
+  if (!cached) return;
+  // Ensure non-serialisable types are always correct instances
+  const completedStages =
+    cached.completedStages instanceof Set
+      ? cached.completedStages
+      : new Set((cached.completedStages as unknown as Stage[]) ?? []);
+  const sessions =
+    cached.sessions instanceof Map
+      ? cached.sessions
+      : new Map(Object.entries((cached.sessions ?? {}) as Record<string, PipelineSession>));
+  useImplementTicketStore.setState({
+    ...cached,
+    completedStages,
+    sessions,
+  });
+}
+
+// Subscribe and save on every state change (debounced).
+useImplementTicketStore.subscribe((state) => {
+  saveCache(IMPLEMENT_STORE_KEY, serializableState(state));
+});
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 

@@ -277,6 +277,37 @@ impl BitbucketClient {
         self.delete_req(&url).await
     }
 
+    /// Fetch the authenticated user's nickname from the Bitbucket /user endpoint.
+    /// This is the account username that appears as `author.nickname` on PRs —
+    /// it is distinct from the email address used for Basic auth.
+    /// Fetch the authenticated user's account_id from the Bitbucket /user endpoint.
+    /// Requires Account: Read scope on the App Password.
+    pub async fn get_current_user_account_id(&self) -> Result<String, String> {
+        let url = "https://api.bitbucket.org/2.0/user".to_string();
+        let body = self.get_json(&url).await?;
+        let account_id = body["account_id"]
+            .as_str()
+            .ok_or_else(|| "Bitbucket /user response did not contain an account_id field".to_string())?
+            .to_string();
+        eprintln!("[meridian] get_current_user_account_id: resolved account_id={:?}", account_id);
+        Ok(account_id)
+    }
+
+    /// Fetch open PRs authored by the authenticated user.
+    /// Uses the /user endpoint to get the authenticated user's account_id,
+    /// then filters all open PRs client-side by that id.
+    pub async fn get_my_authored_open_prs(&self) -> Result<Vec<BitbucketPr>, String> {
+        let my_account_id = self.get_current_user_account_id().await?;
+        let all = self.get_open_prs().await?;
+        eprintln!("[meridian] get_my_authored_open_prs: my_account_id={:?}, filtering {} total PRs", my_account_id, all.len());
+        let filtered: Vec<BitbucketPr> = all
+            .into_iter()
+            .filter(|pr| pr.author.account_id.as_deref() == Some(my_account_id.as_str()))
+            .collect();
+        eprintln!("[meridian] get_my_authored_open_prs: {} PRs matched", filtered.len());
+        Ok(filtered)
+    }
+
     /// All open PRs in the repository.
     pub async fn get_open_prs(&self) -> Result<Vec<BitbucketPr>, String> {
         let url = self.repo_url(
@@ -332,7 +363,7 @@ impl BitbucketClient {
 
     /// Open PRs authored by the authenticated user (filtered by username).
     pub async fn get_my_open_prs(&self) -> Result<Vec<BitbucketPr>, String> {
-        self.get_my_open_prs_by_username(&self.username.clone()).await
+        self.get_my_authored_open_prs().await
     }
 
     /// Filter open PRs to those authored by the given username (nickname or account_id).
@@ -342,14 +373,25 @@ impl BitbucketClient {
     pub async fn get_my_open_prs_by_username(&self, username: &str) -> Result<Vec<BitbucketPr>, String> {
         let all = self.get_open_prs().await?;
         let username_lc = username.to_lowercase();
-        Ok(all
+        eprintln!("[meridian] get_my_open_prs: matching against={:?}", username_lc);
+        eprintln!("[meridian] get_my_open_prs: {} total open PRs", all.len());
+        for pr in &all {
+            eprintln!(
+                "[meridian]   PR #{}: author.nickname={:?} author.account_id={:?}",
+                pr.id, pr.author.nickname, pr.author.account_id
+            );
+        }
+        let matched: Vec<BitbucketPr> = all
             .into_iter()
             .filter(|pr| {
                 let nickname = pr.author.nickname.to_lowercase();
                 let account_id = pr.author.account_id.as_deref().unwrap_or("").to_lowercase();
-                nickname == username_lc || account_id == username_lc
+                // Match on account_id first (reliable), then nickname as fallback
+                account_id == username_lc || nickname == username_lc
             })
-            .collect())
+            .collect();
+        eprintln!("[meridian] get_my_open_prs: {} PRs matched", matched.len());
+        Ok(matched)
     }
 
     pub async fn get_pr(&self, pr_id: i64) -> Result<BitbucketPr, String> {

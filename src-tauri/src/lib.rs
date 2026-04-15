@@ -7,7 +7,7 @@ use commands::{
     credential_status, delete_credential, save_credential, get_non_secret_config,     validate_anthropic, validate_bitbucket,
     validate_jira, test_anthropic_stored, test_jira_stored, test_bitbucket_stored, debug_jira_endpoints, assess_ticket_quality, generate_standup_briefing, generate_sprint_retrospective,
     import_claude_pro_token,
-    generate_workload_suggestions, review_pr, chat_pr_review,
+    generate_workload_suggestions, review_pr, cancel_review, chat_pr_review,
     analyze_pr_comments, chat_address_pr,
     get_claude_models, get_gemini_models, validate_gemini, test_gemini_stored,
     get_local_models, validate_local_llm, test_local_llm_stored,
@@ -34,6 +34,8 @@ use commands::{
     load_agent_skills, save_agent_skill, delete_agent_skill,
     // Store cache (file-backed persistence for Zustand stores)
     save_store_cache, load_store_cache, delete_store_cache, get_store_cache_info, clear_all_store_caches,
+    // Preferences (plain JSON, survives cache clears)
+    get_preferences, set_preference, delete_preference,
     // Repo / worktree
     validate_worktree, sync_worktree,
     glob_repo_files, grep_repo_files, read_repo_file,
@@ -65,6 +67,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             commands::credentials::init_store_path(app.handle());
+            commands::preferences::init_prefs_path(app.handle());
             eprintln!("[MERIDIAN] setup hook complete");
             Ok(())
         })
@@ -75,6 +78,7 @@ pub fn run() {
             generate_sprint_retrospective,
             generate_workload_suggestions,
             review_pr,
+            cancel_review,
             chat_pr_review,
             analyze_pr_comments,
             chat_address_pr,
@@ -102,6 +106,10 @@ pub fn run() {
             save_credential,
             delete_credential,
             get_non_secret_config,
+            // Preferences
+            get_preferences,
+            set_preference,
+            delete_preference,
             // Validation
             validate_anthropic,
             validate_jira,

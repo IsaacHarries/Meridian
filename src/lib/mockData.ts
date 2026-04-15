@@ -74,6 +74,7 @@ const makeIssue = (
   url: `https://example.atlassian.net/browse/${key}`,
   summary,
   description,
+  descriptionSections: [],
   status,
   statusCategory,
   assignee,

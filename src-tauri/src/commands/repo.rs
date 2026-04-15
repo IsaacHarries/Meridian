@@ -3,11 +3,17 @@ use std::process::Command;
 use serde::Serialize;
 
 use super::credentials::get_credential;
+use super::preferences::get_pref;
+
+/// Read a config value: preferences first, credential store as migration fallback.
+fn get_config(key: &str) -> Option<String> {
+    get_pref(key).or_else(|| get_credential(key))
+}
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 fn worktree_path() -> Result<PathBuf, String> {
-    let raw = get_credential("repo_worktree_path")
+    let raw = get_config("repo_worktree_path")
         .ok_or("Codebase worktree path not configured. Set it in Settings → Configuration.")?;
     let path = PathBuf::from(raw.trim());
     if !path.exists() {
@@ -20,15 +26,15 @@ fn worktree_path() -> Result<PathBuf, String> {
 }
 
 fn base_branch() -> String {
-    get_credential("repo_base_branch")
+    get_config("repo_base_branch")
         .unwrap_or_else(|| "develop".to_string())
 }
 
 /// Returns the PR review–specific worktree path if configured, otherwise falls
 /// back to the main worktree path. Returns an error only if neither is set.
 fn pr_review_worktree_path() -> Result<PathBuf, String> {
-    let raw = get_credential("pr_review_worktree_path")
-        .or_else(|| get_credential("repo_worktree_path"))
+    let raw = get_config("pr_review_worktree_path")
+        .or_else(|| get_config("repo_worktree_path"))
         .ok_or("No worktree path configured. Set one in Settings → Configuration.")?;
     let path = PathBuf::from(raw.trim());
     if !path.exists() {
@@ -43,9 +49,9 @@ fn pr_review_worktree_path() -> Result<PathBuf, String> {
 /// Returns the PR address–specific worktree path if configured, falling back to
 /// the PR review path, and then the main implementation worktree.
 fn pr_address_worktree_path() -> Result<PathBuf, String> {
-    let raw = get_credential("pr_address_worktree_path")
-        .or_else(|| get_credential("pr_review_worktree_path"))
-        .or_else(|| get_credential("repo_worktree_path"))
+    let raw = get_config("pr_address_worktree_path")
+        .or_else(|| get_config("pr_review_worktree_path"))
+        .or_else(|| get_config("repo_worktree_path"))
         .ok_or("No worktree path configured. Set one in Settings → Configuration.")?;
     let path = PathBuf::from(raw.trim());
     if !path.exists() {
@@ -345,13 +351,17 @@ pub async fn get_repo_log(max_commits: u32) -> Result<String, String> {
 
 /// Check out `branch` inside `path`, updating it to `origin/<branch>`.
 ///
-/// Strategy (avoids the "branch already exists" error):
+/// Strategy (avoids the "branch already exists" and "dirty working tree" errors):
 /// 1. `git fetch origin <branch>` — ensure the remote ref is fresh.
-/// 2. Check whether a local branch named `<branch>` already exists with
+/// 2. Check for uncommitted changes with `git status --porcelain`. If any exist,
+///    stash them with `git stash --include-untracked` so the checkout can proceed
+///    cleanly. The stash is intentionally left in place (not popped) — the PR
+///    review worktree is a scratch area and any local modifications are transient.
+/// 3. Check whether a local branch named `<branch>` already exists with
 ///    `git branch --list <branch>`.
-/// 3a. Branch exists locally  → `git checkout <branch>` then
+/// 4a. Branch exists locally  → `git checkout <branch>` then
 ///     `git reset --hard origin/<branch>` to fast-forward it.
-/// 3b. Branch does not exist  → `git checkout -b <branch> --track origin/<branch>`.
+/// 4b. Branch does not exist  → `git checkout -b <branch> --track origin/<branch>`.
 ///
 /// Using `--list` instead of relying on checkout exit codes means we never
 /// accidentally attempt `-b` on a branch that already exists (which produces
@@ -363,18 +373,29 @@ fn checkout_branch_in(path: &Path, branch: &str) -> Result<WorktreeInfo, String>
     git(path, &["fetch", "origin", branch])
         .map_err(|e| format!("git fetch failed: {e}"))?;
 
-    // 2. Does a local branch with this exact name already exist?
+    // 2. Stash any uncommitted changes (including untracked files) so the
+    //    checkout / reset cannot fail with "local changes would be overwritten".
+    //    We check first to avoid creating empty stash entries unnecessarily.
+    let status_out = git(path, &["status", "--porcelain"]).unwrap_or_default();
+    if !status_out.trim().is_empty() {
+        // --include-untracked stashes new files too; --quiet suppresses the
+        // "Saved working directory…" message from appearing in error output.
+        git(path, &["stash", "push", "--include-untracked", "-m", "meridian: auto-stash before branch checkout"])
+            .map_err(|e| format!("git stash failed: {e}"))?;
+    }
+
+    // 3. Does a local branch with this exact name already exist?
     let list_out = git(path, &["branch", "--list", branch]).unwrap_or_default();
     let exists_locally = !list_out.trim().is_empty();
 
     if exists_locally {
-        // 3a. Already exists — check it out then hard-reset to the remote tip
+        // 4a. Already exists — check it out then hard-reset to the remote tip
         git(path, &["checkout", branch])
             .map_err(|e| format!("git checkout {branch} failed: {e}"))?;
         git(path, &["reset", "--hard", &remote_ref])
             .map_err(|e| format!("git reset to {remote_ref} failed: {e}"))?;
     } else {
-        // 3b. New locally — create it tracking the remote
+        // 4b. New locally — create it tracking the remote
         git(path, &["checkout", "-b", branch, "--track", &remote_ref])
             .map_err(|e| format!("git checkout -b {branch} failed: {e}"))?;
     }
@@ -479,7 +500,7 @@ pub async fn run_in_terminal(command: String) -> Result<(), String> {
     let path = pr_review_worktree_path()?;
     let path_str = path.to_string_lossy();
 
-    let terminal = get_credential("pr_review_terminal")
+    let terminal = get_config("pr_review_terminal")
         .unwrap_or_else(|| "iTerm2".to_string());
     let terminal = terminal.trim().to_string();
 

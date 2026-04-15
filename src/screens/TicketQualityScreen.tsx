@@ -25,7 +25,7 @@ import {
   type CredentialStatus,
   type QualityReport,
   type QualityCriterion,
-  anthropicComplete,
+  aiProviderComplete,
   jiraComplete,
   getActiveSprintIssues,
   searchJiraIssues,
@@ -322,8 +322,8 @@ function TicketSelector({ sprintIssues, loadingIssues, selected, onSelect }: Tic
   }
 
   return (
-    <div className="space-y-3">
-      <div className="relative">
+    <div className="flex flex-col flex-1 min-h-0 gap-3">
+      <div className="relative shrink-0">
         <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground pointer-events-none" />
         <Input
           placeholder="Search tickets or enter key (e.g. PROJ-123)…"
@@ -333,7 +333,7 @@ function TicketSelector({ sprintIssues, loadingIssues, selected, onSelect }: Tic
         />
       </div>
 
-      <div className="space-y-1 max-h-96 overflow-y-auto pr-1">
+      <div className="flex-1 min-h-0 space-y-1 overflow-y-auto pr-1">
         {showLoading && (
           <div className="flex items-center justify-center py-8 text-muted-foreground gap-2 text-sm">
             <Loader2 className="h-4 w-4 animate-spin" />
@@ -370,7 +370,7 @@ export function TicketQualityScreen({ credStatus, onBack }: TicketQualityScreenP
   const [report, setReport] = useState<QualityReport | null>(null);
   const [rawError, setRawError] = useState<string | null>(null);
 
-  const claudeAvailable = anthropicComplete(credStatus);
+  const claudeAvailable = aiProviderComplete(credStatus);
   const jiraAvailable = jiraComplete(credStatus);
 
   // Load sprint issues
@@ -431,8 +431,8 @@ export function TicketQualityScreen({ credStatus, onBack }: TicketQualityScreenP
         }
       />
 
-      <div className="flex-1 flex items-center">
-        <div className="w-full max-w-5xl mx-auto px-6 py-6 bg-background/60 rounded-xl">
+      <div className="flex-1 flex flex-col min-h-0">
+        <div className="flex-1 flex flex-col min-h-0 w-full max-w-5xl mx-auto px-6 py-6 bg-background/60 rounded-xl">
         {/* Credential warnings */}
         {!jiraAvailable && (
           <div className="mb-5 rounded-md border border-amber-200 bg-amber-50 dark:border-amber-900 dark:bg-amber-950/30 px-4 py-3 text-sm text-amber-800 dark:text-amber-200">
@@ -441,18 +441,18 @@ export function TicketQualityScreen({ credStatus, onBack }: TicketQualityScreenP
         )}
         {!claudeAvailable && (
           <div className="mb-5 rounded-md border border-amber-200 bg-amber-50 dark:border-amber-900 dark:bg-amber-950/30 px-4 py-3 text-sm text-amber-800 dark:text-amber-200">
-            Anthropic API key not configured — quality assessment unavailable.
+            No AI provider configured — quality assessment unavailable.
           </div>
         )}
 
-        <div className="grid grid-cols-[380px_1fr] gap-6 items-start">
-          {/* Left: ticket selector */}
-          <div className="space-y-4">
-            <Card>
-              <CardHeader className="pb-3">
+        <div className="flex-1 grid grid-cols-[380px_1fr] gap-6 items-start min-h-0">
+          {/* Left: ticket selector — fills full height */}
+          <div className="flex flex-col h-full min-h-0">
+            <Card className="flex flex-col flex-1 min-h-0">
+              <CardHeader className="pb-3 shrink-0">
                 <CardTitle className="text-sm font-semibold">Select a Ticket</CardTitle>
               </CardHeader>
-              <CardContent className="pt-0">
+              <CardContent className="pt-0 flex flex-col flex-1 min-h-0">
                 <TicketSelector
                   sprintIssues={sprintIssues}
                   loadingIssues={loadingIssues}
