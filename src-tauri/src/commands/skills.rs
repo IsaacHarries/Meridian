@@ -36,6 +36,12 @@ pub fn load_agent_skills(app: tauri::AppHandle) -> Result<HashMap<String, String
     read_skills(&app)
 }
 
+/// Internal helper: read a single skill's content by key (e.g. "review", "implementation").
+/// Returns None if the skill is not set or the file cannot be read.
+pub fn get_skill(app: &tauri::AppHandle, key: &str) -> Option<String> {
+    read_skills(app).ok()?.remove(key).filter(|v| !v.trim().is_empty())
+}
+
 /// Save one agent skill. skill_type must be one of: grooming, patterns, implementation, review.
 #[tauri::command]
 pub fn save_agent_skill(

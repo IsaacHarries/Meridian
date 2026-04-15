@@ -1,5 +1,5 @@
 use crate::commands::credentials::get_credential;
-use crate::jira::{JiraClient, JiraIssue, JiraSprint};
+use crate::jira::{CustomFieldConfig, JiraClient, JiraFieldMeta, JiraIssue, JiraSprint, RawIssueField};
 
 fn jira_client() -> Result<(JiraClient, i64), String> {
     let base_url = get_credential("jira_base_url")
@@ -17,6 +17,32 @@ fn jira_client() -> Result<(JiraClient, i64), String> {
 
     let client = JiraClient::new(base_url, email, api_token)?;
     Ok((client, board_id))
+}
+
+/// Build a CustomFieldConfig from whatever the user has stored in Settings.
+fn load_custom_field_config() -> CustomFieldConfig {
+    use std::collections::HashMap;
+    let acceptance_criteria = get_credential("jira_field_acceptance_criteria")
+        .filter(|s| !s.trim().is_empty());
+    let steps_to_reproduce = get_credential("jira_field_steps_to_reproduce")
+        .filter(|s| !s.trim().is_empty());
+    let observed_behavior = get_credential("jira_field_observed_behavior")
+        .filter(|s| !s.trim().is_empty());
+    let expected_behavior = get_credential("jira_field_expected_behavior")
+        .filter(|s| !s.trim().is_empty());
+
+    // jira_extra_custom_fields is stored as a JSON object: { "Display Name": "customfield_XXXXX" }
+    let extra: HashMap<String, String> = get_credential("jira_extra_custom_fields")
+        .and_then(|json| serde_json::from_str(&json).ok())
+        .unwrap_or_default();
+
+    CustomFieldConfig {
+        acceptance_criteria,
+        steps_to_reproduce,
+        observed_behavior,
+        expected_behavior,
+        extra,
+    }
 }
 
 /// Active sprint for the configured board.
@@ -37,10 +63,11 @@ pub async fn get_all_active_sprints() -> Result<Vec<JiraSprint>, String> {
 #[tauri::command]
 pub async fn get_all_active_sprint_issues() -> Result<Vec<(JiraSprint, Vec<JiraIssue>)>, String> {
     let (client, board_id) = jira_client()?;
+    let cfg = load_custom_field_config();
     let sprints = client.get_all_active_sprints(board_id).await?;
     let mut result = Vec::new();
     for sprint in sprints {
-        let issues = client.get_sprint_issues(sprint.id).await?;
+        let issues = client.get_sprint_issues(sprint.id, &cfg).await?;
         result.push((sprint, issues));
     }
     Ok(result)
@@ -50,15 +77,17 @@ pub async fn get_all_active_sprint_issues() -> Result<Vec<(JiraSprint, Vec<JiraI
 #[tauri::command]
 pub async fn get_sprint_issues(sprint_id: i64) -> Result<Vec<JiraIssue>, String> {
     let (client, _) = jira_client()?;
-    client.get_sprint_issues(sprint_id).await
+    let cfg = load_custom_field_config();
+    client.get_sprint_issues(sprint_id, &cfg).await
 }
 
 /// All issues in the active sprint.
 #[tauri::command]
 pub async fn get_active_sprint_issues() -> Result<Vec<JiraIssue>, String> {
     let (client, board_id) = jira_client()?;
+    let cfg = load_custom_field_config();
     match client.get_active_sprint(board_id).await? {
-        Some(sprint) => client.get_sprint_issues(sprint.id).await,
+        Some(sprint) => client.get_sprint_issues(sprint.id, &cfg).await,
         None => Ok(vec![]),
     }
 }
@@ -67,15 +96,17 @@ pub async fn get_active_sprint_issues() -> Result<Vec<JiraIssue>, String> {
 #[tauri::command]
 pub async fn get_my_sprint_issues() -> Result<Vec<JiraIssue>, String> {
     let (client, _) = jira_client()?;
+    let cfg = load_custom_field_config();
     let jql = "assignee = currentUser() AND sprint in openSprints() ORDER BY priority DESC";
-    client.search_issues(jql, 50).await
+    client.search_issues(jql, 50, &cfg).await
 }
 
 /// Full detail for a single issue.
 #[tauri::command]
 pub async fn get_issue(issue_key: String) -> Result<JiraIssue, String> {
     let (client, _) = jira_client()?;
-    client.get_issue(&issue_key).await
+    let cfg = load_custom_field_config();
+    client.get_issue(&issue_key, &cfg).await
 }
 
 /// Most-recent closed sprints, newest first.
@@ -89,12 +120,46 @@ pub async fn get_completed_sprints(limit: u32) -> Result<Vec<JiraSprint>, String
 #[tauri::command]
 pub async fn get_sprint_issues_by_id(sprint_id: i64) -> Result<Vec<JiraIssue>, String> {
     let (client, _) = jira_client()?;
-    client.get_sprint_issues(sprint_id).await
+    let cfg = load_custom_field_config();
+    client.get_sprint_issues(sprint_id, &cfg).await
 }
 
 /// General-purpose JQL search (used by Ticket Quality Checker and other workflows).
 #[tauri::command]
 pub async fn search_jira_issues(jql: String, max_results: u32) -> Result<Vec<JiraIssue>, String> {
     let (client, _) = jira_client()?;
-    client.search_issues(&jql, max_results as usize).await
+    let cfg = load_custom_field_config();
+    client.search_issues(&jql, max_results as usize, &cfg).await
 }
+
+/// Diagnostic: fetch ALL fields for a single issue (with ?expand=names so field IDs
+/// are mapped to human-readable display names). No admin permissions required.
+/// Returns a list of { id, name, value } objects sorted custom-fields-last.
+#[tauri::command]
+pub async fn get_raw_issue_fields(issue_key: String) -> Result<Vec<RawIssueField>, String> {
+    let (client, _) = jira_client()?;
+    client.get_raw_issue_fields(&issue_key).await
+}
+
+/// Fetch all field definitions from the JIRA workspace (id + name + type).
+/// Use this alongside get_raw_issue_fields to map field IDs to human-readable names.
+#[tauri::command]
+pub async fn get_jira_fields() -> Result<Vec<JiraFieldMeta>, String> {
+    let (client, _) = jira_client()?;
+    client.get_all_fields().await
+}
+
+/// Update an issue's description (and optionally its summary).
+/// `description` is plain text; the Rust layer converts it to ADF for the v3 API.
+#[tauri::command]
+pub async fn update_jira_issue(
+    issue_key: String,
+    summary: Option<String>,
+    description: String,
+) -> Result<(), String> {
+    let (client, _) = jira_client()?;
+    client
+        .update_issue_description(&issue_key, summary.as_deref(), &description)
+        .await
+}
+

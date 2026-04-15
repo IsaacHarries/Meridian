@@ -3,6 +3,7 @@ use serde_json::json;
 use std::time::Duration;
 
 use super::credentials::{get_credential, store_credential};
+use super::skills::get_skill;
 use crate::http::make_corporate_client;
 
 // ── OAuth token refresh ─────────────────────────────────────────────────────
@@ -572,6 +573,448 @@ async fn complete_multi_local(
         .ok_or_else(|| "Unexpected response shape from local LLM.".to_string())
 }
 
+/// Streaming multi-turn variant for local LLM (OpenAI-compatible /chat/completions).
+async fn complete_multi_local_streaming(
+    app: &tauri::AppHandle,
+    base_url: &str,
+    api_key: Option<&str>,
+    model: &str,
+    system: &str,
+    history_json: &str,
+    max_tokens: u32,
+    stream_event: &str,
+) -> Result<String, String> {
+    use futures_util::StreamExt;
+    use tauri::Emitter;
+
+    let client = make_local_client()?;
+    let url = format!("{base_url}/chat/completions");
+
+    let history: serde_json::Value = serde_json::from_str(history_json)
+        .map_err(|e| format!("Invalid history JSON: {e}"))?;
+
+    let mut messages: Vec<serde_json::Value> =
+        vec![serde_json::json!({ "role": "system", "content": system })];
+
+    if let Some(arr) = history.as_array() {
+        for msg in arr {
+            messages.push(msg.clone());
+        }
+    }
+
+    let body = serde_json::json!({
+        "model": model,
+        "messages": messages,
+        "max_tokens": max_tokens,
+        "stream": true,
+    });
+
+    let mut req = client
+        .post(&url)
+        .header("content-type", "application/json")
+        .json(&body);
+
+    if let Some(key) = api_key {
+        if !key.is_empty() {
+            req = req.header("Authorization", format!("Bearer {key}"));
+        }
+    }
+
+    let resp = req.send().await.map_err(|e| {
+        if e.is_connect() {
+            format!(
+                "Could not connect to local LLM at {base_url}. \
+                 Make sure Ollama / LM Studio is running."
+            )
+        } else {
+            format!("Local LLM request failed: {e}")
+        }
+    })?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body_text = resp.text().await.unwrap_or_default();
+        if status.as_u16() == 500 {
+            return Err(format!(
+                "Local LLM server error (500) — the prompt may be too large for the model. \
+                 Raw: {body_text}"
+            ));
+        }
+        return Err(format!("Local LLM error {status}: {body_text}"));
+    }
+
+    let mut stream = resp.bytes_stream();
+    let mut full_text = String::new();
+    let mut buffer = String::new();
+
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| format!("Stream read error: {e}"))?;
+        buffer.push_str(&String::from_utf8_lossy(&chunk));
+
+        while let Some(nl) = buffer.find('\n') {
+            let line = buffer[..nl].trim().to_string();
+            buffer = buffer[nl + 1..].to_string();
+
+            if !line.starts_with("data: ") { continue; }
+            let data = &line["data: ".len()..];
+            if data == "[DONE]" { break; }
+
+            if let Ok(json) = serde_json::from_str::<serde_json::Value>(data) {
+                if let Some(text) = json["choices"][0]["delta"]["content"].as_str() {
+                    if !text.is_empty() {
+                        full_text.push_str(text);
+                        let _ = app.emit(stream_event, serde_json::json!({
+                            "delta": text,
+                            "text": &full_text,
+                        }));
+                    }
+                }
+            }
+        }
+    }
+
+    if full_text.is_empty() {
+        return Err("Local LLM returned an empty streaming response.".to_string());
+    }
+    Ok(full_text)
+}
+
+/// Streaming multi-turn variant for Claude (Anthropic /v1/messages).
+async fn complete_multi_claude_streaming(
+    app: &tauri::AppHandle,
+    client: &Client,
+    api_key: &str,
+    model: &str,
+    system: &str,
+    history_json: &str,
+    max_tokens: u32,
+    stream_event: &str,
+) -> Result<String, String> {
+    use futures_util::StreamExt;
+    use tauri::Emitter;
+
+    let messages: serde_json::Value = serde_json::from_str(history_json)
+        .map_err(|e| format!("Invalid history JSON: {e}"))?;
+
+    let body = serde_json::json!({
+        "model": model,
+        "max_tokens": max_tokens,
+        "stream": true,
+        "system": system,
+        "messages": messages,
+    });
+
+    let req = client
+        .post("https://api.anthropic.com/v1/messages")
+        .header("anthropic-version", "2023-06-01")
+        .header("content-type", "application/json");
+
+    let req = if api_key.starts_with("sk-ant-api") {
+        req.header("x-api-key", api_key)
+    } else {
+        req.header("Authorization", format!("Bearer {api_key}"))
+            .header("anthropic-beta", "oauth-2025-04-20")
+    };
+
+    let resp = req
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| {
+            if e.is_connect() || e.is_timeout() {
+                "Could not reach api.anthropic.com. Check your internet connection.".to_string()
+            } else {
+                format!("Request failed: {e}")
+            }
+        })?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body_text = resp.text().await.unwrap_or_default();
+        return Err(format!("Claude API error {status}: {body_text}"));
+    }
+
+    let mut stream = resp.bytes_stream();
+    let mut full_text = String::new();
+    let mut buffer = String::new();
+
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| format!("Stream read error: {e}"))?;
+        buffer.push_str(&String::from_utf8_lossy(&chunk));
+
+        while let Some(nl) = buffer.find('\n') {
+            let line = buffer[..nl].trim().to_string();
+            buffer = buffer[nl + 1..].to_string();
+
+            if !line.starts_with("data: ") { continue; }
+            let data = &line["data: ".len()..];
+
+            if let Ok(json) = serde_json::from_str::<serde_json::Value>(data) {
+                let event_type = json["type"].as_str().unwrap_or("");
+                match event_type {
+                    "content_block_delta" => {
+                        if json["delta"]["type"].as_str() == Some("text_delta") {
+                            if let Some(text) = json["delta"]["text"].as_str() {
+                                if !text.is_empty() {
+                                    full_text.push_str(text);
+                                    let _ = app.emit(stream_event, serde_json::json!({
+                                        "delta": text,
+                                        "text": &full_text,
+                                    }));
+                                }
+                            }
+                        }
+                    }
+                    "message_stop" => break,
+                    "error" => {
+                        let msg = json["error"]["message"]
+                            .as_str()
+                            .unwrap_or("Unknown streaming error");
+                        return Err(format!("Claude stream error: {msg}"));
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    if full_text.is_empty() {
+        return Err("Claude returned an empty streaming response.".to_string());
+    }
+    Ok(full_text)
+}
+
+/// Provider-aware multi-turn streaming dispatch.
+async fn dispatch_multi_streaming(
+    app: &tauri::AppHandle,
+    client: &Client,
+    claude_key: &str,
+    system: &str,
+    history_json: &str,
+    max_tokens: u32,
+    stream_event: &str,
+) -> Result<String, String> {
+    let provider = get_ai_provider();
+
+    let providers_to_try: Vec<String> = if provider == "auto" {
+        get_provider_order()
+    } else {
+        vec![provider]
+    };
+
+    let mut last_err = "No providers configured.".to_string();
+
+    for p in &providers_to_try {
+        let result = match p.as_str() {
+            "claude" => {
+                if claude_key.is_empty() {
+                    Err("Claude: not configured.".to_string())
+                } else {
+                    complete_multi_claude_streaming(
+                        app, client, claude_key, &get_active_model(),
+                        system, history_json, max_tokens, stream_event,
+                    ).await
+                }
+            }
+            "local" => {
+                let base = match local_llm_base_url() {
+                    Some(b) => b,
+                    None => { last_err = "Local LLM: not configured.".to_string(); continue; }
+                };
+                let model = match get_local_llm_model() {
+                    Some(m) => m,
+                    None => { last_err = "Local LLM: no model selected.".to_string(); continue; }
+                };
+                let key = get_credential("local_llm_api_key");
+                complete_multi_local_streaming(
+                    app, &base, key.as_deref(), &model,
+                    system, history_json, max_tokens, stream_event,
+                ).await
+            }
+            // Gemini and other providers fall back to non-streaming multi-turn
+            _ => try_provider_multi(p, client, claude_key, system, history_json, max_tokens).await,
+        };
+
+        match result {
+            Ok(r) => return Ok(r),
+            Err(e) if e.contains("not configured") || e.contains("no model") => { last_err = e; }
+            Err(e) if is_quota_error(&e) => { last_err = format!("{p} quota exceeded, trying next provider…"); }
+            Err(e) => return Err(e),
+        }
+    }
+
+    Err(format!("All providers failed or are unconfigured. Last error: {last_err}"))
+}
+
+/// Streaming single-turn completion via local LLM (OpenAI SSE format).
+/// Emits `{stream_event}` Tauri events for each token chunk received.
+async fn complete_local_streaming(
+    app: &tauri::AppHandle,
+    base_url: &str,
+    api_key: Option<&str>,
+    model: &str,
+    system: &str,
+    user: &str,
+    max_tokens: u32,
+    stream_event: &str,
+) -> Result<String, String> {
+    use futures_util::StreamExt;
+    use tauri::Emitter;
+
+    let client = make_local_client()?;
+    let url = format!("{base_url}/chat/completions");
+
+    let body = serde_json::json!({
+        "model": model,
+        "messages": [
+            { "role": "system", "content": system },
+            { "role": "user",   "content": user  },
+        ],
+        "max_tokens": max_tokens,
+        "stream": true,
+    });
+
+    let mut req = client
+        .post(&url)
+        .header("content-type", "application/json")
+        .json(&body);
+
+    if let Some(key) = api_key {
+        if !key.is_empty() {
+            req = req.header("Authorization", format!("Bearer {key}"));
+        }
+    }
+
+    let resp = req.send().await.map_err(|e| {
+        if e.is_connect() {
+            format!(
+                "Could not connect to local LLM at {base_url}. \
+                 Make sure Ollama / LM Studio is running."
+            )
+        } else {
+            format!("Local LLM request failed: {e}")
+        }
+    })?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body_text = resp.text().await.unwrap_or_default();
+        // A 500 after a long wait almost always means Ollama hit its generation
+        // timeout because the prompt was too large for the model to finish in time.
+        if status.as_u16() == 500 {
+            return Err(format!(
+                "Local LLM server error (500) — the diff is likely too large for the model \
+                 to process within its timeout. Try a PR with a smaller diff, or switch to \
+                 Claude / Gemini for large PRs in Settings → AI Provider. Raw: {body_text}"
+            ));
+        }
+        return Err(format!("Local LLM error {status}: {body_text}"));
+    }
+
+    let mut stream = resp.bytes_stream();
+    let mut full_text = String::new();
+    let mut buffer = String::new(); // accumulate partial SSE lines
+
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| format!("Stream read error: {e}"))?;
+        let text = String::from_utf8_lossy(&chunk);
+        buffer.push_str(&text);
+
+        // SSE lines are separated by newlines; process complete lines only
+        while let Some(nl) = buffer.find('\n') {
+            let line = buffer[..nl].trim().to_string();
+            buffer = buffer[nl + 1..].to_string();
+
+            if !line.starts_with("data: ") {
+                continue;
+            }
+            let data = &line["data: ".len()..];
+            if data == "[DONE]" {
+                break;
+            }
+
+            if let Ok(json) = serde_json::from_str::<serde_json::Value>(data) {
+                if let Some(delta) = json["choices"][0]["delta"]["content"].as_str() {
+                    if !delta.is_empty() {
+                        full_text.push_str(delta);
+                        // Emit the accumulated text so far as the progress message
+                        let _ = app.emit(stream_event, serde_json::json!({
+                            "delta": delta,
+                            "text": &full_text,
+                        }));
+                    }
+                }
+                // Check for finish reason
+                if json["choices"][0]["finish_reason"].as_str().map_or(false, |r| r != "null" && !r.is_empty() && r != "") {
+                    break;
+                }
+            }
+        }
+    }
+
+    if full_text.is_empty() {
+        return Err("Local LLM returned an empty response.".to_string());
+    }
+
+    Ok(full_text)
+}
+
+/// Provider-aware dispatch that streams from the local LLM when it's the active
+/// provider, and falls back to the standard (non-streaming) path for Claude/Gemini.
+async fn dispatch_streaming(
+    app: &tauri::AppHandle,
+    client: &Client,
+    claude_key: &str,
+    system: &str,
+    user: &str,
+    max_tokens: u32,
+    stream_event: &str,
+) -> Result<String, String> {
+    let provider = get_ai_provider();
+
+    let providers_to_try: Vec<String> = if provider == "auto" {
+        get_provider_order()
+    } else {
+        vec![provider]
+    };
+
+    let mut last_err = "No providers configured.".to_string();
+
+    for p in &providers_to_try {
+        let result = match p.as_str() {
+            "claude" => {
+                if claude_key.is_empty() {
+                    Err("Claude: not configured.".to_string())
+                } else {
+                    complete_claude_streaming(app, client, claude_key, &get_active_model(), system, user, max_tokens, stream_event).await
+                }
+            }
+            "local" => {
+                let base = match local_llm_base_url() {
+                    Some(b) => b,
+                    None => { last_err = "Local LLM: not configured.".to_string(); continue; }
+                };
+                let model = match get_local_llm_model() {
+                    Some(m) => m,
+                    None => { last_err = "Local LLM: no model selected.".to_string(); continue; }
+                };
+                let key = get_credential("local_llm_api_key");
+                complete_local_streaming(app, &base, key.as_deref(), &model, system, user, max_tokens, stream_event).await
+            }
+            p => try_provider_single(p, client, claude_key, system, user, max_tokens).await,
+        };
+
+        match result {
+            Ok(r) => return Ok(r),
+            Err(e) if e.contains("not configured") || e.contains("no model") => { last_err = e; }
+            Err(e) if is_quota_error(&e) => { last_err = format!("{p} quota exceeded, trying next provider…"); }
+            Err(e) => return Err(e),
+        }
+    }
+
+    Err(format!("All providers failed or are unconfigured. Last error: {last_err}"))
+}
+
 /// Fetch the model list from the local server via the OpenAI-compatible `/v1/models`
 /// endpoint, with an Ollama-native `/api/tags` fallback.
 #[tauri::command]
@@ -882,13 +1325,17 @@ pub async fn get_claude_models() -> Vec<(String, String)> {
         .collect()
 }
 
-/// Build an HTTP client, silently refresh the OAuth token if needed, then
-/// return the (possibly updated) access token ready for API calls.
-async fn claude_client() -> Result<(Client, String), String> {
+/// Builds an HTTP client and returns it with the Anthropic key (if set).
+/// Does NOT require an Anthropic key — the dispatch layer picks the right
+/// provider (Anthropic, Gemini, or local LLM) based on what's configured.
+async fn llm_client() -> Result<(Client, String), String> {
     let client = make_corporate_client(Duration::from_secs(60))?;
-    refresh_oauth_if_needed(&client).await?;
-    let api_key = get_credential("anthropic_api_key")
-        .ok_or("Anthropic API key not configured. Check Settings.")?;
+    // Only refresh OAuth if an Anthropic key is actually present.
+    if get_credential("anthropic_api_key").is_some() {
+        refresh_oauth_if_needed(&client).await?;
+    }
+    // Pass an empty key — dispatch will use the right provider.
+    let api_key = get_credential("anthropic_api_key").unwrap_or_default();
     Ok((client, api_key))
 }
 
@@ -954,6 +1401,115 @@ async fn complete(
         .ok_or_else(|| "Unexpected response shape from Claude API.".to_string())
 }
 
+/// Streaming single-turn completion via the Anthropic Messages API.
+/// Emits `{stream_event}` Tauri events for each text_delta received.
+async fn complete_claude_streaming(
+    app: &tauri::AppHandle,
+    client: &Client,
+    api_key: &str,
+    model: &str,
+    system: &str,
+    user: &str,
+    max_tokens: u32,
+    stream_event: &str,
+) -> Result<String, String> {
+    use futures_util::StreamExt;
+    use tauri::Emitter;
+
+    let body = json!({
+        "model": model,
+        "max_tokens": max_tokens,
+        "stream": true,
+        "system": system,
+        "messages": [{ "role": "user", "content": user }]
+    });
+
+    let req = client
+        .post("https://api.anthropic.com/v1/messages")
+        .header("anthropic-version", "2023-06-01")
+        .header("content-type", "application/json");
+
+    let req = if api_key.starts_with("sk-ant-api") {
+        req.header("x-api-key", api_key)
+    } else {
+        req.header("Authorization", format!("Bearer {api_key}"))
+            .header("anthropic-beta", "oauth-2025-04-20")
+    };
+
+    let resp = req
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| {
+            if e.is_connect() || e.is_timeout() {
+                "Could not reach api.anthropic.com. Check your internet connection.".to_string()
+            } else {
+                format!("Request failed: {e}")
+            }
+        })?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body_text = resp.text().await.unwrap_or_default();
+        return Err(format!("Claude API error {status}: {body_text}"));
+    }
+
+    let mut stream = resp.bytes_stream();
+    let mut full_text = String::new();
+    let mut buffer = String::new();
+
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| format!("Stream read error: {e}"))?;
+        buffer.push_str(&String::from_utf8_lossy(&chunk));
+
+        // Process complete SSE lines
+        while let Some(nl) = buffer.find('\n') {
+            let line = buffer[..nl].trim().to_string();
+            buffer = buffer[nl + 1..].to_string();
+
+            if !line.starts_with("data: ") {
+                continue;
+            }
+            let data = &line["data: ".len()..];
+
+            if let Ok(json) = serde_json::from_str::<serde_json::Value>(data) {
+                // Anthropic streaming event types:
+                // "content_block_delta" with delta.type == "text_delta" carries text
+                let event_type = json["type"].as_str().unwrap_or("");
+                match event_type {
+                    "content_block_delta" => {
+                        if json["delta"]["type"].as_str() == Some("text_delta") {
+                            if let Some(text) = json["delta"]["text"].as_str() {
+                                if !text.is_empty() {
+                                    full_text.push_str(text);
+                                    let _ = app.emit(stream_event, serde_json::json!({
+                                        "delta": text,
+                                        "text": &full_text,
+                                    }));
+                                }
+                            }
+                        }
+                    }
+                    "message_stop" => break,
+                    "error" => {
+                        let msg = json["error"]["message"]
+                            .as_str()
+                            .unwrap_or("Unknown streaming error");
+                        return Err(format!("Claude stream error: {msg}"));
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    if full_text.is_empty() {
+        return Err("Claude returned an empty streaming response.".to_string());
+    }
+
+    Ok(full_text)
+}
+
 /// Multi-turn complete — history_json is a JSON array of {role, content} objects.
 async fn complete_multi(
     client: &Client,
@@ -1012,6 +1568,1039 @@ async fn complete_multi(
         .as_str()
         .map(str::to_string)
         .ok_or_else(|| "Unexpected response shape from Claude API.".to_string())
+}
+
+// ── Tool-use loop ──────────────────────────────────────────────────────────────
+//
+// Conversational agents (triage, grooming chat, checkpoint, PR review chat) run
+// inside an agentic loop that allows them to call tools autonomously — up to
+// MAX_TOOL_ROUNDS times per user turn.
+//
+// Supported tools:
+//   fetch_url        — fetch any public URL as plain text
+//   read_repo_file   — read a file from the configured worktree
+//   grep_repo        — search the worktree by regex pattern
+//   search_jira      — search JIRA by keyword or JQL
+//   get_jira_issue   — fetch a specific JIRA ticket by key
+//   get_pr_diff      — fetch a Bitbucket PR diff by ID
+//   get_pr_comments  — fetch Bitbucket PR comments by ID
+//   git_log          — recent git history (optionally for one file)
+//   search_npm       — query npm registry for a package
+//   search_crates    — query crates.io for a Rust crate
+//   request_tool     — ask the developer to add a new tool to Meridian
+//
+// Provider strategy:
+//   Claude  — native Anthropic tool-use API (tools / tool_use blocks)
+//   Gemini / Local — text-based XML-tag protocol injected into system prompt
+
+const MAX_TOOL_ROUNDS: usize = 8;
+
+// ── Tool definitions ──────────────────────────────────────────────────────────
+
+/// All supported tool names as constants.
+const TOOL_FETCH_URL:       &str = "fetch_url";
+const TOOL_READ_REPO_FILE:  &str = "read_repo_file";
+const TOOL_GREP_REPO:       &str = "grep_repo";
+const TOOL_SEARCH_JIRA:     &str = "search_jira";
+const TOOL_GET_JIRA_ISSUE:  &str = "get_jira_issue";
+const TOOL_GET_PR_DIFF:     &str = "get_pr_diff";
+const TOOL_GET_PR_COMMENTS: &str = "get_pr_comments";
+const TOOL_GIT_LOG:         &str = "git_log";
+const TOOL_SEARCH_NPM:      &str = "search_npm";
+const TOOL_SEARCH_CRATES:   &str = "search_crates";
+const TOOL_REQUEST_TOOL:    &str = "request_tool";
+
+/// The JSON tool definitions sent to Claude on every conversational turn.
+fn all_tools_def() -> serde_json::Value {
+    serde_json::json!([
+        {
+            "name": TOOL_FETCH_URL,
+            "description": "Fetch the plain-text content of any public URL. \
+                Use for API docs, library READMEs, changelogs, GitHub pages, \
+                benchmark comparisons, or any live web resource.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "url": { "type": "string", "description": "Full https:// URL to fetch" }
+                },
+                "required": ["url"]
+            }
+        },
+        {
+            "name": TOOL_READ_REPO_FILE,
+            "description": "Read a source file from the configured local git worktree. \
+                Use when you need to see more code context beyond what was already provided, \
+                e.g. to understand how a function is implemented or what a module exports.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "Relative path from the repo root, e.g. 'src/reports/index.ts'" }
+                },
+                "required": ["path"]
+            }
+        },
+        {
+            "name": TOOL_GREP_REPO,
+            "description": "Search the codebase for a regex pattern using git grep. \
+                Use to find all usages of a function, class, constant, or identifier. \
+                Returns up to 200 matching lines with file paths and line numbers.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "pattern": { "type": "string", "description": "Extended regex pattern to search for" },
+                    "path":    { "type": "string", "description": "Optional subdirectory to restrict the search (e.g. 'src/reports')" }
+                },
+                "required": ["pattern"]
+            }
+        },
+        {
+            "name": TOOL_SEARCH_JIRA,
+            "description": "Search JIRA for related tickets by keyword or JQL. \
+                Use to find duplicate tickets, dependency tickets, or related work \
+                the engineer mentioned. Returns up to 10 matching tickets.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "query": { "type": "string", "description": "Keyword search string or JQL (e.g. 'upsertReportPage' or 'project = FJP AND summary ~ \"undo\"')" }
+                },
+                "required": ["query"]
+            }
+        },
+        {
+            "name": TOOL_GET_JIRA_ISSUE,
+            "description": "Fetch a specific JIRA ticket by its key (e.g. FJP-1234). \
+                Use when the engineer references a ticket you need to read for context.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "key": { "type": "string", "description": "JIRA issue key, e.g. 'FJP-1234'" }
+                },
+                "required": ["key"]
+            }
+        },
+        {
+            "name": TOOL_GET_PR_DIFF,
+            "description": "Fetch the full diff of a Bitbucket pull request by its numeric ID. \
+                Use when the engineer mentions a related PR you need to read.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "pr_id": { "type": "integer", "description": "Numeric Bitbucket PR ID" }
+                },
+                "required": ["pr_id"]
+            }
+        },
+        {
+            "name": TOOL_GET_PR_COMMENTS,
+            "description": "Fetch the comments on a Bitbucket pull request by its numeric ID. \
+                Use to read reviewer feedback on a related PR.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "pr_id": { "type": "integer", "description": "Numeric Bitbucket PR ID" }
+                },
+                "required": ["pr_id"]
+            }
+        },
+        {
+            "name": TOOL_GIT_LOG,
+            "description": "Get recent git commit history from the worktree. \
+                Optionally restrict to a specific file to understand when and why it was last changed. \
+                Returns the last N commits (default 20, max 50).",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "file":       { "type": "string",  "description": "Optional relative file path to filter history" },
+                    "max_commits": { "type": "integer", "description": "Number of commits to return (default 20)" }
+                },
+                "required": []
+            }
+        },
+        {
+            "name": TOOL_SEARCH_NPM,
+            "description": "Search the npm registry for a JavaScript/TypeScript package. \
+                Returns the package description, version, weekly downloads, and homepage. \
+                Use when brainstorming library choices or checking if a package exists.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "package": { "type": "string", "description": "Package name or search term" }
+                },
+                "required": ["package"]
+            }
+        },
+        {
+            "name": TOOL_SEARCH_CRATES,
+            "description": "Search crates.io for a Rust crate. \
+                Returns the crate description, version, downloads, and repository link. \
+                Use when brainstorming Rust library choices.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string", "description": "Crate name or search term" }
+                },
+                "required": ["name"]
+            }
+        },
+        {
+            "name": TOOL_REQUEST_TOOL,
+            "description": "Request that the developer add a new tool to Meridian. \
+                Use this when you genuinely need a capability that none of the existing tools \
+                provide and you cannot complete your task without it. \
+                Be specific: describe exactly what data you need, why no existing tool covers it, \
+                and how it would help you right now.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "name":        { "type": "string", "description": "Short slug for the proposed tool, e.g. 'get_build_logs'" },
+                    "description": { "type": "string", "description": "One sentence: what the tool would do" },
+                    "why_needed":  { "type": "string", "description": "Why no existing tool covers this and what context it would unlock" },
+                    "example_call":{ "type": "string", "description": "A concrete example of how you would call it, e.g. get_build_logs(branch='task/FJP-1234', last_n=50)" }
+                },
+                "required": ["name", "description", "why_needed"]
+            }
+        }
+    ])
+}
+
+/// Text-based tool protocol injected into the system prompt for Gemini / local LLMs.
+/// Each tool is represented as an XML-style self-closing tag.
+const TOOL_SYSTEM_SUFFIX: &str = "\n\n\
+    === AVAILABLE TOOLS ===\n\
+    You have access to the following tools. Use them when they would improve your answer.\n\
+    To call a tool, output ONLY the tag on its own line — nothing else on that line.\n\
+    The system will run the tool and send you the result before you continue.\n\n\
+    fetch_url        — fetch a web page as plain text:\n\
+        <fetch_url url=\"https://example.com\"/>\n\n\
+    read_repo_file   — read a source file from the codebase:\n\
+        <read_repo_file path=\"src/reports/index.ts\"/>\n\n\
+    grep_repo        — search codebase by regex (optional path filter):\n\
+        <grep_repo pattern=\"upsertReportPage\" path=\"src/reports\"/>\n\n\
+    search_jira      — search JIRA by keyword or JQL:\n\
+        <search_jira query=\"undo redo reports\"/>\n\n\
+    get_jira_issue   — fetch a specific JIRA ticket:\n\
+        <get_jira_issue key=\"FJP-1234\"/>\n\n\
+    get_pr_diff      — fetch a Bitbucket PR diff:\n\
+        <get_pr_diff pr_id=\"456\"/>\n\n\
+    get_pr_comments  — fetch comments on a Bitbucket PR:\n\
+        <get_pr_comments pr_id=\"456\"/>\n\n\
+    git_log          — recent git history (optional file and count):\n\
+        <git_log file=\"src/reports/index.ts\" max_commits=\"20\"/>\n\n\
+    search_npm       — search npm registry for a JS/TS package:\n\
+        <search_npm package=\"zustand\"/>\n\n\
+    search_crates    — search crates.io for a Rust crate:\n\
+        <search_crates name=\"serde\"/>\n\n\
+    request_tool     — ask the developer to add a new Meridian tool:\n\
+        <request_tool name=\"get_build_logs\" description=\"Fetch CI build logs for a branch\" why_needed=\"I need to check why the build is failing but have no way to read CI output\" example_call=\"get_build_logs(branch='task/FJP-1234', last_n=50)\"/>\n\n\
+    Rules:\n\
+    - Call at most one tool per response turn.\n\
+    - Stop after outputting the tag — do not continue until you receive the result.\n\
+    - If a tool fails, say so and answer from your existing knowledge instead.\n\
+    - Do NOT call a tool if you can answer accurately from the context already provided.";
+
+// ── Tool execution ─────────────────────────────────────────────────────────────
+
+/// Execute any supported tool given its name and JSON input, returning the result as a String.
+async fn execute_tool(name: &str, input: &serde_json::Value) -> String {
+    match name {
+        TOOL_FETCH_URL => {
+            let url = input["url"].as_str().unwrap_or("");
+            if url.is_empty() { return "[fetch_url: missing url]".to_string(); }
+            use crate::commands::fetch_url::fetch_url_content;
+            match fetch_url_content(url.to_string()).await {
+                Ok(c) => c,
+                Err(e) => format!("[fetch_url failed: {e}]"),
+            }
+        }
+
+        TOOL_READ_REPO_FILE => {
+            let path = input["path"].as_str().unwrap_or("");
+            if path.is_empty() { return "[read_repo_file: missing path]".to_string(); }
+            use crate::commands::repo::read_repo_file;
+            match read_repo_file(path.to_string()).await {
+                Ok(c) => format!("=== {path} ===\n{c}"),
+                Err(e) => format!("[read_repo_file failed for '{path}': {e}]"),
+            }
+        }
+
+        TOOL_GREP_REPO => {
+            let pattern = input["pattern"].as_str().unwrap_or("").to_string();
+            let path    = input["path"].as_str().map(str::to_string);
+            if pattern.is_empty() { return "[grep_repo: missing pattern]".to_string(); }
+            use crate::commands::repo::grep_repo_files;
+            match grep_repo_files(pattern.clone(), path).await {
+                Ok(lines) if lines.is_empty() => format!("[grep_repo: no matches for '{pattern}']"),
+                Ok(lines) => {
+                    // Cap the tool result at ~12 KB so it never overwhelms the context window.
+                    // grep_repo_files already caps at 200 lines but lines can be long.
+                    const MAX_GREP_BYTES: usize = 12 * 1024;
+                    let joined = lines.join("\n");
+                    if joined.len() > MAX_GREP_BYTES {
+                        format!(
+                            "{}\n\n[… grep output truncated at 12 KB — use a more specific pattern or path to narrow results …]",
+                            &joined[..MAX_GREP_BYTES]
+                        )
+                    } else {
+                        joined
+                    }
+                }
+                Err(e) => format!("[grep_repo failed: {e}]"),
+            }
+        }
+
+        TOOL_SEARCH_JIRA => {
+            let query = input["query"].as_str().unwrap_or("").to_string();
+            if query.is_empty() { return "[search_jira: missing query]".to_string(); }
+            use crate::commands::jira::search_jira_issues;
+            match search_jira_issues(query.clone(), 10).await {
+                Ok(issues) if issues.is_empty() => format!("[search_jira: no results for '{query}']"),
+                Ok(issues) => {
+                    let mut out = format!("JIRA search results for '{query}':\n\n");
+                    for issue in &issues {
+                        out.push_str(&format!(
+                            "## {} — {}\nType: {} | Status: {} | Points: {}\n{}\n\n",
+                            issue.key,
+                            issue.summary,
+                            issue.issue_type,
+                            issue.status,
+                            issue.story_points.map_or("?".to_string(), |p| p.to_string()),
+                            issue.description.as_deref().unwrap_or("(no description)"),
+                        ));
+                    }
+                    out
+                }
+                Err(e) => format!("[search_jira failed: {e}]"),
+            }
+        }
+
+        TOOL_GET_JIRA_ISSUE => {
+            let key = input["key"].as_str().unwrap_or("").to_string();
+            if key.is_empty() { return "[get_jira_issue: missing key]".to_string(); }
+            use crate::commands::jira::get_issue;
+            match get_issue(key.clone()).await {
+                Ok(issue) => format!(
+                    "## {} — {}\nType: {} | Status: {} | Points: {}\n\nDescription:\n{}\n\nAcceptance Criteria:\n{}",
+                    issue.key,
+                    issue.summary,
+                    issue.issue_type,
+                    issue.status,
+                    issue.story_points.map_or("?".to_string(), |p| p.to_string()),
+                    issue.description.as_deref().unwrap_or("(none)"),
+                    issue.acceptance_criteria.as_deref().unwrap_or("(none)"),
+                ),
+                Err(e) => format!("[get_jira_issue failed for '{key}': {e}]"),
+            }
+        }
+
+        TOOL_GET_PR_DIFF => {
+            let pr_id = match input["pr_id"].as_i64() {
+                Some(id) => id,
+                None => return "[get_pr_diff: missing or invalid pr_id]".to_string(),
+            };
+            use crate::commands::bitbucket::get_pr_diff;
+            match get_pr_diff(pr_id).await {
+                Ok(diff) => {
+                    // Cap diff at 80 KB so it doesn't swamp the context
+                    const MAX: usize = 80 * 1024;
+                    if diff.len() > MAX {
+                        format!("{}\n\n[diff truncated at 80 KB]", &diff[..MAX])
+                    } else {
+                        diff
+                    }
+                }
+                Err(e) => format!("[get_pr_diff failed for PR {pr_id}: {e}]"),
+            }
+        }
+
+        TOOL_GET_PR_COMMENTS => {
+            let pr_id = match input["pr_id"].as_i64() {
+                Some(id) => id,
+                None => return "[get_pr_comments: missing or invalid pr_id]".to_string(),
+            };
+            use crate::commands::bitbucket::get_pr_comments;
+            match get_pr_comments(pr_id).await {
+                Ok(comments) if comments.is_empty() => format!("[No comments on PR {pr_id}]"),
+                Ok(comments) => {
+                    let mut out = format!("Comments on PR {pr_id}:\n\n");
+                    for c in comments.iter().take(50) {
+                        let loc = c.inline.as_ref()
+                            .map(|i| format!(" ({}{})", i.path, i.to_line.map_or(String::new(), |l| format!(" L{l}"))))
+                            .unwrap_or_default();
+                        out.push_str(&format!(
+                            "[{}{}]: {}\n\n",
+                            c.author.display_name,
+                            loc,
+                            c.content,
+                        ));
+                    }
+                    out
+                }
+                Err(e) => format!("[get_pr_comments failed for PR {pr_id}: {e}]"),
+            }
+        }
+
+        TOOL_GIT_LOG => {
+            let file = input["file"].as_str();
+            let max  = input["max_commits"].as_u64().unwrap_or(20).min(50) as u32;
+            use crate::commands::repo::{get_repo_log, get_file_history};
+            let result = if let Some(f) = file {
+                get_file_history(f.to_string(), max).await
+            } else {
+                get_repo_log(max).await
+            };
+            match result {
+                Ok(log) => log,
+                Err(e) => format!("[git_log failed: {e}]"),
+            }
+        }
+
+        TOOL_SEARCH_NPM => {
+            let package = input["package"].as_str().unwrap_or("").trim().to_string();
+            if package.is_empty() { return "[search_npm: missing package name]".to_string(); }
+            search_npm_registry(&package).await
+        }
+
+        TOOL_SEARCH_CRATES => {
+            let name = input["name"].as_str().unwrap_or("").trim().to_string();
+            if name.is_empty() { return "[search_crates: missing crate name]".to_string(); }
+            search_crates_io(&name).await
+        }
+
+        TOOL_REQUEST_TOOL => {
+            // No execution — just surface the request as structured JSON so the
+            // frontend can render a special card. Return an acknowledgement so the
+            // model can write its final reply explaining the situation.
+            let name        = input["name"].as_str().unwrap_or("(unnamed)");
+            let description = input["description"].as_str().unwrap_or("");
+            let why_needed  = input["why_needed"].as_str().unwrap_or("");
+            let example     = input["example_call"].as_str().unwrap_or("");
+            format!(
+                "[tool_request_received]\n\
+                 Your request for the '{}' tool has been surfaced to the developer in the UI.\n\
+                 Tool: {}\n\
+                 Why needed: {}\n\
+                 Example: {}\n\
+                 Please continue your response explaining what you cannot do without this tool \
+                 and what you'll do in the meantime.",
+                name, description, why_needed, example
+            )
+        }
+
+        other => format!("[Unknown tool: {other}]"),
+    }
+}
+
+// ── Package registry helpers ───────────────────────────────────────────────────
+
+async fn search_npm_registry(package: &str) -> String {
+    use crate::http::make_corporate_client;
+    let client = match make_corporate_client(std::time::Duration::from_secs(10)) {
+        Ok(c) => c,
+        Err(e) => return format!("[search_npm: http client error: {e}]"),
+    };
+    let url = format!("https://registry.npmjs.org/-/v1/search?text={}&size=5",
+        urlencoding_simple(package));
+    match client.get(&url).send().await {
+        Ok(resp) if resp.status().is_success() => {
+            match resp.json::<serde_json::Value>().await {
+                Ok(json) => {
+                    let objects = json["objects"].as_array()
+                        .cloned()
+                        .unwrap_or_default();
+                    if objects.is_empty() {
+                        return format!("[search_npm: no results for '{package}']");
+                    }
+                    let mut out = format!("npm search results for '{package}':\n\n");
+                    for obj in objects.iter().take(5) {
+                        let p = &obj["package"];
+                        let name    = p["name"].as_str().unwrap_or("?");
+                        let version = p["version"].as_str().unwrap_or("?");
+                        let desc    = p["description"].as_str().unwrap_or("(no description)");
+                        let weekly  = obj["score"]["detail"]["popularity"].as_f64()
+                            .map(|v| format!("{:.0}%", v * 100.0))
+                            .unwrap_or_else(|| "?".to_string());
+                        let links   = p["links"]["npm"].as_str().unwrap_or("");
+                        out.push_str(&format!(
+                            "**{name}** v{version}\n{desc}\nPopularity: {weekly} | {links}\n\n"
+                        ));
+                    }
+                    out
+                }
+                Err(e) => format!("[search_npm: parse error: {e}]"),
+            }
+        }
+        Ok(resp) => format!("[search_npm: HTTP {}]", resp.status()),
+        Err(e) => format!("[search_npm: request failed: {e}]"),
+    }
+}
+
+async fn search_crates_io(name: &str) -> String {
+    use crate::http::make_corporate_client;
+    let client = match make_corporate_client(std::time::Duration::from_secs(10)) {
+        Ok(c) => c,
+        Err(e) => return format!("[search_crates: http client error: {e}]"),
+    };
+    let url = format!("https://crates.io/api/v1/crates?q={}&per_page=5",
+        urlencoding_simple(name));
+    match client
+        .get(&url)
+        .header("User-Agent", "Meridian/1.0 (https://github.com/meridian-app)")
+        .send()
+        .await
+    {
+        Ok(resp) if resp.status().is_success() => {
+            match resp.json::<serde_json::Value>().await {
+                Ok(json) => {
+                    let crates = json["crates"].as_array()
+                        .cloned()
+                        .unwrap_or_default();
+                    if crates.is_empty() {
+                        return format!("[search_crates: no results for '{name}']");
+                    }
+                    let mut out = format!("crates.io search results for '{name}':\n\n");
+                    for c in crates.iter().take(5) {
+                        let cname     = c["name"].as_str().unwrap_or("?");
+                        let version   = c["newest_version"].as_str().unwrap_or("?");
+                        let desc      = c["description"].as_str().unwrap_or("(no description)");
+                        let downloads = c["downloads"].as_u64().unwrap_or(0);
+                        let repo      = c["repository"].as_str().unwrap_or("");
+                        out.push_str(&format!(
+                            "**{cname}** v{version}\n{desc}\nDownloads: {downloads} | {repo}\n\n"
+                        ));
+                    }
+                    out
+                }
+                Err(e) => format!("[search_crates: parse error: {e}]"),
+            }
+        }
+        Ok(resp) => format!("[search_crates: HTTP {}]", resp.status()),
+        Err(e) => format!("[search_crates: request failed: {e}]"),
+    }
+}
+
+/// Minimal percent-encoding for URL query parameters (encodes spaces and special chars).
+fn urlencoding_simple(s: &str) -> String {
+    s.chars().map(|c| match c {
+        'A'..='Z' | 'a'..='z' | '0'..='9' | '-' | '_' | '.' | '~' => c.to_string(),
+        ' ' => "+".to_string(),
+        c => format!("%{:02X}", c as u32),
+    }).collect()
+}
+
+// ── Text-based tool tag extraction (Gemini / local) ───────────────────────────
+
+/// Represents a parsed tool call from text-based protocol output.
+struct TextToolCall {
+    name: String,
+    input: serde_json::Value,
+    /// The full tag string to strip from visible output
+    tag: String,
+}
+
+/// Extract any supported tool tag from a model reply.
+/// Returns the first tool call found, or None if the reply is a plain text response.
+fn extract_text_tool_call(text: &str) -> Option<TextToolCall> {
+    // Helper: extract attribute value from tag string
+    fn attr<'a>(tag: &'a str, name: &str) -> Option<&'a str> {
+        let dq = format!(r#"{}=""#, name);
+        let sq = format!(r#"{}='"#, name);
+        if let Some(start) = tag.find(&dq) {
+            let rest = &tag[start + dq.len()..];
+            rest.find('"').map(|end| &rest[..end])
+        } else if let Some(start) = tag.find(&sq) {
+            let rest = &tag[start + sq.len()..];
+            rest.find('\'').map(|end| &rest[..end])
+        } else {
+            None
+        }
+    }
+
+    // Find first < ... /> block that looks like one of our tool tags
+    let tools = [
+        TOOL_FETCH_URL, TOOL_READ_REPO_FILE, TOOL_GREP_REPO,
+        TOOL_SEARCH_JIRA, TOOL_GET_JIRA_ISSUE, TOOL_GET_PR_DIFF,
+        TOOL_GET_PR_COMMENTS, TOOL_GIT_LOG, TOOL_SEARCH_NPM, TOOL_SEARCH_CRATES,
+        TOOL_REQUEST_TOOL,
+    ];
+
+    for tool in &tools {
+        let open = format!("<{tool}");
+        if let Some(start) = text.find(&open) {
+            if let Some(rel_end) = text[start..].find("/>") {
+                let end = start + rel_end + 2;
+                let tag_str = &text[start..end];
+
+                let input = match *tool {
+                    TOOL_FETCH_URL => {
+                        let url = attr(tag_str, "url").unwrap_or("");
+                        serde_json::json!({ "url": url })
+                    }
+                    TOOL_READ_REPO_FILE => {
+                        let path = attr(tag_str, "path").unwrap_or("");
+                        serde_json::json!({ "path": path })
+                    }
+                    TOOL_GREP_REPO => {
+                        let pattern = attr(tag_str, "pattern").unwrap_or("");
+                        let path    = attr(tag_str, "path");
+                        serde_json::json!({ "pattern": pattern, "path": path })
+                    }
+                    TOOL_SEARCH_JIRA => {
+                        let query = attr(tag_str, "query").unwrap_or("");
+                        serde_json::json!({ "query": query })
+                    }
+                    TOOL_GET_JIRA_ISSUE => {
+                        let key = attr(tag_str, "key").unwrap_or("");
+                        serde_json::json!({ "key": key })
+                    }
+                    TOOL_GET_PR_DIFF | TOOL_GET_PR_COMMENTS => {
+                        let pr_id: i64 = attr(tag_str, "pr_id")
+                            .and_then(|s| s.parse().ok())
+                            .unwrap_or(0);
+                        serde_json::json!({ "pr_id": pr_id })
+                    }
+                    TOOL_GIT_LOG => {
+                        let file = attr(tag_str, "file");
+                        let max: u64 = attr(tag_str, "max_commits")
+                            .and_then(|s| s.parse().ok())
+                            .unwrap_or(20);
+                        serde_json::json!({ "file": file, "max_commits": max })
+                    }
+                    TOOL_SEARCH_NPM => {
+                        let package = attr(tag_str, "package").unwrap_or("");
+                        serde_json::json!({ "package": package })
+                    }
+                    TOOL_SEARCH_CRATES => {
+                        let name = attr(tag_str, "name").unwrap_or("");
+                        serde_json::json!({ "name": name })
+                    }
+                    TOOL_REQUEST_TOOL => {
+                        let name        = attr(tag_str, "name").unwrap_or("");
+                        let description = attr(tag_str, "description").unwrap_or("");
+                        let why_needed  = attr(tag_str, "why_needed").unwrap_or("");
+                        let example     = attr(tag_str, "example_call").unwrap_or("");
+                        serde_json::json!({
+                            "name": name,
+                            "description": description,
+                            "why_needed": why_needed,
+                            "example_call": example
+                        })
+                    }
+                    _ => serde_json::json!({}),
+                };
+
+                return Some(TextToolCall {
+                    name: tool.to_string(),
+                    input,
+                    tag: tag_str.to_string(),
+                });
+            }
+        }
+    }
+    None
+}
+
+/// Strip a tool tag from the visible reply.
+fn strip_tool_tag(text: &str, tag: &str) -> String {
+    // Remove the line containing the tag (and any surrounding blank line)
+    text.replace(tag, "").trim().to_string()
+}
+
+/// Human-readable label for what a tool call is doing (shown in the stream).
+fn tool_progress_label(name: &str, input: &serde_json::Value) -> String {
+    match name {
+        TOOL_FETCH_URL =>       format!("Fetching {}…", input["url"].as_str().unwrap_or("URL")),
+        TOOL_READ_REPO_FILE =>  format!("Reading {}…", input["path"].as_str().unwrap_or("file")),
+        TOOL_GREP_REPO =>       format!("Searching codebase for '{}'…", input["pattern"].as_str().unwrap_or("")),
+        TOOL_SEARCH_JIRA =>     format!("Searching JIRA for '{}'…", input["query"].as_str().unwrap_or("")),
+        TOOL_GET_JIRA_ISSUE =>  format!("Fetching ticket {}…", input["key"].as_str().unwrap_or("")),
+        TOOL_GET_PR_DIFF =>     format!("Fetching PR {} diff…", input["pr_id"]),
+        TOOL_GET_PR_COMMENTS => format!("Fetching PR {} comments…", input["pr_id"]),
+        TOOL_GIT_LOG => {
+            match input["file"].as_str() {
+                Some(f) => format!("Reading git history for {f}…"),
+                None    => "Reading git history…".to_string(),
+            }
+        }
+        TOOL_SEARCH_NPM =>    format!("Searching npm for '{}'…", input["package"].as_str().unwrap_or("")),
+        TOOL_SEARCH_CRATES => format!("Searching crates.io for '{}'…", input["name"].as_str().unwrap_or("")),
+        TOOL_REQUEST_TOOL =>  format!("Requesting new tool: '{}'…", input["name"].as_str().unwrap_or("")),
+        other => format!("Running tool {other}…"),
+    }
+}
+
+// ── Claude native tool-use streaming agentic loop ─────────────────────────────
+
+/// Streaming multi-turn with Claude's native tool-use API.
+/// Runs up to MAX_TOOL_ROUNDS. Each round either produces a final text reply
+/// or a tool_use block (execute tool → inject result → next round).
+async fn complete_multi_claude_tool_loop(
+    app: &tauri::AppHandle,
+    client: &Client,
+    api_key: &str,
+    model: &str,
+    system: &str,
+    history_json: &str,
+    max_tokens: u32,
+    stream_event: &str,
+) -> Result<String, String> {
+    use futures_util::StreamExt;
+    use tauri::Emitter;
+
+    let tools_def = all_tools_def();
+
+    let base_messages: serde_json::Value = serde_json::from_str(history_json)
+        .map_err(|e| format!("Invalid history JSON: {e}"))?;
+
+    let mut messages: Vec<serde_json::Value> = base_messages
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+
+    // Accumulates the full visible conversation across all rounds so the stream
+    // "text" field (which the frontend displays) always shows the complete
+    // history — earlier thinking is never overwritten by later rounds.
+    let mut accumulated_text = String::new();
+    let mut final_text = String::new();
+
+    for round in 0..MAX_TOOL_ROUNDS {
+        let body = serde_json::json!({
+            "model": model,
+            "max_tokens": max_tokens,
+            "stream": true,
+            "system": system,
+            "messages": messages,
+            "tools": tools_def,
+        });
+
+        let req = client
+            .post("https://api.anthropic.com/v1/messages")
+            .header("anthropic-version", "2023-06-01")
+            .header("content-type", "application/json");
+
+        let req = if api_key.starts_with("sk-ant-api") {
+            req.header("x-api-key", api_key)
+        } else {
+            req.header("Authorization", format!("Bearer {api_key}"))
+                .header("anthropic-beta", "oauth-2025-04-20")
+        };
+
+        let resp = req.json(&body).send().await.map_err(|e| {
+            if e.is_connect() || e.is_timeout() {
+                "Could not reach api.anthropic.com. Check your internet connection.".to_string()
+            } else {
+                format!("Request failed: {e}")
+            }
+        })?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body_text = resp.text().await.unwrap_or_default();
+            return Err(format!("Claude API error {status}: {body_text}"));
+        }
+
+        let mut stream = resp.bytes_stream();
+        let mut buffer = String::new();
+        let mut round_text = String::new();
+
+        let mut tool_use_id: Option<String> = None;
+        let mut tool_name: Option<String> = None;
+        let mut tool_input_json = String::new();
+        let mut stop_reason: Option<String> = None;
+        let mut tool_block_index: Option<u64> = None;
+
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(|e| format!("Stream read error: {e}"))?;
+            buffer.push_str(&String::from_utf8_lossy(&chunk));
+
+            while let Some(nl) = buffer.find('\n') {
+                let line = buffer[..nl].trim().to_string();
+                buffer = buffer[nl + 1..].to_string();
+
+                if !line.starts_with("data: ") { continue; }
+                let data = &line["data: ".len()..];
+
+                if let Ok(json) = serde_json::from_str::<serde_json::Value>(data) {
+                    match json["type"].as_str().unwrap_or("") {
+                        "message_delta" => {
+                            if let Some(reason) = json["delta"]["stop_reason"].as_str() {
+                                stop_reason = Some(reason.to_string());
+                            }
+                        }
+                        "content_block_start" => {
+                            let block = &json["content_block"];
+                            if block["type"].as_str() == Some("tool_use") {
+                                tool_use_id = block["id"].as_str().map(str::to_string);
+                                tool_name = block["name"].as_str().map(str::to_string);
+                                tool_input_json.clear();
+                                tool_block_index = json["index"].as_u64();
+                            }
+                        }
+                        "content_block_delta" => {
+                            let delta = &json["delta"];
+                            match delta["type"].as_str().unwrap_or("") {
+                                "text_delta" => {
+                                    if let Some(text) = delta["text"].as_str() {
+                                        if !text.is_empty() {
+                                            round_text.push_str(text);
+                                            accumulated_text.push_str(text);
+                                            let _ = app.emit(stream_event, serde_json::json!({
+                                                "delta": text,
+                                                "text": &accumulated_text,
+                                            }));
+                                        }
+                                    }
+                                }
+                                "input_json_delta" => {
+                                    if json["index"].as_u64() == tool_block_index {
+                                        if let Some(partial) = delta["partial_json"].as_str() {
+                                            tool_input_json.push_str(partial);
+                                        }
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+                        "message_stop" => {}
+                        "error" => {
+                            let msg = json["error"]["message"]
+                                .as_str()
+                                .unwrap_or("Unknown streaming error");
+                            return Err(format!("Claude stream error: {msg}"));
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+
+        // ── Determine what to do next ──────────────────────────────────────────
+        let used_tool = stop_reason.as_deref() == Some("tool_use") && tool_use_id.is_some();
+
+        if used_tool {
+            let name     = tool_name.clone().unwrap_or_default();
+            let tool_id  = tool_use_id.clone().unwrap_or_default();
+            let input: serde_json::Value = serde_json::from_str(&tool_input_json)
+                .unwrap_or(serde_json::json!({}));
+
+            let label = tool_progress_label(&name, &input);
+            // Append the tool-running label to the accumulated text so the user
+            // can see what the agent is doing without losing the preceding text.
+            let tool_separator = format!("\n\n[{}]\n", label);
+            accumulated_text.push_str(&tool_separator);
+            let _ = app.emit(stream_event, serde_json::json!({
+                "delta": &tool_separator,
+                "text":  &accumulated_text,
+            }));
+
+            let result = execute_tool(&name, &input).await;
+
+            // If the agent requested a new tool, emit a dedicated event so the
+            // frontend can render a tool-request card in the chat UI.
+            if name == TOOL_REQUEST_TOOL {
+                let _ = app.emit("agent-tool-request", serde_json::json!({
+                    "name":        input["name"].as_str().unwrap_or(""),
+                    "description": input["description"].as_str().unwrap_or(""),
+                    "why_needed":  input["why_needed"].as_str().unwrap_or(""),
+                    "example_call":input["example_call"].as_str().unwrap_or(""),
+                }));
+            }
+
+            messages.push(serde_json::json!({
+                "role": "assistant",
+                "content": [
+                    { "type": "text", "text": round_text },
+                    { "type": "tool_use", "id": tool_id, "name": name, "input": input }
+                ]
+            }));
+            messages.push(serde_json::json!({
+                "role": "user",
+                "content": [{
+                    "type": "tool_result",
+                    "tool_use_id": tool_id,
+                    "content": result,
+                }]
+            }));
+
+            if round + 1 == MAX_TOOL_ROUNDS {
+                final_text = accumulated_text.clone();
+                break;
+            }
+        } else {
+            // No tool used — this is the final reply. accumulated_text already
+            // contains everything (pre-tool thinking + tool labels + this reply).
+            final_text = accumulated_text.clone();
+            break;
+        }
+    }
+
+    if final_text.is_empty() {
+        return Err("Claude returned an empty streaming response.".to_string());
+    }
+    Ok(final_text)
+}
+
+// ── Text-based tool protocol for Gemini / local LLMs ─────────────────────────
+
+/// Multi-turn streaming with text-based tool tag detection.
+/// Works with Gemini and local LLMs via the TOOL_SYSTEM_SUFFIX protocol.
+async fn complete_multi_text_tool_loop(
+    app: &tauri::AppHandle,
+    client: &Client,
+    claude_key: &str,
+    provider: &str,
+    system: &str,
+    history_json: &str,
+    max_tokens: u32,
+    stream_event: &str,
+) -> Result<String, String> {
+    use tauri::Emitter;
+
+    let augmented_system = format!("{system}{TOOL_SYSTEM_SUFFIX}");
+    let mut current_history = history_json.to_string();
+    // Accumulates visible text across all rounds so earlier thinking is never
+    // lost when the agent calls a tool and continues in a new round.
+    let mut accumulated_text = String::new();
+    let mut final_text = String::new();
+
+    for round in 0..MAX_TOOL_ROUNDS {
+        let reply = match provider {
+            "claude" => {
+                complete_multi_claude_streaming(
+                    app, client, claude_key, &get_active_model(),
+                    &augmented_system, &current_history, max_tokens, stream_event,
+                ).await?
+            }
+            "local" => {
+                let base = local_llm_base_url()
+                    .ok_or_else(|| "Local LLM: not configured.".to_string())?;
+                let model = get_local_llm_model()
+                    .ok_or_else(|| "Local LLM: no model selected.".to_string())?;
+                let key = get_credential("local_llm_api_key");
+                complete_multi_local_streaming(
+                    app, &base, key.as_deref(), &model,
+                    &augmented_system, &current_history, max_tokens, stream_event,
+                ).await?
+            }
+            "gemini" => {
+                let key = get_credential("gemini_api_key")
+                    .ok_or_else(|| "Gemini: not configured.".to_string())?;
+                complete_multi_gemini(
+                    client, &key, &get_active_gemini_model(),
+                    &augmented_system, &current_history, max_tokens,
+                ).await?
+            }
+            p => return Err(format!("Unknown provider: {p}")),
+        };
+
+        if let Some(call) = extract_text_tool_call(&reply) {
+            let visible_reply = strip_tool_tag(&reply, &call.tag);
+            let label = tool_progress_label(&call.name, &call.input);
+
+            // Append this round's visible text to the accumulator
+            if !visible_reply.is_empty() {
+                if !accumulated_text.is_empty() {
+                    accumulated_text.push('\n');
+                }
+                accumulated_text.push_str(&visible_reply);
+            }
+
+            // Append the tool-running separator and emit the cumulative text
+            let tool_separator = format!("\n\n[{}]\n", label);
+            accumulated_text.push_str(&tool_separator);
+            let _ = app.emit(stream_event, serde_json::json!({
+                "delta": &tool_separator,
+                "text":  &accumulated_text,
+            }));
+
+            let result = execute_tool(&call.name, &call.input).await;
+
+            // Emit dedicated event for tool requests
+            if call.name == TOOL_REQUEST_TOOL {
+                let _ = app.emit("agent-tool-request", serde_json::json!({
+                    "name":        call.input["name"].as_str().unwrap_or(""),
+                    "description": call.input["description"].as_str().unwrap_or(""),
+                    "why_needed":  call.input["why_needed"].as_str().unwrap_or(""),
+                    "example_call":call.input["example_call"].as_str().unwrap_or(""),
+                }));
+            }
+
+            let mut history: Vec<serde_json::Value> =
+                serde_json::from_str(&current_history).unwrap_or_default();
+            history.push(serde_json::json!({ "role": "assistant", "content": visible_reply }));
+            history.push(serde_json::json!({
+                "role": "user",
+                "content": format!("[Tool result: {}]\n\n{}", label, result)
+            }));
+            current_history = serde_json::to_string(&history)
+                .unwrap_or_else(|_| current_history.clone());
+
+            if round + 1 == MAX_TOOL_ROUNDS {
+                final_text = accumulated_text.clone();
+                break;
+            }
+        } else {
+            // No tool — final reply. Append to accumulator and return the whole thing.
+            if !accumulated_text.is_empty() {
+                accumulated_text.push('\n');
+            }
+            accumulated_text.push_str(&reply);
+            final_text = accumulated_text.clone();
+            break;
+        }
+    }
+
+    if final_text.is_empty() {
+        return Err("LLM returned an empty response.".to_string());
+    }
+    Ok(final_text)
+}
+
+/// Top-level agentic multi-turn streaming dispatch with full tool suite.
+async fn dispatch_multi_streaming_with_tools(
+    app: &tauri::AppHandle,
+    client: &Client,
+    claude_key: &str,
+    system: &str,
+    history_json: &str,
+    max_tokens: u32,
+    stream_event: &str,
+) -> Result<String, String> {
+    let provider = get_ai_provider();
+
+    let providers_to_try: Vec<String> = if provider == "auto" {
+        get_provider_order()
+    } else {
+        vec![provider]
+    };
+
+    let mut last_err = "No providers configured.".to_string();
+
+    for p in &providers_to_try {
+        let result = match p.as_str() {
+            "claude" if !claude_key.is_empty() => {
+                complete_multi_claude_tool_loop(
+                    app, client, claude_key, &get_active_model(),
+                    system, history_json, max_tokens, stream_event,
+                ).await
+            }
+            "claude" => Err("Claude: not configured.".to_string()),
+            other => {
+                complete_multi_text_tool_loop(
+                    app, client, claude_key, other,
+                    system, history_json, max_tokens, stream_event,
+                ).await
+            }
+        };
+
+        match result {
+            Ok(r) => return Ok(r),
+            Err(e) if e.contains("not configured") || e.contains("no model") => { last_err = e; }
+            Err(e) if is_quota_error(&e) => { last_err = format!("{p} quota exceeded, trying next provider…"); }
+            Err(e) => return Err(e),
+        }
+    }
+
+    Err(format!("All providers failed or are unconfigured. Last error: {last_err}"))
 }
 
 // ── Agent pipeline commands ────────────────────────────────────────────────────
@@ -1164,32 +2753,112 @@ async fn dispatch_multi(
 }
 
 
-/// Agent 1 — Grooming: analyse ticket and identify relevant code areas.
+/// Agent 1a — Grooming File Probe: ask Claude which files to read before full grooming.
+/// Returns JSON: { "files": ["path/to/file", ...], "grep_patterns": ["pattern", ...] }
 #[tauri::command]
-pub async fn run_grooming_agent(ticket_text: String) -> Result<String, String> {
-    let (client, api_key) = claude_client().await?;
-    let system = "You are a grooming agent helping a senior engineer understand a JIRA ticket. \
-        Analyse the ticket thoroughly and return ONLY valid JSON (no markdown fences) with this schema:\n\
+pub async fn run_grooming_file_probe(app: tauri::AppHandle, ticket_text: String) -> Result<String, String> {
+    use tauri::Emitter;
+    let _ = app.emit("grooming-progress", serde_json::json!({
+        "phase": "probe",
+        "message": "Identifying relevant files in the codebase…"
+    }));
+    let (client, api_key) = llm_client().await?;
+    let system = "You are a codebase navigation agent. Given a JIRA ticket, identify the \
+        source files most relevant to understanding and implementing it. \
+        Return ONLY valid JSON (no markdown fences, no explanation) with exactly this schema:\n\
+        {\n\
+          \"files\": [\"<relative path from repo root>\", ...],\n\
+          \"grep_patterns\": [\"<regex to search for relevant symbols/functions>\", ...]\n\
+        }\n\
+        Rules:\n\
+        - List at most 12 files and 6 grep patterns\n\
+        - Paths should be relative (e.g. \"src/reports/ReportEditor.tsx\"), not absolute\n\
+        - Grep patterns should target specific function names, class names, or identifiers mentioned in the ticket\n\
+        - If a CODEBASE CONTEXT section is provided, use the worktree path information to form accurate paths\n\
+        - Do not include test files, lock files, or generated files\n\
+        - Return an empty arrays if the ticket is too vague to identify specific files";
+    let user = format!("Identify relevant files for this ticket:\n\n{ticket_text}");
+    dispatch_streaming(&app, &client, &api_key, system, &user, 600, "grooming-stream").await
+}
+
+/// Agent 1 — Grooming: analyse ticket and identify relevant code areas.
+/// file_contents is the injected codebase context (file contents from the probe phase).
+#[tauri::command]
+pub async fn run_grooming_agent(app: tauri::AppHandle, ticket_text: String, file_contents: String) -> Result<String, String> {
+    use tauri::Emitter;
+    let (client, api_key) = llm_client().await?;
+
+    let file_block = if file_contents.trim().is_empty() {
+        let _ = app.emit("grooming-progress", serde_json::json!({
+            "phase": "analysis",
+            "message": "Analysing ticket (no codebase context — configure a worktree in Settings to enable codebase reading)…"
+        }));
+        String::new()
+    } else {
+        let file_count = file_contents.matches("--- ").count();
+        let _ = app.emit("grooming-progress", serde_json::json!({
+            "phase": "analysis",
+            "message": format!("Analysing ticket with {} codebase context block{}…", file_count, if file_count == 1 { "" } else { "s" })
+        }));
+        format!("\n\n=== RELEVANT FILE CONTENTS (read from codebase) ===\n{file_contents}")
+    };
+
+    let system = "You are a grooming agent helping a senior engineer understand and refine a JIRA ticket. \
+        You have been given the ticket details and relevant source code from the codebase. \
+        Your job is twofold:\n\
+        1. Analyse the ticket and produce a structured grooming summary\n\
+        2. Identify any gaps, inaccuracies, or missing sections in the ticket and suggest concrete improvements\n\n\
+        For each suggested edit:\n\
+        - Compare what the ticket currently says against what the code actually does\n\
+        - Propose a specific, concrete replacement (not vague advice)\n\
+        - For missing sections (e.g. no Acceptance Criteria on a Story, no Steps to Reproduce on a Bug), \
+          draft what should be there based on the code context — or raise a clarifying_question if you genuinely cannot determine it\n\n\
+        Return ONLY valid JSON (no markdown fences) with this schema:\n\
         {\n\
           \"ticket_summary\": \"<2-3 sentence summary of what the ticket is asking for>\",\n\
           \"ticket_type\": \"feature|bug|chore|spike\",\n\
           \"acceptance_criteria\": [\"<criterion>\", ...],\n\
           \"relevant_areas\": [\n\
-            {\"area\": \"<module or layer>\", \"reason\": \"<why relevant>\", \"files_to_check\": [\"<path hint>\"]}\n\
+            {\"area\": \"<module or layer>\", \"reason\": \"<why relevant>\", \"files_to_check\": [\"<path>\"]}\n\
           ],\n\
           \"ambiguities\": [\"<unclear thing>\", ...],\n\
-          \"dependencies\": [\"<other tickets or systems this depends on>\", ...],\n\
+          \"dependencies\": [\"<other tickets or systems>\", ...],\n\
           \"estimated_complexity\": \"low|medium|high\",\n\
-          \"grooming_notes\": \"<anything else worth flagging>\"\n\
-        }";
-    let user = format!("Groom this ticket:\n\n{ticket_text}");
-    dispatch(&client, &api_key, system, &user, 1500).await
+          \"grooming_notes\": \"<anything else worth flagging>\",\n\
+          \"suggested_edits\": [\n\
+            {\n\
+              \"id\": \"<short unique slug e.g. 'ac-1' or 'desc-clarity'>\",\n\
+              \"field\": \"<jira field: description|acceptance_criteria|steps_to_reproduce|observed_behavior|expected_behavior|summary>\",\n\
+              \"section\": \"<human label e.g. 'Acceptance Criteria' or 'Description'>\",\n\
+              \"current\": \"<exact existing text, or null if the section is missing entirely>\",\n\
+              \"suggested\": \"<your proposed replacement or addition>\",\n\
+              \"reasoning\": \"<1-2 sentences explaining why this change improves the ticket>\"\n\
+            }\n\
+          ],\n\
+          \"clarifying_questions\": [\n\
+            \"<question you need answered before you can complete the analysis or a suggestion>\"\n\
+          ]\n\
+        }\n\n\
+        Important:\n\
+        - Only raise a clarifying_question when you genuinely cannot determine the answer from the code or ticket\n\
+        - Prefer drafting a concrete suggestion (even if tentative) over asking a question\n\
+        - If the ticket is a Bug and has no Steps to Reproduce / Observed / Expected Behavior, always suggest them\n\
+        - If the ticket is a Story/Task and has no Acceptance Criteria, always suggest them\n\
+        - Keep each suggested text concise and actionable";
+
+    let user = format!("Groom this ticket:\n\n{ticket_text}{file_block}");
+    let result = dispatch_streaming(&app, &client, &api_key, system, &user, 3000, "grooming-stream").await;
+    let _ = app.emit("grooming-progress", serde_json::json!({
+        "phase": "done",
+        "message": if result.is_ok() { "Analysis complete." } else { "Analysis failed." }
+    }));
+    result
 }
 
 /// Agent 2 — Impact Analysis: assess the blast radius of the planned change.
 #[tauri::command]
 pub async fn run_impact_analysis(ticket_text: String, grooming_json: String) -> Result<String, String> {
-    let (client, api_key) = claude_client().await?;
+    let (client, api_key) = llm_client().await?;
     let system = "You are an impact analysis agent. Given a ticket and its grooming analysis, \
         assess the blast radius of the change. Return ONLY valid JSON (no markdown fences):\n\
         {\n\
@@ -1209,10 +2878,11 @@ pub async fn run_impact_analysis(ticket_text: String, grooming_json: String) -> 
 /// history_json is a JSON array of [{role: "user"|"assistant", content: "..."}].
 #[tauri::command]
 pub async fn run_triage_turn(
+    app: tauri::AppHandle,
     context_text: String,
     history_json: String,
 ) -> Result<String, String> {
-    let (client, api_key) = claude_client().await?;
+    let (client, api_key) = llm_client().await?;
     let system = format!(
         "You are a triage agent helping plan the implementation of a JIRA ticket. \
         You have access to the ticket details, grooming analysis, and impact analysis below.\n\n\
@@ -1224,7 +2894,49 @@ pub async fn run_triage_turn(
         - Be concise and practical\n\
         Respond in plain text. Do NOT produce JSON."
     );
-    dispatch_multi(&client, &api_key, &system, &history_json, 800).await
+    dispatch_multi_streaming_with_tools(&app, &client, &api_key, &system, &history_json, 800, "grooming-stream").await
+}
+
+/// Grooming chat turn: structured back-and-forth during ticket grooming.
+/// The agent leads the discussion, refines suggested edits, and asks clarifying questions.
+/// Returns JSON: { "message": "...", "updated_edits": [...], "updated_questions": [...] }
+#[tauri::command]
+pub async fn run_grooming_chat_turn(
+    context_text: String,
+    history_json: String,
+) -> Result<String, String> {
+    let (client, api_key) = llm_client().await?;
+    let system = format!(
+        "You are a grooming agent leading a structured review of a JIRA ticket with a senior engineer. \
+        The ticket details, relevant code context, and current state of suggested edits are below.\n\n\
+        {context_text}\n\n\
+        Your role in this conversation:\n\
+        - Respond naturally to the engineer's message\n\
+        - Refine, add, or retract suggested edits based on new information\n\
+        - Ask follow-up clarifying questions if you still need information\n\
+        - When the engineer answers a question, incorporate it into your suggestions immediately\n\
+        - Lead toward a complete, well-groomed ticket\n\n\
+        Return ONLY valid JSON (no markdown fences) with this schema:\n\
+        {{\n\
+          \"message\": \"<your conversational reply to the engineer — plain prose, no JSON>\",\n\
+          \"updated_edits\": [\n\
+            {{\n\
+              \"id\": \"<same id as existing edit to update it, or a new slug for new edits>\",\n\
+              \"field\": \"<description|acceptance_criteria|steps_to_reproduce|observed_behavior|expected_behavior|summary>\",\n\
+              \"section\": \"<human label>\",\n\
+              \"current\": \"<existing text or null>\",\n\
+              \"suggested\": \"<proposed text>\",\n\
+              \"reasoning\": \"<why>\"\n\
+            }}\n\
+          ],\n\
+          \"updated_questions\": [\"<any remaining open questions you still need answered>\"]\n\
+        }}\n\n\
+        Rules:\n\
+        - updated_edits may be empty if no changes are needed this turn\n\
+        - To remove a suggestion, omit its id from updated_edits (the frontend will not delete it — include it with a note in reasoning if it should be withdrawn)\n\
+        - Keep the message focused and concise"
+    );
+    dispatch_multi(&client, &api_key, &system, &history_json, 1200).await
 }
 
 /// Agent 3b — Finalize plan: extract a structured implementation plan from the triage conversation.
@@ -1233,7 +2945,7 @@ pub async fn finalize_implementation_plan(
     context_text: String,
     conversation_json: String,
 ) -> Result<String, String> {
-    let (client, api_key) = claude_client().await?;
+    let (client, api_key) = llm_client().await?;
     let system = format!(
         "You are a planning agent. Based on the ticket context and the triage conversation below, \
         produce a final structured implementation plan. \
@@ -1262,7 +2974,7 @@ pub async fn run_implementation_guidance(
     ticket_text: String,
     plan_json: String,
 ) -> Result<String, String> {
-    let (client, api_key) = claude_client().await?;
+    let (client, api_key) = llm_client().await?;
     let system = "You are an implementation guidance agent. Given the ticket and agreed implementation plan, \
         produce a detailed step-by-step guide the engineer can follow while coding. \
         Return ONLY valid JSON (no markdown fences):\n\
@@ -1286,7 +2998,7 @@ pub async fn run_test_suggestions(
     plan_json: String,
     guidance_json: String,
 ) -> Result<String, String> {
-    let (client, api_key) = claude_client().await?;
+    let (client, api_key) = llm_client().await?;
     let system = "You are a test generation advisor. Given the implementation plan and guidance, \
         recommend specific tests to write. Think independently — challenge the implementation's assumptions. \
         Return ONLY valid JSON (no markdown fences):\n\
@@ -1314,7 +3026,7 @@ pub async fn run_plan_review(
     guidance_json: String,
     test_json: String,
 ) -> Result<String, String> {
-    let (client, api_key) = claude_client().await?;
+    let (client, api_key) = llm_client().await?;
     let system = "You are a code review agent critiquing an implementation plan before coding begins. \
         Review for completeness, correctness, and risk. \
         Return ONLY valid JSON (no markdown fences):\n\
@@ -1339,7 +3051,7 @@ pub async fn run_pr_description_gen(
     plan_json: String,
     review_json: String,
 ) -> Result<String, String> {
-    let (client, api_key) = claude_client().await?;
+    let (client, api_key) = llm_client().await?;
     let system = "You are a PR description writer. Produce a thorough, professional PR description. \
         Return ONLY valid JSON (no markdown fences):\n\
         {\n\
@@ -1358,7 +3070,7 @@ pub async fn run_retrospective_agent(
     plan_json: String,
     review_json: String,
 ) -> Result<String, String> {
-    let (client, api_key) = claude_client().await?;
+    let (client, api_key) = llm_client().await?;
     let system = "You are a retrospective agent. Review the full implementation session and capture learnings. \
         Return ONLY valid JSON (no markdown fences):\n\
         {\n\
@@ -1377,50 +3089,527 @@ pub async fn run_retrospective_agent(
     dispatch(&client, &api_key, system, &user, 1500).await
 }
 
+// ── PR review helpers ─────────────────────────────────────────────────────────
+
+/// Split a full review text (header + diff) into chunks that fit within
+/// `chunk_chars`. The PR header (everything before "=== DIFF ===") is kept
+/// intact and prepended to every chunk so the model always has context.
+/// Each chunk contains one or more complete file diffs.
+fn split_review_into_chunks(review_text: &str, chunk_chars: usize) -> Vec<String> {
+    // Split at the diff boundary
+    let (header, diff_body) = if let Some(pos) = review_text.find("=== DIFF ===") {
+        let h = &review_text[..pos + "=== DIFF ===".len()];
+        let d = &review_text[pos + "=== DIFF ===".len()..];
+        (h.to_string(), d.to_string())
+    } else {
+        // No diff section — treat the whole thing as one chunk
+        return vec![review_text.to_string()];
+    };
+
+    // Split the diff body into per-file sections
+    let mut file_sections: Vec<String> = vec![];
+    let mut current = String::new();
+    for line in diff_body.lines() {
+        if line.starts_with("diff --git") && !current.is_empty() {
+            file_sections.push(current.clone());
+            current.clear();
+        }
+        current.push_str(line);
+        current.push('\n');
+    }
+    if !current.trim().is_empty() {
+        file_sections.push(current);
+    }
+
+    if file_sections.is_empty() {
+        return vec![review_text.to_string()];
+    }
+
+    // Greedily pack file sections into chunks, each prefixed with the header
+    let mut chunks: Vec<String> = vec![];
+    let mut chunk_diff = String::new();
+
+    for section in &file_sections {
+        let candidate_len = header.len() + "\n".len() + chunk_diff.len() + section.len();
+        if candidate_len > chunk_chars && !chunk_diff.is_empty() {
+            // Current chunk is full — flush it
+            chunks.push(format!("{header}\n{chunk_diff}"));
+            chunk_diff.clear();
+        }
+        // If a single file section is larger than the limit, truncate it
+        if header.len() + section.len() > chunk_chars {
+            let max_section = chunk_chars.saturating_sub(header.len() + 100);
+            let truncated = &section[..max_section.min(section.len())];
+            chunk_diff.push_str(truncated);
+            chunk_diff.push_str("\n[file diff truncated — too large for one chunk]\n");
+        } else {
+            chunk_diff.push_str(section);
+        }
+    }
+    if !chunk_diff.trim().is_empty() {
+        chunks.push(format!("{header}\n{chunk_diff}"));
+    }
+
+    chunks
+}
+
+/// The per-chunk findings prompt. Returns a flat JSON array of findings across
+/// all five lenses from the provided diff chunk.
+const CHUNK_SYSTEM: &str = "You are a senior engineer performing a thorough, precise review of \
+    one chunk of a pull request diff. Your goal is to identify REAL issues that a human expert \
+    would flag — not to generate noise.\n\
+    \n\
+    Return ONLY a valid JSON array of findings — no markdown, no text outside the JSON.\n\
+    Each finding:\n\
+    { \"lens\": \"acceptance_criteria\" | \"security\" | \"logic\" | \"quality\" | \"testing\",\n\
+      \"severity\": \"blocking\" | \"non_blocking\" | \"nitpick\",\n\
+      \"title\": \"<short title>\",\n\
+      \"description\": \"<detailed explanation with specific reasoning — not generic advice>\",\n\
+      \"file\": \"<file path as a JSON string, or JSON null>\",\n\
+      \"line_range\": \"<e.g. \\\"L12-L34\\\" as a JSON string, or JSON null>\" }\n\
+    \n\
+    === SEVERITY CALIBRATION ===\n\
+    - blocking: the code is demonstrably wrong, will cause bugs, data loss, crashes, or security \
+      vulnerabilities. Code that compiles and runs correctly but has style issues is NOT blocking.\n\
+    - non_blocking: a real concern worth fixing before merge, but won't cause immediate breakage.\n\
+    - nitpick: style, naming, or minor readability — optional to fix.\n\
+    \n\
+    === LENS RULES ===\n\
+    \n\
+    LOGIC lens:\n\
+    - Only flag logic as blocking if you can articulate a concrete scenario where it produces \
+      wrong output, crashes, or corrupts state.\n\
+    - Dead code / unreachable expressions (e.g. a ?? that can never fire because its left side \
+      always evaluates to boolean) are non_blocking or nitpick — not blocking — unless the \
+      dead code masks a real bug in the intent.\n\
+    - Do NOT flag things as logic errors if they look unusual but compile correctly and the \
+      intent can be reasonably inferred. Ask yourself: will this actually misbehave at runtime?\n\
+    - Typos in variable/function names that are used consistently are nitpick. Typos that could \
+      cause a compile error or shadow another variable are non_blocking.\n\
+    - Deliberate design choices (renamed labels, changed expected values in tests) should not be \
+      flagged as logic errors unless you can prove they conflict with stated requirements.\n\
+    \n\
+    QUALITY lens:\n\
+    - Flag: typos and spelling errors in identifiers, strings, or comments.\n\
+    - Flag: inconsistent indentation or whitespace within a file (e.g. one block uses tabs while \
+      surrounding code uses spaces, or 2-space vs 4-space mixed in the same file).\n\
+    - Flag: functions or loops that perform O(n) scans where a direct lookup is available and \
+      the collection may grow — note it as a comment-worthy perf concern, not a bug.\n\
+    - Flag: missing or inadequate error handling for operations that can fail.\n\
+    - Flag: code that is structurally hard to follow or maintain.\n\
+    - Flag: new public API surface without doc comments.\n\
+    - Do NOT flag: the choice of test framework API functions as inconsistency. Functions such \
+      as `test`, `it`, `describe`, `suite`, `spec`, `context`, `beforeEach`, `afterEach`, \
+      `beforeAll`, `afterAll`, `expect`, `assert` etc. are all first-class APIs provided by \
+      test frameworks (Vitest, Jest, Mocha, Jasmine, etc.). Using `test()` instead of `it()` \
+      or vice versa is a valid stylistic choice within the same framework and must never be \
+      raised as an inconsistency or quality finding.\n\
+    \n\
+    TESTING lens:\n\
+    - Before flagging untested code: scan the ENTIRE chunk (and note that other chunks may contain \
+      tests) for test functions, test classes, or test files that exercise the new code.\n\
+    - If tests for the new code ARE present in the diff, do not raise a testing finding.\n\
+    - Only raise a testing finding if the added code is non-trivial business logic with no \
+      corresponding test ANYWHERE visible in the diff. Each finding must cite the specific \
+      untested file and line range.\n\
+    - Do not flag: generated code, config files, type/interface definitions, trivial one-liners, \
+      or code that is purely declarative.\n\
+    - Severity: missing tests for new business logic = non_blocking (not blocking) unless the \
+      code is safety-critical or the diff description explicitly promises tests.\n\
+    - @tags annotation: if the LINKED JIRA TICKET has Type: Bug and a ticket key is present \
+      (e.g. FJP-1234), check whether new or modified unit tests in the diff include a \
+      \\\"@tags <TICKET-KEY>\\\" annotation comment. If missing, raise a non_blocking finding. \
+      Skip this check if: not a Bug ticket, no JIRA key, no unit tests in the diff, or the \
+      annotation is already present.\n\
+    \n\
+    SECURITY lens:\n\
+    - Flag injection, auth bypass, credential exposure, insecure randomness, unsafe deserialization.\n\
+    - Do not flag theoretical risks — only flag if there is a concrete exploitable path.\n\
+    - CRITICAL: Do NOT raise security findings for test or spec files. If the file path of a \
+      changed file contains \\\"test\\\", \\\"spec\\\", or similar test-file indicators (e.g. \
+      *.test.ts, *.spec.js, test_*.py, *_test.go), skip it entirely for the security lens. \
+      Hardcoded values, mock credentials, relaxed validation, and similar patterns are \
+      expected and acceptable in test code.\n\
+    \n\
+    ACCEPTANCE CRITERIA lens:\n\
+    - CRITICAL: If the ticket context says acceptance criteria are blank or not provided, \
+      produce ZERO acceptance_criteria findings.\n\
+    - Only check compliance against criteria that are explicitly stated.\n\
+    \n\
+    General:\n\
+    - Return [] if you find no real issues in this chunk.\n\
+    - Do not invent generic advice. Every finding must be grounded in something you actually \
+      observe in the diff.\n\
+    - file and line_range must be a quoted JSON string or JSON null — never a bare word.";
+
+/// The synthesis prompt. Takes all chunk findings and the PR header and
+/// returns the final structured 5-lens ReviewReport JSON.
+const SYNTHESIS_SYSTEM: &str = "You are a senior engineer synthesising a thorough, balanced \
+    pull request review. You have received raw findings from a multi-chunk diff analysis \
+    and the full PR context. Produce a final, calibrated review report.\n\
+    \n\
+    Return ONLY a valid JSON object — no markdown fences, no text outside the JSON.\n\
+    Schema:\n\
+    {\n\
+      \"overall\": \"approve\" | \"request_changes\" | \"needs_discussion\",\n\
+      \"summary\": \"<two to four sentences: overall verdict, key strengths, and key concerns>\",\n\
+      \"lenses\": {\n\
+        \"acceptance_criteria\": {\n\
+          \"assessment\": \"<one sentence summary>\",\n\
+          \"findings\": [\n\
+            { \"severity\": \"blocking\" | \"non_blocking\" | \"nitpick\",\n\
+              \"title\": \"<short title>\",\n\
+              \"description\": \"<detailed explanation>\",\n\
+              \"file\": \"<file path as a JSON string, or JSON null>\",\n\
+              \"line_range\": \"<line range as a JSON string e.g. \\\"L12-L34\\\", or JSON null>\" }\n\
+          ]\n\
+        },\n\
+        \"security\": { \"assessment\": \"...\", \"findings\": [...] },\n\
+        \"logic\":    { \"assessment\": \"...\", \"findings\": [...] },\n\
+        \"quality\":  { \"assessment\": \"...\", \"findings\": [...] },\n\
+        \"testing\":  { \"assessment\": \"...\", \"findings\": [...] }\n\
+      }\n\
+    }\n\
+    \n\
+    === SYNTHESIS RULES ===\n\
+    \n\
+    SUMMARY field:\n\
+    - Lead with the overall verdict.\n\
+    - Explicitly note what is done WELL in this PR (good design decisions, solid test coverage, \
+      clean propagation of renames, performance improvements, etc.) — a good review is balanced.\n\
+    - Then note the most important concerns to address.\n\
+    \n\
+    DEDUPLICATION:\n\
+    - Merge findings that describe the same root issue across chunks into one finding.\n\
+    - Preserve all distinct findings — do not silently drop real issues.\n\
+    \n\
+    SEVERITY CALIBRATION (apply before finalising):\n\
+    - Downgrade to non_blocking or nitpick any finding where the code compiles correctly, \
+      runs correctly in the normal case, and the concern is about style, naming, or dead code \
+      that doesn't mask a real bug.\n\
+    - Only keep blocking if you can articulate a concrete runtime failure, data corruption, \
+      security vulnerability, or clear violation of a stated requirement.\n\
+    - Do not inflate severity to justify the finding. A genuine nitpick is more useful than \
+      a falsely-blocked review.\n\
+    \n\
+    TESTING lens:\n\
+    - If tests are present in the diff for the new/changed code, the assessment should say so.\n\
+    - Do not mark untested code as blocking unless the PR description explicitly promised tests \
+      or the code is safety-critical.\n\
+    - Consolidate all untested-code findings. Each must identify the specific file and line \
+      range of the untested code. Do not flag trivial code, generated files, config, or \
+      type definitions.\n\
+    - @tags annotation: if the linked JIRA ticket is a Bug type with a known key, check \
+      whether new or modified unit tests in the diff carry a \\\"@tags <TICKET-KEY>\\\" annotation. \
+      If missing, include a consolidated non_blocking finding. Omit if not a Bug, no key, \
+      annotation already present, or no unit tests in diff.\n\
+    \n\
+    ACCEPTANCE CRITERIA lens:\n\
+    - CRITICAL: If the PR context states acceptance criteria are blank or not provided, the \
+      acceptance_criteria lens MUST have an empty findings array and an assessment stating \
+      no criteria were available to check. Never invent criteria.\n\
+    \n\
+    QUALITY lens:\n\
+    - Do NOT flag the choice of test framework API functions as an inconsistency or quality \
+      issue. Functions such as `test`, `it`, `describe`, `suite`, `spec`, `context`, \
+      `beforeEach`, `afterEach`, `beforeAll`, `afterAll`, `expect`, `assert` etc. are all \
+      first-class APIs provided by test frameworks (Vitest, Jest, Mocha, Jasmine, etc.). \
+      Using `test()` instead of `it()` or vice versa is a valid stylistic choice within the \
+      same framework — drop any such finding during synthesis.\n\
+    \n\
+    SECURITY lens:\n\
+    - CRITICAL: If the PR context lists files under \\\"TEST / SPEC FILES IN THIS DIFF\\\", \
+      do NOT raise any security finding whose file field matches one of those paths. \
+      Test and spec files are not production code — hardcoded values, test credentials, \
+      relaxed input handling, and other patterns that would be concerning in production \
+      are expected and acceptable in test code. Silently skip those files when populating \
+      the security findings array.\n\
+    \n\
+    FORMAT:\n\
+    - overall is request_changes if any blocking finding remains after calibration, approve if \
+      none, needs_discussion if uncertain.\n\
+    - Every field value must be valid JSON. file and line_range must be a quoted JSON string \
+      or literal JSON null — never a bare word like L96-L127.";
+
+/// Sort findings by severity (blocking first, then non_blocking, then nitpick)
+/// and greedily include them up to `max_chars`. Returns the capped JSON array
+/// string and the count of findings that were dropped.
+fn cap_findings_by_severity(findings_json: &str, max_chars: usize) -> (String, usize) {
+    let Ok(arr) = serde_json::from_str::<serde_json::Value>(findings_json) else {
+        // Can't parse — return as-is, truncated hard if necessary
+        let truncated = if findings_json.len() > max_chars {
+            &findings_json[..max_chars]
+        } else {
+            findings_json
+        };
+        return (truncated.to_string(), 0);
+    };
+
+    let Some(findings) = arr.as_array() else {
+        return (findings_json.to_string(), 0);
+    };
+
+    // Severity ordering: blocking = 0, non_blocking = 1, nitpick = 2, unknown = 3
+    let severity_rank = |f: &serde_json::Value| -> u8 {
+        match f.get("severity").and_then(|s| s.as_str()).unwrap_or("") {
+            "blocking"     => 0,
+            "non_blocking" => 1,
+            "nitpick"      => 2,
+            _              => 3,
+        }
+    };
+
+    let mut sorted = findings.clone();
+    sorted.sort_by_key(|f| severity_rank(f));
+
+    let mut kept: Vec<serde_json::Value> = Vec::new();
+    let mut running_chars = 2usize; // for the outer `[` and `]`
+
+    for finding in &sorted {
+        let s = serde_json::to_string(finding).unwrap_or_default();
+        let needed = s.len() + if kept.is_empty() { 0 } else { 2 }; // `, ` separator
+        if running_chars + needed > max_chars {
+            break;
+        }
+        running_chars += needed;
+        kept.push(finding.clone());
+    }
+
+    let dropped = findings.len() - kept.len();
+    let out = serde_json::to_string(&kept).unwrap_or_else(|_| "[]".to_string());
+    (out, dropped)
+}
+
+/// Build the synthesis system prompt, appending any user-authored Agent Skills
+/// (Review Standards and Implementation Standards) so that project-specific
+/// conventions — e.g. "use Vitest not Jest", "all commands must be registered
+/// in lib.rs" — are always available to the review agent.
+fn build_review_system_prompt(app: &tauri::AppHandle) -> String {
+    let mut prompt = SYNTHESIS_SYSTEM.to_string();
+
+    let review_skill = get_skill(app, "review");
+    let impl_skill   = get_skill(app, "implementation");
+
+    if review_skill.is_some() || impl_skill.is_some() {
+        prompt.push_str("\n\n=== PROJECT-SPECIFIC REVIEW STANDARDS (Agent Skills) ===\n");
+        prompt.push_str("The following conventions are specific to this codebase. \
+            Apply them when evaluating findings — they take precedence over generic heuristics.\n");
+        if let Some(s) = review_skill {
+            prompt.push_str("\n--- Review Standards ---\n");
+            prompt.push_str(&s);
+        }
+        if let Some(s) = impl_skill {
+            prompt.push_str("\n--- Implementation Standards ---\n");
+            prompt.push_str(&s);
+        }
+    }
+
+    prompt
+}
+
 /// Analyse a pull request across four review lenses and return a JSON review report.
+/// Uses a map-reduce strategy for large diffs:
+///   1. Split the diff into file-level chunks that fit the model's context window.
+///   2. Run a lightweight "find findings" pass on each chunk (non-streaming).
+///   3. Stream a single synthesis pass that merges all chunk findings into the
+///      final 4-lens ReviewReport.
+/// For small diffs that fit in one chunk, skips directly to the synthesis pass.
 #[tauri::command]
-pub async fn review_pr(review_text: String) -> Result<String, String> {
-    let (client, api_key) = claude_client().await?;
+pub async fn review_pr(app: tauri::AppHandle, review_text: String) -> Result<String, String> {
+    use tauri::Emitter;
+    let (client, api_key) = llm_client().await?;
 
-    let system = "You are an expert code reviewer. Analyse the provided pull request across exactly \
-        four review lenses and return ONLY a valid JSON object — no markdown fences, no text outside the JSON.\n\
-        \n\
-        Schema:\n\
-        {\n\
-          \"overall\": \"approve\" | \"request_changes\" | \"needs_discussion\",\n\
-          \"summary\": \"<one sentence verdict>\",\n\
-          \"lenses\": {\n\
-            \"acceptance_criteria\": {\n\
-              \"assessment\": \"<one sentence summary>\",\n\
-              \"findings\": [\n\
-                { \"severity\": \"blocking\" | \"non_blocking\" | \"nitpick\",\n\
-                  \"title\": \"<short title>\",\n\
-                  \"description\": \"<detailed explanation>\",\n\
-                  \"file\": \"<file path or null>\",\n\
-                  \"line_range\": \"<e.g. L12-L34 or null>\" }\n\
-              ]\n\
-            },\n\
-            \"security\": { \"assessment\": \"...\", \"findings\": [...] },\n\
-            \"logic\":    { \"assessment\": \"...\", \"findings\": [...] },\n\
-            \"quality\":  { \"assessment\": \"...\", \"findings\": [...] }\n\
-          }\n\
-        }\n\
-        \n\
-        Rules:\n\
-        - Security and logic findings default to blocking unless clearly minor.\n\
-        - If a lens has no findings, return an empty findings array with a positive assessment.\n\
-        - Cite specific file paths and line ranges from the diff for all findings where possible.\n\
-        - Only report findings you actually observe in the diff — do not invent generic issues.";
+    // Determine the chunk size based on the active provider.
+    // Local LLMs typically have 8k-32k context; cloud models can handle much more.
+    let provider = get_ai_provider();
+    let effective_provider = if provider == "auto" {
+        get_provider_order().into_iter().next().unwrap_or_else(|| "claude".to_string())
+    } else {
+        provider
+    };
+    // Conservative: leave room for the system prompt + response tokens
+    let chunk_chars: usize = if effective_provider == "local" { 12_000 } else { 80_000 };
 
-    let user = format!("Review this pull request:\n\n{review_text}");
+    let chunks = split_review_into_chunks(&review_text, chunk_chars);
+    let needs_chunking = chunks.len() > 1;
 
-    dispatch(&client, &api_key, system, &user, 4000).await
+    // ── Map pass (skip for single-chunk diffs) ────────────────────────────────
+    let all_findings_json: String = if needs_chunking {
+        let total = chunks.len();
+        let _ = app.emit("pr-review-progress", serde_json::json!({
+            "phase": "analysis",
+            "message": format!("Large diff detected — reviewing {total} file chunk{} separately…",
+                if total == 1 { "" } else { "s" })
+        }));
+
+        let mut all_findings: Vec<serde_json::Value> = vec![];
+
+        for (i, chunk) in chunks.iter().enumerate() {
+            let _ = app.emit("pr-review-progress", serde_json::json!({
+                "phase": "analysis",
+                "message": format!("Reviewing chunk {}/{total} ({} chars)…", i + 1, chunk.len())
+            }));
+            // Signal the frontend to clear the stream display before each new chunk
+            let _ = app.emit("pr-review-stream-reset", serde_json::json!({}));
+
+            let user = format!("Find all review findings in this diff chunk:\n\n{chunk}");
+            match dispatch_streaming(&app, &client, &api_key, CHUNK_SYSTEM, &user, 2000, "pr-review-stream").await {
+                Ok(raw) => {
+                    // Strip optional markdown fences the model may have added
+                    let cleaned = raw
+                        .trim()
+                        .trim_start_matches("```json")
+                        .trim_start_matches("```")
+                        .trim_end_matches("```")
+                        .trim();
+                    if let Ok(arr) = serde_json::from_str::<serde_json::Value>(cleaned) {
+                        if let Some(findings) = arr.as_array() {
+                            all_findings.extend(findings.iter().cloned());
+                        }
+                    }
+                    // If the chunk failed to parse, silently continue — we'd rather
+                    // produce a partial report than abort the whole review.
+                }
+                Err(e) => {
+                    // Non-fatal: emit a warning and continue with remaining chunks
+                    let _ = app.emit("pr-review-progress", serde_json::json!({
+                        "phase": "analysis",
+                        "message": format!("Warning: chunk {}/{total} failed ({e}) — continuing…", i + 1)
+                    }));
+                }
+            }
+        }
+
+        serde_json::to_string(&all_findings).unwrap_or_else(|_| "[]".to_string())
+    } else {
+        // Small diff — no pre-pass needed; synthesis will work directly from the diff
+        "[]".to_string()
+    };
+
+    // ── Synthesis pass (always streamed) ─────────────────────────────────────
+    let synthesis_user = if needs_chunking {
+        let _ = app.emit("pr-review-stream-reset", serde_json::json!({}));
+
+        // Cap findings by severity before building the synthesis prompt so the
+        // combined input never blows the model's context window.
+        // Budget: for local models leave ~4k chars for findings; cloud gets 40k.
+        let findings_budget: usize = if effective_provider == "local" { 4_000 } else { 40_000 };
+        let (capped_findings_json, dropped_count) =
+            cap_findings_by_severity(&all_findings_json, findings_budget);
+
+        let drop_note = if dropped_count > 0 {
+            format!("\n\nNote: {dropped_count} lower-severity finding(s) were omitted to fit the model context window. All blocking and non-blocking findings are included.")
+        } else {
+            String::new()
+        };
+
+        let _ = app.emit("pr-review-progress", serde_json::json!({
+            "phase": "analysis",
+            "message": if dropped_count > 0 {
+                format!("Synthesising findings ({dropped_count} low-severity finding(s) trimmed to fit context)…")
+            } else {
+                "Synthesising findings into final report…".to_string()
+            }
+        }));
+
+        // Extract just the PR header (no diff) for the synthesis context
+        let header = if let Some(pos) = review_text.find("=== DIFF ===") {
+            review_text[..pos + "=== DIFF ===".len()].to_string()
+                + "\n[diff reviewed in chunks — findings collected above]"
+        } else {
+            review_text.clone()
+        };
+
+        format!(
+            "Pull request context:\n{header}\n\n\
+             Findings collected from reviewing all diff chunks:{drop_note}\n{capped_findings_json}\n\n\
+             Produce the final review report JSON."
+        )
+    } else {
+        let _ = app.emit("pr-review-progress", serde_json::json!({
+            "phase": "analysis",
+            "message": "Analysing diff across five review lenses…"
+        }));
+        // For single-chunk diffs, pass the full diff directly to synthesis.
+        // Prepend a structured instruction so the model applies all five lenses
+        // explicitly rather than doing a generic read.
+        format!(
+            "Review this pull request across five lenses: acceptance_criteria, security, \
+             logic, quality, and testing. Apply the severity calibration rules from your \
+             system prompt carefully — do not inflate severity. Note what is done well in \
+             the summary. Produce the final review report JSON.\n\n{review_text}"
+        )
+    };
+
+    let result = dispatch_streaming(
+        &app, &client, &api_key,
+        &build_review_system_prompt(&app),
+        &synthesis_user,
+        4000,
+        "pr-review-stream",
+    ).await;
+
+    let _ = app.emit("pr-review-progress", serde_json::json!({
+        "phase": "done",
+        "message": if result.is_ok() { "Review complete." } else { "Review failed." }
+    }));
+    result
+}
+
+/// Conversational follow-up chat about a completed PR review.
+/// Takes the full review context (PR metadata + report JSON) and the chat
+/// history, returns a plain-text assistant reply.
+#[tauri::command]
+pub async fn chat_pr_review(
+    app: tauri::AppHandle,
+    context_text: String,
+    history_json: String,
+) -> Result<String, String> {
+    let (client, api_key) = llm_client().await?;
+
+    // Load project-specific skills — Review Standards and Implementation Standards
+    // both inform what "good code" means for this codebase.
+    let review_skill = get_skill(&app, "review");
+    let impl_skill   = get_skill(&app, "implementation");
+    let skills_block = if review_skill.is_some() || impl_skill.is_some() {
+        let mut block = String::from(
+            "\n\n=== PROJECT-SPECIFIC CONVENTIONS (Agent Skills) ===\n\
+            These codebase-specific standards must inform any code you write or suggest:\n"
+        );
+        if let Some(s) = review_skill { block.push_str("\n--- Review Standards ---\n"); block.push_str(&s); }
+        if let Some(s) = impl_skill   { block.push_str("\n--- Implementation Standards ---\n"); block.push_str(&s); }
+        block
+    } else {
+        String::new()
+    };
+
+    let system = format!(
+        "You are an expert code reviewer who has just completed a structured review of a pull \
+        request. The review report, PR comments, and PR context are below.\n\n\
+        {context_text}\n\n\
+        The engineer is now asking you follow-up questions about your findings. Your role:\n\
+        - Explain your reasoning clearly when asked why you raised a finding\n\
+        - When a finding was informed by a PR comment from another reviewer, say so explicitly: \
+          cite the comment author by name and quote the relevant part of their comment. \
+          Do not present their observation as your own independent conclusion.\n\
+        - When a finding comes from your own analysis of the diff (not from any comment), \
+          say so clearly: explain which lines or patterns led you to the conclusion.\n\
+        - Reconsider or soften a finding if the engineer provides additional context that \
+          changes its relevance\n\
+        - Point to specific parts of the diff or specific comments when relevant\n\
+        - Be concise and direct — this is a conversation, not another report\n\
+        - Do NOT produce JSON — reply in plain prose only\n\
+        - When writing or suggesting code examples, follow the project-specific conventions \
+          below. For example: if the standards specify Vitest, use Vitest syntax — not Jest \
+          or any other framework.{skills_block}"
+    );
+    dispatch_multi_streaming_with_tools(&app, &client, &api_key, &system, &history_json, 1024, "pr-review-chat-stream").await
 }
 
 /// Generate workload rebalancing suggestions from pre-compiled capacity text.
 #[tauri::command]
 pub async fn generate_workload_suggestions(workload_text: String) -> Result<String, String> {
-    let (client, api_key) = claude_client().await?;
+    let (client, api_key) = llm_client().await?;
 
     let system = "You are a scrum master assistant helping balance work across a development team. \
         Analyse the workload data and suggest specific, actionable ticket reassignments. \
@@ -1445,7 +3634,7 @@ pub async fn generate_workload_suggestions(workload_text: String) -> Result<Stri
 /// Assess a JIRA ticket for development readiness and return a JSON quality report.
 #[tauri::command]
 pub async fn assess_ticket_quality(ticket_text: String) -> Result<String, String> {
-    let (client, api_key) = claude_client().await?;
+    let (client, api_key) = llm_client().await?;
 
     let system = "You are a senior engineering lead reviewing JIRA tickets for sprint readiness. \
         Assess the provided ticket strictly and honestly. \
@@ -1474,7 +3663,7 @@ pub async fn assess_ticket_quality(ticket_text: String) -> Result<String, String
 /// Generate a sprint retrospective summary from pre-compiled sprint data.
 #[tauri::command]
 pub async fn generate_sprint_retrospective(sprint_text: String) -> Result<String, String> {
-    let (client, api_key) = claude_client().await?;
+    let (client, api_key) = llm_client().await?;
 
     let system = "You are an experienced agile coach helping a scrum master run sprint retrospectives. \
         Write concise, honest, and actionable retrospective summaries based on sprint metrics. \
@@ -1494,9 +3683,95 @@ pub async fn generate_sprint_retrospective(sprint_text: String) -> Result<String
     dispatch(&client, &api_key, system, &user, 1024).await
 }
 
+// ── Address PR Comments agent ─────────────────────────────────────────────────
+
+/// Analyse PR reviewer comments and the PR diff to produce a structured fix plan.
+/// Streams its reasoning to `address-pr-stream`.
+/// Returns a JSON array of fix proposals.
+#[tauri::command]
+pub async fn analyze_pr_comments(
+    app: tauri::AppHandle,
+    review_text: String,
+) -> Result<String, String> {
+    let (client, api_key) = llm_client().await?;
+
+    let system = "You are an expert software engineer helping the PR author address code review \
+        comments left by their team. You will be given:\n\
+        1. The full PR diff\n\
+        2. All reviewer comments (inline comments annotated with file/line context)\n\
+        3. The content of files referenced in inline comments\n\n\
+        Your task is to produce a structured fix plan. Analyse every reviewer comment carefully. \
+        For each comment, decide:\n\
+        - What is the reviewer asking for?\n\
+        - What specific code change would address it?\n\
+        - How confident are you in the fix? (High / Medium / Needs human judgment)\n\n\
+        You MUST respond with ONLY a valid JSON array — no markdown fences, no explanation outside the JSON.\n\
+        Schema for each element:\n\
+        {\n\
+          \"commentId\": <number — the Bitbucket comment id>,\n\
+          \"file\": \"<relative file path or null for general comments>\",\n\
+          \"fromLine\": <number or null>,\n\
+          \"toLine\": <number or null>,\n\
+          \"reviewerName\": \"<commenter display name>\",\n\
+          \"commentSummary\": \"<one sentence: what the reviewer wants>\",\n\
+          \"proposedFix\": \"<concrete description of the change to make>\",\n\
+          \"confidence\": \"High\" | \"Medium\" | \"Needs human judgment\",\n\
+          \"affectedFiles\": [\"<relative path>\"],\n\
+          \"newContent\": \"<the exact replacement file content if confidence is High or Medium, otherwise null>\",\n\
+          \"skippable\": false\n\
+        }\n\
+        Set `newContent` only when you can produce the full replacement content for the affected file. \
+        For general architectural or design comments where the fix is open-ended, set confidence to \
+        'Needs human judgment' and leave newContent null.\n\
+        Do not invent problems. Only address comments that are actually present.";
+
+    dispatch_streaming(
+        &app,
+        &client,
+        &api_key,
+        system,
+        &review_text,
+        4096,
+        "address-pr-stream",
+    )
+    .await
+}
+
+/// Multi-turn chat for the Address PR Comments workflow.
+/// The `history_json` contains the conversation so far.
+#[tauri::command]
+pub async fn chat_address_pr(
+    app: tauri::AppHandle,
+    context_text: String,
+    history_json: String,
+) -> Result<String, String> {
+    let (client, api_key) = llm_client().await?;
+    let system = format!(
+        "You are an expert software engineer helping the PR author address code review comments. \
+        The PR diff, reviewer comments, and fix plan are below.\n\n\
+        {context_text}\n\n\
+        The engineer is now conversing with you about the fix plan. Your role:\n\
+        - Explain your reasoning for any proposed fix\n\
+        - Revise a proposed fix if the engineer asks you to approach it differently\n\
+        - When revising, describe the new approach clearly\n\
+        - Be concise and direct — this is a conversation, not a report\n\
+        - Do NOT produce JSON unless the engineer explicitly asks you to regenerate the full fix plan"
+    );
+    dispatch_multi_streaming_with_tools(
+        &app,
+        &client,
+        &api_key,
+        &system,
+        &history_json,
+        1024,
+        "address-pr-chat-stream",
+    )
+    .await
+}
+
 #[tauri::command]
 pub async fn generate_standup_briefing(standup_text: String) -> Result<String, String> {
-    let (client, api_key) = claude_client().await?;
+    let (client, api_key) = llm_client().await?;
 
     let system = "You are a scrum master assistant. \
         Generate concise, ready-to-read daily standup briefings from team activity data. \

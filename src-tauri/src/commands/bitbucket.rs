@@ -37,6 +37,20 @@ pub async fn get_prs_for_review() -> Result<Vec<BitbucketPr>, String> {
     }
 }
 
+/// Open PRs authored by the configured Bitbucket user.
+#[tauri::command]
+pub async fn get_my_open_prs() -> Result<Vec<BitbucketPr>, String> {
+    let client = bitbucket_client()?;
+    // Use the dedicated bitbucket_username (the account's nickname/username as it
+    // appears in the API) for author matching. Fall back to bitbucket_email in case
+    // the user hasn't set a separate username — though the email will rarely match
+    // the API nickname field.
+    let username = get_credential("bitbucket_username")
+        .or_else(|| get_credential("bitbucket_email"))
+        .ok_or("Bitbucket username not configured. Check Settings.")?;
+    client.get_my_open_prs_by_username(&username).await
+}
+
 /// Full detail for a single PR.
 #[tauri::command]
 pub async fn get_pr(pr_id: i64) -> Result<BitbucketPr, String> {
@@ -71,4 +85,98 @@ pub async fn get_pr_tasks(pr_id: i64) -> Result<Vec<BitbucketTask>, String> {
     let client = bitbucket_client()?;
     client.get_pr_tasks(pr_id).await
 }
+
+/// Approve a PR as the authenticated user.
+/// Requires App Password with 'Pull requests: Write' scope.
+#[tauri::command]
+pub async fn approve_pr(pr_id: i64) -> Result<(), String> {
+    let client = bitbucket_client()?;
+    client.approve_pr(pr_id).await
+}
+
+/// Remove approval from a PR (unapprove).
+#[tauri::command]
+pub async fn unapprove_pr(pr_id: i64) -> Result<(), String> {
+    let client = bitbucket_client()?;
+    client.unapprove_pr(pr_id).await
+}
+
+/// Mark a PR as 'Needs work' (request changes).
+#[tauri::command]
+pub async fn request_changes_pr(pr_id: i64) -> Result<(), String> {
+    let client = bitbucket_client()?;
+    client.request_changes_pr(pr_id).await
+}
+
+/// Remove 'Needs work' status from a PR.
+#[tauri::command]
+pub async fn unrequest_changes_pr(pr_id: i64) -> Result<(), String> {
+    let client = bitbucket_client()?;
+    client.unrequest_changes_pr(pr_id).await
+}
+
+/// Post a general or inline comment on a PR.
+/// Set `inline_path` + `inline_to_line` for an inline comment.
+/// Set `parent_id` to reply to an existing comment thread.
+#[tauri::command]
+pub async fn post_pr_comment(
+    pr_id: i64,
+    content: String,
+    inline_path: Option<String>,
+    inline_to_line: Option<i64>,
+    parent_id: Option<i64>,
+) -> Result<crate::bitbucket::BitbucketComment, String> {
+    let client = bitbucket_client()?;
+    client
+        .post_pr_comment(
+            pr_id,
+            &content,
+            inline_path.as_deref(),
+            inline_to_line,
+            parent_id,
+        )
+        .await
+}
+
+/// Create a task linked to a specific comment on a PR.
+#[tauri::command]
+pub async fn create_pr_task(
+    pr_id: i64,
+    comment_id: i64,
+    content: String,
+) -> Result<crate::bitbucket::BitbucketTask, String> {
+    let client = bitbucket_client()?;
+    client.create_pr_task(pr_id, comment_id, &content).await
+}
+
+/// Resolve or re-open a task on a PR.
+#[tauri::command]
+pub async fn resolve_pr_task(
+    pr_id: i64,
+    task_id: i64,
+    resolved: bool,
+) -> Result<crate::bitbucket::BitbucketTask, String> {
+    let client = bitbucket_client()?;
+    client.resolve_pr_task(pr_id, task_id, resolved).await
+}
+
+/// Delete a comment from a PR (only succeeds if the authed user is the author).
+#[tauri::command]
+pub async fn delete_pr_comment(pr_id: i64, comment_id: i64) -> Result<(), String> {
+    let client = bitbucket_client()?;
+    client.delete_pr_comment(pr_id, comment_id).await
+}
+
+/// Update the content of a PR comment (only succeeds if the authed user is the author).
+#[tauri::command]
+pub async fn update_pr_comment(
+    pr_id: i64,
+    comment_id: i64,
+    new_content: String,
+) -> Result<crate::bitbucket::BitbucketComment, String> {
+    let client = bitbucket_client()?;
+    client.update_pr_comment(pr_id, comment_id, &new_content).await
+}
+
+
 

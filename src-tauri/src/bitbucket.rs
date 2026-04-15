@@ -70,6 +70,8 @@ pub struct BitbucketTask {
     pub id: i64,
     pub content: String,
     pub resolved: bool,
+    /// The comment this task is anchored to, if any.
+    pub comment_id: Option<i64>,
 }
 
 // ── HTTP client ───────────────────────────────────────────────────────────────
@@ -198,6 +200,83 @@ impl BitbucketClient {
 
     // ── Pull Requests ─────────────────────────────────────────────────────────
 
+    /// POST with no body — used for approve (empty body is correct per Bitbucket docs).
+    async fn post_empty(&self, url: &str) -> Result<(), String> {
+        let resp = self
+            .client
+            .post(url)
+            .basic_auth(&self.username, Some(&self.access_token))
+            .header("content-type", "application/json")
+            .body("{}")
+            .send()
+            .await
+            .map_err(|e| format!("Request failed: {e}"))?;
+        let status = resp.status();
+        if status.is_success() {
+            return Ok(());
+        }
+        let body = resp.text().await.unwrap_or_default();
+        let hint = if status == StatusCode::FORBIDDEN {
+            " — your App Password needs 'Pull requests: Write' permission. \
+             Update it at bitbucket.org → Personal settings → App passwords."
+        } else if status == StatusCode::UNAUTHORIZED {
+            " — check your username and App Password in Settings."
+        } else {
+            ""
+        };
+        Err(format!("Bitbucket returned {status} for POST {url}{hint}\nBody: {body}"))
+    }
+
+    /// DELETE — used for unapprove / remove needs-work.
+    async fn delete_req(&self, url: &str) -> Result<(), String> {
+        let resp = self
+            .client
+            .delete(url)
+            .basic_auth(&self.username, Some(&self.access_token))
+            .send()
+            .await
+            .map_err(|e| format!("Request failed: {e}"))?;
+        let status = resp.status();
+        if status.is_success() || status == StatusCode::NO_CONTENT {
+            return Ok(());
+        }
+        let body = resp.text().await.unwrap_or_default();
+        let hint = if status == StatusCode::FORBIDDEN {
+            " — your App Password needs 'Pull requests: Write' permission."
+        } else {
+            ""
+        };
+        Err(format!("Bitbucket returned {status} for DELETE {url}{hint}\nBody: {body}"))
+    }
+
+    /// Approve a PR on behalf of the authenticated user.
+    /// Bitbucket API: POST /2.0/repositories/{workspace}/{slug}/pullrequests/{id}/approve
+    pub async fn approve_pr(&self, pr_id: i64) -> Result<(), String> {
+        let url = self.repo_url(&format!("/pullrequests/{pr_id}/approve"));
+        self.post_empty(&url).await
+    }
+
+    /// Remove approval (unapprove) from a PR.
+    /// Bitbucket API: DELETE /2.0/repositories/{workspace}/{slug}/pullrequests/{id}/approve
+    pub async fn unapprove_pr(&self, pr_id: i64) -> Result<(), String> {
+        let url = self.repo_url(&format!("/pullrequests/{pr_id}/approve"));
+        self.delete_req(&url).await
+    }
+
+    /// Mark a PR as "Needs work" (request changes).
+    /// Bitbucket API: POST /2.0/repositories/{workspace}/{slug}/pullrequests/{id}/request-changes
+    pub async fn request_changes_pr(&self, pr_id: i64) -> Result<(), String> {
+        let url = self.repo_url(&format!("/pullrequests/{pr_id}/request-changes"));
+        self.post_empty(&url).await
+    }
+
+    /// Remove "Needs work" status.
+    /// Bitbucket API: DELETE /2.0/repositories/{workspace}/{slug}/pullrequests/{id}/request-changes
+    pub async fn unrequest_changes_pr(&self, pr_id: i64) -> Result<(), String> {
+        let url = self.repo_url(&format!("/pullrequests/{pr_id}/request-changes"));
+        self.delete_req(&url).await
+    }
+
     /// All open PRs in the repository.
     pub async fn get_open_prs(&self) -> Result<Vec<BitbucketPr>, String> {
         let url = self.repo_url(
@@ -251,6 +330,28 @@ impl BitbucketClient {
             .collect())
     }
 
+    /// Open PRs authored by the authenticated user (filtered by username).
+    pub async fn get_my_open_prs(&self) -> Result<Vec<BitbucketPr>, String> {
+        self.get_my_open_prs_by_username(&self.username.clone()).await
+    }
+
+    /// Filter open PRs to those authored by the given username (nickname or account_id).
+    /// Uses an explicit username so callers can pass `bitbucket_username` rather than
+    /// `bitbucket_email`, since the Bitbucket API `nickname` field is the account
+    /// username — not the email address used for Basic auth.
+    pub async fn get_my_open_prs_by_username(&self, username: &str) -> Result<Vec<BitbucketPr>, String> {
+        let all = self.get_open_prs().await?;
+        let username_lc = username.to_lowercase();
+        Ok(all
+            .into_iter()
+            .filter(|pr| {
+                let nickname = pr.author.nickname.to_lowercase();
+                let account_id = pr.author.account_id.as_deref().unwrap_or("").to_lowercase();
+                nickname == username_lc || account_id == username_lc
+            })
+            .collect())
+    }
+
     pub async fn get_pr(&self, pr_id: i64) -> Result<BitbucketPr, String> {
         let url = self.repo_url(&format!("/pullrequests/{pr_id}"));
         let body = self.get_json(&url).await?;
@@ -266,6 +367,10 @@ impl BitbucketClient {
         let url = self.repo_url(&format!("/pullrequests/{pr_id}/comments?pagelen=100"));
         let body = self.get_json(&url).await?;
         let values = body["values"].as_array().cloned().unwrap_or_default();
+        // Debug: log the first comment's raw JSON so we can see the author field structure
+        if let Some(first) = values.first() {
+            eprintln!("[meridian] first comment author JSON: {}", first["author"]);
+        }
         Ok(values.iter().map(parse_comment).collect())
     }
 
@@ -279,17 +384,225 @@ impl BitbucketClient {
                 id: t["id"].as_i64().unwrap_or(0),
                 content: t["content"]["raw"].as_str().unwrap_or("").to_string(),
                 resolved: t["state"].as_str().unwrap_or("") == "RESOLVED",
+                comment_id: t["comment"]["id"].as_i64(),
             })
             .collect())
+    }
+
+    /// Post a comment on a PR. Pass `inline_path` + `inline_to_line` to create an
+    /// inline comment anchored to a specific file and line in the new version of
+    /// the diff. Pass `parent_id` to reply to an existing comment thread.
+    pub async fn post_pr_comment(
+        &self,
+        pr_id: i64,
+        content: &str,
+        inline_path: Option<&str>,
+        inline_to_line: Option<i64>,
+        parent_id: Option<i64>,
+    ) -> Result<BitbucketComment, String> {
+        let url = self.repo_url(&format!("/pullrequests/{pr_id}/comments"));
+
+        let mut body = serde_json::json!({
+            "content": { "raw": content }
+        });
+
+        if let Some(path) = inline_path {
+            let mut inline = serde_json::json!({ "path": path });
+            if let Some(line) = inline_to_line {
+                inline["to"] = serde_json::json!(line);
+            }
+            body["inline"] = inline;
+        }
+
+        if let Some(pid) = parent_id {
+            body["parent"] = serde_json::json!({ "id": pid });
+        }
+
+        let resp = self
+            .client
+            .post(&url)
+            .basic_auth(&self.username, Some(&self.access_token))
+            .header("content-type", "application/json")
+            .body(body.to_string())
+            .send()
+            .await
+            .map_err(|e| format!("Request failed: {e}"))?;
+
+        let status = resp.status();
+        if !status.is_success() {
+            let text = resp.text().await.unwrap_or_default();
+            let hint = if status.as_u16() == 403 {
+                " — your App Password needs 'Pull requests: Write' permission."
+            } else {
+                ""
+            };
+            return Err(format!("Bitbucket returned {status} posting comment{hint}\nBody: {text}"));
+        }
+
+        let json: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| format!("Failed to parse comment response: {e}"))?;
+        Ok(parse_comment(&json))
+    }
+
+    /// Create a task linked to a comment on a PR.
+    pub async fn create_pr_task(        &self,
+        pr_id: i64,
+        comment_id: i64,
+        content: &str,
+    ) -> Result<BitbucketTask, String> {
+        let url = self.repo_url(&format!("/pullrequests/{pr_id}/tasks"));
+
+        let body = serde_json::json!({
+            "content": { "raw": content },
+            "comment": { "id": comment_id }
+        });
+
+        let resp = self
+            .client
+            .post(&url)
+            .basic_auth(&self.username, Some(&self.access_token))
+            .header("content-type", "application/json")
+            .body(body.to_string())
+            .send()
+            .await
+            .map_err(|e| format!("Request failed: {e}"))?;
+
+        let status = resp.status();
+        if !status.is_success() {
+            let text = resp.text().await.unwrap_or_default();
+            return Err(format!("Bitbucket returned {status} creating task\nBody: {text}"));
+        }
+
+        let json: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| format!("Failed to parse task response: {e}"))?;
+        Ok(BitbucketTask {
+            id: json["id"].as_i64().unwrap_or(0),
+            content: json["content"]["raw"].as_str().unwrap_or("").to_string(),
+            resolved: json["state"].as_str().unwrap_or("") == "RESOLVED",
+            comment_id: json["comment"]["id"].as_i64(),
+        })
+    }
+
+    /// Resolve or re-open a task by PATCH /tasks/{task_id}.
+    pub async fn resolve_pr_task(&self, pr_id: i64, task_id: i64, resolved: bool) -> Result<BitbucketTask, String> {
+        let url = self.repo_url(&format!("/pullrequests/{pr_id}/tasks/{task_id}"));
+        let state = if resolved { "RESOLVED" } else { "UNRESOLVED" };
+        let body = serde_json::json!({ "state": state });
+
+        let resp = self
+            .client
+            .put(&url)
+            .basic_auth(&self.username, Some(&self.access_token))
+            .header("content-type", "application/json")
+            .body(body.to_string())
+            .send()
+            .await
+            .map_err(|e| format!("Request failed: {e}"))?;
+
+        let status = resp.status();
+        if !status.is_success() {
+            let text = resp.text().await.unwrap_or_default();
+            return Err(format!("Bitbucket returned {status} updating task\nBody: {text}"));
+        }
+
+        let json: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| format!("Failed to parse task response: {e}"))?;
+        Ok(BitbucketTask {
+            id: json["id"].as_i64().unwrap_or(0),
+            content: json["content"]["raw"].as_str().unwrap_or("").to_string(),
+            resolved: json["state"].as_str().unwrap_or("") == "RESOLVED",
+            comment_id: json["comment"]["id"].as_i64(),
+        })
+    }
+
+    /// Delete a comment from a PR. Only succeeds if the authenticated user is the author.
+    pub async fn delete_pr_comment(&self, pr_id: i64, comment_id: i64) -> Result<(), String> {
+        let url = self.repo_url(&format!("/pullrequests/{pr_id}/comments/{comment_id}"));
+
+        let resp = self
+            .client
+            .delete(&url)
+            .basic_auth(&self.username, Some(&self.access_token))
+            .send()
+            .await
+            .map_err(|e| format!("Request failed: {e}"))?;
+
+        let status = resp.status();
+        if !status.is_success() {
+            let text = resp.text().await.unwrap_or_default();
+            let hint = if status.as_u16() == 403 {
+                " — you can only delete your own comments, and your App Password needs 'Pull requests: Write' permission."
+            } else {
+                ""
+            };
+            return Err(format!("Bitbucket returned {status} deleting comment{hint}\nBody: {text}"));
+        }
+
+        Ok(())
+    }
+
+    /// Update the content of a PR comment. Only succeeds if the authenticated user is the author.
+    pub async fn update_pr_comment(
+        &self,
+        pr_id: i64,
+        comment_id: i64,
+        new_content: &str,
+    ) -> Result<BitbucketComment, String> {
+        let url = self.repo_url(&format!("/pullrequests/{pr_id}/comments/{comment_id}"));
+
+        let body = serde_json::json!({
+            "content": { "raw": new_content }
+        });
+
+        let resp = self
+            .client
+            .put(&url)
+            .basic_auth(&self.username, Some(&self.access_token))
+            .header("content-type", "application/json")
+            .body(body.to_string())
+            .send()
+            .await
+            .map_err(|e| format!("Request failed: {e}"))?;
+
+        let status = resp.status();
+        if !status.is_success() {
+            let text = resp.text().await.unwrap_or_default();
+            let hint = if status.as_u16() == 403 {
+                " — you can only edit your own comments, and your App Password needs 'Pull requests: Write' permission."
+            } else {
+                ""
+            };
+            return Err(format!("Bitbucket returned {status} updating comment{hint}\nBody: {text}"));
+        }
+
+        let json: Value = resp
+            .json()
+            .await
+            .map_err(|e| format!("Failed to parse update response: {e}"))?;
+
+        Ok(parse_comment(&json))
     }
 }
 
 // ── Parsing helpers ───────────────────────────────────────────────────────────
 
 fn parse_user(v: &Value) -> BitbucketUser {
+    let display_name = v["display_name"].as_str().unwrap_or("").to_string();
+    let nickname = v["nickname"].as_str()
+        .or_else(|| v["username"].as_str())
+        .unwrap_or("")
+        .to_string();
+    // Fall back to nickname if display_name is missing (some Bitbucket endpoints omit it)
+    let display_name = if display_name.is_empty() { nickname.clone() } else { display_name };
     BitbucketUser {
-        display_name: v["display_name"].as_str().unwrap_or("").to_string(),
-        nickname: v["nickname"].as_str().unwrap_or("").to_string(),
+        display_name,
+        nickname,
         account_id: v["account_id"].as_str().map(str::to_string),
     }
 }
@@ -391,7 +704,15 @@ fn parse_comment(v: &Value) -> BitbucketComment {
     BitbucketComment {
         id: v["id"].as_i64().unwrap_or(0),
         content: v["content"]["raw"].as_str().unwrap_or("").to_string(),
-        author: parse_user(&v["author"]),
+        // Bitbucket Cloud uses "author" for comments; fall back to "user" just in case
+        author: {
+            let author = parse_user(&v["author"]);
+            if author.display_name.is_empty() && author.nickname.is_empty() {
+                parse_user(&v["user"])
+            } else {
+                author
+            }
+        },
         created_on: v["created_on"].as_str().unwrap_or("").to_string(),
         updated_on: v["updated_on"].as_str().unwrap_or("").to_string(),
         inline,

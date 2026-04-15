@@ -12,10 +12,12 @@
     "windows": [
       {
         "title": "Meridian",
-        "width": 1280,
-        "height": 800,
+        "width": 1728,
+        "height": 1117,
         "resizable": true,
-        "fullscreen": false
+        "fullscreen": false,
+        "center": true,
+        "maximized": true
       }
     ]
   },

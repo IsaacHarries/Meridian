@@ -1,6 +1,7 @@
 use reqwest::{Client, StatusCode};
 use serde::Serialize;
 use serde_json::Value;
+use std::collections::HashMap;
 use std::time::Duration;
 
 // ── Output types (returned to the frontend via Tauri commands) ───────────────
@@ -24,6 +25,36 @@ pub struct JiraUser {
     pub email_address: Option<String>,
 }
 
+/// A single heading + body section parsed out of the JIRA ADF description.
+/// heading is None for content that appears before the first heading.
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct DescriptionSection {
+    pub heading: Option<String>,
+    pub content: String,
+}
+
+/// A single field entry returned by the raw-field inspector.
+/// Includes the machine ID, the human-readable name (from JIRA's `names` expand),
+/// and a short display value. No admin permissions required.
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct RawIssueField {
+    pub id: String,
+    pub name: String,
+    pub value: String,
+}
+
+/// Metadata about a single JIRA custom field (id + name + type).
+/// Returned by the /rest/api/3/field endpoint (may require admin on some instances).
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct JiraFieldMeta {
+    pub id: String,
+    pub name: String,
+    pub field_type: Option<String>,
+}
+
 #[derive(Debug, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct JiraIssue {
@@ -32,6 +63,9 @@ pub struct JiraIssue {
     pub url: String,
     pub summary: String,
     pub description: Option<String>,
+    /// Structured sections parsed from the ADF description (heading → body pairs).
+    /// Empty when the description has no headings (plain prose only).
+    pub description_sections: Vec<DescriptionSection>,
     pub status: String,
     pub status_category: String,
     pub assignee: Option<JiraUser>,
@@ -44,6 +78,17 @@ pub struct JiraIssue {
     pub epic_summary: Option<String>,
     pub created: String,
     pub updated: String,
+    /// Acceptance criteria — extracted from a custom field if configured via
+    /// the `jira_field_acceptance_criteria` setting, otherwise None.
+    pub acceptance_criteria: Option<String>,
+    /// Steps to reproduce — from a custom field if configured.
+    pub steps_to_reproduce: Option<String>,
+    /// Observed behaviour — from a custom field if configured.
+    pub observed_behavior: Option<String>,
+    /// Expected behaviour — from a custom field if configured.
+    pub expected_behavior: Option<String>,
+    /// Any extra configured custom fields, keyed by the field name (not ID).
+    pub extra_fields: std::collections::HashMap<String, String>,
 }
 
 // ── HTTP client ───────────────────────────────────────────────────────────────
@@ -251,31 +296,121 @@ impl JiraClient {
 
     // ── Issues ────────────────────────────────────────────────────────────────
 
-    pub async fn get_sprint_issues(&self, sprint_id: i64) -> Result<Vec<JiraIssue>, String> {
-        let fields = issue_fields();
+    pub async fn get_sprint_issues(
+        &self,
+        sprint_id: i64,
+        custom_fields: &CustomFieldConfig,
+    ) -> Result<Vec<JiraIssue>, String> {
+        let fields = issue_fields_with_custom(custom_fields);
         let url = self.url(&format!(
             "/rest/agile/1.0/sprint/{sprint_id}/issue?maxResults=100&fields={fields}"
         ));
         let body = self.get_json(&url).await?;
         let issues = body["issues"].as_array().cloned().unwrap_or_default();
-        Ok(issues.iter().map(|i| parse_issue(i, &self.base_url)).collect())
+        Ok(issues.iter().map(|i| parse_issue(i, &self.base_url, custom_fields)).collect())
     }
 
-    pub async fn get_issue(&self, issue_key: &str) -> Result<JiraIssue, String> {
-        let fields = issue_fields();
+    pub async fn get_issue(
+        &self,
+        issue_key: &str,
+        custom_fields: &CustomFieldConfig,
+    ) -> Result<JiraIssue, String> {
+        let fields = issue_fields_with_custom(custom_fields);
         let url = self.url(&format!(
             "/rest/api/3/issue/{issue_key}?fields={fields}"
         ));
         let body = self.get_json(&url).await?;
-        Ok(parse_issue(&body, &self.base_url))
+        Ok(parse_issue(&body, &self.base_url, custom_fields))
+    }
+
+    /// Fetch a raw field map for a single issue with human-readable names.
+    /// Uses `?expand=names` so JIRA returns a `names` object mapping every
+    /// `customfield_XXXXX` to its display name — no admin permissions required.
+    /// Returns fields sorted: standard fields first (alphabetically), then
+    /// custom fields (alphabetically by display name).
+    pub async fn get_raw_issue_fields(
+        &self,
+        issue_key: &str,
+    ) -> Result<Vec<RawIssueField>, String> {
+        // expand=names gives us { names: { "customfield_10034": "Acceptance Criteria", … } }
+        let url = self.url(&format!("/rest/api/3/issue/{issue_key}?expand=names"));
+        let body = self.get_json(&url).await?;
+
+        // Build a map of field_id → human name from the `names` object
+        let names: HashMap<String, String> = body["names"]
+            .as_object()
+            .map(|obj| {
+                obj.iter()
+                    .map(|(k, v)| (k.clone(), v.as_str().unwrap_or(k).to_string()))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let fields = &body["fields"];
+        if let Some(map) = fields.as_object() {
+            let mut standard: Vec<RawIssueField> = vec![];
+            let mut custom: Vec<RawIssueField> = vec![];
+
+            for (id, v) in map {
+                let display = field_value_to_string(v);
+                if display.is_empty() {
+                    continue;
+                }
+                let name = names.get(id).cloned().unwrap_or_else(|| id.clone());
+                let entry = RawIssueField { id: id.clone(), name, value: display };
+                if id.starts_with("customfield_") {
+                    custom.push(entry);
+                } else {
+                    standard.push(entry);
+                }
+            }
+
+            standard.sort_by(|a, b| a.id.cmp(&b.id));
+            custom.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+
+            standard.extend(custom);
+            Ok(standard)
+        } else {
+            Ok(vec![])
+        }
+    }
+
+    /// List all field definitions in the workspace (id + name + type).
+    /// Requires field-configuration browse permissions in some instances.
+    /// Returns an empty list (not an error) if access is denied (403).
+    pub async fn get_all_fields(&self) -> Result<Vec<JiraFieldMeta>, String> {
+        let url = self.url("/rest/api/3/field");
+        // A 403 here just means the user lacks admin-level field access —
+        // return empty rather than surfacing a confusing error.
+        let body = match self.get_json(&url).await {
+            Ok(b) => b,
+            Err(e) if e.contains("403") || e.contains("Forbidden") => return Ok(vec![]),
+            Err(e) => return Err(e),
+        };
+        if let Some(arr) = body.as_array() {
+            let mut fields: Vec<JiraFieldMeta> = arr
+                .iter()
+                .map(|f| JiraFieldMeta {
+                    id: f["id"].as_str().unwrap_or("").to_string(),
+                    name: f["name"].as_str().unwrap_or("").to_string(),
+                    field_type: f["schema"]["type"].as_str().map(str::to_string),
+                })
+                .collect();
+            fields.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+            Ok(fields)
+        } else {
+            Ok(vec![])
+        }
     }
 
     pub async fn search_issues(
         &self,
         jql: &str,
         max_results: usize,
+        custom_fields: &CustomFieldConfig,
     ) -> Result<Vec<JiraIssue>, String> {
-        let fields: Vec<&str> = issue_fields().split(',').collect();
+        let fields_str = issue_fields_with_custom(custom_fields);
+        let fields: Vec<&str> = fields_str.split(',').collect();
         let url = self.url("/rest/api/3/search/jql");
         let payload = serde_json::json!({
             "jql": jql,
@@ -307,14 +442,54 @@ impl JiraClient {
         let body = resp.json::<serde_json::Value>().await
             .map_err(|e| format!("Failed to parse JIRA search response: {e}"))?;
         let issues = body["issues"].as_array().cloned().unwrap_or_default();
-        Ok(issues.iter().map(|i| parse_issue(i, &self.base_url)).collect())
+        Ok(issues.iter().map(|i| parse_issue(i, &self.base_url, custom_fields)).collect())
+    }
+}
+
+// ── Custom field configuration ────────────────────────────────────────────────
+
+/// Holds the custom field IDs configured by the user for their JIRA workspace.
+/// All fields are optional — if None the corresponding `JiraIssue` field will be None.
+#[derive(Debug, Default, Clone)]
+pub struct CustomFieldConfig {
+    /// e.g. "customfield_10034" for Acceptance Criteria
+    pub acceptance_criteria: Option<String>,
+    /// e.g. "customfield_10035"
+    pub steps_to_reproduce: Option<String>,
+    /// e.g. "customfield_10036"
+    pub observed_behavior: Option<String>,
+    /// e.g. "customfield_10037"
+    pub expected_behavior: Option<String>,
+    /// Extra arbitrary mappings: display name → field id.
+    /// Populated from `jira_extra_custom_fields` (JSON string in keychain).
+    pub extra: HashMap<String, String>,
+}
+
+impl CustomFieldConfig {
+    /// Collect all configured custom field IDs (deduplicated).
+    pub fn all_field_ids(&self) -> Vec<String> {
+        let mut ids: Vec<String> = vec![];
+        if let Some(id) = &self.acceptance_criteria { ids.push(id.clone()); }
+        if let Some(id) = &self.steps_to_reproduce  { ids.push(id.clone()); }
+        if let Some(id) = &self.observed_behavior    { ids.push(id.clone()); }
+        if let Some(id) = &self.expected_behavior    { ids.push(id.clone()); }
+        for id in self.extra.values() { ids.push(id.clone()); }
+        ids.dedup();
+        ids
     }
 }
 
 // ── Parsing helpers ───────────────────────────────────────────────────────────
 
-fn issue_fields() -> &'static str {
-    "summary,status,assignee,reporter,issuetype,priority,customfield_10016,customfield_10028,labels,description,parent,created,updated"
+fn issue_fields_with_custom(cfg: &CustomFieldConfig) -> String {
+    let mut base = "summary,status,assignee,reporter,issuetype,priority,\
+        customfield_10016,customfield_10028,labels,description,parent,created,updated"
+        .to_string();
+    for id in cfg.all_field_ids() {
+        base.push(',');
+        base.push_str(&id);
+    }
+    base
 }
 
 fn parse_sprint(v: &Value) -> JiraSprint {
@@ -331,7 +506,7 @@ fn parse_sprint(v: &Value) -> JiraSprint {
     }
 }
 
-fn parse_issue(v: &Value, base_url: &str) -> JiraIssue {
+fn parse_issue(v: &Value, base_url: &str, cfg: &CustomFieldConfig) -> JiraIssue {
     let key = v["key"].as_str().unwrap_or("").to_string();
     let fields = &v["fields"];
 
@@ -380,20 +555,53 @@ fn parse_issue(v: &Value, base_url: &str) -> JiraIssue {
         }
     };
 
+    let description_sections = parse_adf_description(&fields["description"]);
+
+    let issue_type_name = fields["issuetype"]["name"]
+        .as_str()
+        .unwrap_or("")
+        .to_string();
+
+    // ── Custom fields ──────────────────────────────────────────────────────────
+    // For Story-type issues: if no dedicated Acceptance Criteria custom field is
+    // configured (or it is empty), fall back to extracting the Requirements column
+    // from the description table — the conventional layout for Story tickets in
+    // this workspace (User Story | Requirements table in the description).
+    let acceptance_criteria = cfg.acceptance_criteria.as_deref()
+        .and_then(|id| extract_field_text(&fields[id]))
+        .or_else(|| {
+            if issue_type_name.eq_ignore_ascii_case("story") {
+                extract_story_ac_from_description_table(&fields["description"])
+            } else {
+                None
+            }
+        });
+    let steps_to_reproduce = cfg.steps_to_reproduce.as_deref()
+        .and_then(|id| extract_field_text(&fields[id]));
+    let observed_behavior = cfg.observed_behavior.as_deref()
+        .and_then(|id| extract_field_text(&fields[id]));
+    let expected_behavior = cfg.expected_behavior.as_deref()
+        .and_then(|id| extract_field_text(&fields[id]));
+
+    let mut extra_fields: HashMap<String, String> = HashMap::new();
+    for (display_name, field_id) in &cfg.extra {
+        if let Some(text) = extract_field_text(&fields[field_id]) {
+            extra_fields.insert(display_name.clone(), text);
+        }
+    }
+
     JiraIssue {
         id: v["id"].as_str().unwrap_or("").to_string(),
         url: format!("{base_url}/browse/{key}"),
         key,
         summary: fields["summary"].as_str().unwrap_or("").to_string(),
         description,
+        description_sections,
         status,
         status_category,
         assignee: parse_user(&fields["assignee"]),
         reporter: parse_user(&fields["reporter"]),
-        issue_type: fields["issuetype"]["name"]
-            .as_str()
-            .unwrap_or("")
-            .to_string(),
+        issue_type: issue_type_name,
         priority: fields["priority"]["name"].as_str().map(str::to_string),
         story_points,
         labels,
@@ -401,8 +609,101 @@ fn parse_issue(v: &Value, base_url: &str) -> JiraIssue {
         epic_summary,
         created: fields["created"].as_str().unwrap_or("").to_string(),
         updated: fields["updated"].as_str().unwrap_or("").to_string(),
+        acceptance_criteria,
+        steps_to_reproduce,
+        observed_behavior,
+        expected_behavior,
+        extra_fields,
     }
 }
+
+/// Extract text from a custom field value.
+/// Handles ADF docs, plain strings, and numeric values.
+fn extract_field_text(v: &Value) -> Option<String> {
+    if v.is_null() {
+        return None;
+    }
+    // ADF document
+    if v.get("type").and_then(|t| t.as_str()) == Some("doc") {
+        return extract_adf_text(v);
+    }
+    // Plain string
+    if let Some(s) = v.as_str() {
+        let trimmed = s.trim().to_string();
+        return if trimmed.is_empty() { None } else { Some(trimmed) };
+    }
+    // Number
+    if let Some(n) = v.as_f64() {
+        return Some(n.to_string());
+    }
+    // Object with a "value" key (e.g. select fields)
+    if let Some(s) = v.get("value").and_then(|s| s.as_str()) {
+        let trimmed = s.trim().to_string();
+        return if trimmed.is_empty() { None } else { Some(trimmed) };
+    }
+    // Array of values (multi-select)
+    if let Some(arr) = v.as_array() {
+        let joined: String = arr
+            .iter()
+            .filter_map(|item| {
+                item.get("value").and_then(|s| s.as_str())
+                    .or_else(|| item.as_str())
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        return if joined.is_empty() { None } else { Some(joined) };
+    }
+    None
+}
+
+/// Convert any field value to a short debug string for the raw-fields diagnostic.
+fn field_value_to_string(v: &Value) -> String {
+    match v {
+        Value::Null => String::new(),
+        Value::Bool(b) => b.to_string(),
+        Value::Number(n) => n.to_string(),
+        Value::String(s) => s.trim().to_string(),
+        Value::Array(arr) => {
+            if arr.is_empty() {
+                return String::new();
+            }
+            // Try to extract .value or .name from each item
+            let items: Vec<String> = arr
+                .iter()
+                .map(|item| {
+                    item.get("value").and_then(|s| s.as_str()).map(str::to_string)
+                        .or_else(|| item.get("name").and_then(|s| s.as_str()).map(str::to_string))
+                        .or_else(|| item.as_str().map(str::to_string))
+                        .unwrap_or_else(|| item.to_string())
+                })
+                .collect();
+            items.join(", ")
+        }
+        Value::Object(map) => {
+            // ADF doc — extract text
+            if map.get("type").and_then(|t| t.as_str()) == Some("doc") {
+                let text = collect_adf_text(v);
+                let trimmed = text.trim().to_string();
+                // Limit for display
+                if trimmed.len() > 200 {
+                    format!("{}…", &trimmed[..200])
+                } else {
+                    trimmed
+                }
+            } else {
+                // Try common summary fields
+                map.get("name").and_then(|s| s.as_str()).map(str::to_string)
+                    .or_else(|| map.get("value").and_then(|s| s.as_str()).map(str::to_string))
+                    .or_else(|| map.get("displayName").and_then(|s| s.as_str()).map(str::to_string))
+                    .or_else(|| map.get("summary").and_then(|s| s.as_str()).map(str::to_string))
+                    .unwrap_or_default()
+            }
+        }
+    }
+}
+
 
 fn parse_user(v: &Value) -> Option<JiraUser> {
     if v.is_null() || !v.is_object() {
@@ -439,7 +740,8 @@ fn collect_adf_text(node: &Value) -> String {
         let node_type = node.get("type").and_then(|t| t.as_str()).unwrap_or("");
         let separator = match node_type {
             "paragraph" | "heading" | "bulletList" | "orderedList" | "listItem"
-            | "blockquote" | "codeBlock" | "rule" => "\n",
+            | "blockquote" | "codeBlock" | "rule" | "tableCell" | "tableHeader"
+            | "tableRow" | "table" => "\n",
             _ => " ",
         };
         return content
@@ -449,5 +751,245 @@ fn collect_adf_text(node: &Value) -> String {
             .join(separator);
     }
     String::new()
+}
+
+/// For Story-type issues: scan the top-level ADF `doc` node for a `table` whose
+/// headers indicate a user-story / requirements layout.
+///
+/// Expected table shape (2 columns):
+///   Column 0: User Story  ("As a …, I want …")
+///   Column 1: Requirements / Acceptance Criteria
+///
+/// The function identifies the requirements column by looking for a header cell
+/// whose text contains "requirement" or "acceptance" (case-insensitive).  If no
+/// such header exists but the table has exactly 2 columns it falls back to
+/// treating column 1 as requirements.
+///
+/// Returns None if no suitable table is found or if the table is empty.
+fn extract_story_ac_from_description_table(description_adf: &Value) -> Option<String> {
+    let top_content = description_adf
+        .get("content")
+        .and_then(|c| c.as_array())?;
+
+    for node in top_content {
+        let node_type = node.get("type").and_then(|t| t.as_str()).unwrap_or("");
+        if node_type != "table" {
+            continue;
+        }
+
+        let rows = match node.get("content").and_then(|c| c.as_array()) {
+            Some(r) => r,
+            None => continue,
+        };
+
+        // ── Detect which column index holds Requirements ───────────────────────
+        // The first row may be a header row (tableHeader cells) or a data row.
+        let mut req_col: Option<usize> = None;
+        let mut data_rows: Vec<&Value> = vec![];
+
+        for (row_idx, row) in rows.iter().enumerate() {
+            let row_type = row.get("type").and_then(|t| t.as_str()).unwrap_or("");
+            if row_type != "tableRow" {
+                continue;
+            }
+            let cells = match row.get("content").and_then(|c| c.as_array()) {
+                Some(c) => c,
+                None => continue,
+            };
+
+            // Try to read column headers from first row containing tableHeader cells
+            if req_col.is_none() && row_idx == 0 {
+                let has_headers = cells
+                    .iter()
+                    .any(|c| c.get("type").and_then(|t| t.as_str()) == Some("tableHeader"));
+
+                if has_headers {
+                    for (col_idx, cell) in cells.iter().enumerate() {
+                        let cell_text = collect_adf_text(cell).to_lowercase();
+                        if cell_text.contains("requirement")
+                            || cell_text.contains("acceptance")
+                            || cell_text.contains("criteria")
+                        {
+                            req_col = Some(col_idx);
+                            break;
+                        }
+                    }
+                    // If still not found but exactly 2 columns, default to col 1
+                    if req_col.is_none() && cells.len() == 2 {
+                        req_col = Some(1);
+                    }
+                    // Header row — skip for data extraction
+                    continue;
+                }
+            }
+
+            data_rows.push(row);
+        }
+
+        // If we never saw a header row, default to column 1 for a 2-column table
+        if req_col.is_none() {
+            // Peek at the first data row to check column count
+            let first_row = data_rows.first().copied().or_else(|| rows.first());
+            if let Some(row) = first_row {
+                if let Some(cells) = row.get("content").and_then(|c| c.as_array()) {
+                    if cells.len() == 2 {
+                        req_col = Some(1);
+                    }
+                }
+            }
+        }
+
+        let col = match req_col {
+            Some(c) => c,
+            None => continue, // can't determine requirements column
+        };
+
+        // ── Extract requirements text from every data row at `col` ────────────
+        let mut entries: Vec<String> = vec![];
+        for row in &data_rows {
+            if let Some(cells) = row.get("content").and_then(|c| c.as_array()) {
+                if let Some(cell) = cells.get(col) {
+                    let text = collect_adf_text(cell).trim().to_string();
+                    if !text.is_empty() {
+                        entries.push(text);
+                    }
+                }
+            }
+        }
+
+        if !entries.is_empty() {
+            return Some(entries.join("\n\n"));
+        }
+    }
+
+    None
+}
+
+fn parse_adf_description(v: &Value) -> Vec<DescriptionSection> {
+    let mut sections = Vec::new();
+    if let Some(content) = v.get("content").and_then(|c| c.as_array()) {
+        let mut current_section = DescriptionSection {
+            heading: None,
+            content: String::new(),
+        };
+        for node in content {
+            let node_type = node.get("type").and_then(|t| t.as_str()).unwrap_or("");
+            match node_type {
+                "heading" => {
+                    // Flush the current section before starting a new one.
+                    if !current_section.content.is_empty() || current_section.heading.is_some() {
+                        let trimmed = current_section.content.trim().to_string();
+                        if !trimmed.is_empty() || current_section.heading.is_some() {
+                            sections.push(DescriptionSection {
+                                heading: current_section.heading,
+                                content: trimmed,
+                            });
+                        }
+                    }
+                    // Collect all text from the heading node's children.
+                    let heading_text = collect_adf_text(node).trim().to_string();
+                    current_section = DescriptionSection {
+                        heading: if heading_text.is_empty() { None } else { Some(heading_text) },
+                        content: String::new(),
+                    };
+                }
+                _ => {
+                    let text = collect_adf_text(node);
+                    if !text.trim().is_empty() {
+                        if !current_section.content.is_empty() {
+                            current_section.content.push('\n');
+                        }
+                        current_section.content.push_str(&text);
+                    }
+                }
+            }
+        }
+        // Flush the last section.
+        let trimmed = current_section.content.trim().to_string();
+        if !trimmed.is_empty() || current_section.heading.is_some() {
+            sections.push(DescriptionSection {
+                heading: current_section.heading,
+                content: trimmed,
+            });
+        }
+    }
+    sections
+}
+
+// ── JiraClient: update issue ──────────────────────────────────────────────────
+
+impl JiraClient {
+    /// Update the description (and optionally summary) of an issue.
+    /// `description_markdown` is plain text / markdown; we wrap it in ADF format
+    /// which is what the JIRA Cloud v3 API expects.
+    pub async fn update_issue_description(
+        &self,
+        issue_key: &str,
+        summary: Option<&str>,
+        description_markdown: &str,
+    ) -> Result<(), String> {
+        let url = self.url(&format!("/rest/api/3/issue/{issue_key}"));
+
+        // Convert plain-text / markdown paragraphs to ADF paragraph nodes.
+        let paragraphs: Vec<serde_json::Value> = description_markdown
+            .split("\n\n")
+            .filter(|p| !p.trim().is_empty())
+            .map(|para| {
+                // Split paragraph lines into text nodes joined by hardBreak nodes.
+                let lines: Vec<&str> = para.lines().collect();
+                let mut inline_nodes: Vec<serde_json::Value> = vec![];
+                for (i, line) in lines.iter().enumerate() {
+                    inline_nodes.push(serde_json::json!({
+                        "type": "text",
+                        "text": line.trim()
+                    }));
+                    if i < lines.len() - 1 {
+                        inline_nodes.push(serde_json::json!({ "type": "hardBreak" }));
+                    }
+                }
+                serde_json::json!({
+                    "type": "paragraph",
+                    "content": inline_nodes
+                })
+            })
+            .collect();
+
+        let adf = serde_json::json!({
+            "version": 1,
+            "type": "doc",
+            "content": paragraphs
+        });
+
+        let mut fields = serde_json::json!({
+            "description": adf
+        });
+
+        if let Some(s) = summary {
+            fields["summary"] = serde_json::Value::String(s.to_string());
+        }
+
+        let body = serde_json::json!({ "fields": fields });
+
+        let resp = self
+            .client
+            .put(&url)
+            .basic_auth(&self.email, Some(&self.api_token))
+            .header("Accept", "application/json")
+            .header("Content-Type", "application/json")
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| format!("JIRA update request failed: {e}"))?;
+
+        let status = resp.status();
+        if status.is_success() || status.as_u16() == 204 {
+            return Ok(());
+        }
+
+        let body_text = resp.text().await.unwrap_or_default();
+        Err(format!(
+            "JIRA returned HTTP {status} when updating {issue_key}: {body_text}"
+        ))
+    }
 }
 
