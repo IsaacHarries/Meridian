@@ -18,9 +18,9 @@ use commands::{
     run_pr_description_gen, run_retrospective_agent,
     // JIRA data commands
     get_active_sprint, get_all_active_sprints, get_all_active_sprint_issues,
-    get_active_sprint_issues, get_completed_sprints, get_issue,
+    get_active_sprint_issues, get_completed_sprints, get_future_sprints, get_issue,
     get_my_sprint_issues, get_sprint_issues, get_sprint_issues_by_id, search_jira_issues,
-    update_jira_issue,
+    update_jira_issue, update_jira_fields,
     // JIRA diagnostic / field discovery
     get_raw_issue_fields, get_jira_fields,
     // Bitbucket data commands
@@ -130,8 +130,10 @@ pub fn run() {
             get_sprint_issues_by_id,
             get_issue,
             get_completed_sprints,
+            get_future_sprints,
             search_jira_issues,
             update_jira_issue,
+            update_jira_fields,
             get_raw_issue_fields,
             get_jira_fields,
             // Bitbucket

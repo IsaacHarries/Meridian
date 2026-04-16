@@ -89,6 +89,10 @@ pub struct JiraIssue {
     pub expected_behavior: Option<String>,
     /// Any extra configured custom fields, keyed by the field name (not ID).
     pub extra_fields: std::collections::HashMap<String, String>,
+    /// Mapping of semantic field name → discovered JIRA field ID.
+    /// e.g. { "acceptance_criteria": "customfield_10034", "steps_to_reproduce": "customfield_10070" }
+    /// Empty map if the field was not discovered. Only populated by get_issue (full detail fetch).
+    pub discovered_field_ids: std::collections::HashMap<String, String>,
 }
 
 // ── HTTP client ───────────────────────────────────────────────────────────────
@@ -294,6 +298,29 @@ impl JiraClient {
         Ok(all_sprints)
     }
 
+    /// Future (not-yet-started) sprints for the configured board, sorted by
+    /// start date ascending (soonest first). Returns at most `limit` sprints.
+    pub async fn get_future_sprints(
+        &self,
+        board_id: i64,
+        limit: usize,
+    ) -> Result<Vec<JiraSprint>, String> {
+        let url = self.url(&format!(
+            "/rest/agile/1.0/board/{board_id}/sprint?state=future&maxResults=50"
+        ));
+        let body = self.get_json(&url).await?;
+        let values = body["values"].as_array().cloned().unwrap_or_default();
+        let mut sprints: Vec<JiraSprint> = values.iter().map(parse_sprint).collect();
+        // Sort by startDate ascending — nearest upcoming sprint first.
+        sprints.sort_by(|a, b| {
+            let a_start = a.start_date.as_deref().unwrap_or("");
+            let b_start = b.start_date.as_deref().unwrap_or("");
+            a_start.cmp(b_start)
+        });
+        sprints.truncate(limit);
+        Ok(sprints)
+    }
+
     // ── Issues ────────────────────────────────────────────────────────────────
 
     pub async fn get_sprint_issues(
@@ -315,12 +342,44 @@ impl JiraClient {
         issue_key: &str,
         custom_fields: &CustomFieldConfig,
     ) -> Result<JiraIssue, String> {
-        let fields = issue_fields_with_custom(custom_fields);
+        // Fetch with expand=names so we get ALL fields (including custom ones)
+        // and a names map so we can auto-discover custom field IDs by display name.
         let url = self.url(&format!(
-            "/rest/api/3/issue/{issue_key}?fields={fields}"
+            "/rest/api/3/issue/{issue_key}?expand=names"
         ));
         let body = self.get_json(&url).await?;
-        Ok(parse_issue(&body, &self.base_url, custom_fields))
+
+        // Build a display-name → field-id map from the `names` object.
+        let names: HashMap<String, String> = body["names"]
+            .as_object()
+            .map(|obj| {
+                obj.iter()
+                    .map(|(id, name)| (name.as_str().unwrap_or("").to_lowercase(), id.clone()))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        // Auto-discover custom field IDs by well-known display names, falling
+        // back to whatever the caller passed in via custom_fields.
+        let auto_cfg = CustomFieldConfig {
+            acceptance_criteria: custom_fields.acceptance_criteria.clone()
+                .or_else(|| names.get("acceptance criteria").cloned())
+                .or_else(|| names.get("acceptance_criteria").cloned()),
+            steps_to_reproduce: custom_fields.steps_to_reproduce.clone()
+                .or_else(|| names.get("steps to reproduce").cloned())
+                .or_else(|| names.get("steps_to_reproduce").cloned()),
+            observed_behavior: custom_fields.observed_behavior.clone()
+                .or_else(|| names.get("observed behavior").cloned())
+                .or_else(|| names.get("observed behaviour").cloned()),
+            expected_behavior: custom_fields.expected_behavior.clone()
+                .or_else(|| names.get("expected behavior").cloned())
+                .or_else(|| names.get("expected behaviour").cloned())
+                .or_else(|| names.get("expected result").cloned())
+                .or_else(|| names.get("expected results").cloned()),
+            extra: custom_fields.extra.clone(),
+        };
+
+        Ok(parse_issue(&body, &self.base_url, &auto_cfg))
     }
 
     /// Fetch a raw field map for a single issue with human-readable names.
@@ -577,11 +636,23 @@ fn parse_issue(v: &Value, base_url: &str, cfg: &CustomFieldConfig) -> JiraIssue 
             }
         });
     let steps_to_reproduce = cfg.steps_to_reproduce.as_deref()
-        .and_then(|id| extract_field_text(&fields[id]));
+        .and_then(|id| extract_field_text(&fields[id]))
+        .or_else(|| find_section_content(&description_sections, &[
+            "Steps to Reproduce", "Steps To Reproduce", "Steps to reproduce",
+            "Reproduction Steps", "How to Reproduce",
+        ]));
     let observed_behavior = cfg.observed_behavior.as_deref()
-        .and_then(|id| extract_field_text(&fields[id]));
+        .and_then(|id| extract_field_text(&fields[id]))
+        .or_else(|| find_section_content(&description_sections, &[
+            "Observed Behavior", "Observed Behaviour", "Observed behavior", "Observed behaviour",
+            "Current Behavior", "Current Behaviour", "Actual Behavior", "Actual Behaviour",
+        ]));
     let expected_behavior = cfg.expected_behavior.as_deref()
-        .and_then(|id| extract_field_text(&fields[id]));
+        .and_then(|id| extract_field_text(&fields[id]))
+        .or_else(|| find_section_content(&description_sections, &[
+            "Expected Behavior", "Expected Behaviour", "Expected behavior", "Expected behaviour",
+            "Expected Result", "Expected Results",
+        ]));
 
     let mut extra_fields: HashMap<String, String> = HashMap::new();
     for (display_name, field_id) in &cfg.extra {
@@ -614,13 +685,36 @@ fn parse_issue(v: &Value, base_url: &str, cfg: &CustomFieldConfig) -> JiraIssue 
         observed_behavior,
         expected_behavior,
         extra_fields,
+        discovered_field_ids: {
+            let mut m = HashMap::new();
+            if let Some(id) = &cfg.acceptance_criteria { m.insert("acceptance_criteria".into(), id.clone()); }
+            if let Some(id) = &cfg.steps_to_reproduce  { m.insert("steps_to_reproduce".into(), id.clone()); }
+            if let Some(id) = &cfg.observed_behavior   { m.insert("observed_behavior".into(), id.clone()); }
+            if let Some(id) = &cfg.expected_behavior   { m.insert("expected_behavior".into(), id.clone()); }
+            m
+        },
     }
+}
+
+/// Look up a section body from parsed description sections by heading name.
+/// Matching is case-insensitive. Returns None if no matching heading is found
+/// or the matched section has empty content.
+fn find_section_content(sections: &[DescriptionSection], headings: &[&str]) -> Option<String> {
+    sections
+        .iter()
+        .find(|s| {
+            s.heading
+                .as_deref()
+                .map(|h| headings.iter().any(|t| h.trim().eq_ignore_ascii_case(t)))
+                .unwrap_or(false)
+        })
+        .map(|s| s.content.clone())
+        .filter(|c| !c.is_empty())
 }
 
 /// Extract text from a custom field value.
 /// Handles ADF docs, plain strings, and numeric values.
-fn extract_field_text(v: &Value) -> Option<String> {
-    if v.is_null() {
+fn extract_field_text(v: &Value) -> Option<String> {    if v.is_null() {
         return None;
     }
     // ADF document
@@ -989,6 +1083,70 @@ impl JiraClient {
         let body_text = resp.text().await.unwrap_or_default();
         Err(format!(
             "JIRA returned HTTP {status} when updating {issue_key}: {body_text}"
+        ))
+    }
+
+    /// Update multiple fields on a JIRA issue in a single PUT request.
+    /// `fields_json` is a JSON object mapping JIRA field IDs to plain-text values.
+    /// Standard fields: "summary" (plain string).
+    /// All other fields are wrapped in ADF doc nodes for the v3 API.
+    pub async fn update_fields(
+        &self,
+        issue_key: &str,
+        fields_json: &str,
+    ) -> Result<(), String> {
+        let map: serde_json::Map<String, serde_json::Value> = serde_json::from_str(fields_json)
+            .map_err(|e| format!("Invalid fields JSON: {e}"))?;
+
+        let mut fields_payload = serde_json::Map::new();
+        for (key, val) in &map {
+            let text = val.as_str().unwrap_or("").to_string();
+            if key == "summary" {
+                // Summary is always a plain string in JIRA v3
+                fields_payload.insert(key.clone(), serde_json::Value::String(text));
+            } else if key == "description" {
+                // Description is always ADF in JIRA v3
+                let adf = serde_json::json!({
+                    "version": 1,
+                    "type": "doc",
+                    "content": [{
+                        "type": "paragraph",
+                        "content": [{ "type": "text", "text": text }]
+                    }]
+                });
+                fields_payload.insert(key.clone(), adf);
+            } else {
+                // Custom fields (customfield_XXXXX) for acceptance criteria, steps to
+                // reproduce, observed/expected behavior etc. are string-type fields —
+                // JIRA returns them as plain strings, so we must write them as plain
+                // strings. Sending ADF to a string field causes JIRA to silently
+                // accept the request (204) but not persist the value correctly.
+                fields_payload.insert(key.clone(), serde_json::Value::String(text));
+            }
+        }
+
+        let url = self.url(&format!("/rest/api/3/issue/{issue_key}"));
+        let body = serde_json::json!({ "fields": fields_payload });
+
+        let resp = self
+            .client
+            .put(&url)
+            .basic_auth(&self.email, Some(&self.api_token))
+            .header("Accept", "application/json")
+            .header("Content-Type", "application/json")
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| format!("JIRA update request failed: {e}"))?;
+
+        let status = resp.status();
+        if status.is_success() || status.as_u16() == 204 {
+            return Ok(());
+        }
+
+        let body_text = resp.text().await.unwrap_or_default();
+        Err(format!(
+            "JIRA returned HTTP {status} when updating fields on {issue_key}: {body_text}"
         ))
     }
 }

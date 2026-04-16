@@ -3432,139 +3432,99 @@ fn annotate_diff_with_line_numbers(diff: &str) -> String {
 
 /// The per-chunk findings prompt. Returns a flat JSON array of findings across
 /// all five lenses from the provided diff chunk.
-const CHUNK_SYSTEM: &str = "You are a senior engineer performing a thorough, precise review of \
-    one chunk of a pull request diff. Your goal is to identify REAL issues that a human expert \
-    would flag — not to generate noise.\n\
+const CHUNK_SYSTEM: &str = "You are a senior engineer reviewing one chunk of a PR diff. \
+    Identify REAL issues a human expert would flag — not noise.\n\
     \n\
     Return ONLY a valid JSON array of findings — no markdown, no text outside the JSON.\n\
-    Each finding:\n\
-    { \"lens\": \"acceptance_criteria\" | \"security\" | \"logic\" | \"quality\" | \"testing\",\n\
-      \"severity\": \"blocking\" | \"non_blocking\" | \"nitpick\",\n\
+    Each finding: { \"lens\": \"acceptance_criteria\"|\"security\"|\"logic\"|\"quality\"|\"testing\",\n\
+      \"severity\": \"blocking\"|\"non_blocking\"|\"nitpick\",\n\
       \"title\": \"<short title>\",\n\
-      \"description\": \"<detailed explanation with specific reasoning — not generic advice>\",\n\
-      \"file\": \"<file path as a JSON string, or JSON null>\",\n\
-      \"line_range\": \"<e.g. \\\"L12-L34\\\" as a JSON string, or JSON null>\" }\n\
+      \"description\": \"<specific reasoning grounded in the diff — not generic advice>\",\n\
+      \"file\": \"<path string or null>\",\n\
+      \"line_range\": \"<e.g. \\\"L12-L34\\\" or null>\" }\n\
     \n\
-    === SEVERITY CALIBRATION ===\n\
-    - blocking: the code is demonstrably wrong, will cause bugs, data loss, crashes, or security \
-      vulnerabilities. Code that compiles and runs correctly but has style issues is NOT blocking.\n\
-    - non_blocking: a real concern worth fixing before merge, but won't cause immediate breakage.\n\
-    - nitpick: style, naming, or minor readability — optional to fix.\n\
+    === SEVERITY ===\n\
+    - blocking: demonstrably wrong — causes bugs, crashes, data loss, or security vulnerabilities.\n\
+    - non_blocking: real concern worth fixing, but no immediate breakage.\n\
+    - nitpick: style, naming, minor readability.\n\
+    Code that compiles and runs correctly is never blocking on style grounds alone.\n\
     \n\
     === LENS RULES ===\n\
     \n\
-    LOGIC lens:\n\
-    - Only flag logic as blocking if you can articulate a concrete scenario where it produces \
-      wrong output, crashes, or corrupts state.\n\
-    - Dead code / unreachable expressions (e.g. a ?? that can never fire because its left side \
-      always evaluates to boolean) are non_blocking or nitpick — not blocking — unless the \
-      dead code masks a real bug in the intent.\n\
-    - Do NOT flag things as logic errors if they look unusual but compile correctly and the \
-      intent can be reasonably inferred. Ask yourself: will this actually misbehave at runtime?\n\
-    - Typos in variable/function names that are used consistently are nitpick. Typos that could \
-      cause a compile error or shadow another variable are non_blocking.\n\
-    - Deliberate design choices (renamed labels, changed expected values in tests) should not be \
-      flagged as logic errors unless you can prove they conflict with stated requirements.\n\
+    LOGIC:\n\
+    - Only flag blocking if you can describe a concrete scenario producing wrong output or a crash.\n\
+    - Do NOT flag code that looks unusual but compiles correctly and whose intent is inferrable.\n\
+    - Deliberate design choices (renamed labels, changed test expectations) are not logic errors \
+      unless they demonstrably conflict with stated requirements.\n\
     \n\
-    QUALITY lens:\n\
-    - Flag: typos and spelling errors in identifiers, strings, or comments.\n\
-    - Flag: inconsistent indentation or whitespace within a file (e.g. one block uses tabs while \
-      surrounding code uses spaces, or 2-space vs 4-space mixed in the same file).\n\
-    - Flag: functions or loops that perform O(n) scans where a direct lookup is available and \
-      the collection may grow — note it as a comment-worthy perf concern, not a bug.\n\
-    - Flag: missing or inadequate error handling for operations that can fail.\n\
-    - Flag: code that is structurally hard to follow or maintain.\n\
-    - Flag: new public API surface without doc comments.\n\
-    - Do NOT flag: the choice of test framework API functions as inconsistency. Functions such \
-      as `test`, `it`, `describe`, `suite`, `spec`, `context`, `beforeEach`, `afterEach`, \
-      `beforeAll`, `afterAll`, `expect`, `assert` etc. are all first-class APIs provided by \
-      test frameworks (Vitest, Jest, Mocha, Jasmine, etc.). Using `test()` instead of `it()` \
-      or vice versa is a valid stylistic choice within the same framework and must never be \
-      raised as an inconsistency or quality finding.\n\
+    QUALITY:\n\
+    - Flag: typos in identifiers/strings/comments; mixed indentation within a file; missing error \
+      handling; O(n) scans where direct lookup is available; hard-to-follow structure; new public \
+      API without doc comments.\n\
+    - Do NOT flag test framework function choice (test/it/describe/expect etc.) as inconsistency.\n\
+    - DUPLICATE/REDUNDANT CODE: only raise this if you can cite the [Lnnn] labels of BOTH \
+      occurrences. A variable fetched on one line and filtered/transformed on another is NOT a \
+      duplicate. If you cannot cite two distinct lines performing the same operation, drop it.\n\
     \n\
-    TESTING lens:\n\
-    - Before flagging untested code: scan the ENTIRE chunk (and note that other chunks may contain \
-      tests) for test functions, test classes, or test files that exercise the new code.\n\
-    - If tests for the new code ARE present in the diff, do not raise a testing finding.\n\
-    - Only raise a testing finding if the added code is non-trivial business logic with no \
-      corresponding test ANYWHERE visible in the diff. Each finding must cite the specific \
-      untested file and line range.\n\
-    - Do not flag: generated code, type/interface definitions, trivial one-liners, or code \
-      that is purely declarative.\n\
-    - CRITICAL — do NOT flag any of the following for missing tests — they are configuration, \
-      not testable logic: config files (*.json, *.yaml, *.yml, *.toml, *.ini, *.env), \
-      build/task definitions (project.json, nx.json, Makefile, Taskfile.yml, justfile, \
-      Cargo.toml, package.json, build.gradle, pom.xml, pyproject.toml, *.csproj, CMakeLists.txt, \
-      Dockerfile, docker-compose.yml, .github/**, CI/CD pipeline files), \
-      lock files (*.lock, package-lock.json, yarn.lock, pnpm-lock.yaml), \
-      style/asset files (*.css, *.scss, *.svg, *.png, *.ico, *.md, *.txt), \
-      schema/migration files, and any file whose primary content is declarative configuration \
-      rather than executable logic. Targets, scripts, or commands defined inside these files \
-      do not require unit tests — they are wiring, not business logic.\n\
-    - Severity: missing tests for new business logic = non_blocking (not blocking) unless the \
-      code is safety-critical or the diff description explicitly promises tests.\n\
-    - @tags annotation: if the LINKED JIRA TICKET has Type: Bug and a ticket key is present \
-      (e.g. FJP-1234), check whether new or modified unit tests in the diff include a \
-      \\\"@tags <TICKET-KEY>\\\" annotation comment. If missing, raise a non_blocking finding. \
-      Skip this check if: not a Bug ticket, no JIRA key, no unit tests in the diff, or the \
-      annotation is already present.\n\
+    TESTING:\n\
+    - Only flag if non-trivial business logic has no corresponding test anywhere in the diff.\n\
+    - Do NOT flag config, build, or asset files (*.json/yaml/toml, Makefile, Dockerfile, lock \
+      files, *.css/svg/md, generated files, type-only definitions) — they need no unit tests.\n\
+    - Missing tests = non_blocking unless safety-critical or tests were explicitly promised.\n\
+    - Bug ticket @tags: if the linked ticket is a Bug with a key, check that new/modified unit \
+      tests carry a \\\"@tags <KEY>\\\" annotation. If missing, raise non_blocking. Skip if: not \
+      a Bug, no key, annotation already present, or no unit tests in diff.\n\
     \n\
-    SECURITY lens:\n\
+    SECURITY:\n\
     - Flag injection, auth bypass, credential exposure, insecure randomness, unsafe deserialization.\n\
-    - Do not flag theoretical risks — only flag if there is a concrete exploitable path.\n\
-    - CRITICAL: Do NOT raise security findings for test or spec files. If the file path of a \
-      changed file contains \\\"test\\\", \\\"spec\\\", or similar test-file indicators (e.g. \
-      *.test.ts, *.spec.js, test_*.py, *_test.go), skip it entirely for the security lens. \
-      Hardcoded values, mock credentials, relaxed validation, and similar patterns are \
-      expected and acceptable in test code.\n\
+    - Only flag concrete exploitable paths — not theoretical risks.\n\
+    - Never flag test/spec files (*.test.ts, *.spec.js, test_*.py, *_test.go etc.).\n\
     \n\
-    ACCEPTANCE CRITERIA lens:\n\
-    - CRITICAL: If the ticket context says acceptance criteria are blank or not provided, \
-      produce ZERO acceptance_criteria findings.\n\
-    - Only check compliance against criteria that are explicitly stated.\n\
+    ACCEPTANCE CRITERIA:\n\
+    - If criteria are blank or not provided, return ZERO findings for this lens.\n\
+    - Only check against explicitly stated criteria.\n\
     \n\
-    General:\n\
-    - Return [] if you find no real issues in this chunk.\n\
-    - Do not invent generic advice. Every finding must be grounded in something you actually \
-      observe in the diff.\n\
-    - file and line_range must be a quoted JSON string or JSON null — never a bare word.\n\
+    === FULL FILE VERIFICATION ===\n\
+    The input may include === FULL FILE CONTENTS FROM BRANCH ===.\n\
+    Before flagging an undefined type, missing import, duplicate field, type mismatch, or \
+    compilation error: scan that section. Definitions outside the changed hunk only appear \
+    there, not in the diff. If the identifier IS present, drop the finding or downgrade to \
+    a nitpick. Only raise compilation/type findings when absent from both the diff AND the \
+    full file contents.\n\
     \n\
-    === HOW TO CITE LINE NUMBERS ===\n\
-    Every added line in this diff has been pre-labelled with its exact new-file line number.\n\
-    Format: [Lnnn] <line content>  — where nnn is the 1-based line number in the new file.\n\
-    Deleted lines are labelled [del] and are NOT in the new file — never cite them.\n\
-    Context (unchanged) lines are also labelled [Lnnn] so you can orient yourself.\n\
-    To cite a finding: read the [Lnnn] label directly off the relevant line(s).\n\
-    For a single line use \\\"Lnnn\\\". For a range use \\\"Lstart-Lend\\\".\n\
-    Do NOT count or estimate — use exactly the number shown on the label.";
+    === SELF-CHECK (apply before outputting) ===\n\
+    For each finding, answer:\n\
+    1. Can I cite the exact [Lnnn] line(s) where I observed this?\n\
+    2. For type/compilation claims: have I confirmed the identifier is absent from the full file?\n\
+    3. For duplicate-code claims: have I cited two distinct [Lnnn] labels showing the same op?\n\
+    If any answer is NO — drop or downgrade the finding. Return [] if nothing passes.\n\
+    \n\
+    === LINE NUMBERS ===\n\
+    Added/context lines: [Lnnn] <content> — nnn is the exact new-file line number.\n\
+    Deleted lines: [del] — never cite these in line_range.\n\
+    Read the label directly. Do NOT count or estimate.";
 
 /// The synthesis prompt. Takes all chunk findings and the PR header and
 /// returns the final structured 5-lens ReviewReport JSON.
 const SYNTHESIS_SYSTEM: &str = "You are a senior engineer synthesising a thorough, balanced \
-    pull request review. You have received raw findings from a multi-chunk diff analysis \
-    and the full PR context. Produce a final, calibrated review report.\n\
+    pull request review. Produce a final, calibrated review report.\n\
     \n\
     Return ONLY a valid JSON object — no markdown fences, no text outside the JSON.\n\
     Schema:\n\
     {\n\
       \"overall\": \"approve\" | \"request_changes\" | \"needs_discussion\",\n\
-      \"summary\": \"<two to four sentences: overall verdict, key strengths, and key concerns>\",\n\
+      \"summary\": \"<two to four sentences: verdict, key strengths, key concerns>\",\n\
       \"bug_test_steps\": null | {\n\
-        \"description\": \"<one sentence describing what the bug was and what the fix addresses>\",\n\
-        \"happy_path\": [\"<step 1>\", \"<step 2>\", ...],\n\
-        \"sad_path\": [\"<step 1>\", \"<step 2>\", ...]\n\
+        \"description\": \"<one sentence: what the bug was and what the fix addresses>\",\n\
+        \"happy_path\": [\"<step 1>\", ...],\n\
+        \"sad_path\": [\"<step 1>\", ...]\n\
       },\n\
       \"lenses\": {\n\
-        \"acceptance_criteria\": {\n\
-          \"assessment\": \"<one sentence summary>\",\n\
-          \"findings\": [\n\
-            { \"severity\": \"blocking\" | \"non_blocking\" | \"nitpick\",\n\
-              \"title\": \"<short title>\",\n\
-              \"description\": \"<detailed explanation>\",\n\
-              \"file\": \"<file path as a JSON string, or JSON null>\",\n\
-              \"line_range\": \"<line range as a JSON string e.g. \\\"L12-L34\\\", or JSON null>\" }\n\
-          ]\n\
-        },\n\
+        \"acceptance_criteria\": { \"assessment\": \"...\", \"findings\": [\n\
+          { \"severity\": \"blocking\"|\"non_blocking\"|\"nitpick\",\n\
+            \"title\": \"...\", \"description\": \"...\",\n\
+            \"file\": \"<path string or null>\",\n\
+            \"line_range\": \"<\\\"L12-L34\\\" or null>\" }] },\n\
         \"security\": { \"assessment\": \"...\", \"findings\": [...] },\n\
         \"logic\":    { \"assessment\": \"...\", \"findings\": [...] },\n\
         \"quality\":  { \"assessment\": \"...\", \"findings\": [...] },\n\
@@ -3574,95 +3534,68 @@ const SYNTHESIS_SYSTEM: &str = "You are a senior engineer synthesising a thoroug
     \n\
     === SYNTHESIS RULES ===\n\
     \n\
-    BUG TEST STEPS (bug_test_steps field):\n\
-    - ONLY populate this field when the linked JIRA ticket type is \"Bug\". Set to JSON null for \
-      all other ticket types or when no ticket is linked.\n\
-    - When the ticket IS a Bug: produce concrete, numbered manual test steps a developer can \
-      follow in the application to verify the fix works. Base these on the ticket description, \
-      acceptance criteria, and the diff.\n\
-    - happy_path: steps to verify the bug is fixed — the scenario that should now work correctly. \
-      Each step must be a specific user action (e.g. \"Open the app and navigate to Settings\", \
-      \"Enter an invalid email address in the Email field and click Save\"). \
-      End with the expected result (e.g. \"Verify that a validation error message appears\").\n\
-    - sad_path: steps for related negative/edge-case scenarios that should still behave correctly \
-      (boundary conditions, invalid input, error states). These confirm the fix didn't break \
-      adjacent behaviour. Each step should be equally specific.\n\
-    - Steps must be actionable by a human tester without access to the codebase — describe UI \
-      interactions, not code. Aim for 3–6 steps per path.\n\
-    \n    SUMMARY field:\n\
-    - Lead with the overall verdict.\n\
-    - Explicitly note what is done WELL in this PR (good design decisions, solid test coverage, \
-      clean propagation of renames, performance improvements, etc.) — a good review is balanced.\n\
-    - Then note the most important concerns to address.\n\
+    BUG TEST STEPS:\n\
+    - Only populate when the linked JIRA ticket type is Bug. Set null for all other types.\n\
+    - happy_path: concrete numbered steps to verify the fix works (UI interactions, not code).\n\
+    - sad_path: edge-case steps confirming adjacent behaviour is unbroken.\n\
+    - Each step must be specific and actionable by a human tester. Aim for 3–6 per path.\n\
+    \n\
+    SUMMARY:\n\
+    - Lead with the verdict. Note what is done WELL, then the most important concerns.\n\
+    \n\
+    VERIFICATION PASS (apply to every logic and security finding before including it):\n\
+    The input includes === FULL FILE CONTENTS FROM BRANCH ===.\n\
+    For any finding that claims a type is undefined, a field is duplicated, an import is missing, \
+    or a compilation error will occur: check that section. If the identifier is present there, \
+    DROP the finding or downgrade it to a nitpick. Only retain compilation/type claims when the \
+    identifier is absent from both the diff and the full file contents.\n\
     \n\
     DEDUPLICATION:\n\
-    - Merge findings that describe the same root issue across chunks into one finding.\n\
-    - Preserve all distinct findings — do not silently drop real issues.\n\
+    - Merge findings about the same root issue across chunks into one.\n\
+    - DROP duplicate/redundant-code findings that cite only one location, or where the diff \
+      shows the second reference is a derivation/usage of a value already fetched — not a \
+      second fetch. Both occurrences must be cited at distinct line numbers.\n\
     \n\
-    SEVERITY CALIBRATION (apply before finalising):\n\
-    - Downgrade to non_blocking or nitpick any finding where the code compiles correctly, \
-      runs correctly in the normal case, and the concern is about style, naming, or dead code \
-      that doesn't mask a real bug.\n\
-    - Only keep blocking if you can articulate a concrete runtime failure, data corruption, \
-      security vulnerability, or clear violation of a stated requirement.\n\
-    - Do not inflate severity to justify the finding. A genuine nitpick is more useful than \
-      a falsely-blocked review.\n\
+    SEVERITY CALIBRATION:\n\
+    - blocking only if you can articulate a concrete runtime failure, data corruption, or \
+      security vulnerability. Downgrade everything else.\n\
+    - Do not inflate severity to justify a finding. A genuine nitpick beats a false blocker.\n\
     \n\
     TESTING lens:\n\
-    - If tests are present in the diff for the new/changed code, the assessment should say so.\n\
-    - Do not mark untested code as blocking unless the PR description explicitly promised tests \
-      or the code is safety-critical.\n\
-    - Consolidate all untested-code findings. Each must identify the specific file and line \
-      range of the untested code.\n\
-    - CRITICAL — silently drop any testing finding whose file is a configuration or build \
-      artefact, not executable business logic. This includes: config files (*.json, *.yaml, \
-      *.yml, *.toml, *.ini, *.env), build/task definitions (project.json, nx.json, Makefile, \
-      Taskfile.yml, justfile, Cargo.toml, package.json, build.gradle, pom.xml, pyproject.toml, \
-      *.csproj, CMakeLists.txt, Dockerfile, docker-compose.yml, .github/**, CI/CD pipeline \
-      files), lock files, style/asset files (*.css, *.scss, *.svg, *.png, *.ico, *.md, *.txt), \
-      schema/migration files, and any file whose content is declarative configuration rather \
-      than executable logic. Scripts, targets, or commands defined inside these files do not \
-      require unit tests — they are wiring, not business logic. If a chunk-pass finding \
-      references one of these file types, remove it during synthesis.\n\
-    - Also drop trivial code, generated files, type definitions.\n\
-    - @tags annotation: if the linked JIRA ticket is a Bug type with a known key, check \
-      whether new or modified unit tests in the diff carry a \\\"@tags <TICKET-KEY>\\\" annotation. \
-      If missing, include a consolidated non_blocking finding. Omit if not a Bug, no key, \
-      annotation already present, or no unit tests in diff.\n\
+    - If tests are present for the new/changed code, say so in the assessment.\n\
+    - Non_blocking (never blocking) for missing tests unless safety-critical or explicitly promised.\n\
+    - DROP any testing finding for config/build/asset files: *.json/yaml/toml, Makefile, \
+      Dockerfile, lock files, *.css/svg/md, generated files, type-only definitions.\n\
+    - Bug @tags: if a Bug ticket key is present, check new/modified unit tests carry \
+      \\\"@tags <KEY>\\\". If missing, one consolidated non_blocking finding. Skip if: not Bug, \
+      no key, annotation present, or no unit tests.\n\
     \n\
     ACCEPTANCE CRITERIA lens:\n\
-    - CRITICAL: If the PR context states acceptance criteria are blank or not provided, the \
-      acceptance_criteria lens MUST have an empty findings array and an assessment stating \
-      no criteria were available to check. Never invent criteria.\n\
+    - If criteria are blank/not provided: empty findings array, assessment states none available.\n\
     \n\
     QUALITY lens:\n\
-    - Do NOT flag the choice of test framework API functions as an inconsistency or quality \
-      issue. Functions such as `test`, `it`, `describe`, `suite`, `spec`, `context`, \
-      `beforeEach`, `afterEach`, `beforeAll`, `afterAll`, `expect`, `assert` etc. are all \
-      first-class APIs provided by test frameworks (Vitest, Jest, Mocha, Jasmine, etc.). \
-      Using `test()` instead of `it()` or vice versa is a valid stylistic choice within the \
-      same framework — drop any such finding during synthesis.\n\
+    - DROP findings about test framework function choice (test/it/describe/expect etc.).\n\
     \n\
     SECURITY lens:\n\
-    - CRITICAL: If the PR context lists files under \\\"TEST / SPEC FILES IN THIS DIFF\\\", \
-      do NOT raise any security finding whose file field matches one of those paths. \
-      Test and spec files are not production code — hardcoded values, test credentials, \
-      relaxed input handling, and other patterns that would be concerning in production \
-      are expected and acceptable in test code. Silently skip those files when populating \
-      the security findings array.\n\
+    - DROP findings whose file is listed under TEST / SPEC FILES IN THIS DIFF.\n\
     \n\
     FORMAT:\n\
-    - overall is request_changes if any blocking finding remains after calibration, approve if \
-      none, needs_discussion if uncertain.\n\
-    - Every field value must be valid JSON. file and line_range must be a quoted JSON string \
-      or literal JSON null — never a bare word like L96-L127.\n\
+    - overall: request_changes if any blocking finding remains, approve if none, \
+      needs_discussion if uncertain.\n\
+    - file and line_range must be a quoted JSON string or literal null — never a bare word.\n\
     \n\
-    LINE NUMBER CITATIONS:\n\
-    - When the diff is provided directly (single-chunk mode), every line is pre-labelled \
-      [Lnnn] with its exact new-file line number. Read the label — do NOT count or estimate.\n\
-    - When findings are passed in from the chunk-pass, preserve the line_range values from \
-      those findings exactly. Do not modify or re-derive them.\n\
-    - Deleted lines are labelled [del] — never cite a [del] line in a line_range.";
+    LINE NUMBERS:\n\
+    - Single-chunk mode: lines are pre-labelled [Lnnn]. Read the label — do not count.\n\
+    - Multi-chunk mode: preserve line_range values from chunk findings exactly.\n\
+    - Never cite [del] lines.\n\
+    \n\
+    === SELF-CHECK (apply before outputting) ===\n\
+    For each finding in the final report:\n\
+    1. Is it grounded in something visible in the diff or full file contents — not inferred?\n\
+    2. Type/compilation claims: verified absent from the full file contents section?\n\
+    3. Duplicate-code claims: two distinct line numbers cited?\n\
+    4. Severity: can I articulate the concrete failure mode for any blocking finding?\n\
+    Drop or downgrade any finding where an answer is NO.";
 
 /// Sort findings by severity (blocking first, then non_blocking, then nitpick)
 /// and greedily include them up to `max_chars`. Returns the capped JSON array
