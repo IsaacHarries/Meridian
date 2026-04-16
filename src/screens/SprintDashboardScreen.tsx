@@ -451,7 +451,7 @@ function HealthSummaryCard({
           <div className="border-t pt-3 space-y-1.5">
             <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide flex items-center gap-1.5">
               <XCircle className="h-3.5 w-3.5 text-red-500" />
-              Needs Attention
+              PRs Needs Attention
               <span className="ml-1 rounded-full bg-red-100 text-red-700 dark:bg-red-900/50 dark:text-red-300 px-1.5 py-0.5 text-[10px] font-medium leading-none">
                 {attentionPrs.length}
               </span>
@@ -678,11 +678,16 @@ function SprintOverview({
 
 // ── Blockers & risks panel ────────────────────────────────────────────────────
 
+interface RiskMeta {
+  label: string;
+  value: string;
+}
+
 interface Risk {
   key: string;
   summary: string;
   type: "blocked" | "stale-pr" | "no-progress" | "not-started";
-  detail: string;
+  metadata: RiskMeta[];
   url?: string;
 }
 
@@ -699,7 +704,11 @@ function buildRisks(
       key: issue.key,
       summary: issue.summary,
       type: "blocked",
-      detail: "Flagged as blocked",
+      metadata: [
+        { label: "Status", value: issue.status },
+        { label: "Assignee", value: issue.assignee?.displayName ?? "Unassigned" },
+        { label: "Last update", value: `${daysSince(issue.updated)}d ago` },
+      ],
       url: issue.url,
     });
   }
@@ -712,7 +721,12 @@ function buildRisks(
         key: `PR #${pr.id}`,
         summary: pr.title,
         type: "stale-pr",
-        detail: `Open ${age}d with no activity`,
+        metadata: [
+          { label: "PR", value: `#${pr.id}` },
+          { label: "Open", value: `${age}d` },
+          { label: "Last activity", value: `${age}d ago` },
+          { label: "Author", value: pr.author.displayName },
+        ],
         url: pr.url,
       });
     }
@@ -730,7 +744,11 @@ function buildRisks(
         key: issue.key,
         summary: issue.summary,
         type: "no-progress",
-        detail: `In Progress, no update for ${daysSince(issue.updated)}d`,
+        metadata: [
+          { label: "Status", value: issue.status },
+          { label: "Assignee", value: issue.assignee?.displayName ?? "Unassigned" },
+          { label: "No update for", value: `${daysSince(issue.updated)}d` },
+        ],
         url: issue.url,
       });
     }
@@ -743,7 +761,11 @@ function buildRisks(
         key: issue.key,
         summary: issue.summary,
         type: "not-started",
-        detail: `Not started — ${daysLeft}d left in sprint`,
+        metadata: [
+          { label: "Status", value: "Not started" },
+          { label: "Assignee", value: issue.assignee?.displayName ?? "Unassigned" },
+          { label: "Sprint ends in", value: `${daysLeft}d` },
+        ],
         url: issue.url,
       });
     }
@@ -771,23 +793,38 @@ function BlockersPanel({
       <CardHeader className="pb-3">
         <CardTitle className="text-base flex items-center gap-2">
           <AlertTriangle className="h-4 w-4 text-amber-500" />
-          Blockers & Risks
+          Jira Ticket Blockers & Risks
           <Badge variant="warning" className="ml-auto">{risks.length}</Badge>
         </CardTitle>
       </CardHeader>
-      <CardContent className="space-y-2">
+      <CardContent className="space-y-0">
         {risks.map((risk, i) => {
           const meta = RISK_META[risk.type];
+          const dotColor = risk.type === "blocked" ? "bg-red-500" : "bg-amber-500";
           return (
-            <div key={i} className="flex items-start gap-3 text-sm py-1.5 border-b last:border-0">
-              <Badge variant={meta.variant} className="shrink-0 mt-0.5 text-[11px]">
-                {meta.label}
-              </Badge>
-              <div className="flex-1 min-w-0">
-                <JiraTicketLink ticketKey={risk.key} url={risk.url} className="mr-1.5" />
-                <span className="truncate">{risk.summary}</span>
+            <div key={i} className="py-2 border-b last:border-0 space-y-1">
+              {/* Row 1: status dot + clickable title */}
+              <div className="flex items-center gap-2">
+                <span className={`h-2 w-2 rounded-full shrink-0 ${dotColor}`} />
+                <button
+                  onClick={() => risk.url && openUrl(risk.url)}
+                  className="flex-1 min-w-0 truncate text-xs font-medium text-left hover:underline hover:text-primary transition-colors"
+                  title={risk.url ? "Open in browser" : undefined}
+                  disabled={!risk.url}
+                >
+                  {risk.summary}
+                </button>
               </div>
-              <span className="text-xs text-muted-foreground shrink-0">{risk.detail}</span>
+              {/* Row 2: structured key/value metadata */}
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 pl-4 text-xs text-muted-foreground">
+                <JiraTicketLink ticketKey={risk.key} url={risk.type !== "stale-pr" ? (risk.url ?? undefined) : undefined} />
+                <Badge variant={meta.variant} className="text-[10px]">{meta.label}</Badge>
+                {risk.metadata.map(({ label, value }) => (
+                  <span key={label}>
+                    {label} <strong className="text-foreground">{value}</strong>
+                  </span>
+                ))}
+              </div>
             </div>
           );
         })}

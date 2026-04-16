@@ -45,7 +45,7 @@ const WORKFLOW_META: Record<WorkflowId, { title: string; description: string; st
     step: 8,
   },
   "ticket-quality": {
-    title: "Ticket Quality Checker",
+    title: "Groom Tickets",
     description: "Readiness assessment for backlog and sprint tickets.",
     step: 10,
   },

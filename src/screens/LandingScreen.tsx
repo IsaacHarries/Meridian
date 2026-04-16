@@ -283,7 +283,7 @@ const WORKFLOW_CARDS: {
   {
     id: "ticket-quality",
     emoji: "✅",
-    title: "Ticket Quality Checker",
+    title: "Groom Tickets",
     description: "Readiness assessment for backlog and sprint tickets",
     ready: false,
   },

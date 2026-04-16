@@ -434,7 +434,14 @@ export const usePrReviewStore = create<PrReviewState>()(
           }
 
           if (parts.length > 0) {
-            fullReviewText += `\n\n=== FULL FILE CONTENTS FROM BRANCH (for deeper context) ===\n${parts.join("\n")}`;
+            fullReviewText +=
+              `\n\n=== FULL FILE CONTENTS FROM BRANCH (for deeper context) ===\n` +
+              `INSTRUCTION: Use these full file contents to VERIFY any finding about undefined types, ` +
+              `missing definitions, duplicate fields, or compilation errors before reporting them. ` +
+              `Definitions that are not visible in the diff alone (e.g. a new type added in the same ` +
+              `file outside the changed hunk) WILL appear here. If the referenced identifier is ` +
+              `present in these file contents, drop or downgrade the finding accordingly.\n` +
+              parts.join("\n");
           }
         } catch { /* non-fatal — proceed with diff-only context */ }
 

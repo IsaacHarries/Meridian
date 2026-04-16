@@ -217,6 +217,7 @@ function DiffLineRow({
   hasComments?: boolean;
   isPendingComment?: boolean;
 }) {
+  const [rowHovered, setRowHovered] = useState(false);
   const { raw, oldNum, newNum } = line;
 
   let rowCls = "";
@@ -247,9 +248,11 @@ function DiffLineRow({
 
   return (
     <div
-      className={`flex min-w-0 group ${rowCls}${pendingCls}`}
+      className={`flex min-w-0 ${rowCls}${pendingCls}`}
       data-new-line={newNum ?? undefined}
       data-old-line={oldNum ?? undefined}
+      onMouseEnter={() => setRowHovered(true)}
+      onMouseLeave={() => setRowHovered(false)}
     >
       <span className={gutterCls}>{oldNum ?? ""}</span>
       <span className={gutterCls}>{newNum ?? ""}</span>
@@ -261,7 +264,7 @@ function DiffLineRow({
           <button
             onClick={onClick}
             title="Add a comment on this line"
-            className="h-4 w-4 flex items-center justify-center rounded hover:bg-muted/60 focus:outline-none opacity-0 group-hover:opacity-100 transition-opacity"
+            className={`h-4 w-4 flex items-center justify-center rounded hover:bg-muted/60 focus:outline-none transition-opacity ${rowHovered ? "opacity-100" : "opacity-0 pointer-events-none"}`}
           >
             <MessageCirclePlus className="h-2.5 w-2.5 text-muted-foreground/70" />
           </button>
@@ -1296,9 +1299,11 @@ interface PrSelectorProps {
   myAccountId: string;
   /** Set of PR ids that have a cached review result — shows a badge on those rows */
   cachedPrIds: Set<number>;
+  /** Set of PR ids where new commits have arrived since the last review */
+  stalePrIds: Set<number>;
 }
 
-function PrSelector({ prsForReview, allOpenPrs, loading, onSelect, jiraBaseUrl, myAccountId, cachedPrIds }: PrSelectorProps) {
+function PrSelector({ prsForReview, allOpenPrs, loading, onSelect, jiraBaseUrl, myAccountId, cachedPrIds, stalePrIds }: PrSelectorProps) {
   const [showAll, setShowAll] = useState(false);
   const [hideApproved, setHideApproved] = useState(true);
 
@@ -1314,6 +1319,7 @@ function PrSelector({ prsForReview, allOpenPrs, loading, onSelect, jiraBaseUrl, 
   function PrRow({ pr }: { pr: BitbucketPr }) {
     const iApproved = isApproved(pr);
     const hasCache = cachedPrIds.has(pr.id);
+    const isStale = stalePrIds.has(pr.id);
 
     return (
       <button
@@ -1331,6 +1337,11 @@ function PrSelector({ prsForReview, allOpenPrs, loading, onSelect, jiraBaseUrl, 
           {hasCache && (
             <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium bg-primary/10 text-primary border border-primary/20">
               <Sparkles className="h-3 w-3" /> Reviewed
+            </span>
+          )}
+          {hasCache && isStale && (
+            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-400 border border-amber-300/40 dark:border-amber-700/40">
+              <RefreshCw className="h-3 w-3" /> New commits
             </span>
           )}
           <span className="ml-auto text-xs text-muted-foreground shrink-0">{prAge(pr.createdOn)}</span>
@@ -1819,6 +1830,11 @@ export function PrReviewScreen({ credStatus, onBack }: PrReviewScreenProps) {
               cachedPrIds={new Set(
                 [...sessions.entries()]
                   .filter(([, s]) => s.report !== null || s.rawError !== null)
+                  .map(([id]) => id)
+              )}
+              stalePrIds={new Set(
+                [...sessions.entries()]
+                  .filter(([, s]) => s.report !== null && s.diffStale)
                   .map(([id]) => id)
               )}
             />

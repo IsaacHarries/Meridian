@@ -1,4 +1,6 @@
 import { useEffect, useState, useCallback } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import {
   ArrowLeft,
   RefreshCw,
@@ -23,11 +25,11 @@ import {
   type BitbucketPr,
   type CredentialStatus,
   aiProviderComplete,
-  getActiveSprint,
-  getActiveSprintIssues,
+  getAllActiveSprintIssues,
   getOpenPrs,
   getMergedPrs,
   generateStandupBriefing,
+  openUrl,
 } from "@/lib/tauri";
 
 interface StandupScreenProps {
@@ -319,15 +321,27 @@ function MemberCard({ member }: { member: MemberActivity }) {
                   </li>
                 ))}
                 {member.prsMergedYesterday.map((pr) => (
-                  <li key={`merged-${pr.id}`} className="flex items-center gap-2 text-xs text-emerald-600">
-                    <GitPullRequest className="h-3 w-3 shrink-0" />
-                    <span className="truncate">Merged PR #{pr.id}: {pr.title}</span>
+                  <li key={`merged-${pr.id}`} className="flex items-center gap-2 text-xs">
+                    <GitPullRequest className="h-3 w-3 shrink-0 text-emerald-600" />
+                    <button
+                      onClick={() => pr.url && openUrl(pr.url)}
+                      className="truncate text-emerald-600 text-left hover:underline transition-colors"
+                      title="Open in Bitbucket"
+                    >
+                      Merged PR #{pr.id}: {pr.title}
+                    </button>
                   </li>
                 ))}
                 {member.prsRaisedYesterday.map((pr) => (
-                  <li key={`raised-${pr.id}`} className="flex items-center gap-2 text-xs text-blue-500">
-                    <GitPullRequest className="h-3 w-3 shrink-0" />
-                    <span className="truncate">Raised PR #{pr.id}: {pr.title}</span>
+                  <li key={`raised-${pr.id}`} className="flex items-center gap-2 text-xs">
+                    <GitPullRequest className="h-3 w-3 shrink-0 text-blue-500" />
+                    <button
+                      onClick={() => pr.url && openUrl(pr.url)}
+                      className="truncate text-blue-500 text-left hover:underline transition-colors"
+                      title="Open in Bitbucket"
+                    >
+                      Raised PR #{pr.id}: {pr.title}
+                    </button>
                   </li>
                 ))}
               </ul>
@@ -495,9 +509,15 @@ function AiBriefingPanel({
 
         {briefing && (
           <div className="space-y-3">
-            <pre className="text-xs whitespace-pre-wrap font-sans leading-relaxed text-foreground bg-muted/60 rounded-md p-3 max-h-96 overflow-y-auto">
-              {briefing}
-            </pre>
+            <div className="max-h-96 overflow-y-auto rounded-md border bg-muted/40 px-4 py-3 text-xs leading-relaxed prose prose-sm dark:prose-invert max-w-none
+              prose-headings:text-foreground prose-headings:font-semibold prose-headings:mt-3 prose-headings:mb-1
+              prose-h1:text-sm prose-h2:text-sm prose-h3:text-xs
+              prose-p:text-foreground prose-p:my-1
+              prose-strong:text-foreground
+              prose-ul:my-1 prose-li:my-0
+              prose-hr:border-border">
+              <ReactMarkdown remarkPlugins={[remarkGfm]}>{briefing}</ReactMarkdown>
+            </div>
             <div className="flex gap-2">
               <Button variant="outline" size="sm" onClick={handleCopy} className="gap-1.5">
                 {copied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
@@ -569,11 +589,17 @@ function ThresholdConfig({
 // ── Main screen ───────────────────────────────────────────────────────────────
 
 export function StandupScreen({ credStatus, onBack }: StandupScreenProps) {
-  const [sprint, setSprint] = useState<JiraSprint | null>(null);
+  const [allSprints, setAllSprints] = useState<Array<{ sprint: JiraSprint; issues: JiraIssue[] }>>([]);
+  const [selectedSprintIndex, setSelectedSprintIndex] = useState(0);
+  const [openPrs, setOpenPrs] = useState<BitbucketPr[]>([]);
+  const [mergedPrs, setMergedPrs] = useState<BitbucketPr[]>([]);
+
+  // Derived per-sprint standup data
   const [members, setMembers] = useState<MemberActivity[]>([]);
   const [stalePrs, setStalePrs] = useState<BitbucketPr[]>([]);
   const [atRiskTickets, setAtRiskTickets] = useState<JiraIssue[]>([]);
   const [prevDay, setPrevDay] = useState<DayWindow | null>(null);
+
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [thresholds, setThresholds] = useState<Thresholds>(DEFAULT_THRESHOLDS);
@@ -590,20 +616,30 @@ export function StandupScreen({ credStatus, onBack }: StandupScreenProps) {
     setBriefing(null);
     setBriefingError(null);
     try {
-      const sprintData = await getActiveSprint();
+      const sprintIssuesPairs = await getAllActiveSprintIssues();
+      const firstSprint = sprintIssuesPairs[0]?.[0] ?? null;
       const prevDayWindow = prevWorkingDay();
-      const [issues, openPrs, mergedPrs] = await Promise.all([
-        getActiveSprintIssues(),
+
+      const [fetchedOpenPrs, fetchedMergedPrs] = await Promise.all([
         getOpenPrs().catch(() => [] as BitbucketPr[]),
         getMergedPrs(prevDayWindow.start.toISOString()).catch(() => [] as BitbucketPr[]),
       ]);
 
-      const compiled = compileStandupData(issues, openPrs, mergedPrs, sprintData, thresholds);
-      setSprint(sprintData);
-      setMembers(compiled.members);
-      setStalePrs(compiled.stalePrs);
-      setAtRiskTickets(compiled.atRiskTickets);
-      setPrevDay(compiled.prevDay);
+      const sprints = sprintIssuesPairs.map(([sprint, issues]) => ({ sprint, issues }));
+      setAllSprints(sprints);
+      setOpenPrs(fetchedOpenPrs);
+      setMergedPrs(fetchedMergedPrs);
+      setSelectedSprintIndex(0);
+
+      if (sprints.length > 0) {
+        const compiled = compileStandupData(
+          sprints[0].issues, fetchedOpenPrs, fetchedMergedPrs, sprints[0].sprint, thresholds
+        );
+        setMembers(compiled.members);
+        setStalePrs(compiled.stalePrs);
+        setAtRiskTickets(compiled.atRiskTickets);
+        setPrevDay(compiled.prevDay);
+      }
     } catch (e) {
       setError(String(e));
     } finally {
@@ -611,8 +647,22 @@ export function StandupScreen({ credStatus, onBack }: StandupScreenProps) {
     }
   }, [thresholds]);
 
+  // Recompile when selected sprint changes
+  useEffect(() => {
+    if (allSprints.length === 0) return;
+    const { sprint, issues } = allSprints[selectedSprintIndex];
+    setBriefing(null);
+    setBriefingError(null);
+    const compiled = compileStandupData(issues, openPrs, mergedPrs, sprint, thresholds);
+    setMembers(compiled.members);
+    setStalePrs(compiled.stalePrs);
+    setAtRiskTickets(compiled.atRiskTickets);
+    setPrevDay(compiled.prevDay);
+  }, [selectedSprintIndex, allSprints, openPrs, mergedPrs, thresholds]);
+
   const generateBriefing = useCallback(async () => {
     if (!prevDay) return;
+    const sprint = allSprints[selectedSprintIndex]?.sprint ?? null;
     setBriefingLoading(true);
     setBriefingError(null);
     try {
@@ -624,15 +674,15 @@ export function StandupScreen({ credStatus, onBack }: StandupScreenProps) {
     } finally {
       setBriefingLoading(false);
     }
-  }, [sprint, members, stalePrs, atRiskTickets, prevDay]);
+  }, [allSprints, selectedSprintIndex, members, stalePrs, atRiskTickets, prevDay]);
 
   useEffect(() => {
     load();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps — only run on mount; refresh is manual
 
-  const noActivityMembers = members
-    .filter((m) => m.noActivity)
-    .map((m) => m.name);
+  const noActivityMembers = members.filter((m) => m.noActivity).map((m) => m.name);
+  const multiSprint = allSprints.length > 1;
+  const activeSprint = allSprints[selectedSprintIndex]?.sprint ?? null;
 
   const today = new Date().toLocaleDateString(undefined, {
     weekday: "long",
@@ -687,12 +737,31 @@ export function StandupScreen({ credStatus, onBack }: StandupScreenProps) {
 
         {!loading && !error && (
           <>
+            {/* Sprint selector — only shown when there are multiple active sprints */}
+            {multiSprint && (
+              <div className="flex gap-2 flex-wrap">
+                {allSprints.map(({ sprint }, idx) => (
+                  <button
+                    key={sprint.id}
+                    onClick={() => setSelectedSprintIndex(idx)}
+                    className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors border ${
+                      idx === selectedSprintIndex
+                        ? "bg-primary text-primary-foreground border-primary"
+                        : "bg-background text-muted-foreground border-border hover:bg-muted"
+                    }`}
+                  >
+                    {sprint.name}
+                  </button>
+                ))}
+              </div>
+            )}
+
             {/* Sprint + date context */}
             <div className="flex items-center justify-between text-sm">
               <span className="text-muted-foreground">
-                {sprint ? (
+                {activeSprint ? (
                   <>
-                    <span className="font-medium text-foreground">{sprint.name}</span>
+                    <span className="font-medium text-foreground">{activeSprint.name}</span>
                     {prevDay && (
                       <span> · activity from {prevDay.label}</span>
                     )}

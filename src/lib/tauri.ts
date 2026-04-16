@@ -329,30 +329,6 @@ export async function generateWorkloadSuggestions(workloadText: string): Promise
   return invokeWithLlmCheck<string>("generate_workload_suggestions", { workloadText });
 }
 
-export async function assessTicketQuality(ticketText: string): Promise<string> {
-  if (isMockClaudeMode()) {
-    const { MOCK_QUALITY_JSON } = await import("./mockClaudeResponses");
-    return MOCK_QUALITY_JSON;
-  }
-  return invokeWithLlmCheck<string>("assess_ticket_quality", { ticketText });
-}
-
-// ── Ticket quality types ──────────────────────────────────────────────────────
-
-export interface QualityCriterion {
-  name: string;
-  result: "pass" | "partial" | "fail";
-  feedback: string;
-}
-
-export interface QualityReport {
-  overall: "ready" | "needs_work" | "not_ready";
-  summary: string;
-  criteria: QualityCriterion[];
-  open_questions: string[];
-  suggested_improvements: string;
-}
-
 export async function reviewPr(reviewText: string): Promise<string> {
   if (isMockClaudeMode()) {
     const { MOCK_PR_REVIEW_JSON } = await import("./mockClaudeResponses");
@@ -424,16 +400,6 @@ export function parseReviewReport(raw: string): ReviewReport | null {
   }
 }
 
-export function parseQualityReport(raw: string): QualityReport | null {
-  try {
-    // Strip markdown fences if Claude added them anyway
-    const cleaned = raw.replace(/^```(?:json)?\n?/m, "").replace(/\n?```$/m, "").trim();
-    return JSON.parse(cleaned) as QualityReport;
-  } catch {
-    return null;
-  }
-}
-
 // ── JIRA types ────────────────────────────────────────────────────────────────
 
 export interface JiraSprint {
@@ -485,6 +451,12 @@ export interface JiraIssue {
    * Only populated by get_issue (full detail fetch). Empty for list/sprint fetches.
    */
   namedFields: Record<string, string>;
+  /**
+   * Mapping of semantic field name → discovered JIRA field ID.
+   * e.g. { "acceptance_criteria": "customfield_10034" }
+   * Empty when fields were not auto-discovered. Only populated by get_issue.
+   */
+  discoveredFieldIds: Record<string, string>;
 }
 
 // ── JIRA commands ─────────────────────────────────────────────────────────────
@@ -562,6 +534,11 @@ export async function getCompletedSprints(limit: number): Promise<JiraSprint[]> 
     return COMPLETED_SPRINTS.slice(0, limit);
   }
   return invoke<JiraSprint[]>("get_completed_sprints", { limit });
+}
+
+export async function getFutureSprints(limit: number): Promise<JiraSprint[]> {
+  if (isMockMode()) return [];
+  return invoke<JiraSprint[]>("get_future_sprints", { limit });
 }
 
 export async function searchJiraIssues(
@@ -1055,6 +1032,18 @@ export async function updateJiraIssue(
   description: string,
 ): Promise<void> {
   return invoke("update_jira_issue", { issueKey, summary, description });
+}
+
+/**
+ * Update multiple fields on a JIRA issue in a single PUT request.
+ * `fieldsJson` is a JSON string mapping JIRA field IDs to plain-text values.
+ * e.g. { "summary": "...", "customfield_10034": "..." }
+ */
+export async function updateJiraFields(
+  issueKey: string,
+  fieldsJson: string,
+): Promise<void> {
+  return invoke("update_jira_fields", { issueKey, fieldsJson });
 }
 
 export async function finalizeImplementationPlan(contextText: string, conversationJson: string): Promise<string> {
