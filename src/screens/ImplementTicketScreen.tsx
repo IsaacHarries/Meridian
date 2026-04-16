@@ -43,6 +43,7 @@ import {
   type ImpactOutput,
   type ImplementationPlan,
   type GuidanceOutput,
+  type ImplementationOutput,
   type TestOutput,
   type PlanReviewOutput,
   type PrDescriptionOutput,
@@ -80,6 +81,7 @@ const STAGE_LABELS: Record<Exclude<Stage, "select">, string> = {
   triage: "Triage",
   plan: "Finalising Plan",
   guidance: "Implementation Guide",
+  implementation: "Implementation",
   tests: "Test Suggestions",
   review: "Plan Review",
   pr: "PR Description",
@@ -88,7 +90,7 @@ const STAGE_LABELS: Record<Exclude<Stage, "select">, string> = {
 };
 
 const STAGE_ORDER: Exclude<Stage, "select" | "complete">[] = [
-  "grooming", "impact", "triage", "plan", "guidance", "tests", "review", "pr", "retro",
+  "grooming", "impact", "triage", "plan", "guidance", "implementation", "tests", "review", "pr", "retro",
 ];
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -821,6 +823,55 @@ function GuidancePanel({ data }: { data: GuidanceOutput }) {
   );
 }
 
+function ImplementationPanel({ data }: { data: ImplementationOutput }) {
+  return (
+    <div className="space-y-3">
+      <p className="text-sm leading-relaxed">{data.summary}</p>
+      {data.files_changed.length > 0 && (
+        <div className="border rounded-md overflow-hidden">
+          <div className="px-3 py-2 bg-muted/30 text-sm font-medium flex items-center gap-2">
+            <FileCode className="h-4 w-4 text-muted-foreground" /> Files changed ({data.files_changed.length})
+          </div>
+          <div className="divide-y">
+            {data.files_changed.map((f, i) => (
+              <div key={i} className="px-3 py-2">
+                <div className="flex items-center gap-2 mb-0.5">
+                  <code className="text-xs font-mono">{f.path}</code>
+                  <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${
+                    f.action === "created" ? "bg-green-100 text-green-700 dark:bg-green-900 dark:text-green-300" :
+                    f.action === "deleted" ? "bg-red-100 text-red-700 dark:bg-red-900 dark:text-red-300" :
+                    "bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-300"
+                  }`}>{f.action}</span>
+                </div>
+                <p className="text-sm text-muted-foreground">{f.summary}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+      {data.deviations.length > 0 && (
+        <div className="border border-amber-300 rounded-md overflow-hidden">
+          <div className="px-3 py-2 bg-amber-50 dark:bg-amber-950/30 text-sm font-medium flex items-center gap-2 text-amber-700 dark:text-amber-300">
+            <AlertTriangle className="h-4 w-4" /> Deviations from plan ({data.deviations.length})
+          </div>
+          <div className="divide-y">
+            {data.deviations.map((d, i) => (
+              <p key={i} className="px-3 py-2 text-sm text-muted-foreground">{d}</p>
+            ))}
+          </div>
+        </div>
+      )}
+      {data.skipped.length > 0 && (
+        <CollapsibleList
+          title={`Skipped files (${data.skipped.length})`}
+          items={data.skipped}
+          icon={<AlertTriangle className="h-4 w-4 text-red-500" />}
+        />
+      )}
+    </div>
+  );
+}
+
 function TestsPanel({ data }: { data: TestOutput }) {
   return (
     <div className="space-y-3">
@@ -974,7 +1025,8 @@ const NEXT_STAGE_LABEL: Partial<Record<Stage, string>> = {
   grooming: "Proceed to Impact Analysis",
   impact: "Proceed to Triage",
   plan: "Proceed to Implementation Guidance",
-  guidance: "Proceed to Test Suggestions",
+  guidance: "Proceed to Implementation",
+  implementation: "Proceed to Test Suggestions",
   tests: "Proceed to Code Review",
   review: "Proceed to PR Description",
   pr: "Proceed to Retrospective",
@@ -982,6 +1034,7 @@ const NEXT_STAGE_LABEL: Partial<Record<Stage, string>> = {
 };
 
 interface CheckpointFooterProps {
+  stage: Stage;
   onProceed: () => void;
   proceeding: boolean;
   hasBlockingIssues?: boolean;
@@ -1306,6 +1359,7 @@ function PipelineSidebar({ currentStage, completedStages, activeStage, pendingAp
     triage: <ClipboardList className="h-3.5 w-3.5" />,
     plan: <ClipboardList className="h-3.5 w-3.5" />,
     guidance: <FileCode className="h-3.5 w-3.5" />,
+    implementation: <FileCode className="h-3.5 w-3.5" />,
     tests: <TestTube className="h-3.5 w-3.5" />,
     review: <Shield className="h-3.5 w-3.5" />,
     pr: <GitPullRequest className="h-3.5 w-3.5" />,
@@ -1357,16 +1411,17 @@ function PipelineSidebar({ currentStage, completedStages, activeStage, pendingAp
 function stageToStep(stage: Stage): number | undefined {
   if (stage === "select") return undefined;
   const map: Record<Exclude<Stage, "select">, number> = {
-    grooming:  0,
-    impact:    1,
-    triage:    2,
-    plan:      2,
-    guidance:  3,
-    tests:     4,
-    review:    5,
-    pr:        6,
-    retro:     7,
-    complete:  7,
+    grooming:       0,
+    impact:         1,
+    triage:         2,
+    plan:           2,
+    guidance:       2,
+    implementation: 3,
+    tests:          4,
+    review:         5,
+    pr:             6,
+    retro:          7,
+    complete:       7,
   };
   return map[stage];
 }
@@ -1390,6 +1445,8 @@ export function ImplementTicketScreen({ credStatus, onBack }: ImplementTicketScr
     triageHistory,
     plan,
     guidance,
+    implementation,
+    implementationStreamText,
     tests,
     review,
     prDescription,
@@ -1476,6 +1533,23 @@ export function ImplementTicketScreen({ credStatus, onBack }: ImplementTicketScr
       flushTimer = setTimeout(() => {
         flushTimer = null;
         useImplementTicketStore.getState()._set({ groomingStreamText: acc.text });
+      }, 80);
+    });
+    return () => {
+      if (flushTimer !== null) clearTimeout(flushTimer);
+      unlisten.then(f => f());
+    };
+  }, []);
+
+  useEffect(() => {
+    const acc = { text: "" };
+    let flushTimer: ReturnType<typeof setTimeout> | null = null;
+    const unlisten = listen<{ delta: string }>("implementation-stream", (event) => {
+      acc.text += event.payload.delta;
+      if (flushTimer !== null) return;
+      flushTimer = setTimeout(() => {
+        flushTimer = null;
+        useImplementTicketStore.getState()._set({ implementationStreamText: acc.text });
       }, 80);
     });
     return () => {
@@ -1803,6 +1877,28 @@ export function ImplementTicketScreen({ credStatus, onBack }: ImplementTicketScr
         </>
       );
     }
+    if (stage === "implementation") {
+      if (!implementation) {
+        return (
+          <div className="space-y-3">
+            <div className="flex items-center gap-2 text-sm text-muted-foreground">
+              <Loader2 className="h-4 w-4 animate-spin" /> Writing code…
+            </div>
+            {implementationStreamText && (
+              <pre className="text-xs font-mono bg-muted/50 rounded p-3 whitespace-pre-wrap overflow-auto max-h-96 border">
+                {implementationStreamText}
+              </pre>
+            )}
+          </div>
+        );
+      }
+      return (
+        <>
+          <ImplementationPanel data={implementation} />
+          {renderCheckpoint(stage)}
+        </>
+      );
+    }
     if (stage === "tests") {
       if (!tests) return <div className="flex items-center gap-2 text-sm text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" /> Generating test suggestions…</div>;
       return (
@@ -1864,7 +1960,8 @@ export function ImplementTicketScreen({ credStatus, onBack }: ImplementTicketScr
                     viewingStage: cur.viewingStage, completedStages: cur.completedStages,
                     pendingApproval: cur.pendingApproval, proceeding: cur.proceeding,
                     grooming: cur.grooming, impact: cur.impact, triageHistory: cur.triageHistory,
-                    plan: cur.plan, guidance: cur.guidance, tests: cur.tests,
+                    plan: cur.plan, guidance: cur.guidance, implementation: cur.implementation,
+                    implementationStreamText: cur.implementationStreamText, tests: cur.tests,
                     review: cur.review, prDescription: cur.prDescription,
                     retrospective: cur.retrospective, groomingBlockers: cur.groomingBlockers,
                     groomingEdits: cur.groomingEdits, clarifyingQuestions: cur.clarifyingQuestions,

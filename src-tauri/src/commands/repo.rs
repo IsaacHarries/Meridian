@@ -280,6 +280,53 @@ pub async fn grep_repo_files(pattern: String, path: Option<String>) -> Result<Ve
 /// Read a single file from the worktree.
 /// `path` is relative to the worktree root (e.g. "src/reports/index.ts").
 /// Hard-capped at 500 KB to prevent enormous files from flooding the context window.
+/// Non-command helper used by the implementation agent in claude.rs.
+/// Reads a file from the main implementation worktree without size-capping.
+pub fn read_repo_file_internal(path: &str) -> Result<String, String> {
+    let root = worktree_path()?;
+    let full = sandboxed(&root, path)?;
+    std::fs::read_to_string(&full).map_err(|_| String::new()) // empty on missing file
+}
+
+/// Non-command helper used by the implementation agent in claude.rs.
+/// Writes a file to the main implementation worktree, creating parent dirs as needed.
+pub fn write_repo_file_internal(path: &str, content: &str) -> Result<(), String> {
+    let root = worktree_path()?;
+    let canonical_root = root
+        .canonicalize()
+        .map_err(|e| format!("Cannot resolve worktree root: {e}"))?;
+    let mut resolved = canonical_root.clone();
+    for component in std::path::Path::new(path).components() {
+        use std::path::Component;
+        match component {
+            Component::Normal(c) => resolved.push(c),
+            Component::ParentDir => {
+                if !resolved.pop() {
+                    return Err(format!("Path '{}' escapes the worktree root", path));
+                }
+            }
+            Component::CurDir | Component::RootDir | Component::Prefix(_) => {}
+        }
+    }
+    if !resolved.starts_with(&canonical_root) {
+        return Err(format!("Path '{}' is outside the worktree root", path));
+    }
+    if let Some(parent) = resolved.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("Could not create directories for '{}': {e}", path))?;
+    }
+    std::fs::write(&resolved, content)
+        .map_err(|e| format!("Could not write '{}': {e}", path))
+}
+
+/// Non-command helper used by the implementation agent in claude.rs.
+/// Deletes a file from the main implementation worktree.
+pub fn delete_repo_file_internal(path: &str) -> Result<(), String> {
+    let root = worktree_path()?;
+    let full = sandboxed(&root, path)?;
+    std::fs::remove_file(&full).map_err(|e| format!("Could not delete '{}': {e}", path))
+}
+
 #[tauri::command]
 pub async fn read_repo_file(path: String) -> Result<String, String> {
     let root = worktree_path()?;
@@ -299,6 +346,43 @@ pub async fn read_repo_file(path: String) -> Result<String, String> {
     }
 
     Ok(content)
+}
+
+/// Write a file in the implementation worktree, sandboxed to the worktree root.
+/// Used exclusively by the Implementation agent to apply code changes.
+#[tauri::command]
+pub async fn write_repo_file(path: String, content: String) -> Result<(), String> {
+    let root = worktree_path()?;
+    // For new files the path won't exist yet — do a prefix check instead of canonicalize.
+    let full = root.join(&path);
+    let canonical_root = root
+        .canonicalize()
+        .map_err(|e| format!("Cannot resolve worktree root: {e}"))?;
+    // Resolve any .. components without requiring the file to exist.
+    let mut resolved = canonical_root.clone();
+    for component in std::path::Path::new(&path).components() {
+        use std::path::Component;
+        match component {
+            Component::Normal(c) => resolved.push(c),
+            Component::ParentDir => {
+                if !resolved.pop() {
+                    return Err(format!("Path '{}' escapes the worktree root", path));
+                }
+            }
+            Component::CurDir | Component::RootDir | Component::Prefix(_) => {}
+        }
+    }
+    if !resolved.starts_with(&canonical_root) {
+        return Err(format!("Path '{}' is outside the worktree root", path));
+    }
+    // Create parent directories if they don't exist.
+    if let Some(parent) = full.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("Could not create directories for '{}': {e}", path))?;
+    }
+    std::fs::write(&full, content)
+        .map_err(|e| format!("Could not write '{}': {e}", path))?;
+    Ok(())
 }
 
 /// Get the git diff of the worktree against the configured base branch.

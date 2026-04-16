@@ -87,9 +87,207 @@ const makeIssue = (
   epicSummary,
   created: "2026-03-28T10:00:00.000Z",
   updated: "2026-04-09T15:30:00.000Z",
+  acceptanceCriteria: null,
+  stepsToReproduce: null,
+  observedBehavior: null,
+  expectedBehavior: null,
+  namedFields: {},
 });
 
+// ── Demo tickets for testing the Implement a Ticket pipeline from a blank worktree ──
+//
+// DEMO-1: Small program — comprehensive enough to exercise every pipeline stage.
+//   A TypeScript CLI that generates a linked table of contents from a markdown file.
+//   ~4 files, clear AC, real edge cases, good fit for a single sitting end-to-end run.
+//
+// DEMO-2: Medium program — stress-tests the pipeline with more files and complexity.
+//   A Node.js/TypeScript in-memory REST API for managing tasks with CRUD + filtering.
+//   ~10 files, multiple layers (routes, services, models, middleware, tests).
+
+export const DEMO_ISSUE_1: JiraIssue = {
+  id: "DEMO1",
+  key: "DEMO-1",
+  url: "https://example.atlassian.net/browse/DEMO-1",
+  summary: "CLI tool: generate a linked table of contents from a markdown file",
+  description: null,
+  descriptionSections: [
+    {
+      heading: "Overview",
+      content:
+        "Build a small TypeScript CLI tool (`md-toc`) that reads a markdown file and outputs a linked table of contents. " +
+        "The tool is invoked as `npx ts-node src/cli.ts <file.md>` (or compiled to `dist/cli.js`). " +
+        "It scans the file for ATX-style headings (`# h1`, `## h2`, `### h3`) and prints a nested markdown list " +
+        "where each item links to the corresponding anchor. The tool must also support an `--in-place` flag that " +
+        "rewrites the source file, replacing any existing `<!-- TOC -->…<!-- /TOC -->` block with the fresh TOC.\n\n" +
+        "This is a greenfield project — the worktree directory is empty. You will need to create all files from scratch.",
+    },
+    {
+      heading: "Acceptance Criteria",
+      content:
+        "- Running `ts-node src/cli.ts <file>` prints the TOC to stdout\n" +
+        "- Each TOC entry is an indented markdown list item: `- [Heading Text](#anchor-slug)` (h2 indented 2 spaces, h3 indented 4)\n" +
+        "- Anchor slugs are lowercase, spaces replaced by hyphens, all non-alphanumeric chars (except hyphens) removed\n" +
+        "- Headings deeper than h3 are ignored\n" +
+        "- If the input file does not exist, exit with code 1 and print an error to stderr\n" +
+        "- If no headings are found, output exactly `<!-- No headings found -->`\n" +
+        "- `--in-place` flag rewrites the file: replaces a `<!-- TOC -->…<!-- /TOC -->` block if present, " +
+        "or inserts one immediately after the first heading if no block exists\n" +
+        "- A `package.json` with `ts-node` and `typescript` as devDependencies is included\n" +
+        "- A `tsconfig.json` targeting Node 18 is included\n" +
+        "- Unit tests (using Node's built-in `node:test` module) cover: slug generation, heading parsing, " +
+        "TOC formatting, missing-file error, no-headings output, and in-place rewrite",
+    },
+    {
+      heading: "Technical Notes",
+      content:
+        "Keep dependencies minimal — `ts-node`, `typescript`, and nothing else (no external markdown parsers). " +
+        "Parse headings with a single regex pass. The slug function should match GitHub's anchor algorithm. " +
+        "Structure: `src/cli.ts` (entry point + arg parsing), `src/parser.ts` (heading extraction + slug), " +
+        "`src/toc.ts` (TOC string assembly + in-place rewrite), `tests/parser.test.ts`, `tests/toc.test.ts`.",
+    },
+  ],
+  status: "To Do",
+  statusCategory: "new",
+  assignee: ME,
+  reporter: ME,
+  issueType: "Story",
+  priority: "Medium",
+  storyPoints: 5,
+  labels: ["demo", "greenfield", "cli"],
+  epicKey: null,
+  epicSummary: null,
+  created: "2026-04-14T09:00:00.000Z",
+  updated: "2026-04-14T09:00:00.000Z",
+  acceptanceCriteria:
+    "- Running `ts-node src/cli.ts <file>` prints the TOC to stdout\n" +
+    "- Each entry is an indented markdown list item with anchor link\n" +
+    "- Anchor slugs: lowercase, spaces → hyphens, non-alphanumeric stripped\n" +
+    "- Headings deeper than h3 are ignored\n" +
+    "- Non-existent file → exit 1, error to stderr\n" +
+    "- No headings found → output `<!-- No headings found -->`\n" +
+    "- `--in-place` flag rewrites the file with a `<!-- TOC -->…<!-- /TOC -->` block\n" +
+    "- `package.json`, `tsconfig.json`, and unit tests (node:test) are included",
+  stepsToReproduce: null,
+  observedBehavior: null,
+  expectedBehavior: null,
+  namedFields: {},
+};
+
+export const DEMO_ISSUE_2: JiraIssue = {
+  id: "DEMO2",
+  key: "DEMO-2",
+  url: "https://example.atlassian.net/browse/DEMO-2",
+  summary: "REST API: in-memory task tracker with CRUD, filtering, and pagination",
+  description: null,
+  descriptionSections: [
+    {
+      heading: "Overview",
+      content:
+        "Build a standalone Node.js/TypeScript REST API server for managing tasks. " +
+        "The server runs on port 3000 and exposes a `/tasks` resource. It uses an in-memory store " +
+        "(no database — a plain Map or array) so the project is fully self-contained and runnable from a blank worktree. " +
+        "The API must follow REST conventions, return JSON, and handle all error cases gracefully.\n\n" +
+        "This is a greenfield project — the worktree directory is empty. Create all files from scratch.",
+    },
+    {
+      heading: "Acceptance Criteria",
+      content:
+        "**Endpoints**\n" +
+        "- `POST /tasks` — create a task; body: `{ title: string, description?: string, priority?: 'low'|'medium'|'high', tags?: string[] }`\n" +
+        "- `GET /tasks` — list tasks with optional query params: `status`, `priority`, `tag`, `page` (1-based), `limit` (default 20, max 100)\n" +
+        "- `GET /tasks/:id` — fetch single task by UUID\n" +
+        "- `PATCH /tasks/:id` — partial update (any subset of writable fields)\n" +
+        "- `DELETE /tasks/:id` — delete task; return 204\n" +
+        "- `POST /tasks/:id/complete` — mark task complete; sets `completedAt` timestamp\n\n" +
+        "**Task schema**\n" +
+        "- `id`: UUID v4 (generated on create)\n" +
+        "- `title`: required string (1–200 chars)\n" +
+        "- `description`: optional string\n" +
+        "- `priority`: `'low' | 'medium' | 'high'` (default `'medium'`)\n" +
+        "- `status`: `'todo' | 'in_progress' | 'done'` (default `'todo'`)\n" +
+        "- `tags`: string array (default `[]`)\n" +
+        "- `createdAt`, `updatedAt`: ISO 8601 timestamps (auto-managed)\n" +
+        "- `completedAt`: ISO 8601 timestamp or `null`\n\n" +
+        "**Validation & errors**\n" +
+        "- Missing/invalid `title` on create → 400 with `{ error: string, field: 'title' }`\n" +
+        "- Invalid `priority` or `status` values → 400 with descriptive message\n" +
+        "- Unknown task ID → 404 with `{ error: 'Task not found' }`\n" +
+        "- All 5xx errors return `{ error: 'Internal server error' }` (never expose stack traces)\n\n" +
+        "**Pagination**\n" +
+        "- Response envelope: `{ data: Task[], total: number, page: number, limit: number, totalPages: number }`\n" +
+        "- Out-of-range page returns empty `data` array (not 404)\n\n" +
+        "**Project structure**\n" +
+        "- `package.json` with `express`, `uuid` as dependencies; `typescript`, `@types/express`, `@types/node`, `ts-node` as devDependencies\n" +
+        "- `tsconfig.json` targeting Node 18\n" +
+        "- `src/server.ts` — Express app setup and `listen()`\n" +
+        "- `src/app.ts` — Express app factory (exported without `listen` for testing)\n" +
+        "- `src/routes/tasks.ts` — route handlers\n" +
+        "- `src/services/taskService.ts` — business logic and in-memory store\n" +
+        "- `src/models/task.ts` — TypeScript interfaces and type guards\n" +
+        "- `src/middleware/errorHandler.ts` — centralised error handler\n" +
+        "- `src/middleware/validateTask.ts` — request body validation\n" +
+        "- `tests/tasks.test.ts` — integration tests using Node's built-in `node:test` + `fetch`\n\n" +
+        "**Tests must cover**\n" +
+        "- Create task (valid and invalid inputs)\n" +
+        "- List with each filter type and pagination\n" +
+        "- Get single task (found and not found)\n" +
+        "- Update and complete task\n" +
+        "- Delete task\n" +
+        "- Error response shape consistency",
+    },
+    {
+      heading: "Technical Notes",
+      content:
+        "Use Express 4.x. For UUID generation use the `uuid` npm package (v4 only). " +
+        "The in-memory store should be a `Map<string, Task>` in `taskService.ts`. " +
+        "Do not add authentication, rate limiting, or persistence — keep scope tight. " +
+        "The app factory pattern (`app.ts` vs `server.ts`) is required so integration tests can " +
+        "import the app without starting a listener. " +
+        "Tests use `node:test` with the built-in test runner (`node --test`) — no Jest or Mocha.",
+    },
+    {
+      heading: "Out of Scope",
+      content:
+        "- Authentication or authorisation\n" +
+        "- Database persistence\n" +
+        "- WebSocket or streaming endpoints\n" +
+        "- Rate limiting\n" +
+        "- File uploads",
+    },
+  ],
+  status: "To Do",
+  statusCategory: "new",
+  assignee: ME,
+  reporter: ME,
+  issueType: "Story",
+  priority: "High",
+  storyPoints: 8,
+  labels: ["demo", "greenfield", "api", "stress-test"],
+  epicKey: null,
+  epicSummary: null,
+  created: "2026-04-14T09:00:00.000Z",
+  updated: "2026-04-14T09:00:00.000Z",
+  acceptanceCriteria:
+    "- POST /tasks creates a task with UUID, timestamps, and defaults\n" +
+    "- GET /tasks supports filtering by status, priority, tag + pagination\n" +
+    "- GET /tasks/:id returns 404 for unknown IDs\n" +
+    "- PATCH /tasks/:id performs partial updates\n" +
+    "- DELETE /tasks/:id returns 204\n" +
+    "- POST /tasks/:id/complete sets completedAt and status=done\n" +
+    "- All validation errors return 400 with descriptive message\n" +
+    "- Response envelope includes total, page, limit, totalPages\n" +
+    "- package.json, tsconfig.json, and integration tests (node:test) included\n" +
+    "- App factory pattern: app.ts (no listen) + server.ts (entry point)",
+  stepsToReproduce: null,
+  observedBehavior: null,
+  expectedBehavior: null,
+  namedFields: {},
+};
+
 export const MY_SPRINT_ISSUES: JiraIssue[] = [
+  // Demo tickets — appear first so they're easy to find during pipeline testing
+  DEMO_ISSUE_1,
+  DEMO_ISSUE_2,
   makeIssue(
     "PROJ-142",
     "Add dark mode and accent colour support to user settings",
@@ -698,6 +896,11 @@ export const PR_87_COMMENTS: BitbucketComment[] = [
 
 // ── Individual issue lookup ───────────────────────────────────────────────────
 
-export const ALL_ISSUES_BY_KEY: Record<string, JiraIssue> = Object.fromEntries(
-  ALL_SPRINT_ISSUES.map((i) => [i.key, i])
-);
+export const ALL_ISSUES_BY_KEY: Record<string, JiraIssue> = {
+  ...Object.fromEntries(ALL_SPRINT_ISSUES.map((i) => [i.key, i])),
+  // Demo issues are in MY_SPRINT_ISSUES (which is part of ALL_SPRINT_ISSUES)
+  // but also registered here explicitly so getIssue("DEMO-1") always works
+  // even if the sprint lookup changes.
+  [DEMO_ISSUE_1.key]: DEMO_ISSUE_1,
+  [DEMO_ISSUE_2.key]: DEMO_ISSUE_2,
+};

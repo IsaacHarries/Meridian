@@ -14,7 +14,7 @@ use commands::{
     // Agent pipeline
     run_grooming_file_probe, run_grooming_agent, run_grooming_chat_turn,
     run_impact_analysis, run_triage_turn, finalize_implementation_plan,
-    run_implementation_guidance, run_test_suggestions, run_plan_review,
+    run_implementation_guidance, run_implementation_agent, run_test_suggestions, run_plan_review,
     run_pr_description_gen, run_retrospective_agent,
     // JIRA data commands
     get_active_sprint, get_all_active_sprints, get_all_active_sprint_issues,
@@ -38,7 +38,7 @@ use commands::{
     get_preferences, set_preference, delete_preference,
     // Repo / worktree
     validate_worktree, sync_worktree,
-    glob_repo_files, grep_repo_files, read_repo_file,
+    glob_repo_files, grep_repo_files, read_repo_file, write_repo_file,
     get_repo_diff, get_repo_log, get_file_history,
     checkout_worktree_branch,
     validate_pr_review_worktree, checkout_pr_review_branch,
@@ -97,6 +97,7 @@ pub fn run() {
             run_triage_turn,
             finalize_implementation_plan,
             run_implementation_guidance,
+            run_implementation_agent,
             run_test_suggestions,
             run_plan_review,
             run_pr_description_gen,
@@ -172,6 +173,7 @@ pub fn run() {
             glob_repo_files,
             grep_repo_files,
             read_repo_file,
+            write_repo_file,
             get_repo_diff,
             get_repo_log,
             get_file_history,

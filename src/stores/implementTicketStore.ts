@@ -13,6 +13,7 @@ import {
   type ImpactOutput,
   type ImplementationPlan,
   type GuidanceOutput,
+  type ImplementationOutput,
   type TestOutput,
   type PlanReviewOutput,
   type PrDescriptionOutput,
@@ -34,6 +35,7 @@ import {
   runGroomingChatTurn,
   finalizeImplementationPlan,
   runImplementationGuidance,
+  runImplementationAgent,
   runTestSuggestions,
   runPlanReview,
   runPrDescriptionGen,
@@ -56,6 +58,7 @@ export type Stage =
   | "triage"
   | "plan"
   | "guidance"
+  | "implementation"
   | "tests"
   | "review"
   | "pr"
@@ -236,6 +239,8 @@ export type PipelineSession = Pick<
   | "triageHistory"
   | "plan"
   | "guidance"
+  | "implementation"
+  | "implementationStreamText"
   | "tests"
   | "review"
   | "prDescription"
@@ -274,6 +279,8 @@ interface ImplementTicketState {
   triageHistory: TriageMessage[];
   plan: ImplementationPlan | null;
   guidance: GuidanceOutput | null;
+  implementation: ImplementationOutput | null;
+  implementationStreamText: string;
   tests: TestOutput | null;
   review: PlanReviewOutput | null;
   prDescription: PrDescriptionOutput | null;
@@ -328,6 +335,7 @@ interface ImplementTicketState {
   sendTriageMessage: (input: string) => Promise<void>;
   finalizePlan: () => Promise<void>;
   runGuidanceStage: () => Promise<void>;
+  runImplementationStage: () => Promise<void>;
   runTestsStage: () => Promise<void>;
   runReviewStage: () => Promise<void>;
   runPrStage: () => Promise<void>;
@@ -355,6 +363,7 @@ export const INITIAL: Omit<
   | "sendTriageMessage"
   | "finalizePlan"
   | "runGuidanceStage"
+  | "runImplementationStage"
   | "runTestsStage"
   | "runReviewStage"
   | "runPrStage"
@@ -380,6 +389,8 @@ export const INITIAL: Omit<
   triageHistory: [],
   plan: null,
   guidance: null,
+  implementation: null,
+  implementationStreamText: "",
   tests: null,
   review: null,
   prDescription: null,
@@ -456,6 +467,8 @@ export const useImplementTicketStore = create<ImplementTicketState>()(
           triageHistory: current.triageHistory,
           plan: current.plan,
           guidance: current.guidance,
+          implementation: current.implementation,
+          implementationStreamText: current.implementationStreamText,
           tests: current.tests,
           review: current.review,
           prDescription: current.prDescription,
@@ -716,6 +729,22 @@ export const useImplementTicketStore = create<ImplementTicketState>()(
       }
     },
 
+    // ── Implementation ─────────────────────────────────────────────────────────
+    runImplementationStage: async () => {
+      set({ currentStage: "implementation", viewingStage: "implementation", implementationStreamText: "" });
+      try {
+        const { ticketText, plan, guidance } = get();
+        const raw = await runImplementationAgent(ticketText, JSON.stringify(plan), JSON.stringify(guidance));
+        const data = parseAgentJson<ImplementationOutput>(raw);
+        if (!data) throw new Error("Could not parse implementation output");
+        set({ implementation: data });
+        get().markComplete("implementation");
+        set({ pendingApproval: "implementation" });
+      } catch (e) {
+        get().setError("implementation", String(e));
+      }
+    },
+
     // ── Tests ──────────────────────────────────────────────────────────────────
     runTestsStage: async () => {
       set({ currentStage: "tests", viewingStage: "tests" });
@@ -790,8 +819,9 @@ export const useImplementTicketStore = create<ImplementTicketState>()(
         switch (stage) {
           case "grooming":   await get().runImpactStage(); break;
           case "impact":     await get().runTriageStage(); break;
-          case "plan":       await get().runGuidanceStage(); break;
-          case "guidance":   await get().runTestsStage(); break;
+          case "plan":           await get().runGuidanceStage(); break;
+          case "guidance":       await get().runImplementationStage(); break;
+          case "implementation": await get().runTestsStage(); break;
           case "tests":      await get().runReviewStage(); break;
           case "review":     await get().runPrStage(); break;
           case "pr":         await get().runRetroStage(); break;
@@ -807,16 +837,17 @@ export const useImplementTicketStore = create<ImplementTicketState>()(
       const { checkpointChats, ticketText, grooming, impact, skills } = get();
       const stageLabels: Record<string, string> = {
         grooming: "GROOMING", impact: "IMPACT ANALYSIS", plan: "IMPLEMENTATION PLAN",
-        guidance: "IMPLEMENTATION GUIDANCE", tests: "TEST SUGGESTIONS",
-        review: "PLAN REVIEW", pr: "PR DESCRIPTION", retro: "RETROSPECTIVE",
+        guidance: "IMPLEMENTATION GUIDANCE", implementation: "IMPLEMENTATION RESULT",
+        tests: "TEST SUGGESTIONS", review: "PLAN REVIEW", pr: "PR DESCRIPTION", retro: "RETROSPECTIVE",
       };
       const s = get();
       const stageOutput =
         stage === "grooming"  ? s.grooming :
         stage === "impact"    ? s.impact :
         stage === "plan"      ? s.plan :
-        stage === "guidance"  ? s.guidance :
-        stage === "tests"     ? s.tests :
+        stage === "guidance"       ? s.guidance :
+        stage === "implementation" ? s.implementation :
+        stage === "tests"          ? s.tests :
         stage === "review"    ? s.review :
         stage === "pr"        ? s.prDescription :
         stage === "retro"     ? s.retrospective : null;

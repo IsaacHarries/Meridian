@@ -943,6 +943,19 @@ export interface TestOutput {
   coverage_notes: string;
 }
 
+export interface ImplementationFileResult {
+  path: string;
+  action: "created" | "modified" | "deleted";
+  summary: string;
+}
+
+export interface ImplementationOutput {
+  summary: string;
+  files_changed: ImplementationFileResult[];
+  deviations: string[];
+  skipped: string[];
+}
+
 export interface PlanReviewFinding {
   severity: "blocking" | "non_blocking" | "suggestion";
   area: string;
@@ -1050,6 +1063,10 @@ export async function finalizeImplementationPlan(contextText: string, conversati
     return MOCK_IMPLEMENTATION_PLAN_JSON;
   }
   return invokeWithLlmCheck<string>("finalize_implementation_plan", { contextText, conversationJson });
+}
+
+export async function runImplementationAgent(ticketText: string, planJson: string, guidanceJson: string): Promise<string> {
+  return invokeWithLlmCheck<string>("run_implementation_agent", { ticketText, planJson, guidanceJson });
 }
 
 export async function runImplementationGuidance(ticketText: string, planJson: string): Promise<string> {

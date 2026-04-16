@@ -3015,6 +3015,206 @@ pub async fn run_implementation_guidance(
     dispatch(&client, &api_key, system, &user, 2000).await
 }
 
+/// Agent 4b — Implementation: actually write code for each file in the plan.
+///
+/// For each file listed in `plan_json.files`, this command:
+///   1. Reads the current file content from the worktree (if it exists)
+///   2. Calls Claude once per file with the ticket, plan, guidance, and current content
+///   3. Writes the new content back to the worktree via `write_repo_file`
+///   4. Emits progress to the `implementation-stream` Tauri event
+///
+/// Returns a JSON `ImplementationOutput` with per-file results and a summary.
+#[tauri::command]
+pub async fn run_implementation_agent(
+    app: tauri::AppHandle,
+    ticket_text: String,
+    plan_json: String,
+    guidance_json: String,
+) -> Result<String, String> {
+    use tauri::Emitter;
+
+    let (client, api_key) = llm_client().await?;
+
+    // Parse the plan to get the file list.
+    let plan: serde_json::Value = serde_json::from_str(&plan_json)
+        .map_err(|e| format!("Invalid plan JSON: {e}"))?;
+
+    let files = plan["files"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+
+    let emit = |msg: &str| {
+        let _ = app.emit("implementation-stream", serde_json::json!({ "delta": msg }));
+    };
+
+    emit(&format!("Starting implementation — {} file(s) to process\n\n", files.len()));
+
+    let mut files_changed: Vec<serde_json::Value> = Vec::new();
+    let mut deviations: Vec<String> = Vec::new();
+    let mut skipped: Vec<String> = Vec::new();
+
+    for (idx, file_entry) in files.iter().enumerate() {
+        let path = match file_entry["path"].as_str() {
+            Some(p) => p.to_string(),
+            None => continue,
+        };
+        let action = file_entry["action"].as_str().unwrap_or("modify").to_string();
+        let description = file_entry["description"].as_str().unwrap_or("").to_string();
+
+        emit(&format!("[{}/{}] {} — {}\n", idx + 1, files.len(), action.to_uppercase(), path));
+
+        if action == "delete" {
+            // Deletion: remove the file from the worktree.
+            match super::repo::delete_repo_file_internal(&path) {
+                Ok(()) => {
+                    emit(&format!("  Deleted {path}\n"));
+                    files_changed.push(serde_json::json!({
+                        "path": path,
+                        "action": "deleted",
+                        "summary": "File deleted as per plan"
+                    }));
+                }
+                Err(e) => {
+                    emit(&format!("  WARNING: Could not delete {path}: {e}\n"));
+                    deviations.push(format!("Could not delete {path}: {e}"));
+                }
+            }
+            continue;
+        }
+
+        // Read the current file content (may not exist for new files).
+        let current_content = super::repo::read_repo_file_internal(&path)
+            .unwrap_or_default();
+
+        let is_new = current_content.is_empty() && action == "create";
+
+        // Build the per-file prompt.
+        let file_context = if current_content.is_empty() {
+            format!("File `{path}` does not exist yet — create it from scratch.")
+        } else {
+            format!(
+                "Current content of `{path}`:\n```\n{current_content}\n```"
+            )
+        };
+
+        let system = "You are an expert software engineer implementing a JIRA ticket. \
+            You will be given:\n\
+            1. The JIRA ticket\n\
+            2. The agreed implementation plan\n\
+            3. Step-by-step implementation guidance\n\
+            4. The current content of a specific file (or a note that it is new)\n\n\
+            Your task: produce the COMPLETE new content of that file, implementing ONLY the \
+            changes described in the plan for this file. Follow the plan precisely. \
+            Do NOT deviate without noting the deviation at the end.\n\n\
+            IMPORTANT — respond with ONLY a valid JSON object (no markdown fences):\n\
+            {\n\
+              \"new_content\": \"<complete file content as a string>\",\n\
+              \"summary\": \"<one sentence describing what changed>\",\n\
+              \"deviation\": \"<describe any deviation from the plan, or null if none>\"\n\
+            }";
+
+        let user = format!(
+            "Ticket:\n{ticket_text}\n\n\
+             Implementation plan:\n{plan_json}\n\n\
+             Implementation guidance:\n{guidance_json}\n\n\
+             File to implement:\n{path}\n\
+             Planned action: {action}\n\
+             Plan description: {description}\n\n\
+             {file_context}"
+        );
+
+        emit(&format!("  Generating new content…\n"));
+
+        let raw = match complete(&client, &api_key, "claude-sonnet-4-6", system, &user, 8000).await {
+            Ok(r) => r,
+            Err(e) => {
+                emit(&format!("  ERROR: Claude call failed for {path}: {e}\n"));
+                deviations.push(format!("Claude call failed for {path}: {e}"));
+                skipped.push(path.clone());
+                continue;
+            }
+        };
+
+        // Parse the JSON response.
+        let parsed: serde_json::Value = match serde_json::from_str(&raw) {
+            Ok(v) => v,
+            Err(_) => {
+                // Try stripping markdown fences if Claude added them despite instructions.
+                let stripped = raw
+                    .trim()
+                    .trim_start_matches("```json")
+                    .trim_start_matches("```")
+                    .trim_end_matches("```")
+                    .trim();
+                match serde_json::from_str(stripped) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        emit(&format!("  ERROR: Could not parse response for {path}: {e}\n"));
+                        deviations.push(format!("Could not parse response for {path}: {e}"));
+                        skipped.push(path.clone());
+                        continue;
+                    }
+                }
+            }
+        };
+
+        let new_content = match parsed["new_content"].as_str() {
+            Some(c) => c.to_string(),
+            None => {
+                emit(&format!("  ERROR: No new_content in response for {path}\n"));
+                skipped.push(path.clone());
+                continue;
+            }
+        };
+
+        let summary = parsed["summary"].as_str().unwrap_or("No summary").to_string();
+        let deviation = parsed["deviation"].as_str()
+            .filter(|d| !d.is_empty() && *d != "null")
+            .map(str::to_string);
+
+        // Write the new content to the worktree.
+        match super::repo::write_repo_file_internal(&path, &new_content) {
+            Ok(()) => {
+                emit(&format!("  Written: {summary}\n"));
+                if let Some(ref dev) = deviation {
+                    emit(&format!("  DEVIATION: {dev}\n"));
+                    deviations.push(format!("{path}: {dev}"));
+                }
+                files_changed.push(serde_json::json!({
+                    "path": path,
+                    "action": if is_new { "created" } else { "modified" },
+                    "summary": summary
+                }));
+            }
+            Err(e) => {
+                emit(&format!("  ERROR: Could not write {path}: {e}\n"));
+                deviations.push(format!("Could not write {path}: {e}"));
+                skipped.push(path.clone());
+            }
+        }
+    }
+
+    emit(&format!("\nImplementation complete — {} file(s) changed", files_changed.len()));
+    if !skipped.is_empty() {
+        emit(&format!(", {} skipped", skipped.len()));
+    }
+    emit("\n");
+
+    let output = serde_json::json!({
+        "summary": format!(
+            "Implementation complete. {} file(s) changed{}.",
+            files_changed.len(),
+            if skipped.is_empty() { String::new() } else { format!(", {} skipped", skipped.len()) }
+        ),
+        "files_changed": files_changed,
+        "deviations": deviations,
+        "skipped": skipped
+    });
+
+    Ok(output.to_string())
+}
+
 /// Agent 5 — Test Suggestions: recommend tests to write for the implementation.
 #[tauri::command]
 pub async fn run_test_suggestions(

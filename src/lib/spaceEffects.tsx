@@ -500,10 +500,8 @@ function mkNova(): Nova { return { id: uid(), x: 8 + r() * 84, y: 8 + r() * 84 }
 // ── 2. Black Hole ──────────────────────────────────────────────────────────────
 
 interface BH { id: number; x: number; y: number; duration: number; rotation: number; }
-interface BHDayRec { date: string; show: boolean; x: number; y: number; }
 
-const BH_LS = "meridian-bh-day";
-const BH_DUR = 10 * 60_000; // 10 minutes on-screen
+const BH_DUR = 5 * 60_000; // 5 minutes on-screen, then vanish
 
 // Context that broadcasts the active BH position to all animation elements.
 // When non-null, animations switch to a "suck-in" mode where they fly toward
@@ -680,44 +678,32 @@ function useBHGravity(myX: number, myY: number, opts?: { moving?: boolean; track
   return { captured, gravRef: divRef, suckStyle, captureAngle: captureRef.current.angle };
 }
 
-function getBHRec(): BHDayRec {
-  const today = new Date().toDateString();
-  try {
-    const raw = localStorage.getItem(BH_LS);
-    if (raw) {
-      const rec = JSON.parse(raw) as BHDayRec;
-      if (rec.date === today) return rec;
-    }
-  } catch { /* */ }
-  const rec: BHDayRec = {
-    date: today,
-    show: Math.random() < 0.10,
-    x: 18 + Math.random() * 64,
-    y: 18 + Math.random() * 64,
-  };
-  try { localStorage.setItem(BH_LS, JSON.stringify(rec)); } catch { /* */ }
-  return rec;
-}
-
 function BHEl({ bh, onDone, onVanishing }: { bh: BH; onDone: () => void; onVanishing: () => void }) {
   const APPEAR = 3500;
   const VANISH = 2800;
   const [vanishing, setVanishing] = React.useState(false);
 
+  // Parent passes fresh inline callbacks each render — timer must not depend on them
+  // or the 5 min auto-vanish keeps resetting (same issue as PulsarEl).
+  const onDoneRef = React.useRef(onDone);
+  onDoneRef.current = onDone;
+  const onVanishingRef = React.useRef(onVanishing);
+  onVanishingRef.current = onVanishing;
+
   const startVanish = React.useCallback(() => {
     setVanishing(true);
-    onVanishing();
-  }, [onVanishing]);
+    onVanishingRef.current();
+  }, []);
 
   React.useEffect(() => {
     if (vanishing) {
-      const t = setTimeout(onDone, VANISH);
+      const t = setTimeout(() => onDoneRef.current(), VANISH);
       return () => clearTimeout(t);
     }
-    const t1 = setTimeout(startVanish, bh.duration - VANISH);
-    const t2 = setTimeout(onDone, bh.duration + 200);
-    return () => { clearTimeout(t1); clearTimeout(t2); };
-  }, [bh.duration, onDone, vanishing, startVanish]);
+    // Natural lifetime: same path as click — m-bh-vanish for VANISH ms, then unmount.
+    const t = setTimeout(startVanish, bh.duration - VANISH);
+    return () => clearTimeout(t);
+  }, [bh.duration, vanishing, startVanish]);
 
   const fadeAnim: React.CSSProperties = {
     animationName: vanishing ? "m-bh-vanish" : "m-bh-appear",
@@ -849,6 +835,11 @@ function PulsarEl({ pulsar, onDone }: { pulsar: Pulsar; onDone: () => void }) {
   const BEAM_LEN = 600;
   const { captured, gravRef, suckStyle } = useBHGravity(x, y);
 
+  // Parent passes `() => rmPulsar(id)` — new ref every overlay render. Timer
+  // effects must not depend on that identity or the 30s timeout keeps resetting.
+  const onDoneRef = React.useRef(onDone);
+  onDoneRef.current = onDone;
+
   // Stable callbacks so NovaEl's useEffect dependency array never sees a new
   // reference — inline lambdas would reset the cloud timers on every re-render
   // of PulsarEl (e.g. triggered by meteors completing during a shower).
@@ -865,19 +856,20 @@ function PulsarEl({ pulsar, onDone }: { pulsar: Pulsar; onDone: () => void }) {
   React.useEffect(() => {
     if (!showPulsar) return;
     if (vanishing) {
-      const t = setTimeout(onDone, 300);
+      const t = setTimeout(() => onDoneRef.current(), 300);
       return () => clearTimeout(t);
     }
-    const t = setTimeout(onDone, duration + 200);
+    // Same path as clicking the pulsar: shrink (m-se-vanish), then unmount.
+    const t = setTimeout(() => setVanishing(true), duration + 200);
     return () => clearTimeout(t);
-  }, [duration, onDone, showPulsar, vanishing]);
+  }, [duration, showPulsar, vanishing]);
 
   // When captured, skip normal lifecycle for the pulsar phase
   React.useEffect(() => {
     if (!captured || !showPulsar) return;
-    const t = setTimeout(onDone, SUCK_DUR + 100);
+    const t = setTimeout(() => onDoneRef.current(), SUCK_DUR + 100);
     return () => clearTimeout(t);
-  }, [captured, showPulsar, onDone]);
+  }, [captured, showPulsar]);
 
   const beamStyle = (delay: string): React.CSSProperties => ({
     position: "absolute",
@@ -923,12 +915,15 @@ function PulsarEl({ pulsar, onDone }: { pulsar: Pulsar; onDone: () => void }) {
   );
 }
 
+/** Visible pulsar (beams + core) phase after the nova prelude — total ~30 s. */
+const PULSAR_VISIBLE_MS = 30_000;
+
 function mkPulsar(): Pulsar {
   return {
     id: uid(),
     x: 10 + r() * 80,
     y: 10 + r() * 80,
-    duration: 120_000,
+    duration: PULSAR_VISIBLE_MS,
     period: 16000 + r() * 4800,
   };
 }
@@ -1350,10 +1345,6 @@ export function SpaceEffectsOverlay({ bgId }: { bgId: string }) {
     setBhGravityActive(true);
     return { ...p, bh: mkBH(x, y) };
   }), []);
-  const replaceBH  = React.useCallback(() => setSt(p => {
-    setBhGravityActive(true);
-    return { ...p, bh: mkBH() };
-  }), []);
   const addComet   = React.useCallback(() => setSt(p => ({ ...p, comets:   [...p.comets, mkComet()] })), []);
   const addPulsar     = React.useCallback(() => setSt(p => p.pulsars.length > 0 ? p : ({ ...p, pulsars: [mkPulsar()] })), []);
   const replacePulsar = React.useCallback(() => setSt(p => ({ ...p, pulsars: [mkPulsar()] })), []);
@@ -1415,7 +1406,7 @@ export function SpaceEffectsOverlay({ bgId }: { bgId: string }) {
         if (enabledRef.current && kindsRef.current.novas) addNova();
       }],
       [EV_BH, () => {
-        if (enabledRef.current && kindsRef.current.blackHole) replaceBH();
+        if (enabledRef.current && kindsRef.current.blackHole) addBH();
       }],
       [EV_COMET, () => {
         if (enabledRef.current && kindsRef.current.comets) addComet();
@@ -1443,7 +1434,7 @@ export function SpaceEffectsOverlay({ bgId }: { bgId: string }) {
       window.removeEventListener(EV_CLEAR, clearAll);
       window.removeEventListener(EV_ENABLED, onEnabled);
     };
-  }, [addNova, replaceBH, addComet, replacePulsar, addMeteors, replaceWH, addShootingStars]);
+  }, [addNova, addBH, addComet, replacePulsar, addMeteors, replaceWH, addShootingStars]);
 
   // Auto-schedule random effects when on a space background and effects are enabled
   React.useEffect(() => {
@@ -1469,11 +1460,10 @@ export function SpaceEffectsOverlay({ bgId }: { bgId: string }) {
       addShootingStars(Math.random() < 0.25 ? 2 : 1);
     }, 2_500, 8_000);
 
-    // Black hole: daily 10% check
-    const rec = getBHRec();
-    if (rec.show && kindsRef.current.blackHole) {
-      timers.push(setTimeout(() => addBH(rec.x, rec.y), 4000));
-    }
+    // Black hole: random cadence; addBH no-ops if one is already active
+    sched(() => {
+      if (kindsRef.current.blackHole) addBH();
+    }, 5 * 60_000, 18 * 60_000);
 
     return () => timers.forEach(clearTimeout);
   }, [space, enabled, addComet, addPulsar, addMeteors, addWH, addBH, addShootingStars]);
