@@ -143,12 +143,20 @@ pub async fn import_claude_pro_token() -> Result<String, String> {
 ///             if false, network failures return Err (used by Test Connection button).
 async fn test_anthropic_connectivity(api_key: &str, tolerant: bool) -> Result<String, String> {
     let client = make_client()?;
-    let resp = match client
+    // API keys (sk-ant-api03-…) use x-api-key.
+    // OAuth tokens (sk-ant-oat01-…) use Authorization: Bearer plus the
+    // oauth-2025-04-20 beta header required by the Anthropic API.
+    let base_req = client
         .get("https://api.anthropic.com/v1/models")
-        .header("x-api-key", api_key)
-        .header("anthropic-version", "2023-06-01")
-        .send()
-        .await
+        .header("anthropic-version", "2023-06-01");
+    let authed_req = if api_key.starts_with("sk-ant-api") {
+        base_req.header("x-api-key", api_key)
+    } else {
+        base_req
+            .header("Authorization", format!("Bearer {api_key}"))
+            .header("anthropic-beta", "oauth-2025-04-20")
+    };
+    let resp = match authed_req.send().await
     {
         Ok(r) => r,
         Err(e) if e.is_connect() || e.is_timeout() => {
