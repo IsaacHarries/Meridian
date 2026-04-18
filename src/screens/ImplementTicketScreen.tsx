@@ -2065,7 +2065,7 @@ export function ImplementTicketScreen({ credStatus, onBack }: ImplementTicketScr
                 completedStages={completedStages}
                 activeStage={viewingStage}
                 pendingApproval={pendingApproval}
-                onClickStage={(s) => store()._set({ viewingStage: s as any })}
+                onClickStage={(s) => store()._set({ viewingStage: s as Exclude<Stage, "select"> })}
               />
 
               <div className="flex min-h-0 min-w-0 flex-1 flex-col">

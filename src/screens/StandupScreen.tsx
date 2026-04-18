@@ -617,7 +617,6 @@ export function StandupScreen({ credStatus, onBack }: StandupScreenProps) {
     setBriefingError(null);
     try {
       const sprintIssuesPairs = await getAllActiveSprintIssues();
-      const firstSprint = sprintIssuesPairs[0]?.[0] ?? null;
       const prevDayWindow = prevWorkingDay();
 
       const [fetchedOpenPrs, fetchedMergedPrs] = await Promise.all([

@@ -803,72 +803,6 @@ async fn complete_multi_claude_streaming(
     Ok(full_text)
 }
 
-/// Provider-aware multi-turn streaming dispatch.
-async fn dispatch_multi_streaming(
-    app: &tauri::AppHandle,
-    client: &Client,
-    claude_key: &str,
-    system: &str,
-    history_json: &str,
-    max_tokens: u32,
-    stream_event: &str,
-) -> Result<String, String> {
-    let provider = get_ai_provider();
-
-    let providers_to_try: Vec<String> = if provider == "auto" {
-        get_provider_order()
-    } else {
-        vec![provider]
-    };
-
-    let mut failure_reasons: Vec<String> = Vec::new();
-
-    for p in &providers_to_try {
-        let result = match p.as_str() {
-            "claude" => {
-                if claude_key.is_empty() {
-                    Err("not configured".to_string())
-                } else {
-                    complete_multi_claude_streaming(
-                        app, client, claude_key, &get_active_model(),
-                        system, history_json, max_tokens, stream_event,
-                    ).await
-                }
-            }
-            "local" => {
-                let base = match local_llm_base_url() {
-                    Some(b) => b,
-                    None => { failure_reasons.push("Local LLM: not configured".to_string()); continue; }
-                };
-                let model = match get_local_llm_model() {
-                    Some(m) => m,
-                    None => { failure_reasons.push("Local LLM: no model selected".to_string()); continue; }
-                };
-                let key = get_credential("local_llm_api_key");
-                complete_multi_local_streaming(
-                    app, &base, key.as_deref(), &model,
-                    system, history_json, max_tokens, stream_event,
-                ).await
-            }
-            // Gemini and other providers fall back to non-streaming multi-turn
-            _ => try_provider_multi(app, p, client, claude_key, system, history_json, max_tokens).await,
-        };
-
-        match result {
-            Ok(r) => return Ok(r),
-            Err(e) if e.contains("not configured") || e.contains("no model") => {
-                failure_reasons.push(format!("{p}: not configured"));
-            }
-            Err(e) if is_quota_error(&e) => {
-                failure_reasons.push(format!("{p}: rate limited / quota exceeded"));
-            }
-            Err(e) => return Err(e),
-        }
-    }
-
-    let summary = failure_reasons.join("; ");
-    Err(format!("All providers failed — {summary}"))
-}
 
 /// Streaming single-turn completion via local LLM (OpenAI SSE format).
 /// Emits `{stream_event}` Tauri events for each token chunk received.
@@ -983,29 +917,6 @@ async fn complete_local_streaming(
     }
 
     Ok(full_text)
-}
-
-fn parse_history_to_sidecar_messages(history_json: &str) -> Vec<crate::sidecar::Message> {
-    let Ok(arr) = serde_json::from_str::<serde_json::Value>(history_json) else {
-        return Vec::new();
-    };
-    let Some(turns) = arr.as_array() else {
-        return Vec::new();
-    };
-    turns.iter().filter_map(|t| {
-        let role = t["role"].as_str()?.to_string();
-        let content = t["content"].as_str()
-            .map(|s| s.to_string())
-            .or_else(|| {
-                t["content"].as_array().map(|blocks| {
-                    blocks.iter()
-                        .filter_map(|b| b["text"].as_str())
-                        .collect::<Vec<_>>()
-                        .join("")
-                })
-            })?;
-        Some(crate::sidecar::Message { role, content })
-    }).collect()
 }
 
 
@@ -2696,7 +2607,7 @@ fn get_provider_order() -> Vec<String> {
 /// Try one provider for a single-turn call. Returns Ok if it succeeded,
 /// Err with the error string otherwise (including "not configured" cases).
 async fn try_provider_single(
-    app: &tauri::AppHandle,
+    _app: &tauri::AppHandle,
     provider: &str,
     client: &Client,
     claude_key: &str,
@@ -2731,7 +2642,7 @@ async fn try_provider_single(
 
 /// Try one provider for a multi-turn call.
 async fn try_provider_multi(
-    app: &tauri::AppHandle,
+    _app: &tauri::AppHandle,
     provider: &str,
     client: &Client,
     claude_key: &str,

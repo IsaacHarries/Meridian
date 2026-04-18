@@ -92,6 +92,7 @@ const makeIssue = (
   observedBehavior: null,
   expectedBehavior: null,
   namedFields: {},
+  discoveredFieldIds: {},
 });
 
 // ── Demo tickets for testing the Implement a Ticket pipeline from a blank worktree ──
@@ -171,6 +172,7 @@ export const DEMO_ISSUE_1: JiraIssue = {
   observedBehavior: null,
   expectedBehavior: null,
   namedFields: {},
+  discoveredFieldIds: {},
 };
 
 export const DEMO_ISSUE_2: JiraIssue = {
@@ -282,6 +284,7 @@ export const DEMO_ISSUE_2: JiraIssue = {
   observedBehavior: null,
   expectedBehavior: null,
   namedFields: {},
+  discoveredFieldIds: {},
 };
 
 export const MY_SPRINT_ISSUES: JiraIssue[] = [

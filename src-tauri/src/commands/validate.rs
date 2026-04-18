@@ -684,3 +684,117 @@ async fn test_bitbucket_connection(workspace: &str, email: &str, access_token: &
         s => Err(format!("Unexpected response from Bitbucket (HTTP {s}).")),
     }
 }
+
+// ── Unit tests ────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── generate_random_base64url ─────────────────────────────────────────────
+
+    #[test]
+    fn random_base64url_32_bytes_gives_43_chars() {
+        let s = generate_random_base64url(32).unwrap();
+        assert_eq!(s.len(), 43, "32 bytes → 43 base64url chars (no padding)");
+    }
+
+    #[test]
+    fn random_base64url_16_bytes_gives_22_chars() {
+        let s = generate_random_base64url(16).unwrap();
+        assert_eq!(s.len(), 22, "16 bytes → 22 base64url chars (no padding)");
+    }
+
+    #[test]
+    fn random_base64url_contains_only_url_safe_chars() {
+        let s = generate_random_base64url(32).unwrap();
+        assert!(
+            s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'),
+            "Output should only contain A-Z a-z 0-9 - _; got: {s}"
+        );
+    }
+
+    #[test]
+    fn random_base64url_two_calls_differ() {
+        let a = generate_random_base64url(32).unwrap();
+        let b = generate_random_base64url(32).unwrap();
+        assert_ne!(a, b, "Two calls should produce different values");
+    }
+
+    // ── sha256_base64url ──────────────────────────────────────────────────────
+
+    #[test]
+    fn sha256_base64url_known_input() {
+        // SHA-256("hello") = 2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824
+        // base64url (no pad) = LPJNul-wow4m6DsqxbninhsWHlwfp0JecwQzYpOLmCQ
+        let result = sha256_base64url("hello");
+        assert_eq!(result, "LPJNul-wow4m6DsqxbninhsWHlwfp0JecwQzYpOLmCQ");
+    }
+
+    #[test]
+    fn sha256_base64url_output_is_43_chars() {
+        let result = sha256_base64url("any input");
+        assert_eq!(result.len(), 43, "SHA-256 → 32 bytes → 43 base64url chars");
+    }
+
+    // ── percent_encode ────────────────────────────────────────────────────────
+
+    #[test]
+    fn percent_encode_space() {
+        assert_eq!(percent_encode("hello world"), "hello%20world");
+    }
+
+    #[test]
+    fn percent_encode_slash() {
+        assert_eq!(percent_encode("a/b"), "a%2Fb");
+    }
+
+    #[test]
+    fn percent_encode_colon() {
+        assert_eq!(percent_encode("a:b"), "a%3Ab");
+    }
+
+    #[test]
+    fn percent_encode_leaves_unreserved_chars() {
+        let unreserved = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_.~";
+        assert_eq!(percent_encode(unreserved), unreserved);
+    }
+
+    #[test]
+    fn percent_encode_scope_string() {
+        let scope = "user:profile user:inference";
+        let encoded = percent_encode(scope);
+        assert!(encoded.contains("%3A"), "colons encoded");
+        assert!(encoded.contains("%20"), "spaces encoded");
+    }
+
+    // ── percent_decode ────────────────────────────────────────────────────────
+
+    #[test]
+    fn percent_decode_space() {
+        assert_eq!(percent_decode("%20"), " ");
+    }
+
+    #[test]
+    fn percent_decode_colon() {
+        assert_eq!(percent_decode("%3A"), ":");
+    }
+
+    #[test]
+    fn percent_decode_plus_as_space() {
+        assert_eq!(percent_decode("hello+world"), "hello world");
+    }
+
+    #[test]
+    fn percent_decode_unchanged_for_plain_text() {
+        assert_eq!(percent_decode("hello"), "hello");
+    }
+
+    #[test]
+    fn percent_encode_decode_round_trip() {
+        let original = "user:profile user:inference org:create_api_key";
+        let encoded = percent_encode(original);
+        let decoded = percent_decode(&encoded);
+        assert_eq!(decoded, original);
+    }
+}

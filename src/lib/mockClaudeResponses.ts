@@ -7,7 +7,6 @@ import type {
   PlanReviewOutput,
   PrDescriptionOutput,
   RetrospectiveOutput,
-  QualityReport,
   ReviewReport,
 } from "./tauri";
 
@@ -41,6 +40,8 @@ const grooming: GroomingOutput = {
   estimated_complexity: "medium",
   grooming_notes:
     "This is static mock output for development. Real grooming would reference your ticket text.",
+  suggested_edits: [],
+  clarifying_questions: [],
 };
 
 const impact: ImpactOutput = {
@@ -180,7 +181,7 @@ const retrospective: RetrospectiveOutput = {
   summary: "Mock retrospective agent output.",
 };
 
-const quality: QualityReport = {
+const quality = {
   overall: "needs_work",
   summary: "Mock quality report: ticket is close but has one ambiguity on auth vs anon limits.",
   criteria: [

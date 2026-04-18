@@ -10,7 +10,7 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
-use std::sync::{Mutex, OnceLock};
+use std::sync::Mutex;
 use tauri::Manager;
 
 // ── Path cache (set once during Tauri setup) ──────────────────────────────────

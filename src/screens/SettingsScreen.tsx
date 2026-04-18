@@ -1104,10 +1104,6 @@ function JiraSection({ isConfigured, onSaved }: { isConfigured: boolean; onSaved
         // Strip ALL whitespace — API tokens never contain spaces or newlines,
         // and paste events in password fields can introduce them invisibly.
         const cleanToken = apiToken.replace(/\s/g, "");
-        if (cleanToken.length !== apiToken.trim().length) {
-          console.warn(`JIRA token had embedded whitespace stripped: raw length ${apiToken.length} → clean length ${cleanToken.length}`);
-        }
-        console.log(`Saving JIRA API token (length: ${cleanToken.length}, prefix: ${cleanToken.slice(0, 8)}, suffix: ${cleanToken.slice(-4)})`);
         await saveCredential("jira_api_token", cleanToken);
       }
       setTestResult("untested");

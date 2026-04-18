@@ -10,17 +10,11 @@
  */
 
 import { create } from "zustand";
-import { getAllActiveSprintIssues, getOpenPrs, type JiraIssue, type BitbucketPr } from "@/lib/tauri";
+import { getAllActiveSprintIssues, getOpenPrs, type BitbucketPr } from "@/lib/tauri";
 import { getIgnoredDevs } from "@/lib/preferences";
 import { classifyWorkloads } from "@/lib/workloadClassifier";
 
 export const POLL_INTERVAL_MS = 3 * 60 * 60 * 1000; // 3 hours
-
-// ── Workload classification (mirrors WorkloadBalancerScreen) ──────────────────
-
-function isDone(issue: JiraIssue): boolean {
-  return issue.statusCategory === "Done";
-}
 
 // ── Store ─────────────────────────────────────────────────────────────────────
 

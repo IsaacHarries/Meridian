@@ -348,7 +348,7 @@ function InlineCommentThread({
   const [showReply, setShowReply] = useState(false);
   const [showTask, setShowTask] = useState<number | "root" | null>(null);
   const [togglingTask, setTogglingTask] = useState<number | null>(null);
-  const [deletingId, setDeletingId] = useState<number | null>(null);
+  const [, setDeletingId] = useState<number | null>(null);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [editDraft, setEditDraft] = useState("");
   const [savingEdit, setSavingEdit] = useState(false);
@@ -1454,7 +1454,6 @@ export function PrReviewScreen({ credStatus, onBack }: PrReviewScreenProps) {
     loadingPrs,
     jiraBaseUrl,
     myAccountId,
-    prListLoaded,
   } = usePrReviewStore();
 
   // Derive the current session fields from the Map (empty defaults while loading)
@@ -1464,7 +1463,7 @@ export function PrReviewScreen({ credStatus, onBack }: PrReviewScreenProps) {
     commentCountAtFetch: 0, commentsLastFetchedAt: null as string | null, hasNewComments: false,
     linkedIssue: null, loadingDetails: false, checkingForUpdates: false,
     report: null, rawError: null, reviewing: false,
-    reviewProgress: "", reviewStreamText: "",
+    reviewProgress: "", reviewStreamText: "", reviewChatStreamText: "",
     worktreeBranch: null, checkoutStatus: "idle" as const, checkoutError: "",
     submitAction: null, submitStatus: "idle" as const, submitError: "",
     reviewChat: [],
