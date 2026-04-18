@@ -51,6 +51,9 @@ import {
   setLocalLlmUrlCache,
   getStoreCacheInfo,
   clearAllStoreCaches,
+  validateWorktree,
+  validatePrReviewWorktree,
+  validatePrAddressWorktree,
 } from "@/lib/tauri";
 import { useImplementTicketStore, IMPLEMENT_STORE_KEY, INITIAL as IMPLEMENT_INITIAL } from "@/stores/implementTicketStore";
 import { usePrReviewStore, PR_REVIEW_STORE_KEY } from "@/stores/prReviewStore";
@@ -370,7 +373,7 @@ function AnthropicSection({ isConfigured, onSaved }: { isConfigured: boolean; on
                 : "bg-background text-muted-foreground hover:text-foreground hover:bg-muted"
             )}
           >
-            Claude Pro / Max
+            Claude.ai
           </button>
         </div>
 
@@ -420,7 +423,7 @@ function AnthropicSection({ isConfigured, onSaved }: { isConfigured: boolean; on
         {authMethod === "oauth" && (
           <div className="space-y-2">
             <p className="text-xs text-muted-foreground">
-              Authorize Meridian to use your Claude Pro / Max subscription. A browser window will open to claude.ai — no CLI required.
+              Authorize Meridian to use your Claude.ai account. A browser window will open to complete sign-in — no API key or CLI required.
             </p>
             <div className="flex flex-wrap gap-2">
               <Button
@@ -785,6 +788,7 @@ function GeminiSection({ isConfigured, onSaved }: { isConfigured: boolean; onSav
         <div className="flex items-center justify-between">
           <div>
             <CardTitle className="text-base">Google Gemini</CardTitle>
+            <CardDescription className="text-xs mt-0.5">Alternative AI provider for fallback or cost optimisation</CardDescription>
           </div>
           <div className="flex items-center gap-2">
             <VerifiedBadge result={testResult} />
@@ -832,8 +836,8 @@ function GeminiSection({ isConfigured, onSaved }: { isConfigured: boolean; onSav
               </p>
             </div>
             <div className="flex gap-2">
-              <Button size="sm" onClick={handleSave} disabled={!apiKey.trim() || apiKey === MASKED_SENTINEL}>
-                Save &amp; Test
+              <Button size="sm" onClick={handleSave} disabled={!apiKey.trim() || apiKey === MASKED_SENTINEL || status.state === "loading"}>
+                {status.state === "loading" ? <Loader2 className="h-3 w-3 animate-spin" /> : "Save & Test"}
               </Button>
               <Button variant="outline" size="sm" onClick={handleCancel}>Cancel</Button>
             </div>
@@ -843,8 +847,8 @@ function GeminiSection({ isConfigured, onSaved }: { isConfigured: boolean; onSav
         <SectionMessage state={status.state} message={status.message} />
 
         {isConfigured && models.length > 0 && (
-          <div>
-            <Label className="text-xs">Model</Label>
+          <div className="space-y-1.5 pt-2 border-t">
+            <Label className="text-xs">Gemini Model</Label>
             <select
               value={selectedModel}
               onChange={e => handleModelChange(e.target.value)}
@@ -854,6 +858,9 @@ function GeminiSection({ isConfigured, onSaved }: { isConfigured: boolean; onSav
                 <option key={id} value={id}>{label}</option>
               ))}
             </select>
+            <p className="text-[11px] text-muted-foreground">
+              Used when Gemini is the active provider. Gemini 2.0 Flash is recommended for speed and cost.
+            </p>
           </div>
         )}
       </CardContent>
@@ -1019,8 +1026,8 @@ function LocalLlmSection({ isConfigured, onSaved }: { isConfigured: boolean; onS
               />
             </div>
             <div className="flex gap-2">
-              <Button size="sm" onClick={handleSave} disabled={!serverUrl.trim()}>
-                Save &amp; Test
+              <Button size="sm" onClick={handleSave} disabled={!serverUrl.trim() || status.state === "loading"}>
+                {status.state === "loading" ? <Loader2 className="h-3 w-3 animate-spin" /> : "Save & Test"}
               </Button>
               <Button variant="outline" size="sm" onClick={handleCancel}>Cancel</Button>
             </div>
@@ -1051,18 +1058,13 @@ function LocalLlmSection({ isConfigured, onSaved }: { isConfigured: boolean; onS
                 ))}
               </select>
             ) : (
-              <div className="space-y-1">
-                <Input
-                  value={customModel}
-                  onChange={e => setCustomModel(e.target.value)}
-                  onBlur={() => { if (customModel.trim()) handleModelChange(customModel.trim()); }}
-                  placeholder="e.g. llama3.2:latest"
-                  className="text-xs h-8 font-mono"
-                />
-                <p className="text-xs text-muted-foreground">
-                  Type the model name exactly as shown in <code className="bg-muted px-1 rounded">ollama list</code>
-                </p>
-              </div>
+              <Input
+                value={customModel}
+                onChange={e => setCustomModel(e.target.value)}
+                onBlur={() => { if (customModel.trim()) handleModelChange(customModel.trim()); }}
+                placeholder="e.g. llama3.2:latest"
+                className="text-xs h-8 font-mono"
+              />
             )}
           </div>
         )}
@@ -1096,6 +1098,7 @@ function JiraSection({ isConfigured, onSaved }: { isConfigured: boolean; onSaved
 
   async function handleSave() {
     if (!baseUrl.trim() || !email.trim() || !apiToken.trim()) return;
+    setSavingJira(true);
     setStatus({ state: "loading", message: "Saving…" });
     try {
       await saveCredential("jira_base_url", baseUrl.trim());
@@ -1111,10 +1114,13 @@ function JiraSection({ isConfigured, onSaved }: { isConfigured: boolean; onSaved
       onSaved();
     } catch (err) {
       setStatus({ state: "error", message: String(err) });
+    } finally {
+      setSavingJira(false);
     }
   }
 
   async function handleTest() {
+    setTestingJira(true);
     setStatus({ state: "loading", message: "Testing connection…" });
     setTestResult("untested");
     try {
@@ -1126,6 +1132,8 @@ function JiraSection({ isConfigured, onSaved }: { isConfigured: boolean; onSaved
     } catch (err) {
       setTestResult("error");
       setStatus({ state: "error", message: String(err) });
+    } finally {
+      setTestingJira(false);
     }
   }
 
@@ -1156,8 +1164,9 @@ function JiraSection({ isConfigured, onSaved }: { isConfigured: boolean; onSaved
     onSaved();
   }
 
-  const hasInput = baseUrl.trim() && email.trim() && apiToken.trim();
-  const canTest = !!(baseUrl.trim() && email.trim() && apiToken.trim());
+  const canSave = !!(baseUrl.trim() && email.trim() && apiToken.trim());
+  const [savingJira, setSavingJira] = useState(false);
+  const [testingJira, setTestingJira] = useState(false);
 
   return (
     <Card>
@@ -1193,15 +1202,15 @@ function JiraSection({ isConfigured, onSaved }: { isConfigured: boolean; onSaved
         ) : (
           <div className="space-y-3">
             <ScopeList {...JIRA_PERMISSIONS} />
-            <CredentialField id="s-jira-url" label="Workspace URL" placeholder="https://yourcompany.atlassian.net" value={baseUrl} onChange={(v) => { setBaseUrl(v); setTestResult("untested"); }} disabled={status.state === "loading"} />
-            <CredentialField id="s-jira-email" label="Email" placeholder="you@yourcompany.com" value={email} onChange={(v) => { setEmail(v); setTestResult("untested"); }} disabled={status.state === "loading"} />
-            <CredentialField id="s-jira-token" label="API Token" placeholder="ATATT3x…" masked value={apiToken} onChange={(v) => { setApiToken(v); setTestResult("untested"); }} disabled={status.state === "loading"} helperText={isConfigured && apiToken === MASKED_SENTINEL ? "Token already saved — clear to replace" : "Classic API token from id.atlassian.com → Security → API tokens. Must be a classic token (starts with ATATT3x, no scope picker) — not an OAuth 2.0 scoped token."} />
+            <CredentialField id="s-jira-url" label="Workspace URL" placeholder="https://yourcompany.atlassian.net" value={baseUrl} onChange={(v) => { setBaseUrl(v); setTestResult("untested"); }} disabled={savingJira || testingJira} />
+            <CredentialField id="s-jira-email" label="Email" placeholder="you@yourcompany.com" value={email} onChange={(v) => { setEmail(v); setTestResult("untested"); }} disabled={savingJira || testingJira} />
+            <CredentialField id="s-jira-token" label="API Token" placeholder="ATATT3x…" masked value={apiToken} onChange={(v) => { setApiToken(v); setTestResult("untested"); }} disabled={savingJira || testingJira} helperText={isConfigured && apiToken === MASKED_SENTINEL ? "Token already saved — clear to replace" : "Go to id.atlassian.com → Security → API tokens and create a classic token (starts with ATATT3x)."} />
             <div className="flex gap-2">
-              <Button size="sm" onClick={handleSave} disabled={!hasInput || status.state === "loading"}>
-                {status.state === "loading" && !status.message.includes("Testing") ? <Loader2 className="h-3 w-3 animate-spin" /> : "Save credentials"}
+              <Button size="sm" onClick={handleSave} disabled={!canSave || savingJira || testingJira}>
+                {savingJira ? <Loader2 className="h-3 w-3 animate-spin" /> : "Save credentials"}
               </Button>
-              <Button size="sm" variant="outline" onClick={handleTest} disabled={!canTest || status.state === "loading"}>
-                {status.state === "loading" && status.message.includes("Testing") ? <Loader2 className="h-3 w-3 animate-spin" /> : "Test connection"}
+              <Button size="sm" variant="outline" onClick={handleTest} disabled={!canSave || savingJira || testingJira}>
+                {testingJira ? <Loader2 className="h-3 w-3 animate-spin" /> : "Test connection"}
               </Button>
               <Button variant="ghost" size="sm" onClick={handleCancel}>Cancel</Button>
             </div>
@@ -1238,6 +1247,7 @@ function BitbucketSection({ isConfigured, onSaved }: { isConfigured: boolean; on
 
   async function handleSave() {
     if (!workspace.trim() || !email.trim() || !accessToken.trim()) return;
+    setSavingBb(true);
     setStatus({ state: "loading", message: "Saving…" });
     try {
       await saveCredential("bitbucket_workspace", workspace.trim());
@@ -1248,10 +1258,13 @@ function BitbucketSection({ isConfigured, onSaved }: { isConfigured: boolean; on
       onSaved();
     } catch (err) {
       setStatus({ state: "error", message: String(err) });
+    } finally {
+      setSavingBb(false);
     }
   }
 
   async function handleTest() {
+    setTestingBb(true);
     setStatus({ state: "loading", message: "Testing connection…" });
     setTestResult("untested");
     try {
@@ -1263,6 +1276,8 @@ function BitbucketSection({ isConfigured, onSaved }: { isConfigured: boolean; on
     } catch (err) {
       setTestResult("error");
       setStatus({ state: "error", message: String(err) });
+    } finally {
+      setTestingBb(false);
     }
   }
 
@@ -1293,8 +1308,9 @@ function BitbucketSection({ isConfigured, onSaved }: { isConfigured: boolean; on
     onSaved();
   }
 
-  const hasInput = workspace.trim() && email.trim() && accessToken.trim();
-  const canTest = !!(workspace.trim() && email.trim() && accessToken.trim());
+  const canSaveBb = !!(workspace.trim() && email.trim() && accessToken.trim());
+  const [savingBb, setSavingBb] = useState(false);
+  const [testingBb, setTestingBb] = useState(false);
 
   return (
     <Card>
@@ -1330,15 +1346,15 @@ function BitbucketSection({ isConfigured, onSaved }: { isConfigured: boolean; on
         ) : (
           <div className="space-y-3">
             <ScopeList {...BITBUCKET_SCOPES} />
-            <CredentialField id="s-bb-ws" label="Workspace slug" placeholder="your-workspace" value={workspace} onChange={(v) => { setWorkspace(v); setTestResult("untested"); }} disabled={status.state === "loading"} helperText="The slug from your Bitbucket workspace URL" />
-            <CredentialField id="s-bb-email" label="Email" placeholder="you@yourcompany.com" value={email} onChange={(v) => { setEmail(v); setTestResult("untested"); }} disabled={status.state === "loading"} helperText="The email address associated with your Bitbucket account (used for authentication)" />
-            <CredentialField id="s-bb-token" label="Access Token" placeholder="ATCTT3x…" masked value={accessToken} onChange={(v) => { setAccessToken(v); setTestResult("untested"); }} disabled={status.state === "loading"} helperText={isConfigured && accessToken === MASKED_SENTINEL ? "Token already saved — clear to enter a new one" : "Workspace or repository HTTP access token"} />
+            <CredentialField id="s-bb-ws" label="Workspace slug" placeholder="your-workspace" value={workspace} onChange={(v) => { setWorkspace(v); setTestResult("untested"); }} disabled={savingBb || testingBb} helperText="The short name in your Bitbucket workspace URL: bitbucket.org/your-workspace" />
+            <CredentialField id="s-bb-email" label="Email" placeholder="you@yourcompany.com" value={email} onChange={(v) => { setEmail(v); setTestResult("untested"); }} disabled={savingBb || testingBb} helperText="The email address you use to sign in to Bitbucket" />
+            <CredentialField id="s-bb-token" label="Access Token" placeholder="ATCTT3x…" masked value={accessToken} onChange={(v) => { setAccessToken(v); setTestResult("untested"); }} disabled={savingBb || testingBb} helperText={isConfigured && accessToken === MASKED_SENTINEL ? "Token already saved — clear to enter a new one" : "HTTP access token from Bitbucket workspace or repository settings → Access tokens."} />
             <div className="flex gap-2">
-              <Button size="sm" onClick={handleSave} disabled={!hasInput || status.state === "loading"}>
-                {status.state === "loading" && !status.message.includes("Testing") ? <Loader2 className="h-3 w-3 animate-spin" /> : "Save credentials"}
+              <Button size="sm" onClick={handleSave} disabled={!canSaveBb || savingBb || testingBb}>
+                {savingBb ? <Loader2 className="h-3 w-3 animate-spin" /> : "Save credentials"}
               </Button>
-              <Button size="sm" variant="outline" onClick={handleTest} disabled={!canTest || status.state === "loading"}>
-                {status.state === "loading" && status.message.includes("Testing") ? <Loader2 className="h-3 w-3 animate-spin" /> : "Test connection"}
+              <Button size="sm" variant="outline" onClick={handleTest} disabled={!canSaveBb || savingBb || testingBb}>
+                {testingBb ? <Loader2 className="h-3 w-3 animate-spin" /> : "Test connection"}
               </Button>
               <Button variant="ghost" size="sm" onClick={handleCancel}>Cancel</Button>
             </div>
@@ -1435,46 +1451,55 @@ function ConfigSection({
   }
 
   async function handleValidateWorktree() {
+    if (!worktreePath.trim()) return;
     setWorktreeStatus({ state: "loading", message: "Validating…" });
+    const prefs = await getPreferences();
+    const prev = prefs["repo_worktree_path"] ?? "";
+    await setPreference("repo_worktree_path", worktreePath.trim());
     try {
-      if (worktreePath.trim()) await setPreference("repo_worktree_path", worktreePath.trim());
-      const { validateWorktree } = await import("@/lib/tauri");
       const info = await validateWorktree();
       setWorktreeStatus({
         state: "success",
         message: `✓ Valid git repo — branch: ${info.branch}, HEAD: ${info.headCommit}`,
       });
     } catch (err) {
+      await setPreference("repo_worktree_path", prev).catch(() => {});
       setWorktreeStatus({ state: "error", message: String(err) });
     }
   }
 
   async function handleValidatePrWorktree() {
+    if (!prReviewWorktreePath.trim()) return;
     setPrWorktreeStatus({ state: "loading", message: "Validating…" });
+    const prefs = await getPreferences();
+    const prev = prefs["pr_review_worktree_path"] ?? "";
+    await setPreference("pr_review_worktree_path", prReviewWorktreePath.trim());
     try {
-      if (prReviewWorktreePath.trim()) await setPreference("pr_review_worktree_path", prReviewWorktreePath.trim());
-      const { validatePrReviewWorktree } = await import("@/lib/tauri");
       const info = await validatePrReviewWorktree();
       setPrWorktreeStatus({
         state: "success",
         message: `✓ Valid git repo — branch: ${info.branch}, HEAD: ${info.headCommit}`,
       });
     } catch (err) {
+      await setPreference("pr_review_worktree_path", prev).catch(() => {});
       setPrWorktreeStatus({ state: "error", message: String(err) });
     }
   }
 
   async function handleValidatePrAddressWorktree() {
+    if (!prAddressWorktreePath.trim()) return;
     setPrAddressWorktreeStatus({ state: "loading", message: "Validating…" });
+    const prefs = await getPreferences();
+    const prev = prefs["pr_address_worktree_path"] ?? "";
+    await setPreference("pr_address_worktree_path", prAddressWorktreePath.trim());
     try {
-      if (prAddressWorktreePath.trim()) await setPreference("pr_address_worktree_path", prAddressWorktreePath.trim());
-      const { validatePrAddressWorktree } = await import("@/lib/tauri");
       const info = await validatePrAddressWorktree();
       setPrAddressWorktreeStatus({
         state: "success",
         message: `✓ Valid git repo — branch: ${info.branch}, HEAD: ${info.headCommit}`,
       });
     } catch (err) {
+      await setPreference("pr_address_worktree_path", prev).catch(() => {});
       setPrAddressWorktreeStatus({ state: "error", message: String(err) });
     }
   }
@@ -1536,7 +1561,7 @@ function ConfigSection({
                 value={worktreePath}
                 onChange={setWorktreePath}
                 disabled={status.state === "loading"}
-                helperText="Absolute path to a git worktree for the implementation pipeline (Grooming, Impact Analysis, Triage agents). Set up with: git worktree add ../MyRepo-meridian develop"
+                helperText={`Absolute path to a git worktree for the implementation pipeline (Grooming, Impact Analysis, Triage agents). Set up with: git worktree add ../MyRepo-meridian ${baseBranch || "develop"}`}
               />
               <CredentialField
                 id="cfg-base-branch"
@@ -1545,7 +1570,7 @@ function ConfigSection({
                 value={baseBranch}
                 onChange={setBaseBranch}
                 disabled={status.state === "loading"}
-                helperText="The branch the implementation worktree tracks (default: develop)."
+                helperText="The branch checked out in the worktree when a pipeline starts (usually develop or main)."
               />
               {worktreePath.trim() && (
                 <div className="flex items-center gap-2">
@@ -1577,7 +1602,7 @@ function ConfigSection({
                 value={prReviewWorktreePath}
                 onChange={setPrReviewWorktreePath}
                 disabled={status.state === "loading"}
-                helperText="Optional dedicated worktree for PR reviews. Branches are checked out here when you open a PR for review, keeping it isolated from your implementation worktree. Leave blank to share the implementation worktree. Set up with: git worktree add ../MyRepo-pr-review develop"
+                helperText={`Optional dedicated worktree for PR reviews. Branches are checked out here when you open a PR for review, keeping it isolated from your implementation worktree. Leave blank to share the implementation worktree. Set up with: git worktree add ../MyRepo-pr-review ${baseBranch || "develop"}`}
               />
               {prReviewWorktreePath.trim() && (
                 <div className="flex items-center gap-2">
@@ -1628,7 +1653,7 @@ function ConfigSection({
                 value={prAddressWorktreePath}
                 onChange={setPrAddressWorktreePath}
                 disabled={status.state === "loading"}
-                helperText="Optional dedicated worktree for addressing PR comments. Branches are checked out here when you work through reviewer comments, keeping it isolated from the implementation and review worktrees. Falls back to PR Review worktree, then Implementation worktree. Set up with: git worktree add ../MyRepo-pr-address develop"
+                helperText={`Optional dedicated worktree for addressing PR comments. Branches are checked out here when you work through reviewer comments, keeping it isolated from the implementation and review worktrees. If not set, falls back to the PR Review worktree, then the Implementation worktree. Set up with: git worktree add ../MyRepo-pr-address ${baseBranch || "develop"}`}
               />
               {prAddressWorktreePath.trim() && (
                 <div className="flex items-center gap-2">
@@ -1884,9 +1909,12 @@ function MockModeSection({ onToggle }: { onToggle: () => void }) {
           </Button>
         </div>
         {enabled && (
-          <p className="text-xs text-amber-600 mt-3 pl-13 ml-13">
-            Restart or navigate back to landing to reload data with mock mode active.
-          </p>
+          <div className="mt-3 ml-13 flex items-start gap-2 rounded-md bg-amber-500/10 border border-amber-500/20 px-3 py-2">
+            <AlertCircle className="h-3.5 w-3.5 text-amber-600 shrink-0 mt-0.5" />
+            <p className="text-xs text-amber-700 dark:text-amber-400">
+              Navigate back to the landing screen to reload data sources with mock mode active.
+            </p>
+          </div>
         )}
       </CardContent>
     </Card>
@@ -1920,9 +1948,9 @@ function MockClaudeModeSection({ onToggle }: { onToggle: () => void }) {
               )}
             </div>
             <p className="text-xs text-muted-foreground leading-relaxed">
-              Return canned Claude / agent output for pipelines, standup, retros, workload, ticket
-              quality, and PR review — no Anthropic API calls. JIRA and Bitbucket are unaffected
-              (use Mock Data Mode for those).
+              Return pre-recorded agent responses for pipelines, standup, retros, workload, ticket
+              quality, and PR review — no Anthropic API calls made. JIRA and Bitbucket are
+              unaffected (enable Mock Data Mode for those).
             </p>
           </div>
           <Button
@@ -1939,10 +1967,12 @@ function MockClaudeModeSection({ onToggle }: { onToggle: () => void }) {
           </Button>
         </div>
         {enabled && (
-          <p className="text-xs text-violet-600 dark:text-violet-400 mt-3 pl-13 ml-13">
-            Credential status treats Anthropic as configured while this is on. Re-run workflows to
-            see mock output.
-          </p>
+          <div className="mt-3 ml-13 flex items-start gap-2 rounded-md bg-violet-500/10 border border-violet-500/20 px-3 py-2">
+            <AlertCircle className="h-3.5 w-3.5 text-violet-600 shrink-0 mt-0.5" />
+            <p className="text-xs text-violet-700 dark:text-violet-400">
+              Anthropic is treated as configured while this is on. Re-run any workflow to see pre-recorded output.
+            </p>
+          </div>
         )}
       </CardContent>
     </Card>
