@@ -1388,6 +1388,7 @@ function ConfigSection({
   async function handleValidateWorktree() {
     setWorktreeStatus({ state: "loading", message: "Validating…" });
     try {
+      if (worktreePath.trim()) await setPreference("repo_worktree_path", worktreePath.trim());
       const { validateWorktree } = await import("@/lib/tauri");
       const info = await validateWorktree();
       setWorktreeStatus({
@@ -1402,6 +1403,7 @@ function ConfigSection({
   async function handleValidatePrWorktree() {
     setPrWorktreeStatus({ state: "loading", message: "Validating…" });
     try {
+      if (prReviewWorktreePath.trim()) await setPreference("pr_review_worktree_path", prReviewWorktreePath.trim());
       const { validatePrReviewWorktree } = await import("@/lib/tauri");
       const info = await validatePrReviewWorktree();
       setPrWorktreeStatus({
@@ -1416,6 +1418,7 @@ function ConfigSection({
   async function handleValidatePrAddressWorktree() {
     setPrAddressWorktreeStatus({ state: "loading", message: "Validating…" });
     try {
+      if (prAddressWorktreePath.trim()) await setPreference("pr_address_worktree_path", prAddressWorktreePath.trim());
       const { validatePrAddressWorktree } = await import("@/lib/tauri");
       const info = await validatePrAddressWorktree();
       setPrAddressWorktreeStatus({
