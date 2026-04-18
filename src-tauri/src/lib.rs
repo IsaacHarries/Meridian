@@ -2,6 +2,7 @@ pub mod bitbucket;
 pub mod commands;
 pub mod http;
 pub mod jira;
+pub mod sidecar;
 
 use commands::{
     credential_status, delete_credential, save_credential, get_non_secret_config,     validate_anthropic, validate_bitbucket,
@@ -65,6 +66,7 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .manage(sidecar::SidecarState::new())
         .setup(|app| {
             commands::credentials::init_store_path(app.handle());
             commands::preferences::init_prefs_path(app.handle());

@@ -829,9 +829,15 @@ async fn dispatch_multi_streaming(
                 let auth_method = get_credential("claude_auth_method")
                     .unwrap_or_else(|| "api_key".to_string());
                 if auth_method == "oauth" {
-                    // Flatten history into a single user message for the CLI path.
-                    let user_msg = flatten_history_for_cli(history_json);
-                    complete_via_claude_cli_streaming(app, system, &user_msg, &get_active_model(), stream_event).await
+                    use tauri::Manager;
+                    let sidecar = app.state::<crate::sidecar::SidecarState>();
+                    let cwd = dirs::home_dir().unwrap_or_default().to_string_lossy().into_owned();
+                    crate::sidecar::dispatch_sidecar(
+                        app, &sidecar, stream_event,
+                        system.to_string(),
+                        parse_history_to_sidecar_messages(history_json),
+                        get_active_model(), cwd, None,
+                    ).await.map(|r| r.text)
                 } else if claude_key.is_empty() {
                     Err("not configured".to_string())
                 } else {
@@ -857,7 +863,7 @@ async fn dispatch_multi_streaming(
                 ).await
             }
             // Gemini and other providers fall back to non-streaming multi-turn
-            _ => try_provider_multi(p, client, claude_key, system, history_json, max_tokens).await,
+            _ => try_provider_multi(app, p, client, claude_key, system, history_json, max_tokens).await,
         };
 
         match result {
@@ -991,141 +997,29 @@ async fn complete_local_streaming(
     Ok(full_text)
 }
 
-// ── Claude Code CLI non-streaming ────────────────────────────────────────────
-
-async fn complete_via_claude_cli(system: &str, user: &str, model: &str) -> Result<String, String> {
-    let output = tokio::process::Command::new("claude")
-        .args(["-p", user, "--system", system, "--output-format", "json", "--model", model])
-        .output()
-        .await
-        .map_err(|e| format!("Failed to spawn claude CLI: {e}"))?;
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let Ok(json) = serde_json::from_str::<serde_json::Value>(&stdout) else {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("claude CLI returned non-JSON: {stderr}"));
-    };
-
-    if json["is_error"].as_bool().unwrap_or(false) {
-        return Err(format!("claude CLI error: {}", json["result"].as_str().unwrap_or("unknown")));
-    }
-
-    json["result"].as_str()
-        .map(|s| s.to_string())
-        .ok_or_else(|| format!("No result field in claude CLI output"))
-}
-
-// ── Claude Code CLI helpers ───────────────────────────────────────────────────
-
-/// Collapse a multi-turn history JSON array into a single string the CLI can receive
-/// as its `--print` argument. Each turn is prefixed with its role.
-fn flatten_history_for_cli(history_json: &str) -> String {
+fn parse_history_to_sidecar_messages(history_json: &str) -> Vec<crate::sidecar::Message> {
     let Ok(arr) = serde_json::from_str::<serde_json::Value>(history_json) else {
-        return history_json.to_string();
+        return Vec::new();
     };
     let Some(turns) = arr.as_array() else {
-        return history_json.to_string();
+        return Vec::new();
     };
-    turns
-        .iter()
-        .filter_map(|t| {
-            let role = t["role"].as_str()?;
-            let content = t["content"].as_str()
-                .map(|s| s.to_string())
-                .or_else(|| {
-                    t["content"].as_array().map(|blocks| {
-                        blocks.iter()
-                            .filter_map(|b| b["text"].as_str())
-                            .collect::<Vec<_>>()
-                            .join("")
-                    })
-                })?;
-            Some(format!("{}: {}", role, content))
-        })
-        .collect::<Vec<_>>()
-        .join("\n\n")
+    turns.iter().filter_map(|t| {
+        let role = t["role"].as_str()?.to_string();
+        let content = t["content"].as_str()
+            .map(|s| s.to_string())
+            .or_else(|| {
+                t["content"].as_array().map(|blocks| {
+                    blocks.iter()
+                        .filter_map(|b| b["text"].as_str())
+                        .collect::<Vec<_>>()
+                        .join("")
+                })
+            })?;
+        Some(crate::sidecar::Message { role, content })
+    }).collect()
 }
 
-// ── Claude Code CLI streaming ─────────────────────────────────────────────────
-//
-// When auth_method is "oauth", bypass api.anthropic.com entirely and spawn the
-// local `claude` CLI (which carries its own Pro/Max session) in print + stream-json
-// mode. This uses the same quota pool as Claude Code / zed-industries/claude-agent-acp,
-// avoiding the lower rate limits that third-party OAuth API callers face.
-
-async fn complete_via_claude_cli_streaming(
-    app: &tauri::AppHandle,
-    system: &str,
-    user: &str,
-    model: &str,
-    stream_event: &str,
-) -> Result<String, String> {
-    use tauri::Emitter;
-    use tokio::io::{AsyncBufReadExt, BufReader, Lines};
-    use tokio::process::{Child, ChildStdout, Command};
-
-    let mut child: Child = Command::new("claude")
-        .args([
-            "-p", user,
-            "--system", system,
-            "--output-format", "stream-json",
-            "--verbose",
-            "--model", model,
-        ])
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .kill_on_drop(true)
-        .spawn()
-        .map_err(|e| format!("Failed to spawn claude CLI: {e}. Is `claude` installed and on PATH?"))?;
-
-    let stdout: ChildStdout = child.stdout.take().expect("stdout piped");
-    let mut lines: Lines<BufReader<ChildStdout>> = BufReader::new(stdout).lines();
-    let mut full_text = String::new();
-
-    while let Some(line) = lines.next_line().await.map_err(|e| format!("CLI read error: {e}"))? {
-        let Ok(event) = serde_json::from_str::<serde_json::Value>(&line) else { continue };
-        match event["type"].as_str() {
-            Some("assistant") => {
-                let content = event["message"]["content"].as_array();
-                for block in content.into_iter().flatten() {
-                    if block["type"].as_str() == Some("text") {
-                        if let Some(text) = block["text"].as_str() {
-                            if !text.is_empty() {
-                                // Emit delta then append — mirrors the HTTP streaming path.
-                                let _ = app.emit(stream_event, serde_json::json!({ "delta": text }));
-                                full_text.push_str(text);
-                            }
-                        }
-                    }
-                }
-            }
-            Some("result") => {
-                if event["subtype"].as_str() == Some("error") {
-                    let msg = event["result"].as_str().unwrap_or("CLI returned an error");
-                    return Err(format!("claude CLI error: {msg}"));
-                }
-                // result.result is the final concatenated text — use it if we got nothing yet.
-                if full_text.is_empty() {
-                    if let Some(r) = event["result"].as_str() {
-                        full_text = r.to_string();
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-
-    let status = child.wait().await.map_err(|e| format!("claude CLI wait error: {e}"))
-        .map(|s| s.success())?;
-    if !status && full_text.is_empty() {
-        return Err("claude CLI exited with an error and returned no text.".to_string());
-    }
-
-    if full_text.is_empty() {
-        return Err("claude CLI returned an empty response.".to_string());
-    }
-    Ok(full_text)
-}
 
 /// Provider-aware dispatch that streams from the local LLM when it's the active
 /// provider, and falls back to the standard (non-streaming) path for Claude/Gemini.
@@ -1154,7 +1048,15 @@ async fn dispatch_streaming(
                 let auth_method = get_credential("claude_auth_method")
                     .unwrap_or_else(|| "api_key".to_string());
                 if auth_method == "oauth" {
-                    complete_via_claude_cli_streaming(app, system, user, &get_active_model(), stream_event).await
+                    use tauri::Manager;
+                    let sidecar = app.state::<crate::sidecar::SidecarState>();
+                    let cwd = dirs::home_dir().unwrap_or_default().to_string_lossy().into_owned();
+                    crate::sidecar::dispatch_sidecar(
+                        app, &sidecar, stream_event,
+                        system.to_string(),
+                        vec![crate::sidecar::Message { role: "user".to_string(), content: user.to_string() }],
+                        get_active_model(), cwd, None,
+                    ).await.map(|r| r.text)
                 } else if claude_key.is_empty() {
                     Err("not configured".to_string())
                 } else {
@@ -1173,7 +1075,7 @@ async fn dispatch_streaming(
                 let key = get_credential("local_llm_api_key");
                 complete_local_streaming(app, &base, key.as_deref(), &model, system, user, max_tokens, stream_event).await
             }
-            p => try_provider_single(p, client, claude_key, system, user, max_tokens).await,
+            p => try_provider_single(app, p, client, claude_key, system, user, max_tokens).await,
         };
 
         match result {
@@ -2762,8 +2664,15 @@ async fn dispatch_multi_streaming_with_tools(
                 let auth_method = get_credential("claude_auth_method")
                     .unwrap_or_else(|| "api_key".to_string());
                 if auth_method == "oauth" {
-                    let user_msg = flatten_history_for_cli(history_json);
-                    complete_via_claude_cli_streaming(app, system, &user_msg, &get_active_model(), stream_event).await
+                    use tauri::Manager;
+                    let sidecar = app.state::<crate::sidecar::SidecarState>();
+                    let cwd = dirs::home_dir().unwrap_or_default().to_string_lossy().into_owned();
+                    crate::sidecar::dispatch_sidecar(
+                        app, &sidecar, stream_event,
+                        system.to_string(),
+                        parse_history_to_sidecar_messages(history_json),
+                        get_active_model(), cwd, None,
+                    ).await.map(|r| r.text)
                 } else if !claude_key.is_empty() {
                     complete_multi_claude_tool_loop(
                         app, client, claude_key, &get_active_model(),
@@ -2823,6 +2732,7 @@ fn get_provider_order() -> Vec<String> {
 /// Try one provider for a single-turn call. Returns Ok if it succeeded,
 /// Err with the error string otherwise (including "not configured" cases).
 async fn try_provider_single(
+    app: &tauri::AppHandle,
     provider: &str,
     client: &Client,
     claude_key: &str,
@@ -2835,7 +2745,15 @@ async fn try_provider_single(
             let auth_method = get_credential("claude_auth_method")
                 .unwrap_or_else(|| "api_key".to_string());
             if auth_method == "oauth" {
-                complete_via_claude_cli(system, user, &get_active_model()).await
+                use tauri::Manager;
+                let sidecar = app.state::<crate::sidecar::SidecarState>();
+                let cwd = dirs::home_dir().unwrap_or_default().to_string_lossy().into_owned();
+                crate::sidecar::dispatch_sidecar(
+                    app, &sidecar, "sidecar-response",
+                    system.to_string(),
+                    vec![crate::sidecar::Message { role: "user".to_string(), content: user.to_string() }],
+                    get_active_model(), cwd, None,
+                ).await.map(|r| r.text)
             } else {
                 complete(client, claude_key, &get_active_model(), system, user, max_tokens).await
             }
@@ -2859,6 +2777,7 @@ async fn try_provider_single(
 
 /// Try one provider for a multi-turn call.
 async fn try_provider_multi(
+    app: &tauri::AppHandle,
     provider: &str,
     client: &Client,
     claude_key: &str,
@@ -2871,8 +2790,15 @@ async fn try_provider_multi(
             let auth_method = get_credential("claude_auth_method")
                 .unwrap_or_else(|| "api_key".to_string());
             if auth_method == "oauth" {
-                let user_msg = flatten_history_for_cli(history_json);
-                complete_via_claude_cli(system, &user_msg, &get_active_model()).await
+                use tauri::Manager;
+                let sidecar = app.state::<crate::sidecar::SidecarState>();
+                let cwd = dirs::home_dir().unwrap_or_default().to_string_lossy().into_owned();
+                crate::sidecar::dispatch_sidecar(
+                    app, &sidecar, "sidecar-response",
+                    system.to_string(),
+                    parse_history_to_sidecar_messages(history_json),
+                    get_active_model(), cwd, None,
+                ).await.map(|r| r.text)
             } else {
                 complete_multi(client, claude_key, &get_active_model(), system, history_json, max_tokens).await
             }
@@ -2895,6 +2821,7 @@ async fn try_provider_multi(
 }
 
 async fn dispatch(
+    app: &tauri::AppHandle,
     client: &Client,
     claude_key: &str,
     system: &str,
@@ -2905,7 +2832,7 @@ async fn dispatch(
 
     // Single-provider modes — no fallback.
     if provider != "auto" {
-        return try_provider_single(&provider, client, claude_key, system, user, max_tokens).await;
+        return try_provider_single(app, &provider, client, claude_key, system, user, max_tokens).await;
     }
 
     // Auto mode: walk the ordered list, skip unconfigured, fall back on quota errors.
@@ -2913,7 +2840,7 @@ async fn dispatch(
     let mut failure_reasons: Vec<String> = Vec::new();
 
     for p in &order {
-        match try_provider_single(p, client, claude_key, system, user, max_tokens).await {
+        match try_provider_single(app, p, client, claude_key, system, user, max_tokens).await {
             Ok(r) => return Ok(r),
             Err(e) if e.contains("not configured") || e.contains("no model") => {
                 failure_reasons.push(format!("{p}: not configured"));
@@ -2930,6 +2857,7 @@ async fn dispatch(
 }
 
 async fn dispatch_multi(
+    app: &tauri::AppHandle,
     client: &Client,
     claude_key: &str,
     system: &str,
@@ -2939,14 +2867,14 @@ async fn dispatch_multi(
     let provider = get_ai_provider();
 
     if provider != "auto" {
-        return try_provider_multi(&provider, client, claude_key, system, history_json, max_tokens).await;
+        return try_provider_multi(app, &provider, client, claude_key, system, history_json, max_tokens).await;
     }
 
     let order = get_provider_order();
     let mut failure_reasons: Vec<String> = Vec::new();
 
     for p in &order {
-        match try_provider_multi(p, client, claude_key, system, history_json, max_tokens).await {
+        match try_provider_multi(app, p, client, claude_key, system, history_json, max_tokens).await {
             Ok(r) => return Ok(r),
             Err(e) if e.contains("not configured") || e.contains("no model") => {
                 failure_reasons.push(format!("{p}: not configured"));
@@ -3067,7 +2995,7 @@ pub async fn run_grooming_agent(app: tauri::AppHandle, ticket_text: String, file
 
 /// Agent 2 — Impact Analysis: assess the blast radius of the planned change.
 #[tauri::command]
-pub async fn run_impact_analysis(ticket_text: String, grooming_json: String) -> Result<String, String> {
+pub async fn run_impact_analysis(app: tauri::AppHandle, ticket_text: String, grooming_json: String) -> Result<String, String> {
     let (client, api_key) = llm_client().await?;
     let system = "You are an impact analysis agent. Given a ticket and its grooming analysis, \
         assess the blast radius of the change. Return ONLY valid JSON (no markdown fences):\n\
@@ -3081,7 +3009,7 @@ pub async fn run_impact_analysis(ticket_text: String, grooming_json: String) -> 
           \"recommendations\": \"<key things to be careful about>\"\n\
         }";
     let user = format!("Ticket:\n{ticket_text}\n\nGrooming analysis:\n{grooming_json}");
-    dispatch(&client, &api_key, system, &user, 1500).await
+    dispatch(&app, &client, &api_key, system, &user, 1500).await
 }
 
 /// Agent 3a — Triage turn: one conversational exchange in the planning session.
@@ -3112,6 +3040,7 @@ pub async fn run_triage_turn(
 /// Returns JSON: { "message": "...", "updated_edits": [...], "updated_questions": [...] }
 #[tauri::command]
 pub async fn run_grooming_chat_turn(
+    app: tauri::AppHandle,
     context_text: String,
     history_json: String,
 ) -> Result<String, String> {
@@ -3146,12 +3075,13 @@ pub async fn run_grooming_chat_turn(
         - To remove a suggestion, omit its id from updated_edits (the frontend will not delete it — include it with a note in reasoning if it should be withdrawn)\n\
         - Keep the message focused and concise"
     );
-    dispatch_multi(&client, &api_key, &system, &history_json, 1200).await
+    dispatch_multi(&app, &client, &api_key, &system, &history_json, 1200).await
 }
 
 /// Agent 3b — Finalize plan: extract a structured implementation plan from the triage conversation.
 #[tauri::command]
 pub async fn finalize_implementation_plan(
+    app: tauri::AppHandle,
     context_text: String,
     conversation_json: String,
 ) -> Result<String, String> {
@@ -3175,12 +3105,13 @@ pub async fn finalize_implementation_plan(
         Context:\n{context_text}"
     );
     let user = format!("Triage conversation:\n{conversation_json}");
-    dispatch(&client, &api_key, &system, &user, 2000).await
+    dispatch(&app, &client, &api_key, &system, &user, 2000).await
 }
 
 /// Agent 4 — Implementation Guidance: step-by-step guide for executing the plan.
 #[tauri::command]
 pub async fn run_implementation_guidance(
+    app: tauri::AppHandle,
     ticket_text: String,
     plan_json: String,
 ) -> Result<String, String> {
@@ -3199,7 +3130,7 @@ pub async fn run_implementation_guidance(
           \"definition_of_done\": [\"<how to know the step is complete>\", ...]\n\
         }";
     let user = format!("Ticket:\n{ticket_text}\n\nImplementation plan:\n{plan_json}");
-    dispatch(&client, &api_key, system, &user, 2000).await
+    dispatch(&app, &client, &api_key, system, &user, 2000).await
 }
 
 /// Agent 4b — Implementation: actually write code for each file in the plan.
@@ -3405,6 +3336,7 @@ pub async fn run_implementation_agent(
 /// Agent 5 — Test Suggestions: recommend tests to write for the implementation.
 #[tauri::command]
 pub async fn run_test_suggestions(
+    app: tauri::AppHandle,
     plan_json: String,
     guidance_json: String,
 ) -> Result<String, String> {
@@ -3426,12 +3358,13 @@ pub async fn run_test_suggestions(
           \"coverage_notes\": \"<anything deliberately not covered and why>\"\n\
         }";
     let user = format!("Implementation plan:\n{plan_json}\n\nImplementation guidance:\n{guidance_json}");
-    dispatch(&client, &api_key, system, &user, 1500).await
+    dispatch(&app, &client, &api_key, system, &user, 1500).await
 }
 
 /// Agent 6 — Plan Review: critique the plan before any code is written.
 #[tauri::command]
 pub async fn run_plan_review(
+    app: tauri::AppHandle,
     plan_json: String,
     guidance_json: String,
     test_json: String,
@@ -3451,12 +3384,13 @@ pub async fn run_plan_review(
           \"things_to_watch\": [\"<keep in mind while implementing>\", ...]\n\
         }";
     let user = format!("Plan:\n{plan_json}\n\nGuidance:\n{guidance_json}\n\nTest plan:\n{test_json}");
-    dispatch(&client, &api_key, system, &user, 1500).await
+    dispatch(&app, &client, &api_key, system, &user, 1500).await
 }
 
 /// Agent 7 — PR Description: generate a complete pull request description.
 #[tauri::command]
 pub async fn run_pr_description_gen(
+    app: tauri::AppHandle,
     ticket_text: String,
     plan_json: String,
     review_json: String,
@@ -3470,12 +3404,13 @@ pub async fn run_pr_description_gen(
             testing approach, linked JIRA ticket, anything reviewers should pay attention to>\"\n\
         }";
     let user = format!("Ticket:\n{ticket_text}\n\nImplementation plan:\n{plan_json}\n\nReview notes:\n{review_json}");
-    dispatch(&client, &api_key, system, &user, 2000).await
+    dispatch(&app, &client, &api_key, system, &user, 2000).await
 }
 
 /// Agent 8 — Retrospective: capture learnings from the implementation session.
 #[tauri::command]
 pub async fn run_retrospective_agent(
+    app: tauri::AppHandle,
     ticket_text: String,
     plan_json: String,
     review_json: String,
@@ -3496,7 +3431,7 @@ pub async fn run_retrospective_agent(
           \"summary\": \"<one paragraph retrospective summary>\"\n\
         }";
     let user = format!("Ticket:\n{ticket_text}\n\nImplementation plan:\n{plan_json}\n\nReview:\n{review_json}");
-    dispatch(&client, &api_key, system, &user, 1500).await
+    dispatch(&app, &client, &api_key, system, &user, 1500).await
 }
 
 // ── PR review helpers ─────────────────────────────────────────────────────────
@@ -4089,7 +4024,7 @@ pub async fn chat_pr_review(
 
 /// Generate workload rebalancing suggestions from pre-compiled capacity text.
 #[tauri::command]
-pub async fn generate_workload_suggestions(workload_text: String) -> Result<String, String> {
+pub async fn generate_workload_suggestions(app: tauri::AppHandle, workload_text: String) -> Result<String, String> {
     let (client, api_key) = llm_client().await?;
 
     let system = "You are a scrum master assistant helping balance work across a development team. \
@@ -4109,12 +4044,12 @@ pub async fn generate_workload_suggestions(workload_text: String) -> Result<Stri
         If the workload is already well balanced, say so clearly. Do not invent problems."
     );
 
-    dispatch(&client, &api_key, system, &user, 1024).await
+    dispatch(&app, &client, &api_key, system, &user, 1024).await
 }
 
 /// Assess a JIRA ticket for development readiness and return a JSON quality report.
 #[tauri::command]
-pub async fn assess_ticket_quality(ticket_text: String) -> Result<String, String> {
+pub async fn assess_ticket_quality(app: tauri::AppHandle, ticket_text: String) -> Result<String, String> {
     let (client, api_key) = llm_client().await?;
 
     let system = "You are a senior engineering lead reviewing JIRA tickets for sprint readiness. \
@@ -4138,12 +4073,12 @@ pub async fn assess_ticket_quality(ticket_text: String) -> Result<String, String
 
     let user = format!("Assess this ticket for sprint readiness:\n\n{ticket_text}");
 
-    dispatch(&client, &api_key, system, &user, 1500).await
+    dispatch(&app, &client, &api_key, system, &user, 1500).await
 }
 
 /// Generate a sprint retrospective summary from pre-compiled sprint data.
 #[tauri::command]
-pub async fn generate_sprint_retrospective(sprint_text: String) -> Result<String, String> {
+pub async fn generate_sprint_retrospective(app: tauri::AppHandle, sprint_text: String) -> Result<String, String> {
     let (client, api_key) = llm_client().await?;
 
     let system = "You are an experienced agile coach helping a scrum master run sprint retrospectives. \
@@ -4161,7 +4096,7 @@ pub async fn generate_sprint_retrospective(sprint_text: String) -> Result<String
         End with a one-paragraph **Summary** the scrum master can use to open the meeting."
     );
 
-    dispatch(&client, &api_key, system, &user, 1024).await
+    dispatch(&app, &client, &api_key, system, &user, 1024).await
 }
 
 // ── Address PR Comments agent ─────────────────────────────────────────────────
@@ -4251,7 +4186,7 @@ pub async fn chat_address_pr(
 }
 
 #[tauri::command]
-pub async fn generate_standup_briefing(standup_text: String) -> Result<String, String> {
+pub async fn generate_standup_briefing(app: tauri::AppHandle, standup_text: String) -> Result<String, String> {
     let (client, api_key) = llm_client().await?;
 
     let system = "You are a scrum master assistant. \
@@ -4272,5 +4207,5 @@ pub async fn generate_standup_briefing(standup_text: String) -> Result<String, S
         Skip members with genuinely no data."
     );
 
-    dispatch(&client, &api_key, system, &user, 1024).await
+    dispatch(&app, &client, &api_key, system, &user, 1024).await
 }
