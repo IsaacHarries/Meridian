@@ -821,13 +821,19 @@ async fn dispatch_multi_streaming(
         vec![provider]
     };
 
-    let mut last_err = "No providers configured.".to_string();
+    let mut failure_reasons: Vec<String> = Vec::new();
 
     for p in &providers_to_try {
         let result = match p.as_str() {
             "claude" => {
-                if claude_key.is_empty() {
-                    Err("Claude: not configured.".to_string())
+                let auth_method = get_credential("claude_auth_method")
+                    .unwrap_or_else(|| "api_key".to_string());
+                if auth_method == "oauth" {
+                    // Flatten history into a single user message for the CLI path.
+                    let user_msg = flatten_history_for_cli(history_json);
+                    complete_via_claude_cli_streaming(app, system, &user_msg, &get_active_model(), stream_event).await
+                } else if claude_key.is_empty() {
+                    Err("not configured".to_string())
                 } else {
                     complete_multi_claude_streaming(
                         app, client, claude_key, &get_active_model(),
@@ -838,11 +844,11 @@ async fn dispatch_multi_streaming(
             "local" => {
                 let base = match local_llm_base_url() {
                     Some(b) => b,
-                    None => { last_err = "Local LLM: not configured.".to_string(); continue; }
+                    None => { failure_reasons.push("Local LLM: not configured".to_string()); continue; }
                 };
                 let model = match get_local_llm_model() {
                     Some(m) => m,
-                    None => { last_err = "Local LLM: no model selected.".to_string(); continue; }
+                    None => { failure_reasons.push("Local LLM: no model selected".to_string()); continue; }
                 };
                 let key = get_credential("local_llm_api_key");
                 complete_multi_local_streaming(
@@ -856,13 +862,18 @@ async fn dispatch_multi_streaming(
 
         match result {
             Ok(r) => return Ok(r),
-            Err(e) if e.contains("not configured") || e.contains("no model") => { last_err = e; }
-            Err(e) if is_quota_error(&e) => { last_err = format!("{p} quota exceeded, trying next provider…"); }
+            Err(e) if e.contains("not configured") || e.contains("no model") => {
+                failure_reasons.push(format!("{p}: not configured"));
+            }
+            Err(e) if is_quota_error(&e) => {
+                failure_reasons.push(format!("{p}: rate limited / quota exceeded"));
+            }
             Err(e) => return Err(e),
         }
     }
 
-    Err(format!("All providers failed or are unconfigured. Last error: {last_err}"))
+    let summary = failure_reasons.join("; ");
+    Err(format!("All providers failed — {summary}"))
 }
 
 /// Streaming single-turn completion via local LLM (OpenAI SSE format).
@@ -980,6 +991,142 @@ async fn complete_local_streaming(
     Ok(full_text)
 }
 
+// ── Claude Code CLI non-streaming ────────────────────────────────────────────
+
+async fn complete_via_claude_cli(system: &str, user: &str, model: &str) -> Result<String, String> {
+    let output = tokio::process::Command::new("claude")
+        .args(["-p", user, "--system", system, "--output-format", "json", "--model", model])
+        .output()
+        .await
+        .map_err(|e| format!("Failed to spawn claude CLI: {e}"))?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let Ok(json) = serde_json::from_str::<serde_json::Value>(&stdout) else {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("claude CLI returned non-JSON: {stderr}"));
+    };
+
+    if json["is_error"].as_bool().unwrap_or(false) {
+        return Err(format!("claude CLI error: {}", json["result"].as_str().unwrap_or("unknown")));
+    }
+
+    json["result"].as_str()
+        .map(|s| s.to_string())
+        .ok_or_else(|| format!("No result field in claude CLI output"))
+}
+
+// ── Claude Code CLI helpers ───────────────────────────────────────────────────
+
+/// Collapse a multi-turn history JSON array into a single string the CLI can receive
+/// as its `--print` argument. Each turn is prefixed with its role.
+fn flatten_history_for_cli(history_json: &str) -> String {
+    let Ok(arr) = serde_json::from_str::<serde_json::Value>(history_json) else {
+        return history_json.to_string();
+    };
+    let Some(turns) = arr.as_array() else {
+        return history_json.to_string();
+    };
+    turns
+        .iter()
+        .filter_map(|t| {
+            let role = t["role"].as_str()?;
+            let content = t["content"].as_str()
+                .map(|s| s.to_string())
+                .or_else(|| {
+                    t["content"].as_array().map(|blocks| {
+                        blocks.iter()
+                            .filter_map(|b| b["text"].as_str())
+                            .collect::<Vec<_>>()
+                            .join("")
+                    })
+                })?;
+            Some(format!("{}: {}", role, content))
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
+// ── Claude Code CLI streaming ─────────────────────────────────────────────────
+//
+// When auth_method is "oauth", bypass api.anthropic.com entirely and spawn the
+// local `claude` CLI (which carries its own Pro/Max session) in print + stream-json
+// mode. This uses the same quota pool as Claude Code / zed-industries/claude-agent-acp,
+// avoiding the lower rate limits that third-party OAuth API callers face.
+
+async fn complete_via_claude_cli_streaming(
+    app: &tauri::AppHandle,
+    system: &str,
+    user: &str,
+    model: &str,
+    stream_event: &str,
+) -> Result<String, String> {
+    use tauri::Emitter;
+    use tokio::io::{AsyncBufReadExt, BufReader, Lines};
+    use tokio::process::{Child, ChildStdout, Command};
+
+    let mut child: Child = Command::new("claude")
+        .args([
+            "-p", user,
+            "--system", system,
+            "--output-format", "stream-json",
+            "--verbose",
+            "--model", model,
+        ])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|e| format!("Failed to spawn claude CLI: {e}. Is `claude` installed and on PATH?"))?;
+
+    let stdout: ChildStdout = child.stdout.take().expect("stdout piped");
+    let mut lines: Lines<BufReader<ChildStdout>> = BufReader::new(stdout).lines();
+    let mut full_text = String::new();
+
+    while let Some(line) = lines.next_line().await.map_err(|e| format!("CLI read error: {e}"))? {
+        let Ok(event) = serde_json::from_str::<serde_json::Value>(&line) else { continue };
+        match event["type"].as_str() {
+            Some("assistant") => {
+                let content = event["message"]["content"].as_array();
+                for block in content.into_iter().flatten() {
+                    if block["type"].as_str() == Some("text") {
+                        if let Some(text) = block["text"].as_str() {
+                            if !text.is_empty() {
+                                // Emit delta then append — mirrors the HTTP streaming path.
+                                let _ = app.emit(stream_event, serde_json::json!({ "delta": text }));
+                                full_text.push_str(text);
+                            }
+                        }
+                    }
+                }
+            }
+            Some("result") => {
+                if event["subtype"].as_str() == Some("error") {
+                    let msg = event["result"].as_str().unwrap_or("CLI returned an error");
+                    return Err(format!("claude CLI error: {msg}"));
+                }
+                // result.result is the final concatenated text — use it if we got nothing yet.
+                if full_text.is_empty() {
+                    if let Some(r) = event["result"].as_str() {
+                        full_text = r.to_string();
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let status = child.wait().await.map_err(|e| format!("claude CLI wait error: {e}"))
+        .map(|s| s.success())?;
+    if !status && full_text.is_empty() {
+        return Err("claude CLI exited with an error and returned no text.".to_string());
+    }
+
+    if full_text.is_empty() {
+        return Err("claude CLI returned an empty response.".to_string());
+    }
+    Ok(full_text)
+}
+
 /// Provider-aware dispatch that streams from the local LLM when it's the active
 /// provider, and falls back to the standard (non-streaming) path for Claude/Gemini.
 async fn dispatch_streaming(
@@ -999,13 +1146,17 @@ async fn dispatch_streaming(
         vec![provider]
     };
 
-    let mut last_err = "No providers configured.".to_string();
+    let mut failure_reasons: Vec<String> = Vec::new();
 
     for p in &providers_to_try {
         let result = match p.as_str() {
             "claude" => {
-                if claude_key.is_empty() {
-                    Err("Claude: not configured.".to_string())
+                let auth_method = get_credential("claude_auth_method")
+                    .unwrap_or_else(|| "api_key".to_string());
+                if auth_method == "oauth" {
+                    complete_via_claude_cli_streaming(app, system, user, &get_active_model(), stream_event).await
+                } else if claude_key.is_empty() {
+                    Err("not configured".to_string())
                 } else {
                     complete_claude_streaming(app, client, claude_key, &get_active_model(), system, user, max_tokens, stream_event).await
                 }
@@ -1013,11 +1164,11 @@ async fn dispatch_streaming(
             "local" => {
                 let base = match local_llm_base_url() {
                     Some(b) => b,
-                    None => { last_err = "Local LLM: not configured.".to_string(); continue; }
+                    None => { failure_reasons.push("Local LLM: not configured".to_string()); continue; }
                 };
                 let model = match get_local_llm_model() {
                     Some(m) => m,
-                    None => { last_err = "Local LLM: no model selected.".to_string(); continue; }
+                    None => { failure_reasons.push("Local LLM: no model selected".to_string()); continue; }
                 };
                 let key = get_credential("local_llm_api_key");
                 complete_local_streaming(app, &base, key.as_deref(), &model, system, user, max_tokens, stream_event).await
@@ -1027,13 +1178,18 @@ async fn dispatch_streaming(
 
         match result {
             Ok(r) => return Ok(r),
-            Err(e) if e.contains("not configured") || e.contains("no model") => { last_err = e; }
-            Err(e) if is_quota_error(&e) => { last_err = format!("{p} quota exceeded, trying next provider…"); }
+            Err(e) if e.contains("not configured") || e.contains("no model") => {
+                failure_reasons.push(format!("{p}: not configured"));
+            }
+            Err(e) if is_quota_error(&e) => {
+                failure_reasons.push(format!("{p}: rate limited / quota exceeded"));
+            }
             Err(e) => return Err(e),
         }
     }
 
-    Err(format!("All providers failed or are unconfigured. Last error: {last_err}"))
+    let summary = failure_reasons.join("; ");
+    Err(format!("All providers failed — {summary}"))
 }
 
 /// Fetch the model list from the local server via the OpenAI-compatible `/v1/models`
@@ -1351,11 +1507,13 @@ pub async fn get_claude_models() -> Vec<(String, String)> {
 /// provider (Anthropic, Gemini, or local LLM) based on what's configured.
 async fn llm_client() -> Result<(Client, String), String> {
     let client = make_corporate_client(Duration::from_secs(60))?;
-    // Only refresh OAuth if an Anthropic key is actually present.
-    if get_credential("anthropic_api_key").is_some() {
+    // Use claude_auth_method to decide whether to use the OAuth refresh flow.
+    // "oauth" → refresh OAuth token if needed before returning the key.
+    // "api_key" (or unset) → use the stored API key directly, no OAuth refresh.
+    let auth_method = get_credential("claude_auth_method").unwrap_or_else(|| "api_key".to_string());
+    if auth_method == "oauth" {
         refresh_oauth_if_needed(&client).await?;
     }
-    // Pass an empty key — dispatch will use the right provider.
     let api_key = get_credential("anthropic_api_key").unwrap_or_default();
     Ok((client, api_key))
 }
@@ -2596,17 +2754,25 @@ async fn dispatch_multi_streaming_with_tools(
         vec![provider]
     };
 
-    let mut last_err = "No providers configured.".to_string();
+    let mut failure_reasons: Vec<String> = Vec::new();
 
     for p in &providers_to_try {
         let result = match p.as_str() {
-            "claude" if !claude_key.is_empty() => {
-                complete_multi_claude_tool_loop(
-                    app, client, claude_key, &get_active_model(),
-                    system, history_json, max_tokens, stream_event,
-                ).await
+            "claude" => {
+                let auth_method = get_credential("claude_auth_method")
+                    .unwrap_or_else(|| "api_key".to_string());
+                if auth_method == "oauth" {
+                    let user_msg = flatten_history_for_cli(history_json);
+                    complete_via_claude_cli_streaming(app, system, &user_msg, &get_active_model(), stream_event).await
+                } else if !claude_key.is_empty() {
+                    complete_multi_claude_tool_loop(
+                        app, client, claude_key, &get_active_model(),
+                        system, history_json, max_tokens, stream_event,
+                    ).await
+                } else {
+                    Err("not configured".to_string())
+                }
             }
-            "claude" => Err("Claude: not configured.".to_string()),
             other => {
                 complete_multi_text_tool_loop(
                     app, client, claude_key, other,
@@ -2617,13 +2783,18 @@ async fn dispatch_multi_streaming_with_tools(
 
         match result {
             Ok(r) => return Ok(r),
-            Err(e) if e.contains("not configured") || e.contains("no model") => { last_err = e; }
-            Err(e) if is_quota_error(&e) => { last_err = format!("{p} quota exceeded, trying next provider…"); }
+            Err(e) if e.contains("not configured") || e.contains("no model") => {
+                failure_reasons.push(format!("{p}: not configured"));
+            }
+            Err(e) if is_quota_error(&e) => {
+                failure_reasons.push(format!("{p}: rate limited / quota exceeded"));
+            }
             Err(e) => return Err(e),
         }
     }
 
-    Err(format!("All providers failed or are unconfigured. Last error: {last_err}"))
+    let summary = failure_reasons.join("; ");
+    Err(format!("All providers failed — {summary}"))
 }
 
 // ── Agent pipeline commands ────────────────────────────────────────────────────
@@ -2660,7 +2831,15 @@ async fn try_provider_single(
     max_tokens: u32,
 ) -> Result<String, String> {
     match provider {
-        "claude" => complete(client, claude_key, &get_active_model(), system, user, max_tokens).await,
+        "claude" => {
+            let auth_method = get_credential("claude_auth_method")
+                .unwrap_or_else(|| "api_key".to_string());
+            if auth_method == "oauth" {
+                complete_via_claude_cli(system, user, &get_active_model()).await
+            } else {
+                complete(client, claude_key, &get_active_model(), system, user, max_tokens).await
+            }
+        }
         "gemini" => {
             let key = get_credential("gemini_api_key")
                 .ok_or_else(|| "Gemini: not configured.".to_string())?;
@@ -2688,7 +2867,16 @@ async fn try_provider_multi(
     max_tokens: u32,
 ) -> Result<String, String> {
     match provider {
-        "claude" => complete_multi(client, claude_key, &get_active_model(), system, history_json, max_tokens).await,
+        "claude" => {
+            let auth_method = get_credential("claude_auth_method")
+                .unwrap_or_else(|| "api_key".to_string());
+            if auth_method == "oauth" {
+                let user_msg = flatten_history_for_cli(history_json);
+                complete_via_claude_cli(system, &user_msg, &get_active_model()).await
+            } else {
+                complete_multi(client, claude_key, &get_active_model(), system, history_json, max_tokens).await
+            }
+        }
         "gemini" => {
             let key = get_credential("gemini_api_key")
                 .ok_or_else(|| "Gemini: not configured.".to_string())?;
@@ -2722,25 +2910,23 @@ async fn dispatch(
 
     // Auto mode: walk the ordered list, skip unconfigured, fall back on quota errors.
     let order = get_provider_order();
-    let mut last_err = "No providers configured.".to_string();
+    let mut failure_reasons: Vec<String> = Vec::new();
 
     for p in &order {
         match try_provider_single(p, client, claude_key, system, user, max_tokens).await {
             Ok(r) => return Ok(r),
             Err(e) if e.contains("not configured") || e.contains("no model") => {
-                // Provider not set up — skip silently.
-                last_err = e;
+                failure_reasons.push(format!("{p}: not configured"));
             }
             Err(e) if is_quota_error(&e) => {
-                // Quota exhausted — try next provider.
-                last_err = format!("{p} quota exceeded, trying next provider…");
-                let _ = e; // log-worthy but not returned unless all fail
+                failure_reasons.push(format!("{p}: rate limited / quota exceeded"));
             }
-            Err(e) => return Err(e), // Hard error — surface immediately.
+            Err(e) => return Err(e),
         }
     }
 
-    Err(format!("All providers failed or are unconfigured. Last error: {last_err}"))
+    let summary = if failure_reasons.is_empty() { "No providers configured.".to_string() } else { failure_reasons.join("; ") };
+    Err(format!("All providers failed — {summary}"))
 }
 
 async fn dispatch_multi(
@@ -2757,22 +2943,23 @@ async fn dispatch_multi(
     }
 
     let order = get_provider_order();
-    let mut last_err = "No providers configured.".to_string();
+    let mut failure_reasons: Vec<String> = Vec::new();
 
     for p in &order {
         match try_provider_multi(p, client, claude_key, system, history_json, max_tokens).await {
             Ok(r) => return Ok(r),
             Err(e) if e.contains("not configured") || e.contains("no model") => {
-                last_err = e;
+                failure_reasons.push(format!("{p}: not configured"));
             }
             Err(e) if is_quota_error(&e) => {
-                last_err = format!("{p} quota exceeded, trying next provider…");
+                failure_reasons.push(format!("{p}: rate limited / quota exceeded"));
             }
             Err(e) => return Err(e),
         }
     }
 
-    Err(format!("All providers failed or are unconfigured. Last error: {last_err}"))
+    let summary = if failure_reasons.is_empty() { "No providers configured.".to_string() } else { failure_reasons.join("; ") };
+    Err(format!("All providers failed — {summary}"))
 }
 
 

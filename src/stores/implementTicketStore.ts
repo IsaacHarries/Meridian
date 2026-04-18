@@ -349,6 +349,9 @@ interface ImplementTicketState {
   saveToKnowledgeBase: (entries: RetroKbEntry[]) => Promise<void>;
   markComplete: (stage: Stage) => void;
   setError: (stage: Stage, err: string) => void;
+  clearError: (stage: Stage) => void;
+  runGroomingStage: () => Promise<void>;
+  retryStage: (stage: Stage) => Promise<void>;
 }
 
 // ── Initial state (no session) ─────────────────────────────────────────────────
@@ -377,6 +380,9 @@ export const INITIAL: Omit<
   | "saveToKnowledgeBase"
   | "markComplete"
   | "setError"
+  | "clearError"
+  | "runGroomingStage"
+  | "retryStage"
 > = {
   selectedIssue: null,
   currentStage: "select",
@@ -434,6 +440,56 @@ export const useImplementTicketStore = create<ImplementTicketState>()(
 
     setError: (stage, err) =>
       set((s) => ({ errors: { ...s.errors, [stage]: err } })),
+
+    clearError: (stage) =>
+      set((s) => {
+        const errors = { ...s.errors };
+        delete errors[stage];
+        return { errors };
+      }),
+
+    retryStage: async (stage) => {
+      const s = get();
+      const errors = { ...s.errors };
+      delete errors[stage];
+      const completedStages = new Set([...s.completedStages].filter((st) => st !== stage));
+      const pendingApproval = s.pendingApproval === stage ? null : s.pendingApproval;
+
+      const outputResets: Partial<ImplementTicketState> = {};
+      switch (stage) {
+        case "grooming":
+          Object.assign(outputResets, {
+            grooming: null, groomingEdits: [], clarifyingQuestions: [],
+            groomingChat: [], groomingBlockers: [], groomingProgress: "",
+            groomingStreamText: "", filesRead: [],
+          });
+          break;
+        case "impact": outputResets.impact = null; break;
+        case "triage": outputResets.triageHistory = []; break;
+        case "plan": outputResets.plan = null; break;
+        case "guidance": outputResets.guidance = null; break;
+        case "implementation": Object.assign(outputResets, { implementation: null, implementationStreamText: "" }); break;
+        case "tests": outputResets.tests = null; break;
+        case "review": outputResets.review = null; break;
+        case "pr": outputResets.prDescription = null; break;
+        case "retro": outputResets.retrospective = null; break;
+      }
+
+      set({ errors, completedStages, pendingApproval, ...outputResets });
+
+      switch (stage) {
+        case "grooming": await get().runGroomingStage(); break;
+        case "impact": await get().runImpactStage(); break;
+        case "triage": await get().runTriageStage(); break;
+        case "plan": await get().finalizePlan(); break;
+        case "guidance": await get().runGuidanceStage(); break;
+        case "implementation": await get().runImplementationStage(); break;
+        case "tests": await get().runTestsStage(); break;
+        case "review": await get().runReviewStage(); break;
+        case "pr": await get().runPrStage(); break;
+        case "retro": await get().runRetroStage(); break;
+      }
+    },
 
     handleApproveEdit: (id) =>
       set((s) => ({
@@ -531,21 +587,31 @@ export const useImplementTicketStore = create<ImplementTicketState>()(
       set({ skills });
 
       // Sync worktree
-      let repoContext = "";
       try {
         const config = await getNonSecretConfig();
         if (config["repo_worktree_path"]) {
           const info = await syncWorktree();
           set({ worktreeInfo: info });
-          repoContext = `\n\n=== CODEBASE CONTEXT ===\nWorktree: ${info.path}\nBranch: ${info.branch} (HEAD: ${info.headCommit})\nCommit: ${info.headMessage}\nYou have access to this codebase. File contents will be injected below after a probe step.`;
         }
       } catch (e) {
         console.warn("[Meridian] Worktree sync failed:", e);
       }
 
       // Agent 1: Grooming
+      await get().runGroomingStage();
+    },
+
+    // ── Grooming ───────────────────────────────────────────────────────────────
+    runGroomingStage: async () => {
+      set({ currentStage: "grooming", viewingStage: "grooming" });
+      const { ticketText, worktreeInfo, skills } = get();
+
+      const repoContext = worktreeInfo
+        ? `\n\n=== CODEBASE CONTEXT ===\nWorktree: ${worktreeInfo.path}\nBranch: ${worktreeInfo.branch} (HEAD: ${worktreeInfo.headCommit})\nCommit: ${worktreeInfo.headMessage}\nYou have access to this codebase. File contents will be injected below after a probe step.`
+        : "";
+
       try {
-        const ticketWithContext = text + repoContext;
+        const ticketWithContext = ticketText + repoContext;
         let fileContentsBlock = "";
         const readFiles: string[] = [];
 
@@ -594,9 +660,7 @@ export const useImplementTicketStore = create<ImplementTicketState>()(
           }
         }
 
-        // Phase 2: Full grooming
-        const currentSkills = get().skills;
-        const groomingInput = prependSkill(ticketWithContext, currentSkills.grooming, "GROOMING CONVENTIONS");
+        const groomingInput = prependSkill(ticketWithContext, skills.grooming, "GROOMING CONVENTIONS");
         const raw = await runGroomingAgent(groomingInput, fileContentsBlock);
         const data = parseAgentJson<GroomingOutput>(raw);
         if (!data) throw new Error("Could not parse grooming output");
@@ -622,13 +686,13 @@ export const useImplementTicketStore = create<ImplementTicketState>()(
               ]
             : [];
 
-        const currentFullIssue = get().selectedIssue ?? fullIssue;
+        const currentIssue = get().selectedIssue;
         set({
           grooming: data,
           groomingEdits: edits,
           clarifyingQuestions: questions,
           groomingChat: initialChat,
-          groomingBlockers: detectGroomingBlockers(currentFullIssue, data),
+          groomingBlockers: currentIssue ? detectGroomingBlockers(currentIssue, data) : [],
         });
         get().markComplete("grooming");
         set({ pendingApproval: "grooming" });

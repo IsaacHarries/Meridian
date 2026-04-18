@@ -143,6 +143,7 @@ fn cred_delete(key: &str) -> Result<(), String> {
 const ALLOWED_KEYS: &[&str] = &[
     "anthropic_api_key",
     "claude_oauth_json",
+    "claude_auth_method",
     "claude_model",
     "gemini_api_key",
     "gemini_model",
@@ -163,6 +164,7 @@ const ALLOWED_KEYS: &[&str] = &[
 
 /// Keys whose values may be returned to the frontend (not secrets).
 const NON_SECRET_KEYS: &[&str] = &[
+    "claude_auth_method",
     "claude_model",
     "gemini_model",
     "ai_provider",

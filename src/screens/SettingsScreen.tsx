@@ -222,6 +222,7 @@ function SectionMessage({ state, message }: { state: SectionState; message: stri
 }
 
 function AnthropicSection({ isConfigured, onSaved }: { isConfigured: boolean; onSaved: () => void }) {
+  const [authMethod, setAuthMethod] = useState<"api_key" | "oauth">("api_key");
   const [editing, setEditing] = useState(false);
   const [apiKey, setApiKey] = useState("");
   const [status, setStatus] = useState<SectionStatus>({ state: "idle", message: "" });
@@ -234,14 +235,21 @@ function AnthropicSection({ isConfigured, onSaved }: { isConfigured: boolean; on
     getClaudeModels().then(setModels).catch(() => {});
     getNonSecretConfig().then(cfg => {
       if (cfg.claude_model) setSelectedModel(cfg.claude_model);
+      if (cfg.claude_auth_method === "oauth") setAuthMethod("oauth");
     }).catch(() => {});
   }, []);
 
   async function handleModelChange(modelId: string) {
     setSelectedModel(modelId);
-    try {
-      await saveCredential("claude_model", modelId);
-    } catch { /* non-critical */ }
+    try { await saveCredential("claude_model", modelId); } catch { /* non-critical */ }
+  }
+
+  async function handleAuthMethodChange(method: "api_key" | "oauth") {
+    setAuthMethod(method);
+    setEditing(false);
+    setStatus({ state: "idle", message: "" });
+    setTestResult("untested");
+    try { await saveCredential("claude_auth_method", method); } catch { /* non-critical */ }
   }
 
   function startEditing() {
@@ -273,8 +281,6 @@ function AnthropicSection({ isConfigured, onSaved }: { isConfigured: boolean; on
     setStatus({ state: "loading", message: "Saving and testing…" });
     try {
       const msg = await validateAnthropic(apiKey.trim());
-      // validate_anthropic may succeed even if network is blocked (returns Ok with a warning)
-      // only mark as verified if it explicitly says "successfully"
       const verified = msg.toLowerCase().includes("successfully");
       setTestResult(verified ? "success" : "untested");
       setStatus({ state: "success", message: msg });
@@ -324,9 +330,7 @@ function AnthropicSection({ isConfigured, onSaved }: { isConfigured: boolean; on
       await deleteCredential("anthropic_api_key");
       setTestResult("untested");
       onSaved();
-    } catch {
-      // If it doesn't exist, that's fine
-    }
+    } catch { /* fine if not present */ }
   }
 
   return (
@@ -335,7 +339,7 @@ function AnthropicSection({ isConfigured, onSaved }: { isConfigured: boolean; on
         <div className="flex items-center justify-between">
           <div>
             <CardTitle className="text-base">Anthropic</CardTitle>
-            <CardDescription className="text-xs mt-0.5">Claude API key for all AI workflows</CardDescription>
+            <CardDescription className="text-xs mt-0.5">Claude authentication for all AI workflows</CardDescription>
           </div>
           <div className="flex items-center gap-2">
             <VerifiedBadge result={testResult} />
@@ -344,54 +348,105 @@ function AnthropicSection({ isConfigured, onSaved }: { isConfigured: boolean; on
         </div>
       </CardHeader>
       <CardContent className="space-y-3">
-        {!editing ? (
-          <div className="flex flex-wrap gap-2">
-            <Button variant="outline" size="sm" onClick={startEditing}>
-              {isConfigured ? "Update key" : "Add key"}
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={handleImportClaudePro}
-              disabled={importing || status.state === "loading"}
-              className="gap-1.5"
-            >
-              {importing ? <><Loader2 className="h-3 w-3 animate-spin" /> Importing…</> : "Use Claude Pro / Max"}
-            </Button>
-            {isConfigured && (
-              <Button variant="outline" size="sm" onClick={handleTestStored} disabled={status.state === "loading"}>
-                {status.state === "loading" ? <><Loader2 className="h-3 w-3 animate-spin" /> Testing…</> : "Test connection"}
-              </Button>
+        {/* Auth method toggle */}
+        <div className="flex rounded-md border overflow-hidden w-fit">
+          <button
+            onClick={() => handleAuthMethodChange("api_key")}
+            className={cn(
+              "px-3 py-1.5 text-xs font-medium transition-colors",
+              authMethod === "api_key"
+                ? "bg-primary text-primary-foreground"
+                : "bg-background text-muted-foreground hover:text-foreground hover:bg-muted"
             )}
-            {isConfigured && (
-              <Button variant="ghost" size="sm" className="text-muted-foreground gap-1" onClick={handleReset}>
-                <RotateCcw className="h-3 w-3" /> Reset
-              </Button>
+          >
+            API Key
+          </button>
+          <button
+            onClick={() => handleAuthMethodChange("oauth")}
+            className={cn(
+              "px-3 py-1.5 text-xs font-medium transition-colors border-l",
+              authMethod === "oauth"
+                ? "bg-primary text-primary-foreground"
+                : "bg-background text-muted-foreground hover:text-foreground hover:bg-muted"
             )}
-          </div>
-        ) : (
-          <div className="space-y-3">
-            <CredentialField
-              id="settings-anthropic-key"
-              label="API Key"
-              placeholder="sk-ant-api03-… or sk-ant-oat01-…"
-              masked
-              value={apiKey}
-              onChange={(v) => { setApiKey(v); setTestResult("untested"); }}
-              disabled={status.state === "loading"}
-            />
-            <div className="flex gap-2">
-              <Button size="sm" onClick={handleSave} disabled={!apiKey.trim() || apiKey === MASKED_SENTINEL || status.state === "loading"}>
-                {status.state === "loading" ? <Loader2 className="h-3 w-3 animate-spin" /> : "Save key"}
+          >
+            Claude Pro / Max
+          </button>
+        </div>
+
+        {/* API Key flow */}
+        {authMethod === "api_key" && (
+          !editing ? (
+            <div className="flex flex-wrap gap-2">
+              <Button variant="outline" size="sm" onClick={startEditing}>
+                {isConfigured ? "Update key" : "Add key"}
               </Button>
-              <Button size="sm" variant="outline" onClick={handleTest} disabled={!apiKey.trim() || status.state === "loading"}>
-                Test connection
+              {isConfigured && (
+                <Button variant="outline" size="sm" onClick={handleTestStored} disabled={status.state === "loading"}>
+                  {status.state === "loading" ? <><Loader2 className="h-3 w-3 animate-spin" /> Testing…</> : "Test connection"}
+                </Button>
+              )}
+              {isConfigured && (
+                <Button variant="ghost" size="sm" className="text-muted-foreground gap-1" onClick={handleReset}>
+                  <RotateCcw className="h-3 w-3" /> Reset
+                </Button>
+              )}
+            </div>
+          ) : (
+            <div className="space-y-3">
+              <CredentialField
+                id="settings-anthropic-key"
+                label="API Key"
+                placeholder="sk-ant-api03-…"
+                masked
+                value={apiKey}
+                onChange={(v) => { setApiKey(v); setTestResult("untested"); }}
+                disabled={status.state === "loading"}
+              />
+              <div className="flex gap-2">
+                <Button size="sm" onClick={handleSave} disabled={!apiKey.trim() || apiKey === MASKED_SENTINEL || status.state === "loading"}>
+                  {status.state === "loading" ? <Loader2 className="h-3 w-3 animate-spin" /> : "Save key"}
+                </Button>
+                <Button size="sm" variant="outline" onClick={handleTest} disabled={!apiKey.trim() || status.state === "loading"}>
+                  Test connection
+                </Button>
+                <Button variant="ghost" size="sm" onClick={handleCancel}>Cancel</Button>
+              </div>
+            </div>
+          )
+        )}
+
+        {/* OAuth flow */}
+        {authMethod === "oauth" && (
+          <div className="space-y-2">
+            <p className="text-xs text-muted-foreground">
+              Uses your Claude Pro / Max subscription via Claude Code. Run{" "}
+              <code className="rounded bg-muted px-1 py-0.5 text-[11px]">claude</code> in a terminal and log in
+              with Claude.ai first.
+            </p>
+            <div className="flex flex-wrap gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleImportClaudePro}
+                disabled={importing || status.state === "loading"}
+                className="gap-1.5"
+              >
+                {importing
+                  ? <><Loader2 className="h-3 w-3 animate-spin" /> Importing…</>
+                  : isConfigured ? "Re-import token" : "Import from Claude Code"}
               </Button>
-              <Button variant="ghost" size="sm" onClick={handleCancel}>Cancel</Button>
+              {isConfigured && (
+                <Button variant="outline" size="sm" onClick={handleTestStored} disabled={status.state === "loading"}>
+                  {status.state === "loading" ? <><Loader2 className="h-3 w-3 animate-spin" /> Testing…</> : "Test connection"}
+                </Button>
+              )}
             </div>
           </div>
         )}
+
         <SectionMessage {...status} />
+
         {/* Model picker — visible when Anthropic is configured */}
         {isConfigured && models.length > 0 && (
           <div className="space-y-1.5 pt-2 border-t">

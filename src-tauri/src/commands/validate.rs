@@ -17,6 +17,7 @@ pub async fn validate_anthropic(api_key: String) -> Result<String, String> {
         return Err("API key cannot be empty.".to_string());
     }
     store_credential("anthropic_api_key", api_key.trim())?;
+    store_credential("claude_auth_method", "api_key")?;
     test_anthropic_connectivity(api_key.trim(), true).await
 }
 
@@ -108,6 +109,7 @@ pub async fn import_claude_pro_token() -> Result<String, String> {
         }
 
         store_credential("anthropic_api_key", &token)?;
+        store_credential("claude_auth_method", "oauth")?;
 
         // Persist the full OAuth blob (refresh token + expiry) so the backend
         // can silently renew the access token before it expires.

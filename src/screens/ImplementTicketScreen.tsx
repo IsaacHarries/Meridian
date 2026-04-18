@@ -29,6 +29,7 @@ import {
   GitPullRequest,
   ExternalLink,
   Bug,
+  RefreshCw,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -1678,9 +1679,18 @@ export function ImplementTicketScreen({ credStatus, onBack }: ImplementTicketScr
     const err = errors[stage];
     if (err) {
       return (
-        <div className="rounded-md border border-destructive/50 bg-destructive/10 p-4">
-          <p className="text-sm font-medium text-destructive mb-1">Error in {STAGE_LABELS[stage as keyof typeof STAGE_LABELS]}</p>
+        <div className="rounded-md border border-destructive/50 bg-destructive/10 p-4 space-y-3">
+          <p className="text-sm font-medium text-destructive">Error in {STAGE_LABELS[stage as keyof typeof STAGE_LABELS]}</p>
           <pre className="text-xs text-muted-foreground whitespace-pre-wrap">{err}</pre>
+          <Button
+            size="sm"
+            variant="outline"
+            className="gap-2"
+            onClick={() => store().retryStage(stage)}
+          >
+            <RefreshCw className="h-3.5 w-3.5" />
+            Retry
+          </Button>
         </div>
       );
     }
