@@ -46,7 +46,7 @@ import {
   getLocalModels,
   getActiveSprint,
   getOpenPrs,
-  importClaudeProToken,
+  startClaudeOauth,
   getClaudeModels,
   setLocalLlmUrlCache,
   getStoreCacheInfo,
@@ -261,9 +261,9 @@ function AnthropicSection({ isConfigured, onSaved }: { isConfigured: boolean; on
 
   async function handleImportClaudePro() {
     setImporting(true);
-    setStatus({ state: "loading", message: "Reading Claude Pro token from keychain…" });
+    setStatus({ state: "loading", message: "Opening browser for Claude authorization…" });
     try {
-      const msg = await importClaudeProToken();
+      const msg = await startClaudeOauth();
       setTestResult("success");
       setStatus({ state: "success", message: msg });
       setEditing(false);
@@ -420,9 +420,7 @@ function AnthropicSection({ isConfigured, onSaved }: { isConfigured: boolean; on
         {authMethod === "oauth" && (
           <div className="space-y-2">
             <p className="text-xs text-muted-foreground">
-              Uses your Claude Pro / Max subscription via Claude Code. Run{" "}
-              <code className="rounded bg-muted px-1 py-0.5 text-[11px]">claude</code> in a terminal and log in
-              with Claude.ai first.
+              Authorize Meridian to use your Claude Pro / Max subscription. A browser window will open to claude.ai — no CLI required.
             </p>
             <div className="flex flex-wrap gap-2">
               <Button
@@ -433,8 +431,8 @@ function AnthropicSection({ isConfigured, onSaved }: { isConfigured: boolean; on
                 className="gap-1.5"
               >
                 {importing
-                  ? <><Loader2 className="h-3 w-3 animate-spin" /> Importing…</>
-                  : isConfigured ? "Re-import token" : "Import from Claude Code"}
+                  ? <><Loader2 className="h-3 w-3 animate-spin" /> Connecting…</>
+                  : isConfigured ? "Re-authorize" : "Connect with Claude"}
               </Button>
               {isConfigured && (
                 <Button variant="outline" size="sm" onClick={handleTestStored} disabled={status.state === "loading"}>

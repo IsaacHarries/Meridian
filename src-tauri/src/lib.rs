@@ -7,7 +7,7 @@ pub mod sidecar;
 use commands::{
     credential_status, delete_credential, save_credential, get_non_secret_config,     validate_anthropic, validate_bitbucket,
     validate_jira, test_anthropic_stored, test_jira_stored, test_bitbucket_stored, debug_jira_endpoints, assess_ticket_quality, generate_standup_briefing, generate_sprint_retrospective,
-    import_claude_pro_token,
+    start_claude_oauth,
     generate_workload_suggestions, review_pr, cancel_review, chat_pr_review,
     analyze_pr_comments, chat_address_pr,
     get_claude_models, get_gemini_models, validate_gemini, test_gemini_stored,
@@ -121,7 +121,7 @@ pub fn run() {
             test_jira_stored,
             test_bitbucket_stored,
             debug_jira_endpoints,
-            import_claude_pro_token,
+            start_claude_oauth,
             // JIRA
             get_active_sprint,
             get_all_active_sprints,

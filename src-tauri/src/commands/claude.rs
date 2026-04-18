@@ -826,19 +826,7 @@ async fn dispatch_multi_streaming(
     for p in &providers_to_try {
         let result = match p.as_str() {
             "claude" => {
-                let auth_method = get_credential("claude_auth_method")
-                    .unwrap_or_else(|| "api_key".to_string());
-                if auth_method == "oauth" {
-                    use tauri::Manager;
-                    let sidecar = app.state::<crate::sidecar::SidecarState>();
-                    let cwd = dirs::home_dir().unwrap_or_default().to_string_lossy().into_owned();
-                    crate::sidecar::dispatch_sidecar(
-                        app, &sidecar, stream_event,
-                        system.to_string(),
-                        parse_history_to_sidecar_messages(history_json),
-                        get_active_model(), cwd, None,
-                    ).await.map(|r| r.text)
-                } else if claude_key.is_empty() {
+                if claude_key.is_empty() {
                     Err("not configured".to_string())
                 } else {
                     complete_multi_claude_streaming(
@@ -1045,19 +1033,7 @@ async fn dispatch_streaming(
     for p in &providers_to_try {
         let result = match p.as_str() {
             "claude" => {
-                let auth_method = get_credential("claude_auth_method")
-                    .unwrap_or_else(|| "api_key".to_string());
-                if auth_method == "oauth" {
-                    use tauri::Manager;
-                    let sidecar = app.state::<crate::sidecar::SidecarState>();
-                    let cwd = dirs::home_dir().unwrap_or_default().to_string_lossy().into_owned();
-                    crate::sidecar::dispatch_sidecar(
-                        app, &sidecar, stream_event,
-                        system.to_string(),
-                        vec![crate::sidecar::Message { role: "user".to_string(), content: user.to_string() }],
-                        get_active_model(), cwd, None,
-                    ).await.map(|r| r.text)
-                } else if claude_key.is_empty() {
+                if claude_key.is_empty() {
                     Err("not configured".to_string())
                 } else {
                     complete_claude_streaming(app, client, claude_key, &get_active_model(), system, user, max_tokens, stream_event).await
@@ -2661,25 +2637,13 @@ async fn dispatch_multi_streaming_with_tools(
     for p in &providers_to_try {
         let result = match p.as_str() {
             "claude" => {
-                let auth_method = get_credential("claude_auth_method")
-                    .unwrap_or_else(|| "api_key".to_string());
-                if auth_method == "oauth" {
-                    use tauri::Manager;
-                    let sidecar = app.state::<crate::sidecar::SidecarState>();
-                    let cwd = dirs::home_dir().unwrap_or_default().to_string_lossy().into_owned();
-                    crate::sidecar::dispatch_sidecar(
-                        app, &sidecar, stream_event,
-                        system.to_string(),
-                        parse_history_to_sidecar_messages(history_json),
-                        get_active_model(), cwd, None,
-                    ).await.map(|r| r.text)
-                } else if !claude_key.is_empty() {
+                if claude_key.is_empty() {
+                    Err("not configured".to_string())
+                } else {
                     complete_multi_claude_tool_loop(
                         app, client, claude_key, &get_active_model(),
                         system, history_json, max_tokens, stream_event,
                     ).await
-                } else {
-                    Err("not configured".to_string())
                 }
             }
             other => {
@@ -2742,18 +2706,8 @@ async fn try_provider_single(
 ) -> Result<String, String> {
     match provider {
         "claude" => {
-            let auth_method = get_credential("claude_auth_method")
-                .unwrap_or_else(|| "api_key".to_string());
-            if auth_method == "oauth" {
-                use tauri::Manager;
-                let sidecar = app.state::<crate::sidecar::SidecarState>();
-                let cwd = dirs::home_dir().unwrap_or_default().to_string_lossy().into_owned();
-                crate::sidecar::dispatch_sidecar(
-                    app, &sidecar, "sidecar-response",
-                    system.to_string(),
-                    vec![crate::sidecar::Message { role: "user".to_string(), content: user.to_string() }],
-                    get_active_model(), cwd, None,
-                ).await.map(|r| r.text)
+            if claude_key.is_empty() {
+                Err("not configured".to_string())
             } else {
                 complete(client, claude_key, &get_active_model(), system, user, max_tokens).await
             }
@@ -2787,18 +2741,8 @@ async fn try_provider_multi(
 ) -> Result<String, String> {
     match provider {
         "claude" => {
-            let auth_method = get_credential("claude_auth_method")
-                .unwrap_or_else(|| "api_key".to_string());
-            if auth_method == "oauth" {
-                use tauri::Manager;
-                let sidecar = app.state::<crate::sidecar::SidecarState>();
-                let cwd = dirs::home_dir().unwrap_or_default().to_string_lossy().into_owned();
-                crate::sidecar::dispatch_sidecar(
-                    app, &sidecar, "sidecar-response",
-                    system.to_string(),
-                    parse_history_to_sidecar_messages(history_json),
-                    get_active_model(), cwd, None,
-                ).await.map(|r| r.text)
+            if claude_key.is_empty() {
+                Err("not configured".to_string())
             } else {
                 complete_multi(client, claude_key, &get_active_model(), system, history_json, max_tokens).await
             }

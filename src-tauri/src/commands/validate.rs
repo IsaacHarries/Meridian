@@ -1,3 +1,4 @@
+use base64::Engine as _;
 use reqwest::{Client, StatusCode};
 use std::time::Duration;
 
@@ -26,79 +27,308 @@ pub async fn validate_anthropic(api_key: String) -> Result<String, String> {
 /// the user explicitly asked to test the connection.
 #[tauri::command]
 pub async fn test_anthropic_stored() -> Result<String, String> {
+    let key = get_credential("anthropic_api_key")
+        .ok_or("No Claude credentials found. Use 'Connect with Claude' to authenticate.")?;
+    if key.trim().is_empty() {
+        return Err("No Claude credentials found. Use 'Connect with Claude' to authenticate.".to_string());
+    }
     let auth_method = get_credential("claude_auth_method")
         .unwrap_or_else(|| "api_key".to_string());
-
     if auth_method == "oauth" {
-        // Sidecar path — verify the claude CLI is still present and logged in.
-        let user = std::env::var("USER").unwrap_or_else(|_| "claude".to_string());
-        let output = std::process::Command::new("security")
-            .args(["find-generic-password", "-a", &user, "-s", "Claude Code", "-w"])
-            .output()
-            .map_err(|e| format!("Keychain lookup failed: {e}"))?;
-
-        let found = output.status.success()
-            && !String::from_utf8_lossy(&output.stdout).trim().is_empty();
-
-        return if found {
-            Ok("Claude Code login confirmed. Meridian is using your Claude Pro / Max \
-                subscription via the claude CLI sidecar."
-                .to_string())
-        } else {
-            Err("Claude Code login not found. Run `claude` in a terminal and log in \
-                 again, then re-import."
-                .to_string())
-        };
+        return test_anthropic_connectivity(&key, false).await.map(|_| {
+            "Claude Pro / Max connection verified.".to_string()
+        });
     }
-
-    let key = get_credential("anthropic_api_key")
-        .ok_or("No Anthropic API key is stored. Save a key first.")?;
     test_anthropic_connectivity(&key, false).await
 }
 
-/// Verify that the Claude Code CLI is logged in and enable the sidecar auth path.
-///
-/// The sidecar spawns the system `claude` binary which authenticates via its own
-/// session in `~/.claude/` — Meridian never holds or transmits the credential.
-/// This command just confirms login is present, then sets `claude_auth_method = "oauth"`
-/// so all AI calls are routed through the sidecar instead of the API key path.
-#[tauri::command]
-pub async fn import_claude_pro_token() -> Result<String, String> {
-    let user = std::env::var("USER").unwrap_or_else(|_| "claude".to_string());
+// ── OAuth PKCE constants ──────────────────────────────────────────────────────
 
-    // Claude Code stores a managed API key in the macOS keychain under service
-    // "Claude Code", account = current macOS username, after the user logs in.
-    // We check for its presence to confirm the user is authenticated — we never
-    // read or store the actual value.
-    let output = std::process::Command::new("security")
-        .args([
-            "find-generic-password",
-            "-a", &user,
-            "-s", "Claude Code",
-            "-w",
-        ])
-        .output()
-        .map_err(|e| format!("Failed to run keychain lookup: {e}"))?;
+const OAUTH_AUTH_URL: &str = "https://claude.ai/oauth/authorize";
+const OAUTH_TOKEN_URL: &str = "https://platform.claude.com/v1/oauth/token";
+const OAUTH_CLIENT_ID: &str = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
+const OAUTH_SCOPE: &str =
+    "org:create_api_key user:profile user:inference \
+     user:sessions:claude_code user:mcp_servers user:file_upload";
 
-    let found = output.status.success()
-        && !String::from_utf8_lossy(&output.stdout).trim().is_empty();
+// ── OAuth PKCE helpers ────────────────────────────────────────────────────────
 
-    if !found {
-        return Err(
-            "Claude Code login not found. Open a terminal and run:\n\n  claude\n\n\
-             Choose \"Log in with Claude.ai\" to authenticate your Claude Pro / Max \
-             subscription. Once logged in, click this button again."
-                .to_string(),
-        );
+fn generate_random_base64url(byte_len: usize) -> Result<String, String> {
+    use std::io::Read;
+    let mut bytes = vec![0u8; byte_len];
+    std::fs::File::open("/dev/urandom")
+        .and_then(|mut f| f.read_exact(&mut bytes))
+        .map_err(|e| format!("Failed to generate random bytes: {e}"))?;
+    Ok(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&bytes))
+}
+
+fn sha256_base64url(input: &str) -> String {
+    use sha2::{Digest, Sha256};
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(Sha256::digest(input.as_bytes()))
+}
+
+fn percent_encode(s: &str) -> String {
+    s.chars()
+        .flat_map(|c| match c {
+            'A'..='Z' | 'a'..='z' | '0'..='9' | '-' | '_' | '.' | '~' => {
+                vec![c as u8]
+            }
+            c => format!("%{:02X}", c as u32).bytes().collect(),
+        })
+        .map(|b| b as char)
+        .collect()
+}
+
+fn percent_decode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let Ok(hex) = std::str::from_utf8(&bytes[i + 1..i + 3]) {
+                if let Ok(byte) = u8::from_str_radix(hex, 16) {
+                    out.push(byte as char);
+                    i += 3;
+                    continue;
+                }
+            }
+        } else if bytes[i] == b'+' {
+            out.push(' ');
+            i += 1;
+            continue;
+        }
+        out.push(bytes[i] as char);
+        i += 1;
+    }
+    out
+}
+
+async fn wait_for_oauth_callback(
+    listener: tokio::net::TcpListener,
+    expected_state: &str,
+) -> Result<String, String> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    loop {
+        let (mut stream, _) = listener
+            .accept()
+            .await
+            .map_err(|e| format!("Local server accept error: {e}"))?;
+
+        let mut buf = [0u8; 8192];
+        let n = stream
+            .read(&mut buf)
+            .await
+            .map_err(|e| format!("Read error: {e}"))?;
+
+        let request = String::from_utf8_lossy(&buf[..n]);
+        let first_line = request.lines().next().unwrap_or("").to_string();
+
+        match parse_callback(&request, expected_state) {
+            CallbackResult::Code(code) => {
+                let html = "<html><head><meta charset=utf-8><title>Meridian — Connected</title>\
+                    <style>body{font-family:system-ui;display:flex;align-items:center;\
+                    justify-content:center;min-height:100vh;margin:0;background:#0f0f0f;color:#fff}\
+                    .card{background:#1a1a1a;padding:2rem;border-radius:12px;text-align:center;max-width:380px}\
+                    h2{margin:0 0 .5rem}p{color:#aaa;margin:.5rem 0 0;font-size:.9rem}</style>\
+                    </head><body><div class=card><h2>✓ Connected to Claude</h2>\
+                    <p>You can close this window and return to Meridian.</p></div></body></html>";
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\n\
+                     Content-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    html.len(), html
+                );
+                let _ = stream.write_all(response.as_bytes()).await;
+                return Ok(code);
+            }
+            CallbackResult::OAuthError(msg) => {
+                let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n").await;
+                return Err(format!("Authorization server returned an error: {msg}"));
+            }
+            CallbackResult::NotCallback => {
+                // Not our redirect — send a minimal response and keep waiting.
+                eprintln!("[meridian oauth] ignored request: {first_line}");
+                let _ = stream.write_all(b"HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n").await;
+            }
+        }
+    }
+}
+
+enum CallbackResult {
+    Code(String),
+    OAuthError(String),
+    NotCallback,
+}
+
+fn parse_callback(request: &str, expected_state: &str) -> CallbackResult {
+    let line = match request.lines().next() {
+        Some(l) => l,
+        None => return CallbackResult::NotCallback,
+    };
+    let after_get = match line.strip_prefix("GET ") {
+        Some(s) => s,
+        None => return CallbackResult::NotCallback,
+    };
+    let path = match after_get.split_whitespace().next() {
+        Some(s) => s,
+        None => return CallbackResult::NotCallback,
+    };
+    let query = match path.strip_prefix("/callback?") {
+        Some(q) => q,
+        None => return CallbackResult::NotCallback,
+    };
+
+    let mut code: Option<String> = None;
+    let mut state: Option<String> = None;
+    let mut error: Option<String> = None;
+    let mut error_description: Option<String> = None;
+
+    for pair in query.split('&') {
+        if let Some((k, v)) = pair.split_once('=') {
+            let decoded = percent_decode(v);
+            match k {
+                "code" => code = Some(decoded),
+                "state" => state = Some(decoded),
+                "error" => error = Some(decoded),
+                "error_description" => error_description = Some(decoded),
+                _ => {}
+            }
+        }
     }
 
-    // Login confirmed — enable the sidecar path. The sidecar authenticates via
-    // the `claude` CLI automatically; no token is extracted or stored here.
+    // If the server redirected with an error, surface it immediately.
+    if let Some(err) = error {
+        let desc = error_description.unwrap_or_default();
+        return CallbackResult::OAuthError(format!("{err}: {desc}"));
+    }
+
+    // Verify CSRF state.
+    if state.as_deref() != Some(expected_state) {
+        eprintln!(
+            "[meridian oauth] state mismatch: got {:?}, expected {expected_state}",
+            state
+        );
+        return CallbackResult::NotCallback;
+    }
+
+    match code {
+        Some(c) => CallbackResult::Code(c),
+        None => CallbackResult::NotCallback,
+    }
+}
+
+/// Open a browser to Claude.ai, complete the OAuth PKCE flow, and store the
+/// resulting tokens. This replaces the old keychain-import approach — no
+/// Claude Code CLI required.
+#[tauri::command]
+pub async fn start_claude_oauth() -> Result<String, String> {
+    use tokio::net::TcpListener;
+
+    // Generate PKCE credentials and CSRF state token.
+    let code_verifier = generate_random_base64url(32)?;
+    let code_challenge = sha256_base64url(&code_verifier);
+    let state = generate_random_base64url(32)?;
+
+    // Bind to a random port on loopback.
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .map_err(|e| format!("Failed to start local callback server: {e}"))?;
+    let port = listener
+        .local_addr()
+        .map_err(|e| format!("Failed to get local port: {e}"))?
+        .port();
+
+    let redirect_uri = format!("http://localhost:{port}/callback");
+
+    // Matches the SDK's OZ8() parameter order exactly — code=true is required first.
+    let auth_url = format!(
+        "{OAUTH_AUTH_URL}?code=true&client_id={OAUTH_CLIENT_ID}\
+         &response_type=code&redirect_uri={}&scope={}&code_challenge={}&code_challenge_method=S256&state={}",
+        percent_encode(&redirect_uri),
+        percent_encode(OAUTH_SCOPE),
+        code_challenge,
+        state
+    );
+
+    // Open the system browser.
+    std::process::Command::new("open")
+        .arg(&auth_url)
+        .spawn()
+        .map_err(|e| format!("Failed to open browser: {e}"))?;
+
+    // Wait up to 3 minutes for the redirect callback.
+    let code = tokio::time::timeout(
+        std::time::Duration::from_secs(180),
+        wait_for_oauth_callback(listener, &state),
+    )
+    .await
+    .map_err(|_| {
+        "Authorization timed out after 3 minutes. Please try again.".to_string()
+    })??;
+
+    // Exchange the authorization code for tokens.
+    // The Claude SDK uses JSON with Content-Type: application/json (not form-encoded),
+    // and requires `state` in the body alongside the standard PKCE fields.
+    let client = make_client()?;
+    let resp = client
+        .post(OAUTH_TOKEN_URL)
+        .header("Content-Type", "application/json")
+        .json(&serde_json::json!({
+            "grant_type": "authorization_code",
+            "code": code,
+            "redirect_uri": redirect_uri,
+            "client_id": OAUTH_CLIENT_ID,
+            "code_verifier": code_verifier,
+            "state": state,
+        }))
+        .send()
+        .await
+        .map_err(|e| format!("Token exchange request failed: {e}"))?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        return Err(format!(
+            "Token exchange failed (HTTP {status}). Please try connecting again.\n\n{body}"
+        ));
+    }
+
+    let tokens: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("Failed to parse token response: {e}"))?;
+
+    let access_token = tokens["access_token"]
+        .as_str()
+        .ok_or("Missing access_token in token response")?;
+    let refresh_token = tokens["refresh_token"]
+        .as_str()
+        .ok_or("Missing refresh_token in token response")?;
+    let expires_in = tokens["expires_in"].as_u64().unwrap_or(3600);
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
+    let expires_at = now_ms + expires_in * 1000;
+
+    // Store the tokens — same format as the existing OAuth refresh code expects.
+    store_credential("anthropic_api_key", access_token)?;
     store_credential("claude_auth_method", "oauth")?;
+    store_credential(
+        "claude_oauth_json",
+        &serde_json::json!({
+            "claudeAiOauth": {
+                "accessToken": access_token,
+                "refreshToken": refresh_token,
+                "expiresAt": expires_at,
+            }
+        })
+        .to_string(),
+    )?;
 
     Ok(
-        "Claude Code login verified. Meridian will use your Claude Pro / Max \
-         subscription via the claude CLI sidecar for all AI features."
+        "Connected to Claude Pro / Max. Meridian will use your subscription \
+         for all AI features."
             .to_string(),
     )
 }

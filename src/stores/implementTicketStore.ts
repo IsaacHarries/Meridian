@@ -262,6 +262,7 @@ export type PipelineSession = Pick<
   | "ticketText"
   | "skills"
   | "isSessionActive"
+  | "activeSessionId"
 >;
 
 interface ImplementTicketState {
@@ -319,6 +320,9 @@ interface ImplementTicketState {
   // ── Computed ─────────────────────────────────────────────────────────────────
   /** True when a pipeline session is active (ticket selected and pipeline started) */
   isSessionActive: boolean;
+
+  /** UUID that changes on every fresh pipeline start — event listeners use this to discard stale backend events */
+  activeSessionId: string;
 
   // ── Session cache — one entry per ticket key ──────────────────────────────────
   /** Cached pipeline sessions keyed by JIRA issue key */
@@ -418,12 +422,55 @@ export const INITIAL: Omit<
   ticketText: "",
   skills: {},
   isSessionActive: false,
+  activeSessionId: "",
   sessions: new Map(),
 };
 
 // ── Persistence key ────────────────────────────────────────────────────────────
 
 export const IMPLEMENT_STORE_KEY = "meridian-implement-store";
+
+// ── Session snapshot helper ────────────────────────────────────────────────────
+
+export function snapshotSession(s: ImplementTicketState): PipelineSession {
+  return {
+    selectedIssue: s.selectedIssue,
+    currentStage: s.currentStage,
+    viewingStage: s.viewingStage,
+    completedStages: s.completedStages,
+    pendingApproval: s.pendingApproval,
+    proceeding: s.proceeding,
+    grooming: s.grooming,
+    impact: s.impact,
+    triageHistory: s.triageHistory,
+    plan: s.plan,
+    guidance: s.guidance,
+    implementation: s.implementation,
+    implementationStreamText: s.implementationStreamText,
+    tests: s.tests,
+    review: s.review,
+    prDescription: s.prDescription,
+    retrospective: s.retrospective,
+    groomingBlockers: s.groomingBlockers,
+    groomingEdits: s.groomingEdits,
+    clarifyingQuestions: s.clarifyingQuestions,
+    filesRead: s.filesRead,
+    groomingChat: s.groomingChat,
+    groomingBaseline: s.groomingBaseline,
+    jiraUpdateStatus: s.jiraUpdateStatus,
+    jiraUpdateError: s.jiraUpdateError,
+    groomingProgress: s.groomingProgress,
+    groomingStreamText: s.groomingStreamText,
+    checkpointChats: s.checkpointChats,
+    errors: s.errors,
+    kbSaved: s.kbSaved,
+    worktreeInfo: s.worktreeInfo,
+    ticketText: s.ticketText,
+    skills: s.skills,
+    isSessionActive: s.isSessionActive,
+    activeSessionId: s.activeSessionId,
+  };
+}
 
 // ── Store ──────────────────────────────────────────────────────────────────────
 
@@ -510,43 +557,13 @@ export const useImplementTicketStore = create<ImplementTicketState>()(
       const current = get();
 
       // ── Save current session into the map before switching ──────────────────
-      if (current.selectedIssue && current.currentStage !== "select") {
-        const snapshot: PipelineSession = {
-          selectedIssue: current.selectedIssue,
-          currentStage: current.currentStage,
-          viewingStage: current.viewingStage,
-          completedStages: current.completedStages,
-          pendingApproval: current.pendingApproval,
-          proceeding: current.proceeding,
-          grooming: current.grooming,
-          impact: current.impact,
-          triageHistory: current.triageHistory,
-          plan: current.plan,
-          guidance: current.guidance,
-          implementation: current.implementation,
-          implementationStreamText: current.implementationStreamText,
-          tests: current.tests,
-          review: current.review,
-          prDescription: current.prDescription,
-          retrospective: current.retrospective,
-          groomingBlockers: current.groomingBlockers,
-          groomingEdits: current.groomingEdits,
-          clarifyingQuestions: current.clarifyingQuestions,
-          filesRead: current.filesRead,
-          groomingChat: current.groomingChat,
-          groomingBaseline: current.groomingBaseline,
-          jiraUpdateStatus: current.jiraUpdateStatus,
-          jiraUpdateError: current.jiraUpdateError,
-          groomingProgress: current.groomingProgress,
-          groomingStreamText: current.groomingStreamText,
-          checkpointChats: current.checkpointChats,
-          errors: current.errors,
-          kbSaved: current.kbSaved,
-          worktreeInfo: current.worktreeInfo,
-          ticketText: current.ticketText,
-          skills: current.skills,
-          isSessionActive: current.isSessionActive,
-        };
+      // Skip if grooming never completed — no point restoring a half-run agent.
+      if (
+        current.selectedIssue &&
+        current.currentStage !== "select" &&
+        !(current.currentStage === "grooming" && current.grooming === null)
+      ) {
+        const snapshot = snapshotSession(current);
         const sessions = new Map(current.sessions);
         sessions.set(current.selectedIssue.key, snapshot);
         set({ sessions });
@@ -555,7 +572,8 @@ export const useImplementTicketStore = create<ImplementTicketState>()(
       // ── Restore an existing session for this ticket ─────────────────────────
       const existingSession = get().sessions.get(issue.key);
       if (existingSession && existingSession.currentStage !== "select") {
-        set({ ...existingSession, selectedIssue: issue, isSessionActive: true });
+        // Assign a fresh session ID — the old backend process is gone.
+        set({ ...existingSession, selectedIssue: issue, isSessionActive: true, activeSessionId: crypto.randomUUID() });
         return;
       }
 
@@ -568,6 +586,7 @@ export const useImplementTicketStore = create<ImplementTicketState>()(
         currentStage: "grooming",
         viewingStage: "grooming",
         isSessionActive: true,
+        activeSessionId: crypto.randomUUID(),
       });
 
       // Fetch full issue details
@@ -1129,6 +1148,8 @@ export async function hydrateImplementStore(): Promise<void> {
     ...cached,
     completedStages,
     sessions,
+    // Fresh ID on hydration — no backend process from a prior app run is still alive.
+    activeSessionId: crypto.randomUUID(),
   });
 }
 

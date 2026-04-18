@@ -61,5 +61,5 @@ pub use store_cache::{
     save_store_cache, load_store_cache, delete_store_cache,
     get_store_cache_info, clear_all_store_caches,
 };
-pub use validate::{validate_anthropic, validate_bitbucket, validate_jira, test_anthropic_stored, test_jira_stored, test_bitbucket_stored, debug_jira_endpoints, import_claude_pro_token};
+pub use validate::{validate_anthropic, validate_bitbucket, validate_jira, test_anthropic_stored, test_jira_stored, test_bitbucket_stored, debug_jira_endpoints, start_claude_oauth};
 pub use fetch_url::fetch_url_content;

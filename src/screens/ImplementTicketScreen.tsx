@@ -59,6 +59,7 @@ import {
 } from "@/lib/tauri";
 import {
   useImplementTicketStore,
+  snapshotSession,
   type Stage,
   type GroomingBlocker,
 } from "@/stores/implementTicketStore";
@@ -1514,26 +1515,40 @@ export function ImplementTicketScreen({ credStatus, onBack }: ImplementTicketScr
   }, [chatPaneWidth]);
 
   // ── Backend event listeners — write directly to store ────────────────────────
+  // Each listener captures the session ID at event time and drops writes for stale sessions.
   useEffect(() => {
     const unlisten = listen<{ phase: string; message: string }>("grooming-progress", (event) => {
+      const store = useImplementTicketStore.getState();
+      const sessionId = store.activeSessionId;
       if (event.payload.phase === "done") {
-        setTimeout(() => useImplementTicketStore.getState()._set({ groomingProgress: "" }), 1200);
+        setTimeout(() => {
+          if (useImplementTicketStore.getState().activeSessionId === sessionId) {
+            useImplementTicketStore.getState()._set({ groomingProgress: "" });
+          }
+        }, 1200);
       } else {
-        useImplementTicketStore.getState()._set({ groomingProgress: event.payload.message });
+        store._set({ groomingProgress: event.payload.message });
       }
     });
     return () => { unlisten.then(f => f()); };
   }, []);
 
   useEffect(() => {
-    const acc = { text: "" };
+    const acc = { text: "", sessionId: "" };
     let flushTimer: ReturnType<typeof setTimeout> | null = null;
     const unlisten = listen<{ delta: string }>("grooming-stream", (event) => {
+      const currentSessionId = useImplementTicketStore.getState().activeSessionId;
+      if (acc.sessionId !== currentSessionId) {
+        acc.text = "";
+        acc.sessionId = currentSessionId;
+      }
       acc.text += event.payload.delta;
       if (flushTimer !== null) return;
       flushTimer = setTimeout(() => {
         flushTimer = null;
-        useImplementTicketStore.getState()._set({ groomingStreamText: acc.text });
+        if (useImplementTicketStore.getState().activeSessionId === acc.sessionId) {
+          useImplementTicketStore.getState()._set({ groomingStreamText: acc.text });
+        }
       }, 80);
     });
     return () => {
@@ -1543,14 +1558,21 @@ export function ImplementTicketScreen({ credStatus, onBack }: ImplementTicketScr
   }, []);
 
   useEffect(() => {
-    const acc = { text: "" };
+    const acc = { text: "", sessionId: "" };
     let flushTimer: ReturnType<typeof setTimeout> | null = null;
     const unlisten = listen<{ delta: string }>("implementation-stream", (event) => {
+      const currentSessionId = useImplementTicketStore.getState().activeSessionId;
+      if (acc.sessionId !== currentSessionId) {
+        acc.text = "";
+        acc.sessionId = currentSessionId;
+      }
       acc.text += event.payload.delta;
       if (flushTimer !== null) return;
       flushTimer = setTimeout(() => {
         flushTimer = null;
-        useImplementTicketStore.getState()._set({ implementationStreamText: acc.text });
+        if (useImplementTicketStore.getState().activeSessionId === acc.sessionId) {
+          useImplementTicketStore.getState()._set({ implementationStreamText: acc.text });
+        }
       }, 80);
     });
     return () => {
@@ -1962,28 +1984,15 @@ export function ImplementTicketScreen({ credStatus, onBack }: ImplementTicketScr
               size="icon"
               className="shrink-0"
               onClick={currentStage === "select" ? onBack : () => {
-                // Save current session into the cache before clearing
                 const cur = store();
-                if (cur.selectedIssue && cur.currentStage !== "select") {
-                  const snap = {
-                    selectedIssue: cur.selectedIssue, currentStage: cur.currentStage,
-                    viewingStage: cur.viewingStage, completedStages: cur.completedStages,
-                    pendingApproval: cur.pendingApproval, proceeding: cur.proceeding,
-                    grooming: cur.grooming, impact: cur.impact, triageHistory: cur.triageHistory,
-                    plan: cur.plan, guidance: cur.guidance, implementation: cur.implementation,
-                    implementationStreamText: cur.implementationStreamText, tests: cur.tests,
-                    review: cur.review, prDescription: cur.prDescription,
-                    retrospective: cur.retrospective, groomingBlockers: cur.groomingBlockers,
-                    groomingEdits: cur.groomingEdits, clarifyingQuestions: cur.clarifyingQuestions,
-                    filesRead: cur.filesRead, groomingChat: cur.groomingChat,
-                    groomingBaseline: cur.groomingBaseline, jiraUpdateStatus: cur.jiraUpdateStatus,
-                    jiraUpdateError: cur.jiraUpdateError, groomingProgress: cur.groomingProgress,
-                    groomingStreamText: cur.groomingStreamText, checkpointChats: cur.checkpointChats,
-                    errors: cur.errors, kbSaved: cur.kbSaved, worktreeInfo: cur.worktreeInfo,
-                    ticketText: cur.ticketText, skills: cur.skills, isSessionActive: cur.isSessionActive,
-                  };
+                // Save current session unless grooming never completed (stale in-flight run)
+                if (
+                  cur.selectedIssue &&
+                  cur.currentStage !== "select" &&
+                  !(cur.currentStage === "grooming" && cur.grooming === null)
+                ) {
                   const newSessions = new Map(cur.sessions);
-                  newSessions.set(cur.selectedIssue.key, snap);
+                  newSessions.set(cur.selectedIssue.key, snapshotSession(cur));
                   cur._set({ sessions: newSessions });
                 }
                 cur._set({ selectedIssue: null, currentStage: "select", isSessionActive: false });

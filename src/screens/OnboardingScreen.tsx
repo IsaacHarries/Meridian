@@ -18,7 +18,7 @@ import {
   getCredentialStatus,
   setMockMode,
   setMockClaudeMode,
-  importClaudeProToken,
+  startClaudeOauth,
 } from "@/lib/tauri";
 
 const MASKED_SENTINEL = "••••••••";
@@ -152,9 +152,9 @@ function AnthropicStep({
   async function handleImportClaudePro() {
     setImporting(true);
     setTestState("loading");
-    setTestMessage("Reading Claude Pro token from keychain…");
+    setTestMessage("Opening browser for Claude authorization…");
     try {
-      const msg = await importClaudeProToken();
+      const msg = await startClaudeOauth();
       setApiKey(MASKED_SENTINEL);
       setSaved(true);
       setTestState("success");
@@ -223,15 +223,9 @@ function AnthropicStep({
         <div>
           <p className="text-sm font-medium">Use Claude Pro or Max subscription</p>
           <p className="text-xs text-muted-foreground mt-0.5">
-            If you have a Claude Pro or Max subscription, import your credentials from
-            the Claude Code CLI instead of using a pay-per-token API key.
+            Authorize Meridian to use your Claude Pro / Max subscription. A browser window will open to claude.ai — no CLI required.
           </p>
         </div>
-        <ol className="text-xs text-muted-foreground space-y-0.5 list-decimal list-inside">
-          <li>Run <code className="bg-muted px-1 rounded">claude</code> in your terminal</li>
-          <li>Choose <strong className="text-foreground">Log in with Claude.ai</strong></li>
-          <li>Click the button below</li>
-        </ol>
         <Button
           variant="outline"
           size="sm"
@@ -239,7 +233,7 @@ function AnthropicStep({
           onClick={handleImportClaudePro}
           disabled={importing || testState === "loading"}
         >
-          {importing ? <><Loader2 className="h-3.5 w-3.5 animate-spin" /> Importing…</> : "Import from Claude Pro / Max"}
+          {importing ? <><Loader2 className="h-3.5 w-3.5 animate-spin" /> Connecting…</> : "Connect with Claude"}
         </Button>
       </div>
 

@@ -237,11 +237,11 @@ export async function testAnthropicStored(): Promise<string> {
 /**
  * Read the Claude Pro / Max OAuth token from the macOS keychain (where Claude Code
  * stores it after `claude /login`) and save it as the Anthropic credential.
- * The token never passes through the frontend — it is read and stored entirely
- * in the Tauri backend.
+ * Opens a browser to claude.ai, completes the OAuth PKCE flow, and stores the
+ * resulting tokens. No Claude Code CLI required.
  */
-export async function importClaudeProToken(): Promise<string> {
-  return invoke<string>("import_claude_pro_token");
+export async function startClaudeOauth(): Promise<string> {
+  return invoke<string>("start_claude_oauth");
 }
 
 /** Return the list of available Claude models as [id, display_label] pairs. */
