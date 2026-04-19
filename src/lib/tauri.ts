@@ -234,6 +234,16 @@ export async function testAnthropicStored(): Promise<string> {
   return invoke<string>("test_anthropic_stored");
 }
 
+/** Send a real "hello" message to Claude and verify a response comes back. */
+export async function pingAnthropic(): Promise<string> {
+  return invoke<string>("ping_anthropic");
+}
+
+/** Import the Claude Code CLI's OAuth token from the macOS Keychain. */
+export async function importClaudeCodeToken(): Promise<string> {
+  return invoke<string>("import_claude_code_token");
+}
+
 /**
  * Read the Claude Pro / Max OAuth token from the macOS keychain (where Claude Code
  * stores it after `claude /login`) and save it as the Anthropic credential.

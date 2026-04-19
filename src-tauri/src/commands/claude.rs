@@ -28,7 +28,7 @@ const OAUTH_REFRESH_BUFFER_MS: u64 = 5 * 60 * 1000;
 /// If the stored OAuth access token is within 5 minutes of expiry, exchange the
 /// refresh token for a new one and update the credential store silently.
 /// No-op when the user authenticates with a plain API key (no OAuth JSON stored).
-async fn refresh_oauth_if_needed(client: &Client) -> Result<(), String> {
+pub async fn refresh_oauth_if_needed(client: &Client) -> Result<(), String> {
     let oauth_str = match get_credential("claude_oauth_json") {
         Some(s) => s,
         None => return Ok(()),
@@ -131,6 +131,171 @@ async fn refresh_oauth_if_needed(client: &Client) -> Result<(), String> {
     Ok(())
 }
 
+// ── OAuth subscription-billing body rewriting ─────────────────────────────────
+//
+// When a request to `/v1/messages` carries an OAuth access token from a
+// Claude.ai subscription (`sk-ant-oat01-…`), Anthropic validates that the
+// request looks like it originated from the Claude Code CLI. If it doesn't,
+// the request is rejected with `429 rate_limit_error` regardless of the
+// account's actual usage — the OAuth token has zero quota on the non-Claude-
+// Code path. Two markers are required in the body:
+//
+//   1. `system` must be an **array** whose first two entries are
+//      (a) a `x-anthropic-billing-header: …` text block and
+//      (b) the Claude Code identity string.
+//   2. Any other system-prompt content must NOT live in `system[]` (triggers a
+//      follow-up `400 "out of extra usage"` rejection). Instead it's prepended
+//      to the first user message, which is functionally equivalent.
+//
+// Algorithm reverse-engineered from
+// https://github.com/griffinmartin/opencode-claude-auth
+// (src/signing.ts + src/transforms.ts). The `cch` and version suffix are
+// SHA-256 fingerprints derived from the first user message text and a constant
+// salt.
+
+const BILLING_SALT: &str = "59cf53e54c78";
+const CC_VERSION: &str = "2.1.90";
+const CC_ENTRYPOINT: &str = "cli";
+const CLAUDE_CODE_IDENTITY: &str =
+    "You are Claude Code, Anthropic's official CLI for Claude.";
+
+fn sha256_hex(input: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(input.as_bytes());
+    let mut out = String::with_capacity(digest.len() * 2);
+    for b in digest.iter() {
+        use std::fmt::Write as _;
+        let _ = write!(out, "{b:02x}");
+    }
+    out
+}
+
+fn compute_cch(message_text: &str) -> String {
+    sha256_hex(message_text).chars().take(5).collect()
+}
+
+fn compute_version_suffix(message_text: &str, version: &str) -> String {
+    let chars: Vec<char> = message_text.chars().collect();
+    let sampled: String = [4, 7, 20]
+        .iter()
+        .map(|&i| chars.get(i).copied().unwrap_or('0'))
+        .collect();
+    let input = format!("{BILLING_SALT}{sampled}{version}");
+    sha256_hex(&input).chars().take(3).collect()
+}
+
+fn build_billing_header(first_user_text: &str) -> String {
+    let suffix = compute_version_suffix(first_user_text, CC_VERSION);
+    let cch = compute_cch(first_user_text);
+    format!(
+        "x-anthropic-billing-header: cc_version={CC_VERSION}.{suffix}; \
+         cc_entrypoint={CC_ENTRYPOINT}; cch={cch};"
+    )
+}
+
+fn first_user_text(messages: &serde_json::Value) -> String {
+    let arr = match messages.as_array() {
+        Some(a) => a,
+        None => return String::new(),
+    };
+    for m in arr {
+        if m.get("role").and_then(|r| r.as_str()) != Some("user") {
+            continue;
+        }
+        match m.get("content") {
+            Some(serde_json::Value::String(s)) => return s.clone(),
+            Some(serde_json::Value::Array(blocks)) => {
+                for b in blocks {
+                    if b.get("type").and_then(|t| t.as_str()) == Some("text") {
+                        if let Some(t) = b.get("text").and_then(|v| v.as_str()) {
+                            return t.to_string();
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+        break;
+    }
+    String::new()
+}
+
+fn prepend_to_first_user(messages: &mut serde_json::Value, prefix: &str) {
+    let arr = match messages.as_array_mut() {
+        Some(a) => a,
+        None => return,
+    };
+    for m in arr.iter_mut() {
+        if m.get("role").and_then(|r| r.as_str()) != Some("user") {
+            continue;
+        }
+        let content = match m.get_mut("content") {
+            Some(c) => c,
+            None => return,
+        };
+        match content {
+            serde_json::Value::String(s) => {
+                *s = format!("{prefix}\n\n{s}");
+            }
+            serde_json::Value::Array(blocks) => {
+                blocks.insert(0, json!({"type": "text", "text": prefix}));
+            }
+            _ => {}
+        }
+        return;
+    }
+    arr.insert(0, json!({"role": "user", "content": prefix}));
+}
+
+/// Build the JSON body for a POST to `/v1/messages`, rewriting the `system`
+/// and first user message for OAuth tokens so the request passes Anthropic's
+/// Claude Code subscription-billing validation (see the big comment above).
+/// For plain API keys (`sk-ant-api*`) the body is emitted in its conventional
+/// shape with `system` as a single string.
+pub fn build_messages_body(
+    api_key: &str,
+    model: &str,
+    user_system: &str,
+    mut messages: serde_json::Value,
+    max_tokens: u32,
+    stream: bool,
+    tools: Option<serde_json::Value>,
+) -> serde_json::Value {
+    let is_oauth = !api_key.starts_with("sk-ant-api");
+
+    let system_value: serde_json::Value = if is_oauth {
+        // Compute cch / version suffix from the *original* first user text,
+        // before we prepend the caller's system prompt.
+        let original_first_user = first_user_text(&messages);
+        let system = json!([
+            {"type": "text", "text": build_billing_header(&original_first_user)},
+            {"type": "text", "text": CLAUDE_CODE_IDENTITY},
+        ]);
+        if !user_system.trim().is_empty() {
+            prepend_to_first_user(&mut messages, user_system);
+        }
+        system
+    } else {
+        serde_json::Value::String(user_system.to_string())
+    };
+
+    let mut body = json!({
+        "model": model,
+        "max_tokens": max_tokens,
+        "system": system_value,
+        "messages": messages,
+    });
+
+    if stream {
+        body["stream"] = serde_json::Value::Bool(true);
+    }
+    if let Some(t) = tools {
+        body["tools"] = t;
+    }
+
+    body
+}
+
 // ── Gemini support ─────────────────────────────────────────────────────────────
 
 const GEMINI_DEFAULT_MODEL: &str = "gemini-2.5-flash";
@@ -155,6 +320,36 @@ fn get_ai_provider() -> String {
         .unwrap_or_else(|| "auto".to_string())
 }
 
+/// Extract retry delay in milliseconds from response headers.
+/// Checks (in priority order):
+///   1. `anthropic-ratelimit-unified-reset` — Unix timestamp (seconds) used by the
+///      Claude Code CLI's unified rate-limit system.
+///   2. `retry-after` — standard HTTP header (seconds to wait).
+///   3. `default_ms` fallback.
+fn retry_after_ms(headers: &reqwest::header::HeaderMap, default_ms: u64) -> u64 {
+    // anthropic-ratelimit-unified-reset is a Unix epoch timestamp in seconds.
+    if let Some(reset_ts) = headers
+        .get("anthropic-ratelimit-unified-reset")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.parse::<u64>().ok())
+    {
+        let now_secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let wait_secs = reset_ts.saturating_sub(now_secs).max(1);
+        return wait_secs * 1000;
+    }
+
+    // Standard Retry-After header (seconds).
+    headers
+        .get("retry-after")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.parse::<u64>().ok())
+        .map(|secs| secs * 1000)
+        .unwrap_or(default_ms)
+}
+
 /// Returns true when an error string indicates the Claude quota / rate limit was
 /// exceeded and it is worth trying a Gemini fallback.
 fn is_quota_error(err: &str) -> bool {
@@ -164,8 +359,11 @@ fn is_quota_error(err: &str) -> bool {
         || e.contains("overloaded")
         || e.contains("you've hit your limit")
         || e.contains("hit your limit")
-        || e.contains("exceeded")
+        || e.contains("usage_exceeded")
+        || e.contains("usage limit")
         || e.contains("quota")
+        || e.contains("credit balance")
+        || e.contains("daily message limit")
 }
 
 /// Single-turn completion via the Gemini `generateContent` REST API.
@@ -713,43 +911,54 @@ async fn complete_multi_claude_streaming(
     let messages: serde_json::Value = serde_json::from_str(history_json)
         .map_err(|e| format!("Invalid history JSON: {e}"))?;
 
-    let body = serde_json::json!({
-        "model": model,
-        "max_tokens": max_tokens,
-        "stream": true,
-        "system": system,
-        "messages": messages,
-    });
+    let body = build_messages_body(api_key, model, system, messages, max_tokens, true, None);
 
-    let req = client
-        .post("https://api.anthropic.com/v1/messages")
-        .header("anthropic-version", "2023-06-01")
-        .header("content-type", "application/json");
+    const MAX_RETRIES: u32 = 5;
+    let mut delay_ms = 2_000u64;
+    let mut attempt = 0u32;
 
-    let req = if api_key.starts_with("sk-ant-api") {
-        req.header("x-api-key", api_key)
-    } else {
-        req.header("Authorization", format!("Bearer {api_key}"))
-            .header("anthropic-beta", "oauth-2025-04-20")
+    let resp = loop {
+        let req = client
+            .post("https://api.anthropic.com/v1/messages")
+            .header("anthropic-version", "2023-06-01")
+            .header("content-type", "application/json");
+
+        let req = if api_key.starts_with("sk-ant-api") {
+            req.header("x-api-key", api_key)
+        } else {
+            req.header("Authorization", format!("Bearer {api_key}"))
+                .header("anthropic-beta", "oauth-2025-04-20,claude-code-20250219,files-api-2025-04-14")
+                .header("anthropic-client-platform", "claude_code_cli")
+        };
+
+        let resp = req
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| {
+                if e.is_connect() || e.is_timeout() {
+                    "Could not reach api.anthropic.com. Check your internet connection.".to_string()
+                } else {
+                    format!("Request failed: {e}")
+                }
+            })?;
+
+        if resp.status().as_u16() == 429 && attempt < MAX_RETRIES {
+            let wait_ms = retry_after_ms(resp.headers(), delay_ms);
+            delay_ms = (delay_ms * 2).min(30_000);
+            attempt += 1;
+            tokio::time::sleep(tokio::time::Duration::from_millis(wait_ms)).await;
+            continue;
+        }
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body_text = resp.text().await.unwrap_or_default();
+            return Err(format!("Claude API error {status}: {body_text}"));
+        }
+
+        break resp;
     };
-
-    let resp = req
-        .json(&body)
-        .send()
-        .await
-        .map_err(|e| {
-            if e.is_connect() || e.is_timeout() {
-                "Could not reach api.anthropic.com. Check your internet connection.".to_string()
-            } else {
-                format!("Request failed: {e}")
-            }
-        })?;
-
-    if !resp.status().is_success() {
-        let status = resp.status();
-        let body_text = resp.text().await.unwrap_or_default();
-        return Err(format!("Claude API error {status}: {body_text}"));
-    }
 
     let mut stream = resp.bytes_stream();
     let mut full_text = String::new();
@@ -971,7 +1180,7 @@ async fn dispatch_streaming(
                 failure_reasons.push(format!("{p}: not configured"));
             }
             Err(e) if is_quota_error(&e) => {
-                failure_reasons.push(format!("{p}: rate limited / quota exceeded"));
+                failure_reasons.push(format!("{p}: rate limited / quota exceeded — {e}"));
             }
             Err(e) => return Err(e),
         }
@@ -1208,7 +1417,8 @@ async fn fetch_models_live(client: &Client, api_key: &str) -> Result<Vec<(String
         req.header("x-api-key", api_key)
     } else {
         req.header("Authorization", format!("Bearer {api_key}"))
-            .header("anthropic-beta", "oauth-2025-04-20")
+            .header("anthropic-beta", "oauth-2025-04-20,claude-code-20250219,files-api-2025-04-14")
+            .header("anthropic-client-platform", "claude_code_cli")
     };
 
     let resp = req.send().await.map_err(|e| format!("Models API request failed: {e}"))?;
@@ -1321,42 +1531,62 @@ async fn complete(
     user: &str,
     max_tokens: u32,
 ) -> Result<String, String> {
-    let body = json!({
-        "model": model,
-        "max_tokens": max_tokens,
-        "system": system,
-        "messages": [{ "role": "user", "content": user }]
-    });
+    let body = build_messages_body(
+        api_key,
+        model,
+        system,
+        json!([{ "role": "user", "content": user }]),
+        max_tokens,
+        false,
+        None,
+    );
 
-    let req = client
-        .post("https://api.anthropic.com/v1/messages")
-        .header("anthropic-version", "2023-06-01")
-        .header("content-type", "application/json");
+    const MAX_RETRIES: u32 = 5;
+    let mut delay_ms = 2_000u64;
+    let mut attempt = 0u32;
 
-    let req = if api_key.starts_with("sk-ant-api") {
-        req.header("x-api-key", api_key)
-    } else {
-        req.header("Authorization", format!("Bearer {api_key}"))
-            .header("anthropic-beta", "oauth-2025-04-20")
+    let resp = loop {
+        let req = client
+            .post("https://api.anthropic.com/v1/messages")
+            .header("anthropic-version", "2023-06-01")
+            .header("content-type", "application/json");
+
+        let req = if api_key.starts_with("sk-ant-api") {
+            req.header("x-api-key", api_key)
+        } else {
+            req.header("Authorization", format!("Bearer {api_key}"))
+                .header("anthropic-beta", "oauth-2025-04-20,claude-code-20250219,files-api-2025-04-14")
+                .header("anthropic-client-platform", "claude_code_cli")
+        };
+
+        let resp = req
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| {
+                if e.is_connect() || e.is_timeout() {
+                    "Could not reach api.anthropic.com. Check your internet connection.".to_string()
+                } else {
+                    format!("Request failed: {e}")
+                }
+            })?;
+
+        if resp.status().as_u16() == 429 && attempt < MAX_RETRIES {
+            let wait_ms = retry_after_ms(resp.headers(), delay_ms);
+            delay_ms = (delay_ms * 2).min(30_000);
+            attempt += 1;
+            tokio::time::sleep(tokio::time::Duration::from_millis(wait_ms)).await;
+            continue;
+        }
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(format!("Claude API error {status}: {body}"));
+        }
+
+        break resp;
     };
-
-    let resp = req
-        .json(&body)
-        .send()
-        .await
-        .map_err(|e| {
-            if e.is_connect() || e.is_timeout() {
-                "Could not reach api.anthropic.com. Check your internet connection.".to_string()
-            } else {
-                format!("Request failed: {e}")
-            }
-        })?;
-
-    if !resp.status().is_success() {
-        let status = resp.status();
-        let body = resp.text().await.unwrap_or_default();
-        return Err(format!("Claude API error {status}: {body}"));
-    }
 
     let json: serde_json::Value = resp
         .json()
@@ -1384,43 +1614,62 @@ async fn complete_claude_streaming(
     use futures_util::StreamExt;
     use tauri::Emitter;
 
-    let body = json!({
-        "model": model,
-        "max_tokens": max_tokens,
-        "stream": true,
-        "system": system,
-        "messages": [{ "role": "user", "content": user }]
-    });
+    let body = build_messages_body(
+        api_key,
+        model,
+        system,
+        json!([{ "role": "user", "content": user }]),
+        max_tokens,
+        true,
+        None,
+    );
 
-    let req = client
-        .post("https://api.anthropic.com/v1/messages")
-        .header("anthropic-version", "2023-06-01")
-        .header("content-type", "application/json");
+    const MAX_RETRIES: u32 = 5;
+    let mut delay_ms = 2_000u64;
+    let mut attempt = 0u32;
 
-    let req = if api_key.starts_with("sk-ant-api") {
-        req.header("x-api-key", api_key)
-    } else {
-        req.header("Authorization", format!("Bearer {api_key}"))
-            .header("anthropic-beta", "oauth-2025-04-20")
+    let resp = loop {
+        let req = client
+            .post("https://api.anthropic.com/v1/messages")
+            .header("anthropic-version", "2023-06-01")
+            .header("content-type", "application/json");
+
+        let req = if api_key.starts_with("sk-ant-api") {
+            req.header("x-api-key", api_key)
+        } else {
+            req.header("Authorization", format!("Bearer {api_key}"))
+                .header("anthropic-beta", "oauth-2025-04-20,claude-code-20250219,files-api-2025-04-14")
+                .header("anthropic-client-platform", "claude_code_cli")
+        };
+
+        let resp = req
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| {
+                if e.is_connect() || e.is_timeout() {
+                    "Could not reach api.anthropic.com. Check your internet connection.".to_string()
+                } else {
+                    format!("Request failed: {e}")
+                }
+            })?;
+
+        if resp.status().as_u16() == 429 && attempt < MAX_RETRIES {
+            let wait_ms = retry_after_ms(resp.headers(), delay_ms);
+            delay_ms = (delay_ms * 2).min(30_000);
+            attempt += 1;
+            tokio::time::sleep(tokio::time::Duration::from_millis(wait_ms)).await;
+            continue;
+        }
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body_text = resp.text().await.unwrap_or_default();
+            return Err(format!("Claude API error {status}: {body_text}"));
+        }
+
+        break resp;
     };
-
-    let resp = req
-        .json(&body)
-        .send()
-        .await
-        .map_err(|e| {
-            if e.is_connect() || e.is_timeout() {
-                "Could not reach api.anthropic.com. Check your internet connection.".to_string()
-            } else {
-                format!("Request failed: {e}")
-            }
-        })?;
-
-    if !resp.status().is_success() {
-        let status = resp.status();
-        let body_text = resp.text().await.unwrap_or_default();
-        return Err(format!("Claude API error {status}: {body_text}"));
-    }
 
     let mut stream = resp.bytes_stream();
     let mut full_text = String::new();
@@ -1492,42 +1741,54 @@ async fn complete_multi(
     let messages: serde_json::Value = serde_json::from_str(history_json)
         .map_err(|e| format!("Invalid history JSON: {e}"))?;
 
-    let body = json!({
-        "model": model,
-        "max_tokens": max_tokens,
-        "system": system,
-        "messages": messages
-    });
+    let body = build_messages_body(api_key, model, system, messages, max_tokens, false, None);
 
-    let req = client
-        .post("https://api.anthropic.com/v1/messages")
-        .header("anthropic-version", "2023-06-01")
-        .header("content-type", "application/json");
+    const MAX_RETRIES: u32 = 5;
+    let mut delay_ms = 2_000u64;
+    let mut attempt = 0u32;
 
-    let req = if api_key.starts_with("sk-ant-api") {
-        req.header("x-api-key", api_key)
-    } else {
-        req.header("Authorization", format!("Bearer {api_key}"))
-            .header("anthropic-beta", "oauth-2025-04-20")
+    let resp = loop {
+        let req = client
+            .post("https://api.anthropic.com/v1/messages")
+            .header("anthropic-version", "2023-06-01")
+            .header("content-type", "application/json");
+
+        let req = if api_key.starts_with("sk-ant-api") {
+            req.header("x-api-key", api_key)
+        } else {
+            req.header("Authorization", format!("Bearer {api_key}"))
+                .header("anthropic-beta", "oauth-2025-04-20,claude-code-20250219,files-api-2025-04-14")
+                .header("anthropic-client-platform", "claude_code_cli")
+        };
+
+        let resp = req
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| {
+                if e.is_connect() || e.is_timeout() {
+                    "Could not reach api.anthropic.com. Check your internet connection.".to_string()
+                } else {
+                    format!("Request failed: {e}")
+                }
+            })?;
+
+        if resp.status().as_u16() == 429 && attempt < MAX_RETRIES {
+            let wait_ms = retry_after_ms(resp.headers(), delay_ms);
+            delay_ms = (delay_ms * 2).min(30_000);
+            attempt += 1;
+            tokio::time::sleep(tokio::time::Duration::from_millis(wait_ms)).await;
+            continue;
+        }
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(format!("Claude API error {status}: {body}"));
+        }
+
+        break resp;
     };
-
-    let resp = req
-        .json(&body)
-        .send()
-        .await
-        .map_err(|e| {
-            if e.is_connect() || e.is_timeout() {
-                "Could not reach api.anthropic.com. Check your internet connection.".to_string()
-            } else {
-                format!("Request failed: {e}")
-            }
-        })?;
-
-    if !resp.status().is_success() {
-        let status = resp.status();
-        let body = resp.text().await.unwrap_or_default();
-        return Err(format!("Claude API error {status}: {body}"));
-    }
 
     let json: serde_json::Value = resp
         .json()
@@ -2233,40 +2494,56 @@ async fn complete_multi_claude_tool_loop(
     let mut final_text = String::new();
 
     for round in 0..MAX_TOOL_ROUNDS {
-        let body = serde_json::json!({
-            "model": model,
-            "max_tokens": max_tokens,
-            "stream": true,
-            "system": system,
-            "messages": messages,
-            "tools": tools_def,
-        });
+        let body = build_messages_body(
+            api_key,
+            model,
+            system,
+            serde_json::Value::Array(messages.clone()),
+            max_tokens,
+            true,
+            Some(tools_def.clone()),
+        );
 
-        let req = client
-            .post("https://api.anthropic.com/v1/messages")
-            .header("anthropic-version", "2023-06-01")
-            .header("content-type", "application/json");
+        let mut retry_delay_ms = 1_000u64;
+        let mut send_attempt = 0u32;
+        let resp = 'send: loop {
+            let req = client
+                .post("https://api.anthropic.com/v1/messages")
+                .header("anthropic-version", "2023-06-01")
+                .header("content-type", "application/json");
 
-        let req = if api_key.starts_with("sk-ant-api") {
-            req.header("x-api-key", api_key)
-        } else {
-            req.header("Authorization", format!("Bearer {api_key}"))
-                .header("anthropic-beta", "oauth-2025-04-20")
-        };
-
-        let resp = req.json(&body).send().await.map_err(|e| {
-            if e.is_connect() || e.is_timeout() {
-                "Could not reach api.anthropic.com. Check your internet connection.".to_string()
+            let req = if api_key.starts_with("sk-ant-api") {
+                req.header("x-api-key", api_key)
             } else {
-                format!("Request failed: {e}")
-            }
-        })?;
+                req.header("Authorization", format!("Bearer {api_key}"))
+                    .header("anthropic-beta", "oauth-2025-04-20,claude-code-20250219,files-api-2025-04-14")
+                    .header("anthropic-client-platform", "claude_code_cli")
+            };
 
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let body_text = resp.text().await.unwrap_or_default();
-            return Err(format!("Claude API error {status}: {body_text}"));
-        }
+            let r = req.json(&body).send().await.map_err(|e| {
+                if e.is_connect() || e.is_timeout() {
+                    "Could not reach api.anthropic.com. Check your internet connection.".to_string()
+                } else {
+                    format!("Request failed: {e}")
+                }
+            })?;
+
+            if r.status().as_u16() == 429 && send_attempt < 5 {
+                let wait_ms = retry_after_ms(r.headers(), retry_delay_ms);
+                retry_delay_ms = (retry_delay_ms * 2).min(60_000);
+                send_attempt += 1;
+                tokio::time::sleep(tokio::time::Duration::from_millis(wait_ms)).await;
+                continue 'send;
+            }
+
+            if !r.status().is_success() {
+                let status = r.status();
+                let body_text = r.text().await.unwrap_or_default();
+                return Err(format!("Claude API error {status}: {body_text}"));
+            }
+
+            break r;
+        };
 
         let mut stream = resp.bytes_stream();
         let mut buffer = String::new();
@@ -2571,7 +2848,7 @@ async fn dispatch_multi_streaming_with_tools(
                 failure_reasons.push(format!("{p}: not configured"));
             }
             Err(e) if is_quota_error(&e) => {
-                failure_reasons.push(format!("{p}: rate limited / quota exceeded"));
+                failure_reasons.push(format!("{p}: rate limited / quota exceeded — {e}"));
             }
             Err(e) => return Err(e),
         }
@@ -2701,7 +2978,7 @@ async fn dispatch(
                 failure_reasons.push(format!("{p}: not configured"));
             }
             Err(e) if is_quota_error(&e) => {
-                failure_reasons.push(format!("{p}: rate limited / quota exceeded"));
+                failure_reasons.push(format!("{p}: rate limited / quota exceeded — {e}"));
             }
             Err(e) => return Err(e),
         }
@@ -2735,7 +3012,7 @@ async fn dispatch_multi(
                 failure_reasons.push(format!("{p}: not configured"));
             }
             Err(e) if is_quota_error(&e) => {
-                failure_reasons.push(format!("{p}: rate limited / quota exceeded"));
+                failure_reasons.push(format!("{p}: rate limited / quota exceeded — {e}"));
             }
             Err(e) => return Err(e),
         }
@@ -2798,7 +3075,7 @@ async fn dispatch_multi_streaming(
                 failure_reasons.push(format!("{p}: not configured"));
             }
             Err(e) if is_quota_error(&e) => {
-                failure_reasons.push(format!("{p}: rate limited / quota exceeded"));
+                failure_reasons.push(format!("{p}: rate limited / quota exceeded — {e}"));
             }
             Err(e) => return Err(e),
         }

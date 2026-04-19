@@ -35,6 +35,7 @@ import {
   validateJira,
   validateBitbucket,
   testAnthropicStored,
+  pingAnthropic,
   testJiraStored,
   testBitbucketStored,
   testGeminiStored,
@@ -322,6 +323,19 @@ function AnthropicSection({ isConfigured, onSaved }: { isConfigured: boolean; on
     }
   }
 
+  async function handlePing() {
+    setStatus({ state: "loading", message: "Sending test message…" });
+    setTestResult("untested");
+    try {
+      const msg = await pingAnthropic();
+      setTestResult("success");
+      setStatus({ state: "success", message: msg });
+    } catch (err) {
+      setTestResult("error");
+      setStatus({ state: "error", message: String(err) });
+    }
+  }
+
   function handleCancel() {
     setEditing(false);
     setApiKey("");
@@ -390,6 +404,11 @@ function AnthropicSection({ isConfigured, onSaved }: { isConfigured: boolean; on
                 </Button>
               )}
               {isConfigured && (
+                <Button variant="outline" size="sm" onClick={handlePing} disabled={status.state === "loading"}>
+                  {status.state === "loading" ? <><Loader2 className="h-3 w-3 animate-spin" /> Sending…</> : "Send test message"}
+                </Button>
+              )}
+              {isConfigured && (
                 <Button variant="ghost" size="sm" className="text-muted-foreground gap-1" onClick={handleReset}>
                   <RotateCcw className="h-3 w-3" /> Reset
                 </Button>
@@ -440,6 +459,11 @@ function AnthropicSection({ isConfigured, onSaved }: { isConfigured: boolean; on
               {isConfigured && (
                 <Button variant="outline" size="sm" onClick={handleTestStored} disabled={status.state === "loading"}>
                   {status.state === "loading" ? <><Loader2 className="h-3 w-3 animate-spin" /> Testing…</> : "Test connection"}
+                </Button>
+              )}
+              {isConfigured && (
+                <Button variant="outline" size="sm" onClick={handlePing} disabled={status.state === "loading"}>
+                  {status.state === "loading" ? <><Loader2 className="h-3 w-3 animate-spin" /> Sending…</> : "Send test message"}
                 </Button>
               )}
             </div>
