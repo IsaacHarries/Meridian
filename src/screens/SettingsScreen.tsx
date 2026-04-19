@@ -68,6 +68,7 @@ import {
   validateBitbucket,
   testAnthropicStored,
   pingAnthropic,
+  pingGemini,
   testJiraStored,
   testBitbucketStored,
   testGeminiStored,
@@ -80,6 +81,7 @@ import {
   getActiveSprint,
   getOpenPrs,
   startClaudeOauth,
+  startGeminiOauth,
   getClaudeModels,
   setLocalLlmUrlCache,
   getStoreCacheInfo,
@@ -963,6 +965,7 @@ function GeminiSection({
   isConfigured: boolean;
   onSaved: () => void;
 }) {
+  const [authMethod, setAuthMethod] = useState<"api_key" | "oauth">("api_key");
   const [editing, setEditing] = useState(false);
   const [apiKey, setApiKey] = useState("");
   const [status, setStatus] = useState<SectionStatus>({
@@ -970,20 +973,38 @@ function GeminiSection({
     message: "",
   });
   const [testResult, setTestResult] = useState<TestResult>("untested");
+  const [connecting, setConnecting] = useState(false);
   const [models, setModels] = useState<[string, string][]>([]);
   const [selectedModel, setSelectedModel] = useState("");
 
   useEffect(() => {
-    getGeminiModels().then(setModels).catch(() => {});
-    getNonSecretConfig().then(cfg => {
-      if (cfg.gemini_model) setSelectedModel(cfg.gemini_model);
-    }).catch(() => {});
+    getGeminiModels()
+      .then(setModels)
+      .catch(() => {});
+    getNonSecretConfig()
+      .then((cfg) => {
+        if (cfg.gemini_model) setSelectedModel(cfg.gemini_model);
+        if (cfg.gemini_auth_method === "oauth") setAuthMethod("oauth");
+      })
+      .catch(() => {});
   }, []);
 
   async function handleModelChange(modelId: string) {
     setSelectedModel(modelId);
     try {
       await saveCredential("gemini_model", modelId);
+    } catch {
+      /* non-critical */
+    }
+  }
+
+  async function handleAuthMethodChange(method: "api_key" | "oauth") {
+    setAuthMethod(method);
+    setEditing(false);
+    setStatus({ state: "idle", message: "" });
+    setTestResult("untested");
+    try {
+      await saveCredential("gemini_auth_method", method);
     } catch {
       /* non-critical */
     }
@@ -996,19 +1017,60 @@ function GeminiSection({
     setEditing(true);
   }
 
-  async function handleSave() {
-    if (!apiKey.trim() || apiKey === MASKED_SENTINEL) return;
-    setStatus({ state: "loading", message: "Saving and testing…" });
+  async function handleConnectGoogle() {
+    setConnecting(true);
+    setStatus({
+      state: "loading",
+      message: "Opening browser for Google authorization…",
+    });
     try {
-      const msg = await validateGemini(apiKey.trim());
+      await saveCredential("gemini_auth_method", "oauth");
+      const msg = await startGeminiOauth();
       setTestResult("success");
       setStatus({ state: "success", message: msg });
       setEditing(false);
       onSaved();
-      // Refresh model list with the new key
       getGeminiModels()
         .then(setModels)
         .catch(() => {});
+    } catch (err) {
+      setTestResult("error");
+      setStatus({ state: "error", message: String(err) });
+    } finally {
+      setConnecting(false);
+    }
+  }
+
+  async function handleSave() {
+    if (!apiKey.trim() || apiKey === MASKED_SENTINEL) return;
+    setStatus({ state: "loading", message: "Saving and testing…" });
+    try {
+      await saveCredential("gemini_auth_method", "api_key");
+      const msg = await validateGemini(apiKey.trim());
+      const verified = msg.toLowerCase().includes("successfully");
+      setTestResult(verified ? "success" : "untested");
+      setStatus({ state: "success", message: msg });
+      setEditing(false);
+      onSaved();
+      getGeminiModels()
+        .then(setModels)
+        .catch(() => {});
+    } catch (err) {
+      setTestResult("error");
+      setStatus({ state: "error", message: String(err) });
+    }
+  }
+
+  async function handleTest() {
+    setStatus({ state: "loading", message: "Testing connection…" });
+    setTestResult("untested");
+    try {
+      const msg =
+        apiKey === MASKED_SENTINEL
+          ? await testGeminiStored()
+          : await validateGemini(apiKey.trim());
+      setTestResult("success");
+      setStatus({ state: "success", message: msg });
     } catch (err) {
       setTestResult("error");
       setStatus({ state: "error", message: String(err) });
@@ -1028,6 +1090,19 @@ function GeminiSection({
     }
   }
 
+  async function handlePing() {
+    setStatus({ state: "loading", message: "Sending test message…" });
+    setTestResult("untested");
+    try {
+      const msg = await pingGemini();
+      setTestResult("success");
+      setStatus({ state: "success", message: msg });
+    } catch (err) {
+      setTestResult("error");
+      setStatus({ state: "error", message: String(err) });
+    }
+  }
+
   function handleCancel() {
     setEditing(false);
     setApiKey("");
@@ -1037,10 +1112,11 @@ function GeminiSection({
   async function handleReset() {
     try {
       await deleteCredential("gemini_api_key");
+      await saveCredential("gemini_auth_method", "api_key");
       setTestResult("untested");
       onSaved();
     } catch {
-      /* fine */
+      /* fine if not present */
     }
   }
 
@@ -1061,56 +1137,98 @@ function GeminiSection({
         </div>
       </CardHeader>
       <CardContent className="space-y-3">
-        {!editing ? (
-          <div className="flex flex-wrap gap-2">
-            <Button variant="outline" size="sm" onClick={startEditing}>
-              {isConfigured ? "Update key" : "Add key"}
-            </Button>
-            {isConfigured && (
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={handleTestStored}
+        {/* Auth method toggle */}
+        <div className="flex rounded-md border overflow-hidden w-fit">
+          <button
+            onClick={() => handleAuthMethodChange("api_key")}
+            className={cn(
+              "px-3 py-1.5 text-xs font-medium transition-colors",
+              authMethod === "api_key"
+                ? "bg-primary text-primary-foreground"
+                : "bg-background text-muted-foreground hover:text-foreground hover:bg-muted",
+            )}
+          >
+            API Key
+          </button>
+          <button
+            onClick={() => handleAuthMethodChange("oauth")}
+            className={cn(
+              "px-3 py-1.5 text-xs font-medium transition-colors border-l",
+              authMethod === "oauth"
+                ? "bg-primary text-primary-foreground"
+                : "bg-background text-muted-foreground hover:text-foreground hover:bg-muted",
+            )}
+          >
+            Google Account
+          </button>
+        </div>
+
+        {/* API Key flow */}
+        {authMethod === "api_key" &&
+          (!editing ? (
+            <div className="flex flex-wrap gap-2">
+              <Button variant="outline" size="sm" onClick={startEditing}>
+                {isConfigured ? "Update key" : "Add key"}
+              </Button>
+              {isConfigured && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleTestStored}
+                  disabled={status.state === "loading"}
+                >
+                  {status.state === "loading" ? (
+                    <>
+                      <Loader2 className="h-3 w-3 animate-spin" /> Testing…
+                    </>
+                  ) : (
+                    "Test connection"
+                  )}
+                </Button>
+              )}
+              {isConfigured && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handlePing}
+                  disabled={status.state === "loading"}
+                >
+                  {status.state === "loading" ? (
+                    <>
+                      <Loader2 className="h-3 w-3 animate-spin" /> Sending…
+                    </>
+                  ) : (
+                    "Send test message"
+                  )}
+                </Button>
+              )}
+              {isConfigured && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="text-muted-foreground gap-1"
+                  onClick={handleReset}
+                >
+                  <RotateCcw className="h-3 w-3" /> Reset
+                </Button>
+              )}
+            </div>
+          ) : (
+            <div className="space-y-3">
+              <CredentialField
+                id="settings-gemini-key"
+                label="API Key"
+                placeholder="AIza…"
+                masked
+                value={apiKey}
+                onChange={(v) => {
+                  setApiKey(v);
+                  setTestResult("untested");
+                }}
                 disabled={status.state === "loading"}
-              >
-                {status.state === "loading" ? (
-                  <>
-                    <Loader2 className="h-3 w-3 animate-spin" /> Testing…
-                  </>
-                ) : (
-                  "Test connection"
-                )}
-              </Button>
-            )}
-            {isConfigured && (
-              <Button
-                variant="ghost"
-                size="sm"
-                className="text-destructive hover:text-destructive"
-                onClick={handleReset}
-              >
-                Remove
-              </Button>
-            )}
-          </div>
-        ) : (
-          <div className="space-y-3">
-            <div>
-              <Label className="text-xs">Gemini API Key</Label>
-              <div className="flex gap-2 mt-1">
-                <Input
-                  type="password"
-                  value={apiKey}
-                  onChange={(e) => setApiKey(e.target.value)}
-                  placeholder="AIza…"
-                  className="text-xs h-8 font-mono"
-                  onFocus={() => {
-                    if (apiKey === MASKED_SENTINEL) setApiKey("");
-                  }}
-                />
-              </div>
-              <p className="text-xs text-muted-foreground mt-1">
-                Get a free key at{" "}
+              />
+              <p className="text-[11px] text-muted-foreground -mt-1">
+                Get a free key (or enable pay-as-you-go) at{" "}
                 <a
                   href="https://aistudio.google.com/apikey"
                   target="_blank"
@@ -1120,40 +1238,122 @@ function GeminiSection({
                   aistudio.google.com/apikey
                 </a>
               </p>
+              <div className="flex gap-2">
+                <Button
+                  size="sm"
+                  onClick={handleSave}
+                  disabled={
+                    !apiKey.trim() ||
+                    apiKey === MASKED_SENTINEL ||
+                    status.state === "loading"
+                  }
+                >
+                  {status.state === "loading" ? (
+                    <Loader2 className="h-3 w-3 animate-spin" />
+                  ) : (
+                    "Save key"
+                  )}
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={handleTest}
+                  disabled={!apiKey.trim() || status.state === "loading"}
+                >
+                  Test connection
+                </Button>
+                <Button variant="ghost" size="sm" onClick={handleCancel}>
+                  Cancel
+                </Button>
+              </div>
             </div>
-            <div className="flex gap-2">
+          ))}
+
+        {/* OAuth flow */}
+        {authMethod === "oauth" && (
+          <div className="space-y-2">
+            <p className="text-xs text-muted-foreground">
+              Sign in with your Google account to use your Gemini subscription
+              limits. A browser window will open to complete sign-in.
+            </p>
+            <div className="flex flex-wrap gap-2">
               <Button
+                variant="outline"
                 size="sm"
-                onClick={handleSave}
-                disabled={
-                  !apiKey.trim() ||
-                  apiKey === MASKED_SENTINEL ||
-                  status.state === "loading"
-                }
+                onClick={handleConnectGoogle}
+                disabled={connecting || status.state === "loading"}
+                className="gap-1.5"
               >
-                {status.state === "loading" ? (
-                  <Loader2 className="h-3 w-3 animate-spin" />
+                {connecting ? (
+                  <>
+                    <Loader2 className="h-3 w-3 animate-spin" /> Connecting…
+                  </>
+                ) : isConfigured ? (
+                  "Re-authorize"
                 ) : (
-                  "Save & Test"
+                  "Connect with Google"
                 )}
               </Button>
-              <Button variant="outline" size="sm" onClick={handleCancel}>
-                Cancel
-              </Button>
+              {isConfigured && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleTestStored}
+                  disabled={status.state === "loading"}
+                >
+                  {status.state === "loading" ? (
+                    <>
+                      <Loader2 className="h-3 w-3 animate-spin" /> Testing…
+                    </>
+                  ) : (
+                    "Test connection"
+                  )}
+                </Button>
+              )}
+              {isConfigured && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handlePing}
+                  disabled={status.state === "loading"}
+                >
+                  {status.state === "loading" ? (
+                    <>
+                      <Loader2 className="h-3 w-3 animate-spin" /> Sending…
+                    </>
+                  ) : (
+                    "Send test message"
+                  )}
+                </Button>
+              )}
+              {isConfigured && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="text-muted-foreground gap-1"
+                  onClick={handleReset}
+                >
+                  <RotateCcw className="h-3 w-3" /> Reset
+                </Button>
+              )}
             </div>
           </div>
         )}
 
-        <SectionMessage state={status.state} message={status.message} />
+        <SectionMessage {...status} />
 
+        {/* Model picker — visible when Gemini is configured */}
         {isConfigured && models.length > 0 && (
           <div className="space-y-1.5 pt-2 border-t">
-            <Label className="text-xs">Gemini Model</Label>
+            <label className="text-xs font-medium text-muted-foreground">
+              Gemini Model
+            </label>
             <select
               value={selectedModel}
               onChange={(e) => handleModelChange(e.target.value)}
-              className="mt-1 w-full text-xs rounded-md border border-input bg-background px-2 py-1.5 text-foreground"
+              className="w-full rounded-md border border-input bg-background px-3 py-1.5 text-xs text-foreground shadow-sm focus:outline-none focus:ring-1 focus:ring-ring"
             >
+              {!selectedModel && <option value="">— select a model —</option>}
               {models.map(([id, label]) => (
                 <option key={id} value={id}>
                   {label}
@@ -1161,8 +1361,8 @@ function GeminiSection({
               ))}
             </select>
             <p className="text-[11px] text-muted-foreground">
-              Used when Gemini is the active provider. Gemini 2.0 Flash is
-              recommended for speed and cost.
+              Used when Gemini is the active provider. Flash is recommended for
+              speed and cost; Pro for the highest quality.
             </p>
           </div>
         )}

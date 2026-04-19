@@ -1,11 +1,13 @@
 export type QueryRequest = {
   id: string;
   type: "query";
+  provider?: "claude" | "gemini";
   system: string;
   messages: Array<{ role: "user" | "assistant"; content: string }>;
   model: string;
   cwd: string;
   sessionId?: string | null;
+  apiKey?: string;
 };
 
 export type TextEvent = {

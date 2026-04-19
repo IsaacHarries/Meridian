@@ -75,25 +75,21 @@ pub use jira::{
 pub use knowledge::{
     delete_knowledge_entry, export_knowledge_markdown, load_knowledge_entries, save_knowledge_entry,
 };
+pub use preferences::{delete_preference, get_preferences, set_preference};
 pub use repo::{
-    validate_worktree, sync_worktree,
-    glob_repo_files, grep_repo_files, read_repo_file, write_repo_file,
-    get_repo_diff, get_repo_log, get_file_history,
-    checkout_worktree_branch,
-    validate_pr_review_worktree, checkout_pr_review_branch,
-    run_in_terminal,
-    validate_pr_address_worktree, checkout_pr_address_branch,
-    read_pr_address_file, write_pr_address_file,
-    get_pr_address_diff, commit_pr_address_changes, push_pr_address_branch,
+    checkout_pr_address_branch, checkout_pr_review_branch, checkout_worktree_branch,
+    commit_pr_address_changes, get_file_history, get_pr_address_diff, get_repo_diff, get_repo_log,
+    glob_repo_files, grep_repo_files, push_pr_address_branch, read_pr_address_file, read_repo_file,
+    run_in_terminal, sync_worktree, validate_pr_address_worktree, validate_pr_review_worktree,
+    validate_worktree, write_pr_address_file, write_repo_file,
 };
-pub use preferences::{get_preferences, set_preference, delete_preference};
-pub use skills::{load_agent_skills, save_agent_skill, delete_agent_skill};
+pub use skills::{delete_agent_skill, load_agent_skills, save_agent_skill};
 pub use store_cache::{
     clear_all_store_caches, delete_store_cache, get_store_cache_info, load_store_cache,
     save_store_cache,
 };
 pub use validate::{
-    debug_jira_endpoints, import_claude_code_token, ping_anthropic, start_claude_oauth,
-    test_anthropic_stored, test_bitbucket_stored, test_jira_stored, validate_anthropic,
-    validate_bitbucket, validate_jira,
+    debug_jira_endpoints, import_claude_code_token, ping_anthropic, ping_gemini,
+    start_claude_oauth, start_gemini_oauth, test_anthropic_stored, test_bitbucket_stored,
+    test_jira_stored, validate_anthropic, validate_bitbucket, validate_jira,
 };

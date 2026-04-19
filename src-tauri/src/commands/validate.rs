@@ -68,21 +68,20 @@ pub async fn ping_anthropic() -> Result<String, String> {
         req.header("x-api-key", &api_key)
     } else {
         req.header("Authorization", format!("Bearer {api_key}"))
-            .header("anthropic-beta", "oauth-2025-04-20,claude-code-20250219,files-api-2025-04-14")
+            .header(
+                "anthropic-beta",
+                "oauth-2025-04-20,claude-code-20250219,files-api-2025-04-14",
+            )
             .header("anthropic-client-platform", "claude_code_cli")
     };
 
-    let resp = req
-        .json(&body)
-        .send()
-        .await
-        .map_err(|e| {
-            if e.is_connect() || e.is_timeout() {
-                "Could not reach api.anthropic.com. Check your internet connection.".to_string()
-            } else {
-                format!("Request failed: {e}")
-            }
-        })?;
+    let resp = req.json(&body).send().await.map_err(|e| {
+        if e.is_connect() || e.is_timeout() {
+            "Could not reach api.anthropic.com. Check your internet connection.".to_string()
+        } else {
+            format!("Request failed: {e}")
+        }
+    })?;
 
     if !resp.status().is_success() {
         let status = resp.status();
@@ -99,7 +98,32 @@ pub async fn ping_anthropic() -> Result<String, String> {
         .as_str()
         .unwrap_or("(no text in response)");
 
-    Ok(format!("Message sent successfully. Claude replied: \"{reply}\""))
+    Ok(format!(
+        "Message sent successfully. Claude replied: \"{reply}\""
+    ))
+}
+
+/// End-to-end ping: actually generate a reply from Gemini using the stored
+/// credentials (API key or OAuth → Code Assist). Mirrors `ping_anthropic`.
+#[tauri::command]
+pub async fn ping_gemini() -> Result<String, String> {
+    use super::credentials::get_credential;
+    use crate::http::make_corporate_client;
+
+    let key = get_credential("gemini_api_key")
+        .filter(|k| !k.trim().is_empty())
+        .ok_or("No Gemini credentials found. Authenticate in Settings first.")?;
+
+    let model = get_credential("gemini_model")
+        .filter(|m| !m.trim().is_empty())
+        .unwrap_or_else(|| "gemini-2.5-flash".to_string());
+
+    let client = make_corporate_client(Duration::from_secs(30))?;
+
+    let reply = super::claude::complete_gemini_for_ping(&client, &key, &model).await?;
+    Ok(format!(
+        "Message sent successfully. Gemini replied: \"{reply}\""
+    ))
 }
 
 /// Read the Claude Code CLI's OAuth token from the macOS Keychain
@@ -109,7 +133,12 @@ pub async fn ping_anthropic() -> Result<String, String> {
 #[tauri::command]
 pub async fn import_claude_code_token() -> Result<String, String> {
     let output = std::process::Command::new("security")
-        .args(["find-generic-password", "-s", "Claude Code-credentials", "-w"])
+        .args([
+            "find-generic-password",
+            "-s",
+            "Claude Code-credentials",
+            "-w",
+        ])
         .output()
         .map_err(|e| format!("Failed to run security command: {e}"))?;
 
@@ -126,8 +155,8 @@ pub async fn import_claude_code_token() -> Result<String, String> {
         .map_err(|e| format!("Credential data is not valid UTF-8: {e}"))?;
     let raw = raw.trim();
 
-    let json: serde_json::Value = serde_json::from_str(raw)
-        .map_err(|e| format!("Failed to parse credential JSON: {e}"))?;
+    let json: serde_json::Value =
+        serde_json::from_str(raw).map_err(|e| format!("Failed to parse credential JSON: {e}"))?;
 
     let oauth = json
         .get("claudeAiOauth")
@@ -169,14 +198,15 @@ pub async fn test_anthropic_stored() -> Result<String, String> {
     let key = get_credential("anthropic_api_key")
         .ok_or("No Claude credentials found. Use 'Connect with Claude' to authenticate.")?;
     if key.trim().is_empty() {
-        return Err("No Claude credentials found. Use 'Connect with Claude' to authenticate.".to_string());
+        return Err(
+            "No Claude credentials found. Use 'Connect with Claude' to authenticate.".to_string(),
+        );
     }
-    let auth_method = get_credential("claude_auth_method")
-        .unwrap_or_else(|| "api_key".to_string());
+    let auth_method = get_credential("claude_auth_method").unwrap_or_else(|| "api_key".to_string());
     if auth_method == "oauth" {
-        return test_anthropic_connectivity(&key, false).await.map(|_| {
-            "Claude Pro / Max connection verified.".to_string()
-        });
+        return test_anthropic_connectivity(&key, false)
+            .await
+            .map(|_| "Claude Pro / Max connection verified.".to_string());
     }
     test_anthropic_connectivity(&key, false).await
 }
@@ -186,8 +216,7 @@ pub async fn test_anthropic_stored() -> Result<String, String> {
 const OAUTH_AUTH_URL: &str = "https://claude.ai/oauth/authorize";
 const OAUTH_TOKEN_URL: &str = "https://platform.claude.com/v1/oauth/token";
 const OAUTH_CLIENT_ID: &str = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
-const OAUTH_SCOPE: &str =
-    "org:create_api_key user:profile user:inference \
+const OAUTH_SCOPE: &str = "org:create_api_key user:profile user:inference \
      user:sessions:claude_code user:mcp_servers user:file_upload";
 
 // ── OAuth PKCE helpers ────────────────────────────────────────────────────────
@@ -245,6 +274,7 @@ fn percent_decode(s: &str) -> String {
 async fn wait_for_oauth_callback(
     listener: tokio::net::TcpListener,
     expected_state: &str,
+    provider_label: &str,
 ) -> Result<String, String> {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -265,29 +295,36 @@ async fn wait_for_oauth_callback(
 
         match parse_callback(&request, expected_state) {
             CallbackResult::Code(code) => {
-                let html = "<html><head><meta charset=utf-8><title>Meridian — Connected</title>\
-                    <style>body{font-family:system-ui;display:flex;align-items:center;\
-                    justify-content:center;min-height:100vh;margin:0;background:#0f0f0f;color:#fff}\
-                    .card{background:#1a1a1a;padding:2rem;border-radius:12px;text-align:center;max-width:380px}\
-                    h2{margin:0 0 .5rem}p{color:#aaa;margin:.5rem 0 0;font-size:.9rem}</style>\
-                    </head><body><div class=card><h2>✓ Connected to Claude</h2>\
-                    <p>You can close this window and return to Meridian.</p></div></body></html>";
+                let html = format!(
+                    "<html><head><meta charset=utf-8><title>Meridian — Connected</title>\
+                    <style>body{{font-family:system-ui;display:flex;align-items:center;\
+                    justify-content:center;min-height:100vh;margin:0;background:#0f0f0f;color:#fff}}\
+                    .card{{background:#1a1a1a;padding:2rem;border-radius:12px;text-align:center;max-width:380px}}\
+                    h2{{margin:0 0 .5rem}}p{{color:#aaa;margin:.5rem 0 0;font-size:.9rem}}</style>\
+                    </head><body><div class=card><h2>✓ Connected to {provider_label}</h2>\
+                    <p>You can close this window and return to Meridian.</p></div></body></html>"
+                );
                 let response = format!(
                     "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\n\
                      Content-Length: {}\r\nConnection: close\r\n\r\n{}",
-                    html.len(), html
+                    html.len(),
+                    html
                 );
                 let _ = stream.write_all(response.as_bytes()).await;
                 return Ok(code);
             }
             CallbackResult::OAuthError(msg) => {
-                let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n").await;
+                let _ = stream
+                    .write_all(b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n")
+                    .await;
                 return Err(format!("Authorization server returned an error: {msg}"));
             }
             CallbackResult::NotCallback => {
                 // Not our redirect — send a minimal response and keep waiting.
                 eprintln!("[meridian oauth] ignored request: {first_line}");
-                let _ = stream.write_all(b"HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n").await;
+                let _ = stream
+                    .write_all(b"HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n")
+                    .await;
             }
         }
     }
@@ -356,6 +393,127 @@ fn parse_callback(request: &str, expected_state: &str) -> CallbackResult {
     }
 }
 
+// ── Google Gemini OAuth ──────────────────────────────────────────────────────
+
+const GEMINI_AUTH_URL: &str = "https://accounts.google.com/o/oauth2/v2/auth";
+const GEMINI_TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
+const GEMINI_CLIENT_ID: &str =
+    "681255809395-oo8ft2oprdrnp9e3aqf6av3hmdib135j.apps.googleusercontent.com";
+// Distributed publicly by the open-source Gemini CLI; Google's token endpoint
+// requires it for this client even with PKCE. Not actually secret.
+const GEMINI_CLIENT_SECRET: &str = "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";
+// The Gemini CLI's OAuth client (`681255809395-…`) is registered with the
+// `cloud-platform` scope — the older `generative-language` scope is not
+// whitelisted on this client and triggers `Error 403: restricted_client`.
+// Generative Language API endpoints accept bearer tokens issued with the
+// `cloud-platform` scope.
+const GEMINI_SCOPE: &str = "https://www.googleapis.com/auth/cloud-platform \
+    https://www.googleapis.com/auth/userinfo.email \
+    https://www.googleapis.com/auth/userinfo.profile \
+    openid";
+
+#[tauri::command]
+pub async fn start_gemini_oauth() -> Result<String, String> {
+    use tokio::net::TcpListener;
+
+    let code_verifier = generate_random_base64url(32)?;
+    let code_challenge = sha256_base64url(&code_verifier);
+    let state = generate_random_base64url(32)?;
+
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .map_err(|e| format!("Failed to start local callback server: {e}"))?;
+    let port = listener
+        .local_addr()
+        .map_err(|e| format!("Failed to get local port: {e}"))?
+        .port();
+
+    let redirect_uri = format!("http://localhost:{port}/callback");
+
+    let auth_url = format!(
+        "{}?client_id={}&response_type=code&redirect_uri={}&scope={}&code_challenge={}&code_challenge_method=S256&state={}",
+        GEMINI_AUTH_URL,
+        GEMINI_CLIENT_ID,
+        percent_encode(&redirect_uri),
+        percent_encode(GEMINI_SCOPE),
+        code_challenge,
+        state
+    );
+
+    std::process::Command::new("open")
+        .arg(&auth_url)
+        .spawn()
+        .map_err(|e| format!("Failed to open browser: {e}"))?;
+
+    let code = tokio::time::timeout(
+        std::time::Duration::from_secs(180),
+        wait_for_oauth_callback(listener, &state, "Google"),
+    )
+    .await
+    .map_err(|_| "Authorization timed out after 3 minutes. Please try again.".to_string())??;
+
+    let client = make_client()?;
+    let resp = client
+        .post(GEMINI_TOKEN_URL)
+        .form(&serde_json::json!({
+            "grant_type": "authorization_code",
+            "code": code,
+            "redirect_uri": redirect_uri,
+            "client_id": GEMINI_CLIENT_ID,
+            "client_secret": GEMINI_CLIENT_SECRET,
+            "code_verifier": code_verifier,
+        }))
+        .send()
+        .await
+        .map_err(|e| format!("Token exchange request failed: {e}"))?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        return Err(format!("Token exchange failed (HTTP {status}).\n\n{body}"));
+    }
+
+    let tokens: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("Failed to parse token response: {e}"))?;
+
+    let access_token = tokens["access_token"]
+        .as_str()
+        .ok_or("Missing access_token in token response")?;
+    let refresh_token = tokens["refresh_token"].as_str();
+    let expires_in = tokens["expires_in"].as_u64().unwrap_or(3600);
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
+    let expires_at = now_ms + expires_in * 1000;
+
+    // Store the tokens
+    store_credential("gemini_api_key", access_token)?;
+    store_credential("gemini_auth_method", "oauth")?;
+
+    let mut oauth_data = serde_json::json!({
+        "accessToken": access_token,
+        "expiresAt": expires_at,
+    });
+
+    if let Some(rt) = refresh_token {
+        oauth_data["refreshToken"] = serde_json::Value::String(rt.to_string());
+    }
+
+    store_credential("gemini_oauth_json", &oauth_data.to_string())?;
+
+    // Onboard the user to Code Assist so subsequent generation calls have a
+    // project ID. Surfaces a clear error if the free-tier signup fails.
+    super::claude::ensure_gemini_codeassist_project(&client, access_token).await?;
+
+    Ok(
+        "Connected to Google Account successfully. Meridian will use your Gemini subscription."
+            .to_string(),
+    )
+}
+
 /// Open a browser to Claude.ai, complete the OAuth PKCE flow, and store the
 /// resulting tokens. This replaces the old keychain-import approach — no
 /// Claude Code CLI required.
@@ -398,7 +556,7 @@ pub async fn start_claude_oauth() -> Result<String, String> {
     // Wait up to 3 minutes for the redirect callback.
     let code = tokio::time::timeout(
         std::time::Duration::from_secs(180),
-        wait_for_oauth_callback(listener, &state),
+        wait_for_oauth_callback(listener, &state, "Claude"),
     )
     .await
     .map_err(|_| "Authorization timed out after 3 minutes. Please try again.".to_string())??;
@@ -485,11 +643,13 @@ async fn test_anthropic_connectivity(api_key: &str, tolerant: bool) -> Result<St
     } else {
         base_req
             .header("Authorization", format!("Bearer {api_key}"))
-            .header("anthropic-beta", "oauth-2025-04-20,claude-code-20250219,files-api-2025-04-14")
+            .header(
+                "anthropic-beta",
+                "oauth-2025-04-20,claude-code-20250219,files-api-2025-04-14",
+            )
             .header("anthropic-client-platform", "claude_code_cli")
     };
-    let resp = match authed_req.send().await
-    {
+    let resp = match authed_req.send().await {
         Ok(r) => r,
         Err(e) if e.is_connect() || e.is_timeout() => {
             return if tolerant {
@@ -527,16 +687,20 @@ pub async fn validate_jira(
 /// Test the already-stored JIRA credentials without accepting secrets from the frontend.
 #[tauri::command]
 pub async fn test_jira_stored() -> Result<String, String> {
-    let base_url = get_credential("jira_base_url")
-        .ok_or("No JIRA URL is stored. Save credentials first.")?;
-    let email = get_credential("jira_email")
-        .ok_or("No JIRA email is stored. Save credentials first.")?;
+    let base_url =
+        get_credential("jira_base_url").ok_or("No JIRA URL is stored. Save credentials first.")?;
+    let email =
+        get_credential("jira_email").ok_or("No JIRA email is stored. Save credentials first.")?;
     let api_token = get_credential("jira_api_token")
         .ok_or("No JIRA API token is stored. Save credentials first.")?;
     test_jira_connection(&base_url, &email, &api_token).await
 }
 
-async fn test_jira_connection(base_url: &str, email: &str, api_token: &str) -> Result<String, String> {
+async fn test_jira_connection(
+    base_url: &str,
+    email: &str,
+    api_token: &str,
+) -> Result<String, String> {
     let base_url_trimmed = base_url.trim().trim_end_matches('/');
     let email_trimmed = email.trim();
     let token_trimmed = api_token.trim();
@@ -585,7 +749,11 @@ async fn test_jira_connection(base_url: &str, email: &str, api_token: &str) -> R
         .to_string();
     let body = resp.text().await.unwrap_or_default();
     // Trim body to first 400 chars so error messages are readable.
-    let body_excerpt = if body.len() > 400 { &body[..400] } else { &body };
+    let body_excerpt = if body.len() > 400 {
+        &body[..400]
+    } else {
+        &body
+    };
 
     match status {
         StatusCode::OK => {
@@ -607,14 +775,13 @@ async fn test_jira_connection(base_url: &str, email: &str, api_token: &str) -> R
             let detail = serde_json::from_str::<serde_json::Value>(&body)
                 .ok()
                 .and_then(|v| {
-                    v["message"].as_str()
+                    v["message"]
+                        .as_str()
                         .or_else(|| v["errorMessages"].get(0).and_then(|m| m.as_str()))
                         .map(str::to_string)
                 });
 
-            let mut parts: Vec<String> = vec![
-                format!("JIRA returned HTTP {status} for {url}."),
-            ];
+            let mut parts: Vec<String> = vec![format!("JIRA returned HTTP {status} for {url}.")];
             if !www_auth.is_empty() {
                 parts.push(format!("WWW-Authenticate: {www_auth}"));
             }
@@ -629,14 +796,12 @@ async fn test_jira_connection(base_url: &str, email: &str, api_token: &str) -> R
             );
             Err(parts.join("\n"))
         }
-        s if s.is_redirection() => {
-            Err(format!(
-                "JIRA redirected the request (HTTP {s}) — this usually means your workspace URL \
+        s if s.is_redirection() => Err(format!(
+            "JIRA redirected the request (HTTP {s}) — this usually means your workspace URL \
                  is incorrect, or your organisation requires a different login flow.\n\
                  Redirect location: {location}\n\
                  Check your workspace URL in Settings (e.g. https://yourcompany.atlassian.net)."
-            ))
-        }
+        )),
         StatusCode::NOT_FOUND => Err(format!(
             "JIRA workspace not found at {base_url_trimmed} (404). \
              Check your workspace URL in Settings."
@@ -678,10 +843,10 @@ pub async fn test_bitbucket_stored() -> Result<String, String> {
 /// can display it verbatim. Never returns Err — errors are embedded in the report.
 #[tauri::command]
 pub async fn debug_jira_endpoints() -> Result<String, String> {
-    let base_url = get_credential("jira_base_url")
-        .ok_or("No JIRA URL stored. Save credentials first.")?;
-    let email = get_credential("jira_email")
-        .ok_or("No JIRA email stored. Save credentials first.")?;
+    let base_url =
+        get_credential("jira_base_url").ok_or("No JIRA URL stored. Save credentials first.")?;
+    let email =
+        get_credential("jira_email").ok_or("No JIRA email stored. Save credentials first.")?;
     let token = get_credential("jira_api_token")
         .ok_or("No JIRA API token stored. Save credentials first.")?;
     let board_id = get_credential("jira_board_id").unwrap_or_else(|| "(not set)".into());
@@ -717,24 +882,63 @@ pub async fn debug_jira_endpoints() -> Result<String, String> {
 
     // List of (label, url, use_nofollow_client, send_accept_json, send_basic_auth)
     let endpoints: &[(&str, String, bool, bool, bool)] = &[
-        ("GET /rest/api/3/myself [no-redirect, Accept:json, Basic auth]",
-            format!("{base}/rest/api/3/myself"), true, true, true),
-        ("GET /rest/api/3/myself [follow-redirect, Accept:json, Basic auth]",
-            format!("{base}/rest/api/3/myself"), false, true, true),
-        ("GET /rest/api/3/myself [no-redirect, NO Accept header, Basic auth]",
-            format!("{base}/rest/api/3/myself"), true, false, true),
-        ("GET /rest/api/3/myself [no-redirect, Accept:json, NO auth]",
-            format!("{base}/rest/api/3/myself"), true, true, false),
-        ("GET /rest/api/3/serverInfo [no-redirect, Accept:json, Basic auth]",
-            format!("{base}/rest/api/3/serverInfo"), true, true, true),
-        ("GET /rest/agile/1.0/board [no-redirect, Accept:json, Basic auth]",
-            format!("{base}/rest/agile/1.0/board"), true, true, true),
-        ("GET /rest/agile/1.0/board/{board_id}/sprint?state=active [no-redirect]",
-            format!("{base}/rest/agile/1.0/board/{board_id}/sprint?state=active"), true, true, true),
+        (
+            "GET /rest/api/3/myself [no-redirect, Accept:json, Basic auth]",
+            format!("{base}/rest/api/3/myself"),
+            true,
+            true,
+            true,
+        ),
+        (
+            "GET /rest/api/3/myself [follow-redirect, Accept:json, Basic auth]",
+            format!("{base}/rest/api/3/myself"),
+            false,
+            true,
+            true,
+        ),
+        (
+            "GET /rest/api/3/myself [no-redirect, NO Accept header, Basic auth]",
+            format!("{base}/rest/api/3/myself"),
+            true,
+            false,
+            true,
+        ),
+        (
+            "GET /rest/api/3/myself [no-redirect, Accept:json, NO auth]",
+            format!("{base}/rest/api/3/myself"),
+            true,
+            true,
+            false,
+        ),
+        (
+            "GET /rest/api/3/serverInfo [no-redirect, Accept:json, Basic auth]",
+            format!("{base}/rest/api/3/serverInfo"),
+            true,
+            true,
+            true,
+        ),
+        (
+            "GET /rest/agile/1.0/board [no-redirect, Accept:json, Basic auth]",
+            format!("{base}/rest/agile/1.0/board"),
+            true,
+            true,
+            true,
+        ),
+        (
+            "GET /rest/agile/1.0/board/{board_id}/sprint?state=active [no-redirect]",
+            format!("{base}/rest/agile/1.0/board/{board_id}/sprint?state=active"),
+            true,
+            true,
+            true,
+        ),
     ];
 
     for (label, url, nofollow, accept_json, with_auth) in endpoints {
-        let client = if *nofollow { &client_nofollow } else { &client_follow };
+        let client = if *nofollow {
+            &client_nofollow
+        } else {
+            &client_follow
+        };
         let mut req = client.get(url.as_str());
         if *with_auth {
             req = req.basic_auth(email, Some(token));
@@ -751,17 +955,27 @@ pub async fn debug_jira_endpoints() -> Result<String, String> {
             }
             Ok(resp) => {
                 let status = resp.status();
-                let headers_of_interest: Vec<String> = ["www-authenticate", "location", "content-type", "x-seraph-loginreason"]
-                    .iter()
-                    .filter_map(|h| {
-                        resp.headers().get(*h)
-                            .and_then(|v| v.to_str().ok())
-                            .map(|v| format!("   {h}: {v}"))
-                    })
-                    .collect();
+                let headers_of_interest: Vec<String> = [
+                    "www-authenticate",
+                    "location",
+                    "content-type",
+                    "x-seraph-loginreason",
+                ]
+                .iter()
+                .filter_map(|h| {
+                    resp.headers()
+                        .get(*h)
+                        .and_then(|v| v.to_str().ok())
+                        .map(|v| format!("   {h}: {v}"))
+                })
+                .collect();
                 let body = resp.text().await.unwrap_or_default();
-                let body_preview = body.chars().take(300).collect::<String>()
-                    .replace('\n', " ").replace('\r', "");
+                let body_preview = body
+                    .chars()
+                    .take(300)
+                    .collect::<String>()
+                    .replace('\n', " ")
+                    .replace('\r', "");
 
                 report.push_str(&format!("   Status : {status}\n"));
                 for h in &headers_of_interest {
@@ -775,7 +989,11 @@ pub async fn debug_jira_endpoints() -> Result<String, String> {
     Ok(report)
 }
 
-async fn test_bitbucket_connection(workspace: &str, email: &str, access_token: &str) -> Result<String, String> {
+async fn test_bitbucket_connection(
+    workspace: &str,
+    email: &str,
+    access_token: &str,
+) -> Result<String, String> {
     let workspace_trimmed = workspace.trim();
     let email_trimmed = email.trim();
     let token_trimmed = access_token.trim();
@@ -847,7 +1065,8 @@ mod tests {
     fn random_base64url_contains_only_url_safe_chars() {
         let s = generate_random_base64url(32).unwrap();
         assert!(
-            s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'),
+            s.chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'),
             "Output should only contain A-Z a-z 0-9 - _; got: {s}"
         );
     }

@@ -1,4 +1,4 @@
-use reqwest::Client;
+use reqwest::{Client, StatusCode};
 use serde_json::json;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -127,6 +127,97 @@ pub async fn refresh_oauth_if_needed(client: &Client) -> Result<(), String> {
 
     store_credential("anthropic_api_key", new_access)?;
     store_credential("claude_oauth_json", &updated.to_string())?;
+
+    Ok(())
+}
+
+// ── Gemini OAuth token refresh ────────────────────────────────────────────────
+
+const GEMINI_REFRESH_URL: &str = "https://oauth2.googleapis.com/token";
+const GEMINI_CLIENT_ID: &str =
+    "681255809395-oo8ft2oprdrnp9e3aqf6av3hmdib135j.apps.googleusercontent.com";
+// Distributed publicly by the open-source Gemini CLI; Google's token endpoint
+// requires it for this client even with PKCE. Not actually secret.
+const GEMINI_CLIENT_SECRET: &str = "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";
+
+pub async fn refresh_gemini_oauth_if_needed(client: &Client) -> Result<(), String> {
+    let oauth_str = match get_credential("gemini_oauth_json") {
+        Some(s) => s,
+        None => return Ok(()),
+    };
+
+    let oauth_data: serde_json::Value = serde_json::from_str(&oauth_str)
+        .map_err(|e| format!("Failed to parse stored Gemini OAuth data: {e}"))?;
+
+    let expires_at = oauth_data
+        .get("expiresAt")
+        .and_then(|v| v.as_u64())
+        .ok_or("Missing expiresAt in Gemini OAuth data")?;
+
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| format!("System time error: {e}"))?
+        .as_millis() as u64;
+
+    // Token still valid for longer than the buffer (5 mins) — nothing to do.
+    if expires_at > now_ms + OAUTH_REFRESH_BUFFER_MS {
+        return Ok(());
+    }
+
+    let refresh_token = oauth_data
+        .get("refreshToken")
+        .and_then(|v| v.as_str())
+        .ok_or("Refresh token missing — your Gemini session has expired. Re-authenticate in Settings.")?;
+
+    let resp = client
+        .post(GEMINI_REFRESH_URL)
+        .form(&serde_json::json!({
+            "grant_type": "refresh_token",
+            "refresh_token": refresh_token,
+            "client_id": GEMINI_CLIENT_ID,
+            "client_secret": GEMINI_CLIENT_SECRET,
+        }))
+        .send()
+        .await
+        .map_err(|e| format!("Gemini token refresh request failed: {e}"))?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body_text = resp.text().await.unwrap_or_default();
+        return Err(format!(
+            "Gemini OAuth token refresh failed (HTTP {status}). \
+             Your session may have expired — re-authenticate in Settings.\n\
+             {body_text}"
+        ));
+    }
+
+    let new_tokens: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("Failed to parse Gemini refresh response: {e}"))?;
+
+    let new_access = new_tokens
+        .get("access_token")
+        .and_then(|v| v.as_str())
+        .ok_or("Missing access_token in refresh response")?;
+
+    let expires_in_secs = new_tokens
+        .get("expires_in")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(3600);
+
+    let new_expires_at = now_ms + expires_in_secs * 1000;
+
+    // Build updated OAuth JSON
+    let mut updated = oauth_data.clone();
+    updated["accessToken"] = serde_json::Value::String(new_access.to_string());
+    updated["expiresAt"] = serde_json::Value::Number(serde_json::Number::from(new_expires_at));
+    if let Some(new_refresh) = new_tokens.get("refresh_token").and_then(|v| v.as_str()) {
+        updated["refreshToken"] = serde_json::Value::String(new_refresh.to_string());
+    }
+
+    store_credential("gemini_api_key", new_access)?;
+    store_credential("gemini_oauth_json", &updated.to_string())?;
 
     Ok(())
 }
@@ -364,6 +455,252 @@ fn is_quota_error(err: &str) -> bool {
         || e.contains("daily message limit")
 }
 
+// ── Gemini Code Assist API (OAuth path) ──────────────────────────────────────
+//
+// The Gemini CLI's OAuth client (`681255809395-…`) is registered with the
+// `cloud-platform` scope, which the Generative Language API rejects with
+// `ACCESS_TOKEN_SCOPE_INSUFFICIENT`. Personal-account OAuth traffic must
+// instead go through the Code Assist API at `cloudcode-pa.googleapis.com`,
+// which is what `gemini-cli` itself does for free-tier users.
+//
+// The flow is:
+//   1. POST :loadCodeAssist  → returns the user's existing project (if any)
+//   2. POST :onboardUser     → if no project, onboard to free tier (LRO)
+//   3. POST :generateContent → wraps a standard Gemini request with
+//                              { model, project, request: { contents, … } }
+
+const GEMINI_CODE_ASSIST_BASE: &str = "https://cloudcode-pa.googleapis.com/v1internal";
+
+fn code_assist_metadata() -> serde_json::Value {
+    serde_json::json!({
+        "ideType": "IDE_UNSPECIFIED",
+        "platform": "PLATFORM_UNSPECIFIED",
+        "pluginType": "GEMINI"
+    })
+}
+
+/// Ensure the OAuth user has a Code Assist project. Returns a project ID
+/// suitable for use in `:generateContent` calls. Caches the result under
+/// the `gemini_project_id` credential.
+pub async fn ensure_gemini_codeassist_project(
+    client: &Client,
+    access_token: &str,
+) -> Result<String, String> {
+    if let Some(p) = get_credential("gemini_project_id").filter(|p| !p.trim().is_empty()) {
+        return Ok(p);
+    }
+
+    let load_resp = client
+        .post(format!("{GEMINI_CODE_ASSIST_BASE}:loadCodeAssist"))
+        .bearer_auth(access_token)
+        .header("Content-Type", "application/json")
+        .json(&serde_json::json!({
+            "metadata": code_assist_metadata(),
+            "cloudaicompanionProject": ""
+        }))
+        .send()
+        .await
+        .map_err(|e| format!("loadCodeAssist request failed: {e}"))?;
+
+    if !load_resp.status().is_success() {
+        let s = load_resp.status();
+        let body = load_resp.text().await.unwrap_or_default();
+        return Err(format!("loadCodeAssist failed (HTTP {s}). {body}"));
+    }
+
+    let load_data: serde_json::Value = load_resp
+        .json()
+        .await
+        .map_err(|e| format!("Failed to parse loadCodeAssist response: {e}"))?;
+
+    if let Some(p) = load_data
+        .get("cloudaicompanionProject")
+        .and_then(|v| v.as_str())
+    {
+        if !p.is_empty() {
+            store_credential("gemini_project_id", p)?;
+            return Ok(p.to_string());
+        }
+    }
+
+    let tier_id = load_data
+        .get("allowedTiers")
+        .and_then(|v| v.as_array())
+        .and_then(|tiers| {
+            tiers
+                .iter()
+                .find(|t| {
+                    t.get("isDefault")
+                        .and_then(|d| d.as_bool())
+                        .unwrap_or(false)
+                })
+                .or_else(|| tiers.first())
+        })
+        .and_then(|t| t.get("id").and_then(|id| id.as_str()))
+        .unwrap_or("free-tier")
+        .to_string();
+
+    let onboard_body = serde_json::json!({
+        "tierId": tier_id,
+        "metadata": code_assist_metadata(),
+    });
+
+    // onboardUser returns a Long Running Operation. Re-issue the same call
+    // until `done` is true — this matches the Gemini CLI's polling pattern.
+    let mut op: serde_json::Value = serde_json::json!({ "done": false });
+    for _ in 0..30 {
+        let onboard_resp = client
+            .post(format!("{GEMINI_CODE_ASSIST_BASE}:onboardUser"))
+            .bearer_auth(access_token)
+            .header("Content-Type", "application/json")
+            .json(&onboard_body)
+            .send()
+            .await
+            .map_err(|e| format!("onboardUser request failed: {e}"))?;
+
+        if !onboard_resp.status().is_success() {
+            let s = onboard_resp.status();
+            let body = onboard_resp.text().await.unwrap_or_default();
+            return Err(format!("onboardUser failed (HTTP {s}). {body}"));
+        }
+
+        op = onboard_resp
+            .json()
+            .await
+            .map_err(|e| format!("Failed to parse onboardUser response: {e}"))?;
+
+        if op.get("done").and_then(|d| d.as_bool()).unwrap_or(false) {
+            break;
+        }
+
+        tokio::time::sleep(Duration::from_millis(2000)).await;
+    }
+
+    let project = op
+        .pointer("/response/cloudaicompanionProject/id")
+        .and_then(|v| v.as_str())
+        .ok_or("onboardUser completed without a project id")?;
+
+    store_credential("gemini_project_id", project)?;
+    Ok(project.to_string())
+}
+
+/// Convert a Claude-style `[ { role, content } ]` history into Gemini's
+/// `contents` array. Strings become a single text part.
+fn claude_history_to_gemini_contents(history: &[serde_json::Value]) -> Vec<serde_json::Value> {
+    history
+        .iter()
+        .map(|msg| {
+            let role = match msg.get("role").and_then(|r| r.as_str()) {
+                Some("assistant") => "model",
+                _ => "user",
+            };
+            let text = msg
+                .get("content")
+                .and_then(|c| c.as_str())
+                .unwrap_or("")
+                .to_string();
+            serde_json::json!({
+                "role": role,
+                "parts": [{ "text": text }]
+            })
+        })
+        .collect()
+}
+
+/// Generate a short pseudo-random hex ID. Code Assist's `user_prompt_id`
+/// just needs to be unique-per-call — a SHA-256 of time + nanos is plenty.
+fn generate_request_id() -> String {
+    use sha2::{Digest, Sha256};
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    let seed = format!("{}-{}", now.as_nanos(), std::process::id());
+    let digest = Sha256::digest(seed.as_bytes());
+    digest.iter().take(8).map(|b| format!("{b:02x}")).collect()
+}
+
+/// Multi-turn completion via the Code Assist API (OAuth mode).
+async fn complete_multi_gemini_codeassist(
+    client: &Client,
+    access_token: &str,
+    project_id: &str,
+    model: &str,
+    system: &str,
+    history: &[serde_json::Value],
+    max_tokens: u32,
+) -> Result<String, String> {
+    let contents = claude_history_to_gemini_contents(history);
+
+    let mut request = serde_json::json!({
+        "contents": contents,
+        "generationConfig": { "maxOutputTokens": max_tokens }
+    });
+    if !system.trim().is_empty() {
+        request["systemInstruction"] = serde_json::json!({
+            "parts": [{ "text": system }]
+        });
+    }
+
+    // Mirror the Gemini CLI's request shape: it sends `user_prompt_id` and
+    // `session_id` alongside `model`/`project`/`request`. The API treats
+    // these as required identifiers for tier accounting.
+    let body = serde_json::json!({
+        "model": model,
+        "project": project_id,
+        "user_prompt_id": generate_request_id(),
+        "session_id": generate_request_id(),
+        "request": request,
+    });
+
+    eprintln!(
+        "[meridian gemini] code assist request: model={model} project={project_id}"
+    );
+
+    let resp = client
+        .post(format!("{GEMINI_CODE_ASSIST_BASE}:generateContent"))
+        .bearer_auth(access_token)
+        .header("Content-Type", "application/json")
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| {
+            if e.is_connect() || e.is_timeout() {
+                "Could not reach cloudcode-pa.googleapis.com.".to_string()
+            } else {
+                format!("Code Assist request failed: {e}")
+            }
+        })?;
+
+    if !resp.status().is_success() {
+        let s = resp.status();
+        let body_text = resp.text().await.unwrap_or_default();
+        return Err(format!(
+            "Gemini Code Assist API error {s} (model={model}, project={project_id}): {body_text}"
+        ));
+    }
+
+    let json: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("Failed to parse Code Assist response: {e}"))?;
+
+    json.pointer("/response/candidates/0/content/parts/0/text")
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+        .ok_or_else(|| format!("Unexpected Code Assist response shape: {json}"))
+}
+
+/// Public wrapper around `complete_gemini` for the ping endpoint, so
+/// `validate::ping_gemini` doesn't need to know the internal signature.
+pub async fn complete_gemini_for_ping(
+    client: &Client,
+    api_key: &str,
+    model: &str,
+) -> Result<String, String> {
+    complete_gemini(client, api_key, model, "", "Say hello.", 32).await
+}
+
 /// Single-turn completion via the Gemini `generateContent` REST API.
 async fn complete_gemini(
     client: &Client,
@@ -373,6 +710,18 @@ async fn complete_gemini(
     user: &str,
     max_tokens: u32,
 ) -> Result<String, String> {
+    let auth_method = get_credential("gemini_auth_method").unwrap_or_else(|| "api_key".to_string());
+    if auth_method == "oauth" {
+        refresh_gemini_oauth_if_needed(client).await?;
+        let token = get_credential("gemini_api_key").unwrap_or_else(|| api_key.to_string());
+        let project = ensure_gemini_codeassist_project(client, &token).await?;
+        let history = vec![serde_json::json!({ "role": "user", "content": user })];
+        return complete_multi_gemini_codeassist(
+            client, &token, &project, model, system, &history, max_tokens,
+        )
+        .await;
+    }
+
     let url = format!("{GEMINI_BASE_URL}/{model}:generateContent?key={api_key}");
 
     let body = serde_json::json!({
@@ -415,62 +764,64 @@ async fn complete_gemini(
 /// Multi-turn completion via Gemini. Converts Claude-style history
 /// (role: "assistant") to Gemini style (role: "model") automatically.
 async fn complete_multi_gemini(
+    app: &tauri::AppHandle,
     client: &Client,
     api_key: &str,
     model: &str,
     system: &str,
     history_json: &str,
-    max_tokens: u32,
+    _max_tokens: u32,
+    stream_event: &str,
 ) -> Result<String, String> {
-    let url = format!("{GEMINI_BASE_URL}/{model}:generateContent?key={api_key}");
+    use crate::sidecar::{dispatch_sidecar, Message, SidecarState};
+    let state = tauri::Manager::state::<SidecarState>(app);
 
-    let history: serde_json::Value =
-        serde_json::from_str(history_json).map_err(|e| format!("Invalid history JSON: {e}"))?;
+    let auth_method = get_credential("gemini_auth_method").unwrap_or_else(|| "api_key".to_string());
 
-    // Gemini uses "model" where Claude uses "assistant".
-    let contents: Vec<serde_json::Value> = history
-        .as_array()
-        .unwrap_or(&vec![])
+    let history: Vec<serde_json::Value> = serde_json::from_str(history_json)
+        .map_err(|e| format!("Invalid history JSON: {e}"))?;
+
+    if auth_method == "oauth" {
+        // OAuth path: hit Code Assist API directly. The sidecar's @google/generative-ai
+        // SDK speaks only the Generative Language API, which rejects this scope.
+        refresh_gemini_oauth_if_needed(client).await?;
+        let token = get_credential("gemini_api_key").unwrap_or_else(|| api_key.to_string());
+        let project = ensure_gemini_codeassist_project(client, &token).await?;
+        return complete_multi_gemini_codeassist(
+            client,
+            &token,
+            &project,
+            model,
+            system,
+            &history,
+            _max_tokens,
+        )
+        .await;
+    }
+
+    let messages: Vec<Message> = history
         .iter()
-        .map(|msg| {
-            let role = match msg["role"].as_str().unwrap_or("user") {
-                "assistant" => "model",
-                other => other,
-            };
-            let text = msg["content"].as_str().unwrap_or("");
-            serde_json::json!({ "role": role, "parts": [{ "text": text }] })
+        .map(|msg| Message {
+            role: msg["role"].as_str().unwrap_or("user").to_string(),
+            content: msg["content"].as_str().unwrap_or("").to_string(),
         })
         .collect();
 
-    let body = serde_json::json!({
-        "system_instruction": { "parts": [{ "text": system }] },
-        "contents": contents,
-        "generationConfig": { "maxOutputTokens": max_tokens }
-    });
+    let res = dispatch_sidecar(
+        app,
+        &state,
+        stream_event,
+        system.to_string(),
+        messages,
+        model.to_string(),
+        "".to_string(), // cwd
+        None,           // sessionId
+        Some("gemini".to_string()),
+        Some(api_key.to_string()),
+    )
+    .await?;
 
-    let resp = client
-        .post(&url)
-        .header("content-type", "application/json")
-        .json(&body)
-        .send()
-        .await
-        .map_err(|e| format!("Gemini request failed: {e}"))?;
-
-    if !resp.status().is_success() {
-        let status = resp.status();
-        let body = resp.text().await.unwrap_or_default();
-        return Err(format!("Gemini API error {status}: {body}"));
-    }
-
-    let json: serde_json::Value = resp
-        .json()
-        .await
-        .map_err(|e| format!("Failed to parse Gemini response: {e}"))?;
-
-    json["candidates"][0]["content"]["parts"][0]["text"]
-        .as_str()
-        .map(str::to_string)
-        .ok_or_else(|| "Unexpected response shape from Gemini API.".to_string())
+    Ok(res.text)
 }
 
 /// Fetch live Gemini models from the API, filtered to text generation models.
@@ -483,6 +834,15 @@ pub async fn get_gemini_models() -> Vec<(String, String)> {
             .map(|(id, label)| (id.to_string(), label.to_string()))
             .collect::<Vec<_>>()
     };
+
+    let auth_method = get_credential("gemini_auth_method").unwrap_or_else(|| "api_key".to_string());
+
+    // Code Assist API (OAuth path) has no public ListModels endpoint; use the
+    // static list. Generative Language API (`cloud-platform` scope) also
+    // rejects ListModels for this OAuth client.
+    if auth_method == "oauth" {
+        return fallback();
+    }
 
     let api_key = match get_credential("gemini_api_key") {
         Some(k) => k,
@@ -497,8 +857,9 @@ pub async fn get_gemini_models() -> Vec<(String, String)> {
     let url = format!(
         "https://generativelanguage.googleapis.com/v1beta/models?key={api_key}&pageSize=50"
     );
+    let req = client.get(&url);
 
-    let resp = match client.get(&url).send().await {
+    let resp = match req.send().await {
         Ok(r) if r.status().is_success() => r,
         _ => return fallback(),
     };
@@ -595,37 +956,67 @@ pub async fn validate_gemini(api_key: String) -> Result<String, String> {
     }
 }
 
-/// Test the already-stored Gemini API key without re-saving it.
+/// Test the already-stored Gemini credentials without re-saving them.
+///
+/// API-key mode: hits the Generative Language API `models` endpoint.
+/// OAuth mode: the Gemini CLI's OAuth client only carries the `cloud-platform`
+/// scope, which the Generative Language API rejects. We instead probe the
+/// Code Assist API (`cloudcode-pa.googleapis.com`) — the same endpoint the
+/// Gemini CLI uses for personal-account auth.
 #[tauri::command]
 pub async fn test_gemini_stored() -> Result<String, String> {
+    let auth_method = get_credential("gemini_auth_method").unwrap_or_else(|| "api_key".to_string());
+
     let key = get_credential("gemini_api_key")
         .filter(|k| !k.trim().is_empty())
-        .ok_or("Gemini API key is not configured.")?;
+        .ok_or("Gemini credentials are not configured.")?;
 
     let client = make_corporate_client(Duration::from_secs(10))
         .map_err(|e| format!("HTTP client error: {e}"))?;
 
-    let url =
-        format!("https://generativelanguage.googleapis.com/v1beta/models?key={key}&pageSize=1");
+    let req = if auth_method == "oauth" {
+        client
+            .post("https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist")
+            .header("Authorization", format!("Bearer {key}"))
+            .header("Content-Type", "application/json")
+            .json(&serde_json::json!({
+                "metadata": {
+                    "ideType": "IDE_UNSPECIFIED",
+                    "platform": "PLATFORM_UNSPECIFIED",
+                    "pluginType": "GEMINI"
+                },
+                "cloudaicompanionProject": ""
+            }))
+    } else {
+        let url = format!(
+            "https://generativelanguage.googleapis.com/v1beta/models?key={key}&pageSize=1"
+        );
+        client.get(&url)
+    };
 
-    let resp = client.get(&url).send().await.map_err(|e| {
+    let resp = req.send().await.map_err(|e| {
         if e.is_connect() || e.is_timeout() {
-            "Could not reach generativelanguage.googleapis.com. \
-                 Check your internet connection."
-                .to_string()
+            "Could not reach Google APIs. Check your internet connection.".to_string()
         } else {
             format!("Request failed: {e}")
         }
     })?;
 
-    match resp.status() {
-        s if s.is_success() => Ok("Connected to Gemini API successfully.".to_string()),
-        reqwest::StatusCode::UNAUTHORIZED | reqwest::StatusCode::FORBIDDEN => {
-            Err("Gemini rejected the stored API key. \
-                 Re-enter it in settings to update it."
-                .to_string())
+    let status = resp.status();
+    let body_text = resp.text().await.unwrap_or_default();
+    match status {
+        s if s.is_success() => Ok("Connected to Gemini successfully.".to_string()),
+        StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => {
+            let prefix = if auth_method == "oauth" {
+                "Gemini rejected the OAuth session"
+            } else {
+                "Gemini rejected the stored API key"
+            };
+            Err(format!("{prefix} (HTTP {status}). {body_text}"))
         }
-        s => Err(format!("Unexpected response from Gemini API (HTTP {s}).")),
+        s => Err(format!(
+            "Unexpected response from Gemini API (HTTP {s}). {body_text}"
+        )),
     }
 }
 
@@ -2881,12 +3272,14 @@ async fn complete_multi_text_tool_loop(
                 let key = get_credential("gemini_api_key")
                     .ok_or_else(|| "Gemini: not configured.".to_string())?;
                 complete_multi_gemini(
+                    app,
                     client,
                     &key,
                     &get_active_gemini_model(),
                     &augmented_system,
                     &current_history,
                     max_tokens,
+                    stream_event,
                 )
                 .await?
             }
@@ -3113,13 +3506,14 @@ async fn try_provider_single(
 
 /// Try one provider for a multi-turn call.
 async fn try_provider_multi(
-    _app: &tauri::AppHandle,
+    app: &tauri::AppHandle,
     provider: &str,
     client: &Client,
     claude_key: &str,
     system: &str,
     history_json: &str,
     max_tokens: u32,
+    stream_event: &str,
 ) -> Result<String, String> {
     match provider {
         "claude" => {
@@ -3141,12 +3535,14 @@ async fn try_provider_multi(
             let key = get_credential("gemini_api_key")
                 .ok_or_else(|| "Gemini: not configured.".to_string())?;
             complete_multi_gemini(
+                app,
                 client,
                 &key,
                 &get_active_gemini_model(),
                 system,
                 history_json,
                 max_tokens,
+                stream_event,
             )
             .await
         }
@@ -3211,55 +3607,7 @@ async fn dispatch(
     Err(format!("All providers failed — {summary}"))
 }
 
-async fn dispatch_multi(
-    app: &tauri::AppHandle,
-    client: &Client,
-    claude_key: &str,
-    system: &str,
-    history_json: &str,
-    max_tokens: u32,
-) -> Result<String, String> {
-    let provider = get_ai_provider();
-
-    if provider != "auto" {
-        return try_provider_multi(
-            app,
-            &provider,
-            client,
-            claude_key,
-            system,
-            history_json,
-            max_tokens,
-        )
-        .await;
-    }
-
-    let order = get_provider_order();
-    let mut failure_reasons: Vec<String> = Vec::new();
-
-    for p in &order {
-        match try_provider_multi(app, p, client, claude_key, system, history_json, max_tokens).await
-        {
-            Ok(r) => return Ok(r),
-            Err(e) if e.contains("not configured") || e.contains("no model") => {
-                failure_reasons.push(format!("{p}: not configured"));
-            }
-            Err(e) if is_quota_error(&e) => {
-                failure_reasons.push(format!("{p}: rate limited / quota exceeded — {e}"));
-            }
-            Err(e) => return Err(e),
-        }
-    }
-
-    let summary = if failure_reasons.is_empty() {
-        "No providers configured.".to_string()
-    } else {
-        failure_reasons.join("; ")
-    };
-    Err(format!("All providers failed — {summary}"))
-}
-
-/// Streaming multi-turn dispatch — mirrors `dispatch_multi` but emits token deltas.
+/// Streaming multi-turn dispatch — emits token deltas.
 /// Falls back to non-streaming for providers that lack a streaming multi-turn path (e.g. Gemini).
 async fn dispatch_multi_streaming(
     app: &tauri::AppHandle,
@@ -3329,8 +3677,17 @@ async fn dispatch_multi_streaming(
             }
             // Gemini has no streaming multi-turn path — use standard non-streaming fallback.
             p => {
-                try_provider_multi(app, p, client, claude_key, system, history_json, max_tokens)
-                    .await
+                try_provider_multi(
+                    app,
+                    p,
+                    client,
+                    claude_key,
+                    system,
+                    history_json,
+                    max_tokens,
+                    stream_event,
+                )
+                .await
             }
         };
 

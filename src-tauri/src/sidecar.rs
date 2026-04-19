@@ -104,12 +104,16 @@ struct SidecarRequest {
     id: String,
     #[serde(rename = "type")]
     req_type: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    provider: Option<String>,
     system: String,
     messages: Vec<Message>,
     model: String,
     cwd: String,
     #[serde(rename = "sessionId", skip_serializing_if = "Option::is_none")]
     session_id: Option<String>,
+    #[serde(rename = "apiKey", skip_serializing_if = "Option::is_none")]
+    api_key: Option<String>,
 }
 
 #[derive(Deserialize, Debug, Clone)]
@@ -293,6 +297,8 @@ pub async fn dispatch_sidecar(
     model: String,
     cwd: String,
     session_id: Option<String>,
+    provider: Option<String>,
+    api_key: Option<String>,
 ) -> Result<SidecarResult, String> {
     use tauri::Emitter;
 
@@ -305,11 +311,13 @@ pub async fn dispatch_sidecar(
     let req = SidecarRequest {
         id: id.clone(),
         req_type: "query",
+        provider,
         system,
         messages,
         model,
         cwd,
         session_id,
+        api_key,
     };
     let mut line = serde_json::to_string(&req).map_err(|e| format!("Serialize error: {e}"))?;
     line.push('\n');

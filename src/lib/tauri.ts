@@ -257,6 +257,11 @@ export async function pingAnthropic(): Promise<string> {
   return invoke<string>("ping_anthropic");
 }
 
+/** Send a real "hello" message to Gemini and verify a response comes back. */
+export async function pingGemini(): Promise<string> {
+  return invoke<string>("ping_gemini");
+}
+
 /** Import the Claude Code CLI's OAuth token from the macOS Keychain. */
 export async function importClaudeCodeToken(): Promise<string> {
   return invoke<string>("import_claude_code_token");
@@ -275,6 +280,10 @@ export async function startClaudeOauth(): Promise<string> {
 /** Return the list of available Claude models as [id, display_label] pairs. */
 export async function getClaudeModels(): Promise<[string, string][]> {
   return invoke<[string, string][]>("get_claude_models");
+}
+
+export async function startGeminiOauth(): Promise<string> {
+  return invoke<string>("start_gemini_oauth");
 }
 
 /** Return the list of available Gemini models as [id, display_label] pairs. */
