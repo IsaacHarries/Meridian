@@ -220,7 +220,7 @@ pub async fn complete_multi_local_streaming(
     let mut full_text = String::new();
     let mut buffer = String::new();
 
-    while let Some(chunk) = stream.next().await {
+    'outer: while let Some(chunk) = stream.next().await {
         if claude::is_cancelled() {
             return Err("Review cancelled by user.".to_string());
         }
@@ -236,7 +236,7 @@ pub async fn complete_multi_local_streaming(
             }
             let data = &line["data: ".len()..];
             if data == "[DONE]" {
-                break;
+                break 'outer;
             }
 
             if let Ok(json) = serde_json::from_str::<serde_json::Value>(data) {
@@ -328,7 +328,7 @@ pub async fn complete_local_streaming(
     let mut full_text = String::new();
     let mut buffer = String::new(); // accumulate partial SSE lines
 
-    while let Some(chunk) = stream.next().await {
+    'outer: while let Some(chunk) = stream.next().await {
         if claude::is_cancelled() {
             return Err("Review cancelled by user.".to_string());
         }
@@ -346,7 +346,7 @@ pub async fn complete_local_streaming(
             }
             let data = &line["data: ".len()..];
             if data == "[DONE]" {
-                break;
+                break 'outer;
             }
 
             if let Ok(json) = serde_json::from_str::<serde_json::Value>(data) {
@@ -367,7 +367,7 @@ pub async fn complete_local_streaming(
                     .as_str()
                     .map_or(false, |r| r != "null" && !r.is_empty() && r != "")
                 {
-                    break;
+                    break 'outer;
                 }
             }
         }

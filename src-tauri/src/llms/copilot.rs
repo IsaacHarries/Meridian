@@ -235,6 +235,82 @@ pub async fn complete_copilot(
         .ok_or_else(|| "Unexpected response shape from Copilot API.".to_string())
 }
 
+pub async fn complete_copilot_streaming(
+    app: &tauri::AppHandle,
+    client: &Client,
+    token: &str,
+    model: &str,
+    system: &str,
+    user: &str,
+    max_tokens: u32,
+    stream_event: &str,
+) -> Result<String, String> {
+    use futures_util::StreamExt;
+    use tauri::Emitter;
+
+    let messages = history_to_copilot_messages(
+        system,
+        &[serde_json::json!({ "role": "user", "content": user })],
+    );
+    let body = serde_json::json!({
+        "model": model,
+        "messages": messages,
+        "max_tokens": max_tokens,
+        "stream": true,
+    });
+
+    let url = format!("{COPILOT_API_BASE}/chat/completions");
+    let req =
+        copilot_request_headers(client.post(&url), token).header("Accept", "text/event-stream");
+    let resp = req.json(&body).send().await.map_err(|e| {
+        if e.is_connect() || e.is_timeout() {
+            "Could not reach api.githubcopilot.com.".to_string()
+        } else {
+            format!("Copilot request failed: {e}")
+        }
+    })?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body_text = resp.text().await.unwrap_or_default();
+        return Err(format!("Copilot API error {status}: {body_text}"));
+    }
+
+    let mut stream = resp.bytes_stream();
+    let mut full = String::new();
+    let mut buffer = String::new();
+
+    'outer: while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| format!("Stream read error: {e}"))?;
+        buffer.push_str(&String::from_utf8_lossy(&chunk));
+
+        while let Some(nl) = buffer.find('\n') {
+            let line = buffer[..nl].trim().to_string();
+            buffer = buffer[nl + 1..].to_string();
+            if !line.starts_with("data: ") {
+                continue;
+            }
+            let data = &line["data: ".len()..];
+            if data == "[DONE]" {
+                break 'outer;
+            }
+            if let Ok(json) = serde_json::from_str::<serde_json::Value>(data) {
+                if let Some(delta) = json["choices"][0]["delta"]["content"].as_str() {
+                    if !delta.is_empty() {
+                        full.push_str(delta);
+                        let _ = app.emit(stream_event, serde_json::json!({ "delta": delta }));
+                    }
+                }
+            }
+        }
+    }
+
+    if full.is_empty() {
+        return Err("Copilot returned an empty streaming response.".to_string());
+    }
+    Ok(full)
+}
+
 pub async fn complete_multi_copilot(
     client: &Client,
     token: &str,
@@ -320,7 +396,7 @@ pub async fn complete_multi_copilot_streaming(
     let mut full = String::new();
     let mut buffer = String::new();
 
-    while let Some(chunk) = stream.next().await {
+    'outer: while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|e| format!("Stream read error: {e}"))?;
         buffer.push_str(&String::from_utf8_lossy(&chunk));
 
@@ -332,7 +408,7 @@ pub async fn complete_multi_copilot_streaming(
             }
             let data = &line["data: ".len()..];
             if data == "[DONE]" {
-                return Ok(full);
+                break 'outer;
             }
             if let Ok(json) = serde_json::from_str::<serde_json::Value>(data) {
                 if let Some(delta) = json["choices"][0]["delta"]["content"].as_str() {
@@ -412,6 +488,10 @@ async fn fetch_copilot_models_live(
             Some(s) => s.to_string(),
             None => continue,
         };
+        // Skip duplicate IDs from the live API.
+        if out.iter().any(|(existing_id, _)| existing_id == &id) {
+            continue;
+        }
         let label = m["name"]
             .as_str()
             .map(str::to_string)
@@ -568,7 +648,10 @@ mod tests {
     fn test_history_to_copilot_messages_system_only() {
         let msgs = history_to_copilot_messages("System instruction", &[]);
         assert_eq!(msgs.len(), 1);
-        assert_eq!(msgs[0], json!({ "role": "system", "content": "System instruction" }));
+        assert_eq!(
+            msgs[0],
+            json!({ "role": "system", "content": "System instruction" })
+        );
     }
 
     #[test]
@@ -580,9 +663,18 @@ mod tests {
         ];
         let msgs = history_to_copilot_messages("You are helpful.", &history);
         assert_eq!(msgs.len(), 4);
-        assert_eq!(msgs[0], json!({ "role": "system", "content": "You are helpful." }));
+        assert_eq!(
+            msgs[0],
+            json!({ "role": "system", "content": "You are helpful." })
+        );
         assert_eq!(msgs[1], json!({ "role": "user", "content": "Hello" }));
-        assert_eq!(msgs[2], json!({ "role": "assistant", "content": "Hi there!" }));
-        assert_eq!(msgs[3], json!({ "role": "user", "content": "How are you?" }));
+        assert_eq!(
+            msgs[2],
+            json!({ "role": "assistant", "content": "Hi there!" })
+        );
+        assert_eq!(
+            msgs[3],
+            json!({ "role": "user", "content": "How are you?" })
+        );
     }
 }

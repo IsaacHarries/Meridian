@@ -583,6 +583,7 @@ pub async fn complete_claude_streaming(
     use futures_util::StreamExt;
     use tauri::Emitter;
 
+    eprintln!("[meridian] complete_claude_streaming: starting request");
     let body = build_messages_body(
         api_key,
         model,
@@ -598,6 +599,10 @@ pub async fn complete_claude_streaming(
     let mut attempt = 0u32;
 
     let resp = loop {
+        eprintln!(
+            "[meridian] complete_claude_streaming: send attempt {}",
+            attempt + 1
+        );
         let req = client
             .post("https://api.anthropic.com/v1/messages")
             .header("anthropic-version", "2023-06-01")
@@ -614,16 +619,31 @@ pub async fn complete_claude_streaming(
                 .header("anthropic-client-platform", "claude_code_cli")
         };
 
-        let resp = req.json(&body).send().await.map_err(|e| {
-            if e.is_connect() || e.is_timeout() {
-                "Could not reach api.anthropic.com. Check your internet connection.".to_string()
-            } else {
-                format!("Request failed: {e}")
+        let resp = match req.json(&body).send().await {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("[meridian] complete_claude_streaming: request error: {e}");
+                if e.is_connect() || e.is_timeout() {
+                    return Err(
+                        "Could not reach api.anthropic.com. Check your internet connection."
+                            .to_string(),
+                    );
+                } else {
+                    return Err(format!("Request failed: {e}"));
+                }
             }
-        })?;
+        };
 
+        eprintln!(
+            "[meridian] complete_claude_streaming: status={}",
+            resp.status()
+        );
         if resp.status().as_u16() == 429 && attempt < MAX_RETRIES {
             let wait_ms = retry_after_ms(resp.headers(), delay_ms);
+            eprintln!(
+                "[meridian] complete_claude_streaming: rate limited, waiting {}ms",
+                wait_ms
+            );
             delay_ms = (delay_ms * 2).min(30_000);
             attempt += 1;
             tokio::time::sleep(tokio::time::Duration::from_millis(wait_ms)).await;
@@ -633,21 +653,33 @@ pub async fn complete_claude_streaming(
         if !resp.status().is_success() {
             let status = resp.status();
             let body_text = resp.text().await.unwrap_or_default();
+            eprintln!(
+                "[meridian] complete_claude_streaming: error body: {}",
+                body_text
+            );
             return Err(format!("Claude API error {status}: {body_text}"));
         }
 
         break resp;
     };
 
+    eprintln!("[meridian] complete_claude_streaming: starting to read stream");
     let mut stream = resp.bytes_stream();
     let mut full_text = String::new();
     let mut buffer = String::new();
 
-    while let Some(chunk) = stream.next().await {
+    'outer: while let Some(chunk) = stream.next().await {
         if REVIEW_CANCELLED.load(Ordering::Relaxed) {
+            eprintln!("[meridian] complete_claude_streaming: cancelled by user");
             return Err("Review cancelled by user.".to_string());
         }
-        let chunk = chunk.map_err(|e| format!("Stream read error: {e}"))?;
+        let chunk = match chunk {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("[meridian] complete_claude_streaming: stream error: {e}");
+                return Err(format!("Stream read error: {e}"));
+            }
+        };
         buffer.push_str(&String::from_utf8_lossy(&chunk));
 
         while let Some(nl) = buffer.find('\n') {
@@ -677,11 +709,18 @@ pub async fn complete_claude_streaming(
                             }
                         }
                     }
-                    "message_stop" => break,
+                    "message_stop" => {
+                        eprintln!("[meridian] complete_claude_streaming: received message_stop");
+                        break 'outer;
+                    }
                     "error" => {
                         let msg = json["error"]["message"]
                             .as_str()
                             .unwrap_or("Unknown streaming error");
+                        eprintln!(
+                            "[meridian] complete_claude_streaming: API level stream error: {}",
+                            msg
+                        );
                         return Err(format!("Claude stream error: {msg}"));
                     }
                     _ => {}
@@ -690,6 +729,10 @@ pub async fn complete_claude_streaming(
         }
     }
 
+    eprintln!(
+        "[meridian] complete_claude_streaming: finished (len={})",
+        full_text.len()
+    );
     if full_text.is_empty() {
         return Err("Claude returned an empty streaming response.".to_string());
     }
@@ -834,7 +877,7 @@ pub async fn complete_multi_claude_streaming(
     let mut full_text = String::new();
     let mut buffer = String::new();
 
-    while let Some(chunk) = stream.next().await {
+    'outer: while let Some(chunk) = stream.next().await {
         if REVIEW_CANCELLED.load(Ordering::Relaxed) {
             return Err("Review cancelled by user.".to_string());
         }
@@ -868,7 +911,7 @@ pub async fn complete_multi_claude_streaming(
                             }
                         }
                     }
-                    "message_stop" => break,
+                    "message_stop" => break 'outer,
                     "error" => {
                         let msg = json["error"]["message"]
                             .as_str()

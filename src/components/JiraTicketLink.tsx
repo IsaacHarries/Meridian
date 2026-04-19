@@ -7,21 +7,36 @@ interface JiraTicketLinkProps {
   className?: string;
 }
 
-export function JiraTicketLink({ ticketKey, url, className }: JiraTicketLinkProps) {
+export function JiraTicketLink({
+  ticketKey,
+  url,
+  className,
+}: JiraTicketLinkProps) {
   const base = "font-mono text-xs shrink-0";
   if (url) {
     return (
-      <button
-        type="button"
-        onClick={(e) => { e.stopPropagation(); openUrl(url); }}
+      <span
+        role="button"
+        tabIndex={0}
+        onClick={(e) => {
+          e.stopPropagation();
+          openUrl(url);
+        }}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            e.stopPropagation();
+            openUrl(url);
+          }
+        }}
         className={cn(
           base,
           "text-primary hover:underline underline-offset-2 cursor-pointer",
-          className
+          className,
         )}
       >
         {ticketKey}
-      </button>
+      </span>
     );
   }
   return (
@@ -30,5 +45,3 @@ export function JiraTicketLink({ ticketKey, url, className }: JiraTicketLinkProp
     </span>
   );
 }
-
-

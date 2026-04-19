@@ -63,7 +63,10 @@ import {
   type GroomingBlocker,
 } from "@/stores/implementTicketStore";
 import { enrichMessageWithUrls } from "@/lib/urlFetch";
-import { ToolRequestCard, type ToolRequest } from "@/components/ToolRequestCard";
+import {
+  ToolRequestCard,
+  type ToolRequest,
+} from "@/components/ToolRequestCard";
 
 interface ImplementTicketScreenProps {
   credStatus: CredentialStatus;
@@ -90,7 +93,15 @@ const STAGE_LABELS: Record<Exclude<Stage, "select">, string> = {
 };
 
 const STAGE_ORDER: Exclude<Stage, "select" | "complete">[] = [
-  "grooming", "impact", "triage", "plan", "implementation", "tests", "review", "pr", "retro",
+  "grooming",
+  "impact",
+  "triage",
+  "plan",
+  "implementation",
+  "tests",
+  "review",
+  "pr",
+  "retro",
 ];
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -101,18 +112,34 @@ function BlockerBanner({ blockers }: { blockers: GroomingBlocker[] }) {
   if (blockers.length === 0) return null;
   const hasBlocking = blockers.some((b) => b.severity === "blocking");
   return (
-    <div className={`rounded-md border p-3 space-y-2 ${hasBlocking ? "border-red-300 bg-red-50 dark:border-red-800 dark:bg-red-950/30" : "border-amber-300 bg-amber-50 dark:border-amber-800 dark:bg-amber-950/30"}`}>
-      <div className={`flex items-center gap-2 text-sm font-medium ${hasBlocking ? "text-red-700 dark:text-red-300" : "text-amber-700 dark:text-amber-300"}`}>
+    <div
+      className={`rounded-md border p-3 space-y-2 ${hasBlocking ? "border-red-300 bg-red-50 dark:border-red-800 dark:bg-red-950/30" : "border-amber-300 bg-amber-50 dark:border-amber-800 dark:bg-amber-950/30"}`}
+    >
+      <div
+        className={`flex items-center gap-2 text-sm font-medium ${hasBlocking ? "text-red-700 dark:text-red-300" : "text-amber-700 dark:text-amber-300"}`}
+      >
         <AlertTriangle className="h-4 w-4 shrink-0" />
-        {hasBlocking ? "Blocking issues — resolve before proceeding" : "Warnings — review before proceeding"}
+        {hasBlocking
+          ? "Blocking issues — resolve before proceeding"
+          : "Warnings — review before proceeding"}
       </div>
       {blockers.map((b) => (
         <div key={b.id} className="pl-6 space-y-0.5">
-          <div className={`flex items-center gap-1.5 text-xs font-medium ${b.severity === "blocking" ? "text-red-700 dark:text-red-300" : "text-amber-700 dark:text-amber-300"}`}>
-            <span className={`px-1.5 py-0.5 rounded ${b.severity === "blocking" ? "bg-red-100 dark:bg-red-900" : "bg-amber-100 dark:bg-amber-900"}`}>{b.severity}</span>
+          <div
+            className={`flex items-center gap-1.5 text-xs font-medium ${b.severity === "blocking" ? "text-red-700 dark:text-red-300" : "text-amber-700 dark:text-amber-300"}`}
+          >
+            <span
+              className={`px-1.5 py-0.5 rounded ${b.severity === "blocking" ? "bg-red-100 dark:bg-red-900" : "bg-amber-100 dark:bg-amber-900"}`}
+            >
+              {b.severity}
+            </span>
             {b.message}
           </div>
-          <p className={`text-xs ${b.severity === "blocking" ? "text-red-600 dark:text-red-400" : "text-amber-600 dark:text-amber-400"}`}>{b.detail}</p>
+          <p
+            className={`text-xs ${b.severity === "blocking" ? "text-red-600 dark:text-red-400" : "text-amber-600 dark:text-amber-400"}`}
+          >
+            {b.detail}
+          </p>
         </div>
       ))}
     </div>
@@ -123,19 +150,51 @@ function BlockerBanner({ blockers }: { blockers: GroomingBlocker[] }) {
 
 function RiskBadge({ level }: { level: "low" | "medium" | "high" }) {
   const cls =
-    level === "high" ? "bg-red-100 text-red-700 dark:bg-red-900 dark:text-red-300" :
-    level === "medium" ? "bg-amber-100 text-amber-700 dark:bg-amber-900 dark:text-amber-300" :
-    "bg-green-100 text-green-700 dark:bg-green-900 dark:text-green-300";
-  return <span className={`px-2 py-0.5 rounded text-xs font-medium ${cls}`}>{level} risk</span>;
+    level === "high"
+      ? "bg-red-100 text-red-700 dark:bg-red-900 dark:text-red-300"
+      : level === "medium"
+        ? "bg-amber-100 text-amber-700 dark:bg-amber-900 dark:text-amber-300"
+        : "bg-green-100 text-green-700 dark:bg-green-900 dark:text-green-300";
+  return (
+    <span className={`px-2 py-0.5 rounded text-xs font-medium ${cls}`}>
+      {level} risk
+    </span>
+  );
 }
 
-function ConfidenceBadge({ level }: { level: "ready" | "needs_attention" | "requires_rework" }) {
-  if (level === "ready") return <span className="px-2 py-0.5 rounded text-xs font-medium bg-green-100 text-green-700">Ready</span>;
-  if (level === "needs_attention") return <span className="px-2 py-0.5 rounded text-xs font-medium bg-amber-100 text-amber-700">Needs attention</span>;
-  return <span className="px-2 py-0.5 rounded text-xs font-medium bg-red-100 text-red-700">Requires rework</span>;
+function ConfidenceBadge({
+  level,
+}: {
+  level: "ready" | "needs_attention" | "requires_rework";
+}) {
+  if (level === "ready")
+    return (
+      <span className="px-2 py-0.5 rounded text-xs font-medium bg-green-100 text-green-700">
+        Ready
+      </span>
+    );
+  if (level === "needs_attention")
+    return (
+      <span className="px-2 py-0.5 rounded text-xs font-medium bg-amber-100 text-amber-700">
+        Needs attention
+      </span>
+    );
+  return (
+    <span className="px-2 py-0.5 rounded text-xs font-medium bg-red-100 text-red-700">
+      Requires rework
+    </span>
+  );
 }
 
-function CollapsibleList({ title, items, icon }: { title: string; items: string[]; icon?: React.ReactNode }) {
+function CollapsibleList({
+  title,
+  items,
+  icon,
+}: {
+  title: string;
+  items: string[];
+  icon?: React.ReactNode;
+}) {
   const [open, setOpen] = useState(true);
   if (items.length === 0) return null;
   return (
@@ -147,7 +206,11 @@ function CollapsibleList({ title, items, icon }: { title: string; items: string[
         {icon}
         <span className="flex-1 text-sm font-medium">{title}</span>
         <span className="text-xs text-muted-foreground">{items.length}</span>
-        {open ? <ChevronDown className="h-4 w-4 text-muted-foreground" /> : <ChevronRight className="h-4 w-4 text-muted-foreground" />}
+        {open ? (
+          <ChevronDown className="h-4 w-4 text-muted-foreground" />
+        ) : (
+          <ChevronRight className="h-4 w-4 text-muted-foreground" />
+        )}
       </button>
       {open && (
         <ul className="px-3 pb-2 pt-1 space-y-1">
@@ -163,7 +226,13 @@ function CollapsibleList({ title, items, icon }: { title: string; items: string[
   );
 }
 
-function CopyButton({ text, label = "Copy" }: { text: string; label?: string }) {
+function CopyButton({
+  text,
+  label = "Copy",
+}: {
+  text: string;
+  label?: string;
+}) {
   const [copied, setCopied] = useState(false);
   async function copy() {
     await navigator.clipboard.writeText(text);
@@ -171,8 +240,17 @@ function CopyButton({ text, label = "Copy" }: { text: string; label?: string }) 
     setTimeout(() => setCopied(false), 2000);
   }
   return (
-    <Button variant="ghost" size="sm" onClick={copy} className="gap-1.5 h-7 text-xs">
-      {copied ? <Check className="h-3.5 w-3.5 text-green-600" /> : <Copy className="h-3.5 w-3.5" />}
+    <Button
+      variant="ghost"
+      size="sm"
+      onClick={copy}
+      className="gap-1.5 h-7 text-xs"
+    >
+      {copied ? (
+        <Check className="h-3.5 w-3.5 text-green-600" />
+      ) : (
+        <Copy className="h-3.5 w-3.5" />
+      )}
       {copied ? "Copied" : label}
     </Button>
   );
@@ -196,7 +274,8 @@ function parseDescriptionText(text: string): DescriptionSection[] {
   let currentHeading: string | null = null;
   let currentLines: string[] = [];
 
-  const headingPattern = /^(?:h[1-6]\.\s*(.+)|#{1,3}\s+(.+)|(\*{1,2})(.+)\3\s*$)/;
+  const headingPattern =
+    /^(?:h[1-6]\.\s*(.+)|#{1,3}\s+(.+)|(\*{1,2})(.+)\3\s*$)/;
   // A line that is just a short phrase (1-6 words) ending in ":" and nothing else
   const labelPattern = /^([A-Z][^:\n]{2,40}):\s*$/;
 
@@ -214,8 +293,8 @@ function parseDescriptionText(text: string): DescriptionSection[] {
     const heading = hMatch
       ? (hMatch[1] || hMatch[2] || hMatch[4] || "").trim()
       : labelMatch
-      ? labelMatch[1].trim()
-      : null;
+        ? labelMatch[1].trim()
+        : null;
 
     if (heading) {
       flush();
@@ -227,7 +306,9 @@ function parseDescriptionText(text: string): DescriptionSection[] {
   flush();
 
   // Drop empty leading/trailing sections
-  return sections.filter(s => s.heading !== null || s.content.trim().length > 0);
+  return sections.filter(
+    (s) => s.heading !== null || s.content.trim().length > 0,
+  );
 }
 
 function DescriptionSectionsPanel({
@@ -242,8 +323,8 @@ function DescriptionSectionsPanel({
     sections.length > 0
       ? sections
       : fallbackDescription
-      ? parseDescriptionText(fallbackDescription)
-      : [];
+        ? parseDescriptionText(fallbackDescription)
+        : [];
 
   if (resolved.length === 0) return null;
 
@@ -251,7 +332,9 @@ function DescriptionSectionsPanel({
   if (resolved.length === 1 && !resolved[0].heading) {
     return (
       <div className="border rounded-md overflow-hidden">
-        <div className="px-3 py-2 bg-muted/30 text-sm font-medium">Description</div>
+        <div className="px-3 py-2 bg-muted/30 text-sm font-medium">
+          Description
+        </div>
         <div className="px-3 py-2">
           <pre className="text-sm text-muted-foreground whitespace-pre-wrap font-sans leading-relaxed">
             {resolved[0].content}
@@ -268,13 +351,23 @@ function DescriptionSectionsPanel({
         Key Details
       </div>
       {resolved.map((section, i) => (
-        <CollapsibleSection key={i} heading={section.heading} content={section.content} />
+        <CollapsibleSection
+          key={i}
+          heading={section.heading}
+          content={section.content}
+        />
       ))}
     </div>
   );
 }
 
-function CollapsibleSection({ heading, content }: { heading: string | null; content: string }) {
+function CollapsibleSection({
+  heading,
+  content,
+}: {
+  heading: string | null;
+  content: string;
+}) {
   const [open, setOpen] = useState(true);
   if (!heading) {
     // Preamble prose (before first heading) — always shown inline without toggle
@@ -295,9 +388,11 @@ function CollapsibleSection({ heading, content }: { heading: string | null; cont
         className="w-full flex items-center gap-2 px-3 py-2 hover:bg-muted/40 transition-colors text-left"
       >
         <span className="flex-1 text-sm font-medium">{heading}</span>
-        {open
-          ? <ChevronDown className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
-          : <ChevronRight className="h-3.5 w-3.5 text-muted-foreground shrink-0" />}
+        {open ? (
+          <ChevronDown className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+        ) : (
+          <ChevronRight className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+        )}
       </button>
       {open && (
         <div className="px-3 pb-3">
@@ -318,13 +413,17 @@ function CollapsibleSection({ heading, content }: { heading: string | null; cont
  */
 function diffStringArrays(
   prev: string[],
-  next: string[]
+  next: string[],
 ): { text: string; status: "added" | "removed" | "unchanged" }[] {
   const prevSet = new Set(prev);
   const nextSet = new Set(next);
-  const result: { text: string; status: "added" | "removed" | "unchanged" }[] = [];
+  const result: { text: string; status: "added" | "removed" | "unchanged" }[] =
+    [];
   for (const item of next) {
-    result.push({ text: item, status: prevSet.has(item) ? "unchanged" : "added" });
+    result.push({
+      text: item,
+      status: prevSet.has(item) ? "unchanged" : "added",
+    });
   }
   for (const item of prev) {
     if (!nextSet.has(item)) result.push({ text: item, status: "removed" });
@@ -339,11 +438,18 @@ interface DiffedListProps {
   hasChanges: boolean;
 }
 
-function DiffedCollapsibleList({ title, items, icon, hasChanges }: DiffedListProps) {
+function DiffedCollapsibleList({
+  title,
+  items,
+  icon,
+  hasChanges,
+}: DiffedListProps) {
   const [open, setOpen] = useState(true);
   if (items.length === 0) return null;
   return (
-    <div className={`border rounded-md overflow-hidden ${hasChanges ? "border-blue-300 dark:border-blue-700" : ""}`}>
+    <div
+      className={`border rounded-md overflow-hidden ${hasChanges ? "border-blue-300 dark:border-blue-700" : ""}`}
+    >
       <button
         className="w-full flex items-center gap-2 px-3 py-2 bg-muted/30 hover:bg-muted/50 transition-colors text-left"
         onClick={() => setOpen(!open)}
@@ -355,8 +461,14 @@ function DiffedCollapsibleList({ title, items, icon, hasChanges }: DiffedListPro
             updated
           </span>
         )}
-        <span className="text-xs text-muted-foreground">{items.filter(i => i.status !== "removed").length}</span>
-        {open ? <ChevronDown className="h-4 w-4 text-muted-foreground" /> : <ChevronRight className="h-4 w-4 text-muted-foreground" />}
+        <span className="text-xs text-muted-foreground">
+          {items.filter((i) => i.status !== "removed").length}
+        </span>
+        {open ? (
+          <ChevronDown className="h-4 w-4 text-muted-foreground" />
+        ) : (
+          <ChevronRight className="h-4 w-4 text-muted-foreground" />
+        )}
       </button>
       {open && (
         <ul className="px-3 pb-2 pt-1 space-y-1">
@@ -367,12 +479,16 @@ function DiffedCollapsibleList({ title, items, icon, hasChanges }: DiffedListPro
                 item.status === "added"
                   ? "bg-green-50 dark:bg-green-950/30 text-green-800 dark:text-green-200"
                   : item.status === "removed"
-                  ? "bg-red-50 dark:bg-red-950/30 text-red-700 dark:text-red-300 line-through opacity-60"
-                  : "text-muted-foreground"
+                    ? "bg-red-50 dark:bg-red-950/30 text-red-700 dark:text-red-300 line-through opacity-60"
+                    : "text-muted-foreground"
               }`}
             >
               <span className="shrink-0">
-                {item.status === "added" ? "+" : item.status === "removed" ? "−" : "·"}
+                {item.status === "added"
+                  ? "+"
+                  : item.status === "removed"
+                    ? "−"
+                    : "·"}
               </span>
               <span>{item.text}</span>
             </li>
@@ -385,7 +501,13 @@ function DiffedCollapsibleList({ title, items, icon, hasChanges }: DiffedListPro
 
 // ── Grooming progress banner ──────────────────────────────────────────────────
 
-function GroomingProgressBanner({ message, streamText }: { message: string; streamText: string }) {
+function GroomingProgressBanner({
+  message,
+  streamText,
+}: {
+  message: string;
+  streamText: string;
+}) {
   const [expanded, setExpanded] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -406,10 +528,12 @@ function GroomingProgressBanner({ message, streamText }: { message: string; stre
         <span className="flex-1 leading-snug">{message}</span>
         {streamText && (
           <button
-            onClick={() => setExpanded(e => !e)}
+            onClick={() => setExpanded((e) => !e)}
             className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors shrink-0"
           >
-            <ChevronDown className={`h-3.5 w-3.5 transition-transform ${expanded ? "rotate-180" : ""}`} />
+            <ChevronDown
+              className={`h-3.5 w-3.5 transition-transform ${expanded ? "rotate-180" : ""}`}
+            />
             {expanded ? "Hide" : "Show"} output
           </button>
         )}
@@ -444,20 +568,38 @@ function SuggestedEditCard({
   const isDeclined = edit.status === "declined";
 
   return (
-    <div className={`border rounded-md overflow-hidden transition-opacity ${isDeclined ? "opacity-40" : ""}`}>
+    <div
+      className={`border rounded-md overflow-hidden transition-opacity ${isDeclined ? "opacity-40" : ""}`}
+    >
       {/* Header */}
-      <div className={`px-3 py-2 flex items-center justify-between text-sm font-medium ${
-        isApproved ? "bg-green-50 dark:bg-green-950/30 border-b border-green-200 dark:border-green-800" :
-        isDeclined ? "bg-muted/30 border-b" :
-        "bg-amber-50 dark:bg-amber-950/20 border-b border-amber-200 dark:border-amber-800"
-      }`}>
+      <div
+        className={`px-3 py-2 flex items-center justify-between text-sm font-medium ${
+          isApproved
+            ? "bg-green-50 dark:bg-green-950/30 border-b border-green-200 dark:border-green-800"
+            : isDeclined
+              ? "bg-muted/30 border-b"
+              : "bg-amber-50 dark:bg-amber-950/20 border-b border-amber-200 dark:border-amber-800"
+        }`}
+      >
         <div className="flex items-center gap-2">
-          {isApproved && <CheckCircle2 className="h-3.5 w-3.5 text-green-600" />}
-          {isDeclined && <Circle className="h-3.5 w-3.5 text-muted-foreground" />}
-          {isPending && <AlertTriangle className="h-3.5 w-3.5 text-amber-500" />}
-          <span className={isDeclined ? "line-through text-muted-foreground" : ""}>{edit.section}</span>
+          {isApproved && (
+            <CheckCircle2 className="h-3.5 w-3.5 text-green-600" />
+          )}
+          {isDeclined && (
+            <Circle className="h-3.5 w-3.5 text-muted-foreground" />
+          )}
+          {isPending && (
+            <AlertTriangle className="h-3.5 w-3.5 text-amber-500" />
+          )}
+          <span
+            className={isDeclined ? "line-through text-muted-foreground" : ""}
+          >
+            {edit.section}
+          </span>
           {edit.current === null && (
-            <span className="text-xs px-1.5 py-0.5 rounded bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300">missing</span>
+            <span className="text-xs px-1.5 py-0.5 rounded bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300">
+              missing
+            </span>
           )}
         </div>
         {isPending && (
@@ -477,12 +619,18 @@ function SuggestedEditCard({
           </div>
         )}
         {isApproved && (
-          <button onClick={() => onDecline(edit.id)} className="text-xs text-muted-foreground hover:text-foreground transition-colors">
+          <button
+            onClick={() => onDecline(edit.id)}
+            className="text-xs text-muted-foreground hover:text-foreground transition-colors"
+          >
             Undo
           </button>
         )}
         {isDeclined && (
-          <button onClick={() => onApprove(edit.id)} className="text-xs text-muted-foreground hover:text-foreground transition-colors">
+          <button
+            onClick={() => onApprove(edit.id)}
+            className="text-xs text-muted-foreground hover:text-foreground transition-colors"
+          >
             Restore
           </button>
         )}
@@ -492,11 +640,13 @@ function SuggestedEditCard({
         <div className="divide-y text-xs font-mono">
           {edit.current !== null && (
             <div className="px-3 py-2 bg-red-50 dark:bg-red-950/20 text-red-700 dark:text-red-300 whitespace-pre-wrap leading-relaxed">
-              <span className="select-none mr-1 opacity-60">−</span>{edit.current}
+              <span className="select-none mr-1 opacity-60">−</span>
+              {edit.current}
             </div>
           )}
           <div className="px-3 py-2 bg-green-50 dark:bg-green-950/20 text-green-700 dark:text-green-300 whitespace-pre-wrap leading-relaxed">
-            <span className="select-none mr-1 opacity-60">+</span>{edit.suggested}
+            <span className="select-none mr-1 opacity-60">+</span>
+            {edit.suggested}
           </div>
         </div>
       )}
@@ -525,13 +675,19 @@ function ClarifyingQuestionsCard({
           <AlertTriangle className="h-4 w-4" />
           Questions from the agent
         </div>
-        <button onClick={onDismiss} className="text-xs text-muted-foreground hover:text-foreground">
+        <button
+          onClick={onDismiss}
+          className="text-xs text-muted-foreground hover:text-foreground"
+        >
           Dismiss
         </button>
       </div>
       <ul className="divide-y">
         {questions.map((q, i) => (
-          <li key={i} className="px-3 py-2 text-sm text-amber-900 dark:text-amber-100">
+          <li
+            key={i}
+            className="px-3 py-2 text-sm text-amber-900 dark:text-amber-100"
+          >
             {i + 1}. {q}
           </li>
         ))}
@@ -549,19 +705,29 @@ function FilesReadPanel({ files }: { files: string[] }) {
   return (
     <div className="border rounded-md overflow-hidden">
       <button
-        onClick={() => setOpen(o => !o)}
+        onClick={() => setOpen((o) => !o)}
         className="w-full px-3 py-2 flex items-center justify-between text-sm bg-muted/20 hover:bg-muted/40 transition-colors"
       >
         <div className="flex items-center gap-2 text-muted-foreground">
           <FileCode className="h-4 w-4" />
-          <span>{files.length} file{files.length !== 1 ? "s" : ""} read from codebase</span>
+          <span>
+            {files.length} file{files.length !== 1 ? "s" : ""} read from
+            codebase
+          </span>
         </div>
-        <ChevronDown className={`h-4 w-4 text-muted-foreground transition-transform ${open ? "rotate-180" : ""}`} />
+        <ChevronDown
+          className={`h-4 w-4 text-muted-foreground transition-transform ${open ? "rotate-180" : ""}`}
+        />
       </button>
       {open && (
         <ul className="divide-y">
           {files.map((f, i) => (
-            <li key={i} className="px-3 py-1.5 text-xs font-mono text-muted-foreground">{f}</li>
+            <li
+              key={i}
+              className="px-3 py-1.5 text-xs font-mono text-muted-foreground"
+            >
+              {f}
+            </li>
           ))}
         </ul>
       )}
@@ -589,40 +755,67 @@ interface GroomingPanelProps {
 }
 
 function GroomingPanel({
-  data, baseline, descriptionSections, description,
-  stepsToReproduce, observedBehavior, expectedBehavior,
-  suggestedEdits, clarifyingQuestions, filesRead,
-  onApproveEdit, onDeclineEdit, onDismissQuestions,
-  onUpdateJira, jiraUpdateStatus, jiraUpdateError,
+  data,
+  baseline,
+  descriptionSections,
+  description,
+  stepsToReproduce,
+  observedBehavior,
+  expectedBehavior,
+  suggestedEdits,
+  clarifyingQuestions,
+  filesRead,
+  onApproveEdit,
+  onDeclineEdit,
+  onDismissQuestions,
+  onUpdateJira,
+  jiraUpdateStatus,
+  jiraUpdateError,
 }: GroomingPanelProps) {
   const hasDiff = baseline != null;
 
   const relevantItems = hasDiff
     ? diffStringArrays(
-        baseline!.relevant_areas.map(a => `${a.area} — ${a.reason}`),
-        data.relevant_areas.map(a => `${a.area} — ${a.reason}`)
+        baseline!.relevant_areas.map((a) => `${a.area} — ${a.reason}`),
+        data.relevant_areas.map((a) => `${a.area} — ${a.reason}`),
       )
-    : data.relevant_areas.map(a => ({ text: `${a.area} — ${a.reason}`, status: "unchanged" as const }));
+    : data.relevant_areas.map((a) => ({
+        text: `${a.area} — ${a.reason}`,
+        status: "unchanged" as const,
+      }));
 
   const ambiguityItems = hasDiff
     ? diffStringArrays(baseline!.ambiguities, data.ambiguities)
-    : data.ambiguities.map(t => ({ text: t, status: "unchanged" as const }));
+    : data.ambiguities.map((t) => ({ text: t, status: "unchanged" as const }));
 
   const depItems = hasDiff
     ? diffStringArrays(baseline!.dependencies, data.dependencies)
-    : data.dependencies.map(t => ({ text: t, status: "unchanged" as const }));
+    : data.dependencies.map((t) => ({ text: t, status: "unchanged" as const }));
 
-  const summaryChanged = hasDiff && baseline!.ticket_summary !== data.ticket_summary;
+  const summaryChanged =
+    hasDiff && baseline!.ticket_summary !== data.ticket_summary;
 
-  const pendingCount = suggestedEdits.filter(e => e.status === "pending").length;
-  const approvedCount = suggestedEdits.filter(e => e.status === "approved").length;
+  const pendingCount = suggestedEdits.filter(
+    (e) => e.status === "pending",
+  ).length;
+  const approvedCount = suggestedEdits.filter(
+    (e) => e.status === "approved",
+  ).length;
 
   return (
     <div className="space-y-3">
       {/* Badges */}
       <div className="flex items-center gap-2 flex-wrap">
         <Badge variant="secondary">{data.ticket_type}</Badge>
-        <Badge variant={data.estimated_complexity === "high" ? "destructive" : data.estimated_complexity === "medium" ? "secondary" : "outline"}>
+        <Badge
+          variant={
+            data.estimated_complexity === "high"
+              ? "destructive"
+              : data.estimated_complexity === "medium"
+                ? "secondary"
+                : "outline"
+          }
+        >
           {data.estimated_complexity} complexity
         </Badge>
         {approvedCount > 0 && (
@@ -638,15 +831,22 @@ function GroomingPanel({
       </div>
 
       {/* Summary */}
-      <div className={`rounded px-2 py-1 -mx-2 ${summaryChanged ? "bg-blue-50 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-800" : ""}`}>
+      <div
+        className={`rounded px-2 py-1 -mx-2 ${summaryChanged ? "bg-blue-50 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-800" : ""}`}
+      >
         <p className="text-sm leading-relaxed">{data.ticket_summary}</p>
         {summaryChanged && (
-          <p className="text-xs text-muted-foreground line-through mt-0.5">{baseline!.ticket_summary}</p>
+          <p className="text-xs text-muted-foreground line-through mt-0.5">
+            {baseline!.ticket_summary}
+          </p>
         )}
       </div>
 
       {/* Clarifying questions — shown prominently when present */}
-      <ClarifyingQuestionsCard questions={clarifyingQuestions} onDismiss={onDismissQuestions} />
+      <ClarifyingQuestionsCard
+        questions={clarifyingQuestions}
+        onDismiss={onDismissQuestions}
+      />
 
       {/* JIRA description sections */}
       {(descriptionSections?.length || description) && (
@@ -663,9 +863,24 @@ function GroomingPanel({
             <Bug className="h-4 w-4 text-muted-foreground" />
             Bug Details
           </div>
-          {stepsToReproduce && <CollapsibleSection heading="Steps to Reproduce" content={stepsToReproduce} />}
-          {observedBehavior && <CollapsibleSection heading="Observed Behavior" content={observedBehavior} />}
-          {expectedBehavior && <CollapsibleSection heading="Expected Behavior" content={expectedBehavior} />}
+          {stepsToReproduce && (
+            <CollapsibleSection
+              heading="Steps to Reproduce"
+              content={stepsToReproduce}
+            />
+          )}
+          {observedBehavior && (
+            <CollapsibleSection
+              heading="Observed Behavior"
+              content={observedBehavior}
+            />
+          )}
+          {expectedBehavior && (
+            <CollapsibleSection
+              heading="Expected Behavior"
+              content={expectedBehavior}
+            />
+          )}
         </div>
       )}
 
@@ -675,7 +890,7 @@ function GroomingPanel({
           <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
             Suggested ticket improvements
           </p>
-          {suggestedEdits.map(edit => (
+          {suggestedEdits.map((edit) => (
             <SuggestedEditCard
               key={edit.id}
               edit={edit}
@@ -691,7 +906,11 @@ function GroomingPanel({
               className="gap-1.5"
               onClick={onUpdateJira}
               disabled={jiraUpdateStatus === "saving" || approvedCount === 0}
-              title={approvedCount === 0 ? "Approve at least one suggested edit first" : `Push ${approvedCount} approved edit${approvedCount !== 1 ? "s" : ""} to JIRA`}
+              title={
+                approvedCount === 0
+                  ? "Approve at least one suggested edit first"
+                  : `Push ${approvedCount} approved edit${approvedCount !== 1 ? "s" : ""} to JIRA`
+              }
             >
               {jiraUpdateStatus === "saving" ? (
                 <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -706,8 +925,13 @@ function GroomingPanel({
               </span>
             )}
             {jiraUpdateStatus === "error" && (
-              <span className="text-xs text-orange-600 leading-tight" title={jiraUpdateError}>
-                {jiraUpdateError.startsWith("Saved.") ? jiraUpdateError : "Error saving — check console"}
+              <span
+                className="text-xs text-orange-600 leading-tight"
+                title={jiraUpdateError}
+              >
+                {jiraUpdateError.startsWith("Saved.")
+                  ? jiraUpdateError
+                  : "Error saving — check console"}
               </span>
             )}
           </div>
@@ -719,21 +943,23 @@ function GroomingPanel({
         title="Relevant Areas"
         items={relevantItems}
         icon={<FileCode className="h-4 w-4 text-muted-foreground" />}
-        hasChanges={relevantItems.some(i => i.status !== "unchanged")}
+        hasChanges={relevantItems.some((i) => i.status !== "unchanged")}
       />
       <DiffedCollapsibleList
         title="Ambiguities"
         items={ambiguityItems}
         icon={<AlertTriangle className="h-4 w-4 text-amber-500" />}
-        hasChanges={ambiguityItems.some(i => i.status !== "unchanged")}
+        hasChanges={ambiguityItems.some((i) => i.status !== "unchanged")}
       />
       <DiffedCollapsibleList
         title="Dependencies"
         items={depItems}
-        hasChanges={depItems.some(i => i.status !== "unchanged")}
+        hasChanges={depItems.some((i) => i.status !== "unchanged")}
       />
       {data.grooming_notes && (
-        <p className="text-sm text-muted-foreground italic">{data.grooming_notes}</p>
+        <p className="text-sm text-muted-foreground italic">
+          {data.grooming_notes}
+        </p>
       )}
 
       {/* Files read from the codebase */}
@@ -747,16 +973,33 @@ function ImpactPanel({ data }: { data: ImpactOutput }) {
     <div className="space-y-3">
       <div className="flex items-center gap-2">
         <RiskBadge level={data.risk_level} />
-        <p className="text-sm text-muted-foreground">{data.risk_justification}</p>
+        <p className="text-sm text-muted-foreground">
+          {data.risk_justification}
+        </p>
       </div>
       <CollapsibleList title="Affected Areas" items={data.affected_areas} />
-      <CollapsibleList title="Potential Regressions" items={data.potential_regressions} icon={<AlertTriangle className="h-4 w-4 text-amber-500" />} />
-      <CollapsibleList title="Cross-cutting Concerns" items={data.cross_cutting_concerns} />
-      <CollapsibleList title="Files Needing Consistent Updates" items={data.files_needing_consistent_updates} icon={<FileCode className="h-4 w-4 text-muted-foreground" />} />
+      <CollapsibleList
+        title="Potential Regressions"
+        items={data.potential_regressions}
+        icon={<AlertTriangle className="h-4 w-4 text-amber-500" />}
+      />
+      <CollapsibleList
+        title="Cross-cutting Concerns"
+        items={data.cross_cutting_concerns}
+      />
+      <CollapsibleList
+        title="Files Needing Consistent Updates"
+        items={data.files_needing_consistent_updates}
+        icon={<FileCode className="h-4 w-4 text-muted-foreground" />}
+      />
       {data.recommendations && (
         <div className="rounded-md border border-blue-200 bg-blue-50 dark:border-blue-900 dark:bg-blue-950/30 px-3 py-2">
-          <p className="text-sm font-medium text-blue-800 dark:text-blue-200 mb-1">Recommendations</p>
-          <p className="text-sm text-blue-700 dark:text-blue-300">{data.recommendations}</p>
+          <p className="text-sm font-medium text-blue-800 dark:text-blue-200 mb-1">
+            Recommendations
+          </p>
+          <p className="text-sm text-blue-700 dark:text-blue-300">
+            {data.recommendations}
+          </p>
         </div>
       )}
     </div>
@@ -770,17 +1013,25 @@ function PlanPanel({ data }: { data: ImplementationPlan }) {
       {data.files.length > 0 && (
         <div className="border rounded-md overflow-hidden">
           <div className="px-3 py-2 bg-muted/30 text-sm font-medium flex items-center gap-2">
-            <FileCode className="h-4 w-4 text-muted-foreground" /> Files ({data.files.length})
+            <FileCode className="h-4 w-4 text-muted-foreground" /> Files (
+            {data.files.length})
           </div>
           <div className="divide-y">
             {data.files.map((f, i) => (
               <div key={i} className="px-3 py-2">
                 <div className="flex items-center gap-2 mb-0.5">
                   <code className="text-xs font-mono">{f.path}</code>
-                  <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${
-                    f.action === "create" ? "bg-green-100 text-green-700" :
-                    f.action === "delete" ? "bg-red-100 text-red-700" : "bg-blue-100 text-blue-700"
-                  }`}>{f.action}</span>
+                  <span
+                    className={`text-xs px-1.5 py-0.5 rounded font-medium ${
+                      f.action === "create"
+                        ? "bg-green-100 text-green-700"
+                        : f.action === "delete"
+                          ? "bg-red-100 text-red-700"
+                          : "bg-blue-100 text-blue-700"
+                    }`}
+                  >
+                    {f.action}
+                  </span>
                 </div>
                 <p className="text-sm text-muted-foreground">{f.description}</p>
               </div>
@@ -788,11 +1039,26 @@ function PlanPanel({ data }: { data: ImplementationPlan }) {
           </div>
         </div>
       )}
-      <CollapsibleList title="Order of Operations" items={data.order_of_operations} />
-      <CollapsibleList title="Edge Cases to Handle" items={data.edge_cases} icon={<AlertTriangle className="h-4 w-4 text-amber-500" />} />
-      <CollapsibleList title="Do NOT Change" items={data.do_not_change} icon={<Shield className="h-4 w-4 text-red-500" />} />
+      <CollapsibleList
+        title="Order of Operations"
+        items={data.order_of_operations}
+      />
+      <CollapsibleList
+        title="Edge Cases to Handle"
+        items={data.edge_cases}
+        icon={<AlertTriangle className="h-4 w-4 text-amber-500" />}
+      />
+      <CollapsibleList
+        title="Do NOT Change"
+        items={data.do_not_change}
+        icon={<Shield className="h-4 w-4 text-red-500" />}
+      />
       <CollapsibleList title="Assumptions" items={data.assumptions} />
-      <CollapsibleList title="Open Questions" items={data.open_questions} icon={<AlertTriangle className="h-4 w-4 text-amber-500" />} />
+      <CollapsibleList
+        title="Open Questions"
+        items={data.open_questions}
+        icon={<AlertTriangle className="h-4 w-4 text-amber-500" />}
+      />
     </div>
   );
 }
@@ -804,18 +1070,25 @@ function ImplementationPanel({ data }: { data: ImplementationOutput }) {
       {data.files_changed.length > 0 && (
         <div className="border rounded-md overflow-hidden">
           <div className="px-3 py-2 bg-muted/30 text-sm font-medium flex items-center gap-2">
-            <FileCode className="h-4 w-4 text-muted-foreground" /> Files changed ({data.files_changed.length})
+            <FileCode className="h-4 w-4 text-muted-foreground" /> Files changed
+            ({data.files_changed.length})
           </div>
           <div className="divide-y">
             {data.files_changed.map((f, i) => (
               <div key={i} className="px-3 py-2">
                 <div className="flex items-center gap-2 mb-0.5">
                   <code className="text-xs font-mono">{f.path}</code>
-                  <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${
-                    f.action === "created" ? "bg-green-100 text-green-700 dark:bg-green-900 dark:text-green-300" :
-                    f.action === "deleted" ? "bg-red-100 text-red-700 dark:bg-red-900 dark:text-red-300" :
-                    "bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-300"
-                  }`}>{f.action}</span>
+                  <span
+                    className={`text-xs px-1.5 py-0.5 rounded font-medium ${
+                      f.action === "created"
+                        ? "bg-green-100 text-green-700 dark:bg-green-900 dark:text-green-300"
+                        : f.action === "deleted"
+                          ? "bg-red-100 text-red-700 dark:bg-red-900 dark:text-red-300"
+                          : "bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-300"
+                    }`}
+                  >
+                    {f.action}
+                  </span>
                 </div>
                 <p className="text-sm text-muted-foreground">{f.summary}</p>
               </div>
@@ -826,11 +1099,14 @@ function ImplementationPanel({ data }: { data: ImplementationOutput }) {
       {data.deviations.length > 0 && (
         <div className="border border-amber-300 rounded-md overflow-hidden">
           <div className="px-3 py-2 bg-amber-50 dark:bg-amber-950/30 text-sm font-medium flex items-center gap-2 text-amber-700 dark:text-amber-300">
-            <AlertTriangle className="h-4 w-4" /> Deviations from plan ({data.deviations.length})
+            <AlertTriangle className="h-4 w-4" /> Deviations from plan (
+            {data.deviations.length})
           </div>
           <div className="divide-y">
             {data.deviations.map((d, i) => (
-              <p key={i} className="px-3 py-2 text-sm text-muted-foreground">{d}</p>
+              <p key={i} className="px-3 py-2 text-sm text-muted-foreground">
+                {d}
+              </p>
             ))}
           </div>
         </div>
@@ -853,15 +1129,26 @@ function TestsPanel({ data }: { data: TestOutput }) {
       {data.unit_tests.length > 0 && (
         <div className="border rounded-md overflow-hidden">
           <div className="px-3 py-2 bg-muted/30 text-sm font-medium flex items-center gap-2">
-            <TestTube className="h-4 w-4 text-muted-foreground" /> Unit Tests ({data.unit_tests.length})
+            <TestTube className="h-4 w-4 text-muted-foreground" /> Unit Tests (
+            {data.unit_tests.length})
           </div>
           <div className="divide-y">
             {data.unit_tests.map((t, i) => (
               <div key={i} className="px-3 py-2">
                 <p className="text-sm font-medium">{t.description}</p>
-                <p className="text-xs text-muted-foreground mb-1">Target: <code>{t.target}</code></p>
+                <p className="text-xs text-muted-foreground mb-1">
+                  Target: <code>{t.target}</code>
+                </p>
                 <ul className="space-y-0.5">
-                  {t.cases.map((c, j) => <li key={j} className="text-sm text-muted-foreground flex gap-2"><span>·</span>{c}</li>)}
+                  {t.cases.map((c, j) => (
+                    <li
+                      key={j}
+                      className="text-sm text-muted-foreground flex gap-2"
+                    >
+                      <span>·</span>
+                      {c}
+                    </li>
+                  ))}
                 </ul>
               </div>
             ))}
@@ -871,23 +1158,43 @@ function TestsPanel({ data }: { data: TestOutput }) {
       {data.integration_tests.length > 0 && (
         <div className="border rounded-md overflow-hidden">
           <div className="px-3 py-2 bg-muted/30 text-sm font-medium flex items-center gap-2">
-            <TestTube className="h-4 w-4 text-blue-500" /> Integration Tests ({data.integration_tests.length})
+            <TestTube className="h-4 w-4 text-blue-500" /> Integration Tests (
+            {data.integration_tests.length})
           </div>
           <div className="divide-y">
             {data.integration_tests.map((t, i) => (
               <div key={i} className="px-3 py-2">
                 <p className="text-sm font-medium">{t.description}</p>
-                {t.setup && <p className="text-xs text-muted-foreground mb-1">Setup: {t.setup}</p>}
+                {t.setup && (
+                  <p className="text-xs text-muted-foreground mb-1">
+                    Setup: {t.setup}
+                  </p>
+                )}
                 <ul className="space-y-0.5">
-                  {t.cases.map((c, j) => <li key={j} className="text-sm text-muted-foreground flex gap-2"><span>·</span>{c}</li>)}
+                  {t.cases.map((c, j) => (
+                    <li
+                      key={j}
+                      className="text-sm text-muted-foreground flex gap-2"
+                    >
+                      <span>·</span>
+                      {c}
+                    </li>
+                  ))}
                 </ul>
               </div>
             ))}
           </div>
         </div>
       )}
-      <CollapsibleList title="Edge Cases to Test" items={data.edge_cases_to_test} />
-      {data.coverage_notes && <p className="text-sm text-muted-foreground italic">{data.coverage_notes}</p>}
+      <CollapsibleList
+        title="Edge Cases to Test"
+        items={data.edge_cases_to_test}
+      />
+      {data.coverage_notes && (
+        <p className="text-sm text-muted-foreground italic">
+          {data.coverage_notes}
+        </p>
+      )}
     </div>
   );
 }
@@ -904,10 +1211,17 @@ function ReviewPanel({ data }: { data: PlanReviewOutput }) {
           {data.findings.map((f, i) => (
             <div key={i} className="border rounded-md px-3 py-2">
               <div className="flex items-center gap-2 mb-1">
-                <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${
-                  f.severity === "blocking" ? "bg-red-100 text-red-700" :
-                  f.severity === "non_blocking" ? "bg-amber-100 text-amber-700" : "bg-muted text-muted-foreground"
-                }`}>{f.severity}</span>
+                <span
+                  className={`text-xs px-1.5 py-0.5 rounded font-medium ${
+                    f.severity === "blocking"
+                      ? "bg-red-100 text-red-700"
+                      : f.severity === "non_blocking"
+                        ? "bg-amber-100 text-amber-700"
+                        : "bg-muted text-muted-foreground"
+                  }`}
+                >
+                  {f.severity}
+                </span>
                 <span className="text-sm font-medium">{f.area}</span>
               </div>
               <p className="text-sm text-muted-foreground">{f.feedback}</p>
@@ -915,8 +1229,15 @@ function ReviewPanel({ data }: { data: PlanReviewOutput }) {
           ))}
         </div>
       )}
-      <CollapsibleList title="Address Before Starting" items={data.things_to_address} icon={<AlertTriangle className="h-4 w-4 text-red-500" />} />
-      <CollapsibleList title="Keep in Mind While Implementing" items={data.things_to_watch} />
+      <CollapsibleList
+        title="Address Before Starting"
+        items={data.things_to_address}
+        icon={<AlertTriangle className="h-4 w-4 text-red-500" />}
+      />
+      <CollapsibleList
+        title="Keep in Mind While Implementing"
+        items={data.things_to_watch}
+      />
     </div>
   );
 }
@@ -926,13 +1247,20 @@ function PrPanel({ data }: { data: PrDescriptionOutput }) {
     <div className="space-y-3">
       <div className="flex items-center justify-between gap-3">
         <div>
-          <p className="text-xs text-muted-foreground font-medium mb-1">PR Title</p>
+          <p className="text-xs text-muted-foreground font-medium mb-1">
+            PR Title
+          </p>
           <p className="text-sm font-semibold">{data.title}</p>
         </div>
-        <CopyButton text={`${data.title}\n\n${data.description}`} label="Copy PR" />
+        <CopyButton
+          text={`${data.title}\n\n${data.description}`}
+          label="Copy PR"
+        />
       </div>
       <div>
-        <p className="text-xs text-muted-foreground font-medium mb-1">Description</p>
+        <p className="text-xs text-muted-foreground font-medium mb-1">
+          Description
+        </p>
         <pre className="text-sm font-sans leading-relaxed whitespace-pre-wrap bg-muted/30 rounded-md p-3 max-h-80 overflow-y-auto">
           {data.description}
         </pre>
@@ -951,13 +1279,26 @@ function RetroPanel({ data, onSaveToKb, kbSaved }: RetroPanelProps) {
   return (
     <div className="space-y-3">
       <p className="text-sm leading-relaxed">{data.summary}</p>
-      <CollapsibleList title="What Went Well" items={data.what_went_well} icon={<CheckCircle2 className="h-4 w-4 text-green-500" />} />
-      <CollapsibleList title="What Could Improve" items={data.what_could_improve} icon={<AlertTriangle className="h-4 w-4 text-amber-500" />} />
-      <CollapsibleList title="Patterns Identified" items={data.patterns_identified} />
+      <CollapsibleList
+        title="What Went Well"
+        items={data.what_went_well}
+        icon={<CheckCircle2 className="h-4 w-4 text-green-500" />}
+      />
+      <CollapsibleList
+        title="What Could Improve"
+        items={data.what_could_improve}
+        icon={<AlertTriangle className="h-4 w-4 text-amber-500" />}
+      />
+      <CollapsibleList
+        title="Patterns Identified"
+        items={data.patterns_identified}
+      />
       {data.agent_skill_suggestions.length > 0 && (
         <CollapsibleList
           title="Agent Skill Suggestions"
-          items={data.agent_skill_suggestions.map(s => `${s.skill}: ${s.suggestion}`)}
+          items={data.agent_skill_suggestions.map(
+            (s) => `${s.skill}: ${s.suggestion}`,
+          )}
           icon={<Sparkles className="h-4 w-4 text-purple-500" />}
         />
       )}
@@ -969,21 +1310,32 @@ function RetroPanel({ data, onSaveToKb, kbSaved }: RetroPanelProps) {
               Knowledge Base Entries ({data.knowledge_base_entries.length})
             </div>
             {!kbSaved ? (
-              <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => onSaveToKb(data.knowledge_base_entries)}>
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-7 text-xs"
+                onClick={() => onSaveToKb(data.knowledge_base_entries)}
+              >
                 Save to KB
               </Button>
             ) : (
-              <span className="text-xs text-green-600 flex items-center gap-1"><Check className="h-3 w-3" /> Saved</span>
+              <span className="text-xs text-green-600 flex items-center gap-1">
+                <Check className="h-3 w-3" /> Saved
+              </span>
             )}
           </div>
           <div className="divide-y">
             {data.knowledge_base_entries.map((e, i) => (
               <div key={i} className="px-3 py-2">
                 <div className="flex items-center gap-2 mb-0.5">
-                  <Badge variant="outline" className="text-xs">{e.type}</Badge>
+                  <Badge variant="outline" className="text-xs">
+                    {e.type}
+                  </Badge>
                   <span className="text-sm font-medium">{e.title}</span>
                 </div>
-                <p className="text-sm text-muted-foreground line-clamp-2">{e.body}</p>
+                <p className="text-sm text-muted-foreground line-clamp-2">
+                  {e.body}
+                </p>
               </div>
             ))}
           </div>
@@ -1006,7 +1358,13 @@ const NEXT_STAGE_LABEL: Partial<Record<Stage, string>> = {
   retro: "Mark Pipeline Complete",
 };
 
-function StreamingLoader({ label, streamText }: { label: string; streamText: string }) {
+function StreamingLoader({
+  label,
+  streamText,
+}: {
+  label: string;
+  streamText: string;
+}) {
   return (
     <div className="space-y-3">
       <div className="flex items-center gap-2 text-sm text-muted-foreground">
@@ -1029,7 +1387,13 @@ interface StageApprovalRowProps {
   onRetry?: () => void;
 }
 
-function StageApprovalRow({ stage, onProceed, proceeding, hasBlockingIssues, onRetry }: StageApprovalRowProps) {
+function StageApprovalRow({
+  stage,
+  onProceed,
+  proceeding,
+  hasBlockingIssues,
+  onRetry,
+}: StageApprovalRowProps) {
   const nextLabel = NEXT_STAGE_LABEL[stage] ?? "Proceed";
   return (
     <div className="mt-5 border-t pt-4 flex items-center justify-between gap-3">
@@ -1103,11 +1467,23 @@ const CHAT_STAGE_LABEL: Partial<Record<Stage, string>> = {
 };
 
 function PipelineChatPanel({
-  grooming, groomingChat, triageHistory, checkpointChats,
-  currentStage, pendingApproval,
-  toolRequests, onDismissToolRequest, onSavedToolRequest,
-  chatInput, onChatInputChange, onSend, onFinalizePlan,
-  sending, finalizing, proceeding, streamingText,
+  grooming,
+  groomingChat,
+  triageHistory,
+  checkpointChats,
+  currentStage,
+  pendingApproval,
+  toolRequests,
+  onDismissToolRequest,
+  onSavedToolRequest,
+  chatInput,
+  onChatInputChange,
+  onSend,
+  onFinalizePlan,
+  sending,
+  finalizing,
+  proceeding,
+  streamingText,
 }: PipelineChatPanelProps) {
   const bottomRef = useRef<HTMLDivElement>(null);
 
@@ -1117,29 +1493,43 @@ function PipelineChatPanel({
 
   // Build unified message thread with stage dividers
   const sections: Array<{ stage: Stage; messages: TriageMessage[] }> = [];
-  if (groomingChat.length > 0) sections.push({ stage: "grooming", messages: groomingChat });
-  if (triageHistory.length > 0) sections.push({ stage: "triage", messages: triageHistory });
-  for (const stage of (["impact","plan","implementation","tests","review","pr","retro"] as Stage[])) {
+  if (groomingChat.length > 0)
+    sections.push({ stage: "grooming", messages: groomingChat });
+  if (triageHistory.length > 0)
+    sections.push({ stage: "triage", messages: triageHistory });
+  for (const stage of [
+    "impact",
+    "plan",
+    "implementation",
+    "tests",
+    "review",
+    "pr",
+    "retro",
+  ] as Stage[]) {
     const msgs = checkpointChats[stage];
     if (msgs && msgs.length > 0) sections.push({ stage, messages: msgs });
   }
 
   // Determine if input is active
-  const isGroomingActive = (pendingApproval === "grooming" || (currentStage === "grooming" && grooming !== null));
-  const isCheckpointActive = pendingApproval !== null && pendingApproval !== "grooming";
+  const isGroomingActive =
+    pendingApproval === "grooming" ||
+    (currentStage === "grooming" && grooming !== null);
+  const isCheckpointActive =
+    pendingApproval !== null && pendingApproval !== "grooming";
   const isTriageActive = currentStage === "triage" && pendingApproval === null;
   const inputActive = isGroomingActive || isCheckpointActive || isTriageActive;
-  const agentRunning = !inputActive && currentStage !== "select" && currentStage !== "complete";
+  const agentRunning =
+    !inputActive && currentStage !== "select" && currentStage !== "complete";
 
   const placeholder = isGroomingActive
     ? "Suggest changes to the ticket or ask questions…"
     : isTriageActive
-    ? "Respond to the agent's proposal or provide clarification…"
-    : isCheckpointActive
-    ? "Ask about these findings…"
-    : agentRunning
-    ? "Agent is running…"
-    : "Pipeline complete";
+      ? "Respond to the agent's proposal or provide clarification…"
+      : isCheckpointActive
+        ? "Ask about these findings…"
+        : agentRunning
+          ? "Agent is running…"
+          : "Pipeline complete";
 
   const showFinalize = isTriageActive && triageHistory.length > 0;
 
@@ -1147,7 +1537,9 @@ function PipelineChatPanel({
     <div className="flex flex-col h-full min-h-0 border-l bg-background/40">
       {/* Panel header */}
       <div className="shrink-0 px-4 py-2.5 border-b flex items-center justify-between">
-        <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Agent Chat</p>
+        <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+          Agent Chat
+        </p>
         {agentRunning && (
           <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
             <Loader2 className="h-3 w-3 animate-spin" /> Running…
@@ -1159,7 +1551,8 @@ function PipelineChatPanel({
       <div className="flex-1 min-h-0 overflow-y-auto px-4 py-3 space-y-1">
         {sections.length === 0 && !sending && (
           <p className="text-xs text-muted-foreground italic text-center pt-6">
-            No messages yet. The conversation will appear here once the grooming stage completes.
+            No messages yet. The conversation will appear here once the grooming
+            stage completes.
           </p>
         )}
 
@@ -1168,20 +1561,31 @@ function PipelineChatPanel({
             {/* Stage divider */}
             <div className="flex items-center gap-2 py-2">
               <div className="flex-1 h-px bg-border" />
-              <span className="text-xs text-muted-foreground px-1">{CHAT_STAGE_LABEL[stage] ?? stage}</span>
+              <span className="text-xs text-muted-foreground px-1">
+                {CHAT_STAGE_LABEL[stage] ?? stage}
+              </span>
               <div className="flex-1 h-px bg-border" />
             </div>
             <div className="space-y-2">
               {messages.map((msg, i) => (
-                <div key={i} className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
-                  <div className={`max-w-[90%] rounded-lg px-3 py-2 text-sm leading-relaxed ${
-                    msg.role === "user" ? "bg-primary text-primary-foreground" : "bg-muted text-foreground"
-                  }`}>
-                    <p className="whitespace-pre-wrap">{
-                      msg.role === "assistant" && stage === "grooming"
-                        ? msg.content.replace(/```json[\s\S]*?```/g, "").trim() || msg.content
-                        : msg.content
-                    }</p>
+                <div
+                  key={i}
+                  className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}
+                >
+                  <div
+                    className={`max-w-[90%] rounded-lg px-3 py-2 text-sm leading-relaxed ${
+                      msg.role === "user"
+                        ? "bg-primary text-primary-foreground"
+                        : "bg-muted text-foreground"
+                    }`}
+                  >
+                    <p className="whitespace-pre-wrap">
+                      {msg.role === "assistant" && stage === "grooming"
+                        ? msg.content
+                            .replace(/```json[\s\S]*?```/g, "")
+                            .trim() || msg.content
+                        : msg.content}
+                    </p>
                   </div>
                 </div>
               ))}
@@ -1190,14 +1594,16 @@ function PipelineChatPanel({
         ))}
 
         {/* Tool requests */}
-        {toolRequests.filter(r => !r.dismissed).map(r => (
-          <ToolRequestCard
-            key={r.id}
-            request={r}
-            onDismiss={onDismissToolRequest}
-            onSaved={onSavedToolRequest}
-          />
-        ))}
+        {toolRequests
+          .filter((r) => !r.dismissed)
+          .map((r) => (
+            <ToolRequestCard
+              key={r.id}
+              request={r}
+              onDismiss={onDismissToolRequest}
+              onSaved={onSavedToolRequest}
+            />
+          ))}
 
         {/* Sending indicator — shows streaming text as it arrives, falls back to spinner */}
         {sending && (
@@ -1228,9 +1634,14 @@ function PipelineChatPanel({
             disabled={finalizing || sending}
           >
             {finalizing ? (
-              <><Loader2 className="h-3.5 w-3.5 animate-spin" /> Finalising plan…</>
+              <>
+                <Loader2 className="h-3.5 w-3.5 animate-spin" /> Finalising
+                plan…
+              </>
             ) : (
-              <><CheckCircle2 className="h-3.5 w-3.5" /> Finalise Plan</>
+              <>
+                <CheckCircle2 className="h-3.5 w-3.5" /> Finalise Plan
+              </>
             )}
           </Button>
         )}
@@ -1242,7 +1653,12 @@ function PipelineChatPanel({
             className="min-h-[52px] resize-none text-sm"
             disabled={!inputActive || sending || finalizing || proceeding}
             onKeyDown={(e) => {
-              if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && chatInput.trim() && inputActive) {
+              if (
+                e.key === "Enter" &&
+                (e.metaKey || e.ctrlKey) &&
+                chatInput.trim() &&
+                inputActive
+              ) {
                 e.preventDefault();
                 onSend();
               }
@@ -1251,13 +1667,21 @@ function PipelineChatPanel({
           <Button
             size="icon"
             onClick={onSend}
-            disabled={!chatInput.trim() || !inputActive || sending || finalizing || proceeding}
+            disabled={
+              !chatInput.trim() ||
+              !inputActive ||
+              sending ||
+              finalizing ||
+              proceeding
+            }
             title="Send (⌘↵)"
           >
             <Send className="h-4 w-4" />
           </Button>
         </div>
-        {inputActive && <p className="text-xs text-muted-foreground">⌘↵ to send</p>}
+        {inputActive && (
+          <p className="text-xs text-muted-foreground">⌘↵ to send</p>
+        )}
       </div>
     </div>
   );
@@ -1272,21 +1696,35 @@ interface TicketSelectorProps {
   sessionKeys: Set<string>;
 }
 
-function TicketSelector({ sprintIssues, loading, onSelect, sessionKeys }: TicketSelectorProps) {
+function TicketSelector({
+  sprintIssues,
+  loading,
+  onSelect,
+  sessionKeys,
+}: TicketSelectorProps) {
   const [search, setSearch] = useState("");
   const [searchResults, setSearchResults] = useState<JiraIssue[]>([]);
   const [searching, setSearching] = useState(false);
   const q = search.trim();
 
   useEffect(() => {
-    if (!q) { setSearchResults([]); return; }
+    if (!q) {
+      setSearchResults([]);
+      return;
+    }
     const isKey = /^[A-Z]+-\d+$/i.test(q);
-    const jql = isKey ? `key = "${q.toUpperCase()}"` : `text ~ "${q}" ORDER BY updated DESC`;
+    const jql = isKey
+      ? `key = "${q.toUpperCase()}"`
+      : `text ~ "${q}" ORDER BY updated DESC`;
     const timer = setTimeout(async () => {
       setSearching(true);
-      try { setSearchResults(await searchJiraIssues(jql, 20)); }
-      catch { setSearchResults([]); }
-      finally { setSearching(false); }
+      try {
+        setSearchResults(await searchJiraIssues(jql, 20));
+      } catch {
+        setSearchResults([]);
+      } finally {
+        setSearching(false);
+      }
     }, 500);
     return () => clearTimeout(timer);
   }, [q]);
@@ -1297,7 +1735,9 @@ function TicketSelector({ sprintIssues, loading, onSelect, sessionKeys }: Ticket
   return (
     <div className="max-w-2xl mx-auto space-y-4">
       <div>
-        <h2 className="text-base font-semibold mb-3">Select a Ticket to Implement</h2>
+        <h2 className="text-base font-semibold mb-3">
+          Select a Ticket to Implement
+        </h2>
         <div className="relative">
           <Input
             placeholder="Search by text or key (e.g. PROJ-123)…"
@@ -1310,15 +1750,23 @@ function TicketSelector({ sprintIssues, loading, onSelect, sessionKeys }: Ticket
 
       {busy ? (
         <div className="flex items-center justify-center py-12 text-muted-foreground gap-2 text-sm">
-          <Loader2 className="h-4 w-4 animate-spin" /> {q ? "Searching…" : "Loading sprint tickets…"}
+          <Loader2 className="h-4 w-4 animate-spin" />{" "}
+          {q ? "Searching…" : "Loading sprint tickets…"}
         </div>
       ) : list.length === 0 ? (
         <p className="text-sm text-muted-foreground text-center py-12">
-          {q ? "No tickets found." : "No active sprint tickets assigned to you."}
+          {q
+            ? "No tickets found."
+            : "No active sprint tickets assigned to you."}
         </p>
       ) : (
         <div className="space-y-2">
-          {!q && <p className="text-xs text-muted-foreground">Active sprint — {list.length} ticket{list.length !== 1 ? "s" : ""} assigned to you</p>}
+          {!q && (
+            <p className="text-xs text-muted-foreground">
+              Active sprint — {list.length} ticket{list.length !== 1 ? "s" : ""}{" "}
+              assigned to you
+            </p>
+          )}
           {list.map((issue) => {
             const hasSession = sessionKeys.has(issue.key);
             return (
@@ -1329,19 +1777,30 @@ function TicketSelector({ sprintIssues, loading, onSelect, sessionKeys }: Ticket
               >
                 <div className="flex items-center gap-2 mb-1">
                   <JiraTicketLink ticketKey={issue.key} url={issue.url} />
-                  <Badge variant="outline" className="text-xs">{issue.issueType}</Badge>
+                  <Badge variant="outline" className="text-xs">
+                    {issue.issueType}
+                  </Badge>
                   {hasSession && (
-                    <Badge variant="secondary" className="text-xs flex items-center gap-1">
+                    <Badge
+                      variant="secondary"
+                      className="text-xs flex items-center gap-1"
+                    >
                       <span className="h-1.5 w-1.5 rounded-full bg-primary animate-pulse inline-block" />
                       In progress
                     </Badge>
                   )}
                   {issue.storyPoints != null && (
-                    <span className="ml-auto text-xs text-muted-foreground">{issue.storyPoints}pt</span>
+                    <span className="ml-auto text-xs text-muted-foreground">
+                      {issue.storyPoints}pt
+                    </span>
                   )}
                 </div>
-                <p className="text-sm font-medium leading-snug">{issue.summary}</p>
-                <p className="text-xs text-muted-foreground mt-0.5">{issue.status}</p>
+                <p className="text-sm font-medium leading-snug">
+                  {issue.summary}
+                </p>
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  {issue.status}
+                </p>
               </button>
             );
           })}
@@ -1361,7 +1820,13 @@ interface PipelineSidebarProps {
   onClickStage: (stage: Stage) => void;
 }
 
-function PipelineSidebar({ currentStage, completedStages, activeStage, pendingApproval, onClickStage }: PipelineSidebarProps) {
+function PipelineSidebar({
+  currentStage,
+  completedStages,
+  activeStage,
+  pendingApproval,
+  onClickStage,
+}: PipelineSidebarProps) {
   const icons: Record<string, React.ReactNode> = {
     grooming: <BookOpen className="h-3.5 w-3.5" />,
     impact: <Shield className="h-3.5 w-3.5" />,
@@ -1379,7 +1844,8 @@ function PipelineSidebar({ currentStage, completedStages, activeStage, pendingAp
       {STAGE_ORDER.map((stage) => {
         const done = completedStages.has(stage);
         const active = activeStage === stage;
-        const running = currentStage === stage && !done && pendingApproval !== stage;
+        const running =
+          currentStage === stage && !done && pendingApproval !== stage;
         const pending = pendingApproval === stage;
         const reachable = done || active || running || pending;
         return (
@@ -1391,10 +1857,10 @@ function PipelineSidebar({ currentStage, completedStages, activeStage, pendingAp
               active
                 ? "bg-primary text-primary-foreground font-medium"
                 : pending
-                ? "bg-amber-50 dark:bg-amber-950/30 text-amber-700 dark:text-amber-300 font-medium hover:bg-amber-100 dark:hover:bg-amber-950/50 cursor-pointer"
-                : done
-                ? "text-foreground hover:bg-muted/60 cursor-pointer"
-                : "text-muted-foreground cursor-default opacity-50"
+                  ? "bg-amber-50 dark:bg-amber-950/30 text-amber-700 dark:text-amber-300 font-medium hover:bg-amber-100 dark:hover:bg-amber-950/50 cursor-pointer"
+                  : done
+                    ? "text-foreground hover:bg-muted/60 cursor-pointer"
+                    : "text-muted-foreground cursor-default opacity-50"
             }`}
           >
             {running ? (
@@ -1404,7 +1870,9 @@ function PipelineSidebar({ currentStage, completedStages, activeStage, pendingAp
             ) : done ? (
               <CheckCircle2 className="h-3.5 w-3.5 text-green-500 shrink-0" />
             ) : (
-              <span className="shrink-0 opacity-60">{icons[stage] ?? <Circle className="h-3.5 w-3.5" />}</span>
+              <span className="shrink-0 opacity-60">
+                {icons[stage] ?? <Circle className="h-3.5 w-3.5" />}
+              </span>
             )}
             <span>{STAGE_LABELS[stage]}</span>
           </button>
@@ -1419,23 +1887,26 @@ function PipelineSidebar({ currentStage, completedStages, activeStage, pendingAp
 function stageToStep(stage: Stage): number | undefined {
   if (stage === "select") return undefined;
   const map: Record<Exclude<Stage, "select">, number> = {
-    grooming:       0,
-    impact:         1,
-    triage:         2,
-    plan:           2,
+    grooming: 0,
+    impact: 1,
+    triage: 2,
+    plan: 2,
     implementation: 3,
-    tests:          4,
-    review:         5,
-    pr:             6,
-    retro:          7,
-    complete:       7,
+    tests: 4,
+    review: 5,
+    pr: 6,
+    retro: 7,
+    complete: 7,
   };
   return map[stage];
 }
 
 // ── Main screen ───────────────────────────────────────────────────────────────
 
-export function ImplementTicketScreen({ credStatus, onBack }: ImplementTicketScreenProps) {
+export function ImplementTicketScreen({
+  credStatus,
+  onBack,
+}: ImplementTicketScreenProps) {
   const claudeAvailable = aiProviderComplete(credStatus);
   const jiraAvailable = jiraComplete(credStatus);
 
@@ -1485,8 +1956,12 @@ export function ImplementTicketScreen({ credStatus, onBack }: ImplementTicketScr
   const store = useImplementTicketStore.getState;
   // Set of issue keys with cached (or active) pipeline sessions
   const sessionKeys = useMemo(
-    () => new Set([...implementSessions.keys(), ...(selectedIssue ? [selectedIssue.key] : [])]),
-    [implementSessions, selectedIssue]
+    () =>
+      new Set([
+        ...implementSessions.keys(),
+        ...(selectedIssue ? [selectedIssue.key] : []),
+      ]),
+    [implementSessions, selectedIssue],
   );
 
   // ── Ephemeral UI state (local — reset on each visit is fine) ─────────────────
@@ -1522,127 +1997,211 @@ export function ImplementTicketScreen({ credStatus, onBack }: ImplementTicketScr
   // ── Backend event listeners — write directly to store ────────────────────────
   // Each listener captures the session ID at event time and drops writes for stale sessions.
   useEffect(() => {
-    const unlisten = listen<{ phase: string; message: string }>("grooming-progress", (event) => {
-      const store = useImplementTicketStore.getState();
-      const sessionId = store.activeSessionId;
-      if (event.payload.phase === "done") {
-        setTimeout(() => {
-          if (useImplementTicketStore.getState().activeSessionId === sessionId) {
-            useImplementTicketStore.getState()._set({ groomingProgress: "" });
-          }
-        }, 1200);
-      } else {
-        store._set({ groomingProgress: event.payload.message });
-      }
-    });
-    return () => { unlisten.then(f => f()); };
-  }, []);
-
-  useEffect(() => {
-    const acc = { text: "", sessionId: "" };
-    let flushTimer: ReturnType<typeof setTimeout> | null = null;
-    const unlisten = listen<{ delta: string }>("grooming-stream", (event) => {
-      const currentSessionId = useImplementTicketStore.getState().activeSessionId;
-      if (acc.sessionId !== currentSessionId) {
-        acc.text = "";
-        acc.sessionId = currentSessionId;
-      }
-      acc.text += event.payload.delta;
-      if (flushTimer !== null) return;
-      flushTimer = setTimeout(() => {
-        flushTimer = null;
-        if (useImplementTicketStore.getState().activeSessionId === acc.sessionId) {
-          useImplementTicketStore.getState()._set({ groomingStreamText: acc.text });
+    let unlistenFn: (() => void) | null = null;
+    const listenPromise = listen<{ phase: string; message: string }>(
+      "grooming-progress",
+      (event) => {
+        const store = useImplementTicketStore.getState();
+        const sessionId = store.activeSessionId;
+        if (event.payload.phase === "done") {
+          setTimeout(() => {
+            if (
+              useImplementTicketStore.getState().activeSessionId === sessionId
+            ) {
+              useImplementTicketStore.getState()._set({ groomingProgress: "" });
+            }
+          }, 1200);
+        } else {
+          store._set({ groomingProgress: event.payload.message });
         }
-      }, 80);
+      },
+    );
+
+    listenPromise.then((f) => {
+      unlistenFn = f;
     });
+
     return () => {
-      if (flushTimer !== null) clearTimeout(flushTimer);
-      unlisten.then(f => f());
+      if (unlistenFn) {
+        unlistenFn();
+      } else {
+        listenPromise.then((f) => f());
+      }
     };
   }, []);
 
   useEffect(() => {
     const acc = { text: "", sessionId: "" };
     let flushTimer: ReturnType<typeof setTimeout> | null = null;
-    const unlisten = listen<{ delta: string }>("implementation-stream", (event) => {
-      const currentSessionId = useImplementTicketStore.getState().activeSessionId;
-      if (acc.sessionId !== currentSessionId) {
-        acc.text = "";
-        acc.sessionId = currentSessionId;
-      }
-      acc.text += event.payload.delta;
-      if (flushTimer !== null) return;
-      flushTimer = setTimeout(() => {
-        flushTimer = null;
-        if (useImplementTicketStore.getState().activeSessionId === acc.sessionId) {
-          useImplementTicketStore.getState()._set({ implementationStreamText: acc.text });
+    let unlistenFn: (() => void) | null = null;
+    const listenPromise = listen<{ delta: string }>(
+      "grooming-stream",
+      (event) => {
+        const currentSessionId =
+          useImplementTicketStore.getState().activeSessionId;
+        if (acc.sessionId !== currentSessionId) {
+          acc.text = "";
+          acc.sessionId = currentSessionId;
         }
-      }, 80);
+        acc.text += event.payload.delta;
+        if (flushTimer !== null) return;
+        flushTimer = setTimeout(() => {
+          flushTimer = null;
+          if (
+            useImplementTicketStore.getState().activeSessionId === acc.sessionId
+          ) {
+            useImplementTicketStore
+              .getState()
+              ._set({ groomingStreamText: acc.text });
+          }
+        }, 80);
+      },
+    );
+
+    listenPromise.then((f) => {
+      unlistenFn = f;
     });
+
     return () => {
       if (flushTimer !== null) clearTimeout(flushTimer);
-      unlisten.then(f => f());
+      if (unlistenFn) {
+        unlistenFn();
+      } else {
+        listenPromise.then((f) => f());
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    const acc = { text: "", sessionId: "" };
+    let flushTimer: ReturnType<typeof setTimeout> | null = null;
+    let unlistenFn: (() => void) | null = null;
+    const listenPromise = listen<{ delta: string }>(
+      "implementation-stream",
+      (event) => {
+        const currentSessionId =
+          useImplementTicketStore.getState().activeSessionId;
+        if (acc.sessionId !== currentSessionId) {
+          acc.text = "";
+          acc.sessionId = currentSessionId;
+        }
+        acc.text += event.payload.delta;
+        if (flushTimer !== null) return;
+        flushTimer = setTimeout(() => {
+          flushTimer = null;
+          if (
+            useImplementTicketStore.getState().activeSessionId === acc.sessionId
+          ) {
+            useImplementTicketStore
+              .getState()
+              ._set({ implementationStreamText: acc.text });
+          }
+        }, 80);
+      },
+    );
+
+    listenPromise.then((f) => {
+      unlistenFn = f;
+    });
+
+    return () => {
+      if (flushTimer !== null) clearTimeout(flushTimer);
+      if (unlistenFn) {
+        unlistenFn();
+      } else {
+        listenPromise.then((f) => f());
+      }
     };
   }, []);
 
   // Stream listeners for all other pipeline stages — same batched-flush pattern.
   useEffect(() => {
-    type StreamKey = "impactStreamText" | "triageStreamText" | "planStreamText" |
-      "testsStreamText" | "reviewStreamText" | "prStreamText" | "retroStreamText" |
-      "checkpointStreamText";
+    type StreamKey =
+      | "impactStreamText"
+      | "triageStreamText"
+      | "planStreamText"
+      | "testsStreamText"
+      | "reviewStreamText"
+      | "prStreamText"
+      | "retroStreamText"
+      | "checkpointStreamText";
     const streams: Array<[string, StreamKey]> = [
-      ["impact-stream",          "impactStreamText"],
-      ["triage-stream",          "triageStreamText"],
-      ["plan-stream",            "planStreamText"],
-      ["tests-stream",           "testsStreamText"],
-      ["review-stream",          "reviewStreamText"],
-      ["pr-stream",              "prStreamText"],
-      ["retro-stream",           "retroStreamText"],
+      ["impact-stream", "impactStreamText"],
+      ["triage-stream", "triageStreamText"],
+      ["plan-stream", "planStreamText"],
+      ["tests-stream", "testsStreamText"],
+      ["review-stream", "reviewStreamText"],
+      ["pr-stream", "prStreamText"],
+      ["retro-stream", "retroStreamText"],
       ["checkpoint-chat-stream", "checkpointStreamText"],
     ];
     const cleanups = streams.map(([event, key]) => {
       const acc = { text: "", sessionId: "" };
       let flushTimer: ReturnType<typeof setTimeout> | null = null;
       const unlisten = listen<{ delta: string }>(event, (e) => {
-        const currentSessionId = useImplementTicketStore.getState().activeSessionId;
-        if (acc.sessionId !== currentSessionId) { acc.text = ""; acc.sessionId = currentSessionId; }
+        const currentSessionId =
+          useImplementTicketStore.getState().activeSessionId;
+        if (acc.sessionId !== currentSessionId) {
+          acc.text = "";
+          acc.sessionId = currentSessionId;
+        }
         acc.text += e.payload.delta;
         if (flushTimer !== null) return;
         flushTimer = setTimeout(() => {
           flushTimer = null;
-          if (useImplementTicketStore.getState().activeSessionId === acc.sessionId) {
-            useImplementTicketStore.getState()._set({ [key]: acc.text } as Record<StreamKey, string>);
+          if (
+            useImplementTicketStore.getState().activeSessionId === acc.sessionId
+          ) {
+            useImplementTicketStore
+              .getState()
+              ._set({ [key]: acc.text } as Record<StreamKey, string>);
           }
         }, 80);
       });
-      return () => { if (flushTimer !== null) clearTimeout(flushTimer); unlisten.then(f => f()); };
+      return () => {
+        if (flushTimer !== null) clearTimeout(flushTimer);
+        unlisten.then((f) => f());
+      };
     });
-    return () => cleanups.forEach(f => f());
+    return () => cleanups.forEach((f) => f());
   }, []);
 
   useEffect(() => {
     const unlisten = listen<{
-      name: string; description: string; why_needed: string; example_call: string;
+      name: string;
+      description: string;
+      why_needed: string;
+      example_call: string;
     }>("agent-tool-request", (event) => {
       const { name, description, why_needed, example_call } = event.payload;
-      setToolRequests(prev => [...prev, {
-        id: `${Date.now()}-${name}`,
-        name,
-        description,
-        whyNeeded: why_needed,
-        exampleCall: example_call,
-        dismissed: false,
-        saved: false,
-      }]);
+      setToolRequests((prev) => [
+        ...prev,
+        {
+          id: `${Date.now()}-${name}`,
+          name,
+          description,
+          whyNeeded: why_needed,
+          exampleCall: example_call,
+          dismissed: false,
+          saved: false,
+        },
+      ]);
     });
-    return () => { unlisten.then(f => f()); };
+    return () => {
+      unlisten.then((f) => f());
+    };
   }, []);
 
   // ── Load sprint issues ───────────────────────────────────────────────────────
   useEffect(() => {
-    if (!jiraAvailable) { setLoadingIssues(false); return; }
-    getMySprintIssues().then(setSprintIssues).catch(() => {}).finally(() => setLoadingIssues(false));
+    if (!jiraAvailable) {
+      setLoadingIssues(false);
+      return;
+    }
+    getMySprintIssues()
+      .then(setSprintIssues)
+      .catch(() => {})
+      .finally(() => setLoadingIssues(false));
   }, [jiraAvailable]);
 
   useEffect(() => {
@@ -1659,8 +2218,11 @@ export function ImplementTicketScreen({ credStatus, onBack }: ImplementTicketScr
     try {
       const enriched = await enrichMessageWithUrls(msg);
       await store().sendPipelineMessage(enriched);
-    } catch { /* handled in store */ }
-    finally { setChatSending(false); }
+    } catch {
+      /* handled in store */
+    } finally {
+      setChatSending(false);
+    }
   }
 
   async function handleFinalizePlan() {
@@ -1673,10 +2235,14 @@ export function ImplementTicketScreen({ credStatus, onBack }: ImplementTicketScr
   }
 
   function dismissToolRequest(id: string) {
-    setToolRequests(prev => prev.map(r => r.id === id ? { ...r, dismissed: true } : r));
+    setToolRequests((prev) =>
+      prev.map((r) => (r.id === id ? { ...r, dismissed: true } : r)),
+    );
   }
   function markToolRequestSaved(id: string) {
-    setToolRequests(prev => prev.map(r => r.id === id ? { ...r, saved: true } : r));
+    setToolRequests((prev) =>
+      prev.map((r) => (r.id === id ? { ...r, saved: true } : r)),
+    );
   }
 
   // ── Stage content renderer ──────────────────────────────────────────────────
@@ -1693,7 +2259,10 @@ export function ImplementTicketScreen({ credStatus, onBack }: ImplementTicketScr
         stage={stage}
         onProceed={() => store().proceedFromStage(stage)}
         proceeding={proceeding}
-        hasBlockingIssues={stage === "review" && (review?.findings.some(f => f.severity === "blocking") ?? false)}
+        hasBlockingIssues={
+          stage === "review" &&
+          (review?.findings.some((f) => f.severity === "blocking") ?? false)
+        }
         onRetry={() => store().retryStage(stage)}
       />
     );
@@ -1704,8 +2273,12 @@ export function ImplementTicketScreen({ credStatus, onBack }: ImplementTicketScr
     if (err) {
       return (
         <div className="rounded-md border border-destructive/50 bg-destructive/10 p-4 space-y-3">
-          <p className="text-sm font-medium text-destructive">Error in {STAGE_LABELS[stage as keyof typeof STAGE_LABELS]}</p>
-          <pre className="text-xs text-muted-foreground whitespace-pre-wrap">{err}</pre>
+          <p className="text-sm font-medium text-destructive">
+            Error in {STAGE_LABELS[stage as keyof typeof STAGE_LABELS]}
+          </p>
+          <pre className="text-xs text-muted-foreground whitespace-pre-wrap">
+            {err}
+          </pre>
           <Button
             size="sm"
             variant="outline"
@@ -1720,11 +2293,15 @@ export function ImplementTicketScreen({ credStatus, onBack }: ImplementTicketScr
     }
 
     if (stage === "grooming") {
-      if (!grooming) return (
-        <div className="space-y-3">
-          <GroomingProgressBanner message={groomingProgress || "Running grooming analysis…"} streamText={groomingStreamText} />
-        </div>
-      );
+      if (!grooming)
+        return (
+          <div className="space-y-3">
+            <GroomingProgressBanner
+              message={groomingProgress || "Running grooming analysis…"}
+              streamText={groomingStreamText}
+            />
+          </div>
+        );
 
       return (
         <div className="space-y-3">
@@ -1746,13 +2323,21 @@ export function ImplementTicketScreen({ credStatus, onBack }: ImplementTicketScr
             jiraUpdateStatus={jiraUpdateStatus}
             jiraUpdateError={jiraUpdateError}
           />
-          {groomingBlockers.length > 0 && <BlockerBanner blockers={groomingBlockers} />}
+          {groomingBlockers.length > 0 && (
+            <BlockerBanner blockers={groomingBlockers} />
+          )}
           {renderCheckpoint("grooming")}
         </div>
       );
     }
     if (stage === "impact") {
-      if (!impact) return <StreamingLoader label="Running impact analysis…" streamText={impactStreamText} />;
+      if (!impact)
+        return (
+          <StreamingLoader
+            label="Running impact analysis…"
+            streamText={impactStreamText}
+          />
+        );
       return (
         <>
           <ImpactPanel data={impact} />
@@ -1770,21 +2355,42 @@ export function ImplementTicketScreen({ credStatus, onBack }: ImplementTicketScr
         );
       }
       if (triageHistory.length === 0) {
-        return <StreamingLoader label="Starting triage conversation…" streamText={triageStreamText} />;
+        return (
+          <StreamingLoader
+            label="Starting triage conversation…"
+            streamText={triageStreamText}
+          />
+        );
       }
       if (planFinalizing) {
-        return <StreamingLoader label="Finalising implementation plan…" streamText={planStreamText} />;
+        return (
+          <StreamingLoader
+            label="Finalising implementation plan…"
+            streamText={planStreamText}
+          />
+        );
       }
       return (
         <div className="rounded-md border bg-muted/20 px-4 py-3 text-sm text-muted-foreground">
-          <p className="font-medium text-foreground mb-1">Planning conversation in progress</p>
-          <p>Use the chat panel on the right to discuss the implementation approach with the agent, then click <span className="font-medium">Finalise Plan</span> when ready.</p>
+          <p className="font-medium text-foreground mb-1">
+            Planning conversation in progress
+          </p>
+          <p>
+            Use the chat panel on the right to discuss the implementation
+            approach with the agent, then click{" "}
+            <span className="font-medium">Finalise Plan</span> when ready.
+          </p>
         </div>
       );
     }
     if (stage === "implementation") {
       if (!implementation) {
-        return <StreamingLoader label="Writing code…" streamText={implementationStreamText} />;
+        return (
+          <StreamingLoader
+            label="Writing code…"
+            streamText={implementationStreamText}
+          />
+        );
       }
       return (
         <>
@@ -1794,7 +2400,13 @@ export function ImplementTicketScreen({ credStatus, onBack }: ImplementTicketScr
       );
     }
     if (stage === "tests") {
-      if (!tests) return <StreamingLoader label="Generating test suggestions…" streamText={testsStreamText} />;
+      if (!tests)
+        return (
+          <StreamingLoader
+            label="Generating test suggestions…"
+            streamText={testsStreamText}
+          />
+        );
       return (
         <>
           <TestsPanel data={tests} />
@@ -1803,7 +2415,13 @@ export function ImplementTicketScreen({ credStatus, onBack }: ImplementTicketScr
       );
     }
     if (stage === "review") {
-      if (!review) return <StreamingLoader label="Reviewing code changes…" streamText={reviewStreamText} />;
+      if (!review)
+        return (
+          <StreamingLoader
+            label="Reviewing code changes…"
+            streamText={reviewStreamText}
+          />
+        );
       return (
         <>
           <ReviewPanel data={review} />
@@ -1812,7 +2430,13 @@ export function ImplementTicketScreen({ credStatus, onBack }: ImplementTicketScr
       );
     }
     if (stage === "pr") {
-      if (!prDescription) return <StreamingLoader label="Generating PR description…" streamText={prStreamText} />;
+      if (!prDescription)
+        return (
+          <StreamingLoader
+            label="Generating PR description…"
+            streamText={prStreamText}
+          />
+        );
       return (
         <>
           <PrPanel data={prDescription} />
@@ -1821,10 +2445,20 @@ export function ImplementTicketScreen({ credStatus, onBack }: ImplementTicketScr
       );
     }
     if (stage === "retro") {
-      if (!retrospective) return <StreamingLoader label="Running retrospective…" streamText={retroStreamText} />;
+      if (!retrospective)
+        return (
+          <StreamingLoader
+            label="Running retrospective…"
+            streamText={retroStreamText}
+          />
+        );
       return (
         <>
-          <RetroPanel data={retrospective} onSaveToKb={(entries) => store().saveToKnowledgeBase(entries)} kbSaved={kbSaved} />
+          <RetroPanel
+            data={retrospective}
+            onSaveToKb={(entries) => store().saveToKnowledgeBase(entries)}
+            kbSaved={kbSaved}
+          />
           {currentStage !== "complete" && renderCheckpoint(stage)}
         </>
       );
@@ -1845,24 +2479,40 @@ export function ImplementTicketScreen({ credStatus, onBack }: ImplementTicketScr
               variant="ghost"
               size="icon"
               className="shrink-0"
-              onClick={currentStage === "select" ? onBack : () => {
-                const cur = store();
-                // Save current session unless grooming never completed (stale in-flight run)
-                if (
-                  cur.selectedIssue &&
-                  cur.currentStage !== "select" &&
-                  !(cur.currentStage === "grooming" && cur.grooming === null)
-                ) {
-                  const newSessions = new Map(cur.sessions);
-                  newSessions.set(cur.selectedIssue.key, snapshotSession(cur));
-                  cur._set({ sessions: newSessions });
-                }
-                cur._set({ selectedIssue: null, currentStage: "select", isSessionActive: false });
-              }}
+              onClick={
+                currentStage === "select"
+                  ? onBack
+                  : () => {
+                      const cur = store();
+                      // Save current session unless grooming never completed (stale in-flight run)
+                      if (
+                        cur.selectedIssue &&
+                        cur.currentStage !== "select" &&
+                        !(
+                          cur.currentStage === "grooming" &&
+                          cur.grooming === null
+                        )
+                      ) {
+                        const newSessions = new Map(cur.sessions);
+                        newSessions.set(
+                          cur.selectedIssue.key,
+                          snapshotSession(cur),
+                        );
+                        cur._set({ sessions: newSessions });
+                      }
+                      cur._set({
+                        selectedIssue: null,
+                        currentStage: "select",
+                        isSessionActive: false,
+                      });
+                    }
+              }
             >
               <ArrowLeft className="h-4 w-4" />
             </Button>
-            <span className={cn(APP_HEADER_TITLE, "shrink-0")}>Implement a Ticket</span>
+            <span className={cn(APP_HEADER_TITLE, "shrink-0")}>
+              Implement a Ticket
+            </span>
           </div>
 
           <div className="min-w-0 flex-1" aria-hidden />
@@ -1874,8 +2524,10 @@ export function ImplementTicketScreen({ credStatus, onBack }: ImplementTicketScr
             <div
               className={cn(
                 "absolute bottom-0 left-1/2 flex h-14 min-h-0 -translate-x-1/2 justify-center overflow-hidden",
-                currentStage !== "select" ? "w-1/2 max-w-md" : "w-auto max-w-md",
-                meridianHeaderVisible ? "opacity-100" : "opacity-0"
+                currentStage !== "select"
+                  ? "w-1/2 max-w-md"
+                  : "w-auto max-w-md",
+                meridianHeaderVisible ? "opacity-100" : "opacity-0",
               )}
               style={{
                 transition:
@@ -1883,7 +2535,11 @@ export function ImplementTicketScreen({ credStatus, onBack }: ImplementTicketScr
               }}
             >
               <PipelineProgress
-                activeStep={currentStage === "select" ? undefined : stageToStep(viewingStage)}
+                activeStep={
+                  currentStage === "select"
+                    ? undefined
+                    : stageToStep(viewingStage)
+                }
                 logoAlign="center"
                 className={`block h-full min-h-0 opacity-100 transition-opacity duration-300 ease-out ${
                   currentStage === "select" ? "w-auto max-h-14" : "w-full"
@@ -1897,9 +2553,19 @@ export function ImplementTicketScreen({ credStatus, onBack }: ImplementTicketScr
       {/* Ticket info bar — shown once a ticket is selected */}
       {selectedIssue && (
         <div className="shrink-0 px-4 py-1.5 border-b bg-muted/20 flex items-center gap-2 min-w-0">
-          <JiraTicketLink ticketKey={selectedIssue.key} url={selectedIssue.url} />
-          <span className="text-xs text-muted-foreground truncate flex-1">— {selectedIssue.summary}</span>
-          <Button variant="outline" size="sm" className="shrink-0" onClick={() => selectedIssue.url && openUrl(selectedIssue.url)}>
+          <JiraTicketLink
+            ticketKey={selectedIssue.key}
+            url={selectedIssue.url}
+          />
+          <span className="text-xs text-muted-foreground truncate flex-1">
+            — {selectedIssue.summary}
+          </span>
+          <Button
+            variant="outline"
+            size="sm"
+            className="shrink-0"
+            onClick={() => selectedIssue.url && openUrl(selectedIssue.url)}
+          >
             <ExternalLink className="h-3.5 w-3.5 mr-1" /> JIRA
           </Button>
         </div>
@@ -1909,16 +2575,26 @@ export function ImplementTicketScreen({ credStatus, onBack }: ImplementTicketScr
       {(!jiraAvailable || !claudeAvailable) && (
         <div className="shrink-0 px-4 py-2 bg-amber-50 dark:bg-amber-950/30 border-b border-amber-200 dark:border-amber-900 text-xs text-amber-800 dark:text-amber-200">
           {!jiraAvailable && "JIRA credentials not configured. "}
-          {!claudeAvailable && "No AI provider configured — add an Anthropic key, Gemini key, or local LLM URL in Settings."}
+          {!claudeAvailable &&
+            "No AI provider configured — add an Anthropic key, Gemini key, or local LLM URL in Settings."}
         </div>
       )}
 
       {/* Body — full-width card; fills viewport below chrome so only the stage panel scrolls */}
-      <div className={`flex min-h-0 flex-1 flex-col overflow-hidden ${currentStage === "select" ? "p-4" : "px-2 py-2"}`}>
-        <div className={`flex min-h-0 w-full flex-1 flex-col overflow-hidden rounded-xl bg-background/60 ${currentStage === "select" ? "mx-auto max-w-3xl" : ""}`}>
+      <div
+        className={`flex min-h-0 flex-1 flex-col overflow-hidden ${currentStage === "select" ? "p-4" : "px-2 py-2"}`}
+      >
+        <div
+          className={`flex min-h-0 w-full flex-1 flex-col overflow-hidden rounded-xl bg-background/60 ${currentStage === "select" ? "mx-auto max-w-3xl" : ""}`}
+        >
           {currentStage === "select" ? (
             <div className="min-h-0 flex-1 overflow-y-auto p-6">
-              <TicketSelector sprintIssues={sprintIssues} loading={loadingIssues} onSelect={startPipeline} sessionKeys={sessionKeys} />
+              <TicketSelector
+                sprintIssues={sprintIssues}
+                loading={loadingIssues}
+                onSelect={startPipeline}
+                sessionKeys={sessionKeys}
+              />
             </div>
           ) : (
             <div className="flex min-h-0 flex-1 overflow-hidden">
@@ -1927,31 +2603,48 @@ export function ImplementTicketScreen({ credStatus, onBack }: ImplementTicketScr
                 completedStages={completedStages}
                 activeStage={viewingStage}
                 pendingApproval={pendingApproval}
-                onClickStage={(s) => store()._set({ viewingStage: s as Exclude<Stage, "select"> })}
+                onClickStage={(s) =>
+                  store()._set({ viewingStage: s as Exclude<Stage, "select"> })
+                }
               />
 
               {/* ── Split container: stage content | divider | chat panel ── */}
-              <div ref={splitContainerRef} className="flex min-h-0 flex-1 overflow-hidden">
+              <div
+                ref={splitContainerRef}
+                className="flex min-h-0 flex-1 overflow-hidden"
+              >
                 {/* Left: stage content */}
-                <div style={{ width: `${splitPct}%` }} className="flex-none flex flex-col min-h-0 overflow-hidden">
+                <div
+                  style={{ width: `${splitPct}%` }}
+                  className="flex-none flex flex-col min-h-0 overflow-hidden"
+                >
                   <div className="shrink-0 px-5 pt-5">
                     <div className="mb-2 flex items-center justify-between">
                       <div>
                         <h2 className="text-base font-semibold">
-                          {viewingStage === "triage" && !completedStages.has("plan")
+                          {viewingStage === "triage" &&
+                          !completedStages.has("plan")
                             ? "Triage"
-                            : viewingStage === "triage" || viewingStage === "plan"
+                            : viewingStage === "triage" ||
+                                viewingStage === "plan"
                               ? "Implementation Plan"
-                              : STAGE_LABELS[viewingStage as keyof typeof STAGE_LABELS]}
+                              : STAGE_LABELS[
+                                  viewingStage as keyof typeof STAGE_LABELS
+                                ]}
                         </h2>
-                        {currentStage === "complete" && viewingStage === "retro" && (
-                          <p className="mt-0.5 flex items-center gap-1 text-xs font-medium text-green-600">
-                            <CheckCircle2 className="h-3 w-3" /> Pipeline complete
-                          </p>
-                        )}
+                        {currentStage === "complete" &&
+                          viewingStage === "retro" && (
+                            <p className="mt-0.5 flex items-center gap-1 text-xs font-medium text-green-600">
+                              <CheckCircle2 className="h-3 w-3" /> Pipeline
+                              complete
+                            </p>
+                          )}
                       </div>
                       {completedStages.has(viewingStage as Stage) &&
-                        (viewingStage === "grooming" || viewingStage === "impact" || viewingStage === "tests" || viewingStage === "review") && (
+                        (viewingStage === "grooming" ||
+                          viewingStage === "impact" ||
+                          viewingStage === "tests" ||
+                          viewingStage === "review") && (
                           <CopyButton
                             text={
                               JSON.stringify(
@@ -1963,7 +2656,7 @@ export function ImplementTicketScreen({ credStatus, onBack }: ImplementTicketScr
                                       ? tests
                                       : review,
                                 null,
-                                2
+                                2,
                               ) ?? ""
                             }
                             label="Copy JSON"
@@ -1983,7 +2676,10 @@ export function ImplementTicketScreen({ credStatus, onBack }: ImplementTicketScr
                 />
 
                 {/* Right: persistent chat panel */}
-                <div style={{ width: `${100 - splitPct}%` }} className="flex-none min-h-0 overflow-hidden">
+                <div
+                  style={{ width: `${100 - splitPct}%` }}
+                  className="flex-none min-h-0 overflow-hidden"
+                >
                   <PipelineChatPanel
                     grooming={grooming}
                     groomingChat={groomingChat}
@@ -2001,7 +2697,11 @@ export function ImplementTicketScreen({ credStatus, onBack }: ImplementTicketScr
                     sending={chatSending}
                     finalizing={planFinalizing}
                     proceeding={proceeding}
-                    streamingText={currentStage === "triage" ? triageStreamText : checkpointStreamText}
+                    streamingText={
+                      currentStage === "triage"
+                        ? triageStreamText
+                        : checkpointStreamText
+                    }
                   />
                 </div>
               </div>

@@ -133,7 +133,7 @@ export function compileTicketText(issue: JiraIssue): string {
     "expected outcome",
   ]);
   const extras = Object.entries(issue.namedFields ?? {}).filter(
-    ([name]) => !knownNames.has(name.toLowerCase())
+    ([name]) => !knownNames.has(name.toLowerCase()),
   );
   if (extras.length > 0) {
     lines.push("## Additional Fields");
@@ -148,24 +148,30 @@ export function compilePipelineContext(
   grooming: GroomingOutput | null,
   impact: ImpactOutput | null,
   skills: Partial<Record<SkillType, string>> = {},
-  groomingChat: TriageMessage[] = []
+  groomingChat: TriageMessage[] = [],
 ): string {
   const parts: string[] = [];
   if (skills.grooming)
-    parts.push(`=== GROOMING CONVENTIONS (follow these) ===\n${skills.grooming}`);
+    parts.push(
+      `=== GROOMING CONVENTIONS (follow these) ===\n${skills.grooming}`,
+    );
   if (skills.patterns)
     parts.push(`=== CODEBASE PATTERNS (follow these) ===\n${skills.patterns}`);
   if (skills.implementation)
     parts.push(
-      `=== IMPLEMENTATION STANDARDS (follow these) ===\n${skills.implementation}`
+      `=== IMPLEMENTATION STANDARDS (follow these) ===\n${skills.implementation}`,
     );
   parts.push(`=== TICKET ===\n${ticketText}`);
   if (grooming)
-    parts.push(`=== GROOMING ANALYSIS ===\n${JSON.stringify(grooming, null, 2)}`);
+    parts.push(
+      `=== GROOMING ANALYSIS ===\n${JSON.stringify(grooming, null, 2)}`,
+    );
   if (groomingChat.length > 0)
     parts.push(
       `=== GROOMING Q&A (questions asked and answered during grooming — treat these answers as resolved) ===\n` +
-      groomingChat.map(m => `${m.role === "user" ? "User" : "Agent"}: ${m.content}`).join("\n\n")
+        groomingChat
+          .map((m) => `${m.role === "user" ? "User" : "Agent"}: ${m.content}`)
+          .join("\n\n"),
     );
   if (impact)
     parts.push(`=== IMPACT ANALYSIS ===\n${JSON.stringify(impact, null, 2)}`);
@@ -175,7 +181,7 @@ export function compilePipelineContext(
 function prependSkill(
   text: string,
   skill: string | undefined,
-  label: string
+  label: string,
 ): string {
   if (!skill) return text;
   return `=== ${label} (follow these) ===\n${skill}\n\n${text}`;
@@ -183,7 +189,7 @@ function prependSkill(
 
 export function detectGroomingBlockers(
   issue: JiraIssue,
-  grooming: GroomingOutput
+  grooming: GroomingOutput,
 ): GroomingBlocker[] {
   const blockers: GroomingBlocker[] = [];
   const type = issue.issueType.toLowerCase();
@@ -523,54 +529,113 @@ export const useImplementTicketStore = create<ImplementTicketState>()(
       const s = get();
       const errors = { ...s.errors };
       delete errors[stage];
-      const completedStages = new Set([...s.completedStages].filter((st) => st !== stage));
-      const pendingApproval = s.pendingApproval === stage ? null : s.pendingApproval;
+      const completedStages = new Set(
+        [...s.completedStages].filter((st) => st !== stage),
+      );
+      const pendingApproval =
+        s.pendingApproval === stage ? null : s.pendingApproval;
 
       const outputResets: Partial<ImplementTicketState> = {};
       switch (stage) {
         case "grooming":
           Object.assign(outputResets, {
-            grooming: null, groomingEdits: [], clarifyingQuestions: [],
-            groomingChat: [], groomingBlockers: [], groomingProgress: "",
-            groomingStreamText: "", filesRead: [],
+            grooming: null,
+            groomingEdits: [],
+            clarifyingQuestions: [],
+            groomingChat: [],
+            groomingBlockers: [],
+            groomingProgress: "",
+            groomingStreamText: "",
+            filesRead: [],
           });
           break;
-        case "impact": Object.assign(outputResets, { impact: null, impactStreamText: "" }); break;
-        case "triage": Object.assign(outputResets, { triageHistory: [], triageStreamText: "" }); break;
-        case "plan": Object.assign(outputResets, { plan: null, guidance: null, planStreamText: "" }); break;
-        case "implementation": Object.assign(outputResets, { implementation: null, implementationStreamText: "", guidance: null }); break;
-        case "tests": Object.assign(outputResets, { tests: null, testsStreamText: "" }); break;
-        case "review": Object.assign(outputResets, { review: null, reviewStreamText: "" }); break;
-        case "pr": Object.assign(outputResets, { prDescription: null, prStreamText: "" }); break;
-        case "retro": Object.assign(outputResets, { retrospective: null, retroStreamText: "" }); break;
+        case "impact":
+          Object.assign(outputResets, { impact: null, impactStreamText: "" });
+          break;
+        case "triage":
+          Object.assign(outputResets, {
+            triageHistory: [],
+            triageStreamText: "",
+          });
+          break;
+        case "plan":
+          Object.assign(outputResets, {
+            plan: null,
+            guidance: null,
+            planStreamText: "",
+          });
+          break;
+        case "implementation":
+          Object.assign(outputResets, {
+            implementation: null,
+            implementationStreamText: "",
+            guidance: null,
+          });
+          break;
+        case "tests":
+          Object.assign(outputResets, { tests: null, testsStreamText: "" });
+          break;
+        case "review":
+          Object.assign(outputResets, { review: null, reviewStreamText: "" });
+          break;
+        case "pr":
+          Object.assign(outputResets, {
+            prDescription: null,
+            prStreamText: "",
+          });
+          break;
+        case "retro":
+          Object.assign(outputResets, {
+            retrospective: null,
+            retroStreamText: "",
+          });
+          break;
       }
 
       set({ errors, completedStages, pendingApproval, ...outputResets });
 
       switch (stage) {
-        case "grooming": await get().runGroomingStage(); break;
-        case "impact": await get().runImpactStage(); break;
-        case "triage": await get().runTriageStage(); break;
-        case "plan": await get().finalizePlan(); break;
-        case "implementation": await get().runImplementationStage(); break;
-        case "tests": await get().runTestsStage(); break;
-        case "review": await get().runReviewStage(); break;
-        case "pr": await get().runPrStage(); break;
-        case "retro": await get().runRetroStage(); break;
+        case "grooming":
+          await get().runGroomingStage();
+          break;
+        case "impact":
+          await get().runImpactStage();
+          break;
+        case "triage":
+          await get().runTriageStage();
+          break;
+        case "plan":
+          await get().finalizePlan();
+          break;
+        case "implementation":
+          await get().runImplementationStage();
+          break;
+        case "tests":
+          await get().runTestsStage();
+          break;
+        case "review":
+          await get().runReviewStage();
+          break;
+        case "pr":
+          await get().runPrStage();
+          break;
+        case "retro":
+          await get().runRetroStage();
+          break;
       }
     },
 
     handleApproveEdit: (id) =>
       set((s) => ({
         groomingEdits: s.groomingEdits.map((e) =>
-          e.id === id ? { ...e, status: "approved" as SuggestedEditStatus } : e
+          e.id === id ? { ...e, status: "approved" as SuggestedEditStatus } : e,
         ),
       })),
 
     handleDeclineEdit: (id) =>
       set((s) => ({
         groomingEdits: s.groomingEdits.map((e) =>
-          e.id === id ? { ...e, status: "declined" as SuggestedEditStatus } : e
+          e.id === id ? { ...e, status: "declined" as SuggestedEditStatus } : e,
         ),
       })),
 
@@ -595,7 +660,12 @@ export const useImplementTicketStore = create<ImplementTicketState>()(
       const existingSession = get().sessions.get(issue.key);
       if (existingSession && existingSession.currentStage !== "select") {
         // Assign a fresh session ID — the old backend process is gone.
-        set({ ...existingSession, selectedIssue: issue, isSessionActive: true, activeSessionId: crypto.randomUUID() });
+        set({
+          ...existingSession,
+          selectedIssue: issue,
+          isSessionActive: true,
+          activeSessionId: crypto.randomUUID(),
+        });
         return;
       }
 
@@ -603,7 +673,7 @@ export const useImplementTicketStore = create<ImplementTicketState>()(
       const sessions = get().sessions;
       set({
         ...INITIAL,
-        sessions,               // preserve the sessions map across resets
+        sessions, // preserve the sessions map across resets
         selectedIssue: issue,
         currentStage: "grooming",
         viewingStage: "grooming",
@@ -616,7 +686,9 @@ export const useImplementTicketStore = create<ImplementTicketState>()(
       try {
         fullIssue = await getIssue(issue.key);
         set({ selectedIssue: fullIssue });
-      } catch { /* fall back to sprint-list version */ }
+      } catch {
+        /* fall back to sprint-list version */
+      }
 
       const text = compileTicketText(fullIssue);
       set({ ticketText: text });
@@ -624,7 +696,9 @@ export const useImplementTicketStore = create<ImplementTicketState>()(
       let skills: Partial<Record<SkillType, string>> = {};
       try {
         skills = await loadAgentSkills();
-      } catch { /* no skills */ }
+      } catch {
+        /* no skills */
+      }
       set({ skills });
 
       // Sync worktree
@@ -644,6 +718,7 @@ export const useImplementTicketStore = create<ImplementTicketState>()(
 
     // ── Grooming ───────────────────────────────────────────────────────────────
     runGroomingStage: async () => {
+      console.log("[Meridian] runGroomingStage: starting");
       set({ currentStage: "grooming", viewingStage: "grooming" });
       const { ticketText, worktreeInfo, skills } = get();
 
@@ -658,36 +733,78 @@ export const useImplementTicketStore = create<ImplementTicketState>()(
 
         if (repoContext) {
           try {
-            set({ groomingProgress: "Identifying relevant files in the codebase…" });
+            console.log("[Meridian] runGroomingStage: starting file probe");
+            set({
+              groomingProgress: "Identifying relevant files in the codebase…",
+            });
             const probeRaw = await runGroomingFileProbe(ticketWithContext);
-            const probe = parseAgentJson<{ files: string[]; grep_patterns: string[] }>(probeRaw);
+            console.log(
+              "[Meridian] runGroomingStage: probe raw output received",
+            );
+            const probe = parseAgentJson<{
+              files: string[];
+              grep_patterns: string[];
+            }>(probeRaw);
             if (probe) {
+              console.log("[Meridian] runGroomingStage: probe parsed", probe);
               const MAX_TOTAL = 40 * 1024;
               let totalSize = 0;
               const parts: string[] = [];
 
               for (const filePath of (probe.files ?? []).slice(0, 12)) {
                 try {
+                  console.log(
+                    "[Meridian] runGroomingStage: reading file",
+                    filePath,
+                  );
                   set({ groomingProgress: `Reading ${filePath}…` });
                   const content = await readRepoFile(filePath);
                   const chunk = `--- ${filePath} ---\n${content}\n`;
-                  if (totalSize + chunk.length > MAX_TOTAL) break;
+                  if (totalSize + chunk.length > MAX_TOTAL) {
+                    console.log(
+                      "[Meridian] runGroomingStage: context size limit reached, stopping file reads",
+                    );
+                    break;
+                  }
                   parts.push(chunk);
                   totalSize += chunk.length;
                   readFiles.push(filePath);
-                } catch { /* skip */ }
+                } catch (e) {
+                  console.warn(
+                    "[Meridian] runGroomingStage: failed to read file",
+                    filePath,
+                    e,
+                  );
+                }
               }
 
               for (const pattern of (probe.grep_patterns ?? []).slice(0, 6)) {
                 try {
-                  set({ groomingProgress: `Searching codebase for "${pattern}"…` });
+                  console.log(
+                    "[Meridian] runGroomingStage: grepping pattern",
+                    pattern,
+                  );
+                  set({
+                    groomingProgress: `Searching codebase for "${pattern}"…`,
+                  });
                   const lines = await grepRepoFiles(pattern);
                   if (lines.length === 0) continue;
                   const chunk = `--- grep: ${pattern} ---\n${lines.join("\n")}\n`;
-                  if (totalSize + chunk.length > MAX_TOTAL) break;
+                  if (totalSize + chunk.length > MAX_TOTAL) {
+                    console.log(
+                      "[Meridian] runGroomingStage: context size limit reached, stopping grep",
+                    );
+                    break;
+                  }
                   parts.push(chunk);
                   totalSize += chunk.length;
-                } catch { /* skip */ }
+                } catch (e) {
+                  console.warn(
+                    "[Meridian] runGroomingStage: failed to grep pattern",
+                    pattern,
+                    e,
+                  );
+                }
               }
 
               if (parts.length > 0) {
@@ -701,15 +818,23 @@ export const useImplementTicketStore = create<ImplementTicketState>()(
           }
         }
 
-        const groomingInput = prependSkill(ticketWithContext, skills.grooming, "GROOMING CONVENTIONS");
+        console.log("[Meridian] runGroomingStage: calling runGroomingAgent");
+        const groomingInput = prependSkill(
+          ticketWithContext,
+          skills.grooming,
+          "GROOMING CONVENTIONS",
+        );
         const raw = await runGroomingAgent(groomingInput, fileContentsBlock);
+        console.log("[Meridian] runGroomingStage: runGroomingAgent finished");
         const data = parseAgentJson<GroomingOutput>(raw);
         if (!data) throw new Error("Could not parse grooming output");
 
-        const edits: SuggestedEdit[] = (data.suggested_edits ?? []).map((e) => ({
-          ...e,
-          status: "pending" as SuggestedEditStatus,
-        }));
+        const edits: SuggestedEdit[] = (data.suggested_edits ?? []).map(
+          (e) => ({
+            ...e,
+            status: "pending" as SuggestedEditStatus,
+          }),
+        );
 
         const questions = data.clarifying_questions ?? [];
         const initialChat: TriageMessage[] =
@@ -733,7 +858,9 @@ export const useImplementTicketStore = create<ImplementTicketState>()(
           groomingEdits: edits,
           clarifyingQuestions: questions,
           groomingChat: initialChat,
-          groomingBlockers: currentIssue ? detectGroomingBlockers(currentIssue, data) : [],
+          groomingBlockers: currentIssue
+            ? detectGroomingBlockers(currentIssue, data)
+            : [],
         });
         get().markComplete("grooming");
         set({ pendingApproval: "grooming" });
@@ -744,14 +871,29 @@ export const useImplementTicketStore = create<ImplementTicketState>()(
 
     // ── Impact ─────────────────────────────────────────────────────────────────
     runImpactStage: async () => {
-      set({ currentStage: "impact", viewingStage: "impact", impactStreamText: "" });
+      set({
+        currentStage: "impact",
+        viewingStage: "impact",
+        impactStreamText: "",
+      });
       try {
         const { ticketText, grooming, skills, groomingChat } = get();
-        const groomingWithQa = groomingChat.length > 0
-          ? JSON.stringify(grooming) + "\n\n=== GROOMING Q&A (resolved) ===\n" +
-            groomingChat.map(m => `${m.role === "user" ? "User" : "Agent"}: ${m.content}`).join("\n\n")
-          : JSON.stringify(grooming);
-        const impactInput = prependSkill(ticketText, skills.patterns, "CODEBASE PATTERNS");
+        const groomingWithQa =
+          groomingChat.length > 0
+            ? JSON.stringify(grooming) +
+              "\n\n=== GROOMING Q&A (resolved) ===\n" +
+              groomingChat
+                .map(
+                  (m) =>
+                    `${m.role === "user" ? "User" : "Agent"}: ${m.content}`,
+                )
+                .join("\n\n")
+            : JSON.stringify(grooming);
+        const impactInput = prependSkill(
+          ticketText,
+          skills.patterns,
+          "CODEBASE PATTERNS",
+        );
         const raw = await runImpactAnalysis(impactInput, groomingWithQa);
         const data = parseAgentJson<ImpactOutput>(raw);
         if (!data) throw new Error("Could not parse impact output");
@@ -765,15 +907,25 @@ export const useImplementTicketStore = create<ImplementTicketState>()(
 
     // ── Triage ─────────────────────────────────────────────────────────────────
     runTriageStage: async () => {
-      set({ currentStage: "triage", viewingStage: "triage", triageStreamText: "" });
+      set({
+        currentStage: "triage",
+        viewingStage: "triage",
+        triageStreamText: "",
+      });
       const { ticketText, grooming, impact, skills, groomingChat } = get();
-      const contextText = compilePipelineContext(ticketText, grooming, impact, skills, groomingChat);
+      const contextText = compilePipelineContext(
+        ticketText,
+        grooming,
+        impact,
+        skills,
+        groomingChat,
+      );
       try {
         const initialMessage =
           "Please analyse this ticket and propose a concrete implementation approach. Ask any clarifying questions you need answered before we can finalise the plan.";
         const response = await runTriageTurn(
           contextText,
-          JSON.stringify([{ role: "user", content: initialMessage }])
+          JSON.stringify([{ role: "user", content: initialMessage }]),
         );
         set({
           triageHistory: [
@@ -789,14 +941,36 @@ export const useImplementTicketStore = create<ImplementTicketState>()(
     },
 
     sendTriageMessage: async (input) => {
-      const { triageHistory, ticketText, grooming, impact, skills, groomingChat } = get();
+      const {
+        triageHistory,
+        ticketText,
+        grooming,
+        impact,
+        skills,
+        groomingChat,
+      } = get();
       const userMsg: TriageMessage = { role: "user", content: input };
       const newHistory = [...triageHistory, userMsg];
       set({ triageHistory: newHistory });
       try {
-        const contextText = compilePipelineContext(ticketText, grooming, impact, skills, groomingChat);
-        const response = await runTriageTurn(contextText, JSON.stringify(newHistory));
-        set({ triageHistory: [...newHistory, { role: "assistant", content: response }], triageStreamText: "" });
+        const contextText = compilePipelineContext(
+          ticketText,
+          grooming,
+          impact,
+          skills,
+          groomingChat,
+        );
+        const response = await runTriageTurn(
+          contextText,
+          JSON.stringify(newHistory),
+        );
+        set({
+          triageHistory: [
+            ...newHistory,
+            { role: "assistant", content: response },
+          ],
+          triageStreamText: "",
+        });
       } catch (e) {
         set({ triageStreamText: "" });
         get().setError("triage", String(e));
@@ -806,9 +980,25 @@ export const useImplementTicketStore = create<ImplementTicketState>()(
     finalizePlan: async () => {
       set({ currentStage: "plan" });
       try {
-        const { ticketText, grooming, impact, skills, triageHistory, groomingChat } = get();
-        const contextText = compilePipelineContext(ticketText, grooming, impact, skills, groomingChat);
-        const raw = await finalizeImplementationPlan(contextText, JSON.stringify(triageHistory));
+        const {
+          ticketText,
+          grooming,
+          impact,
+          skills,
+          triageHistory,
+          groomingChat,
+        } = get();
+        const contextText = compilePipelineContext(
+          ticketText,
+          grooming,
+          impact,
+          skills,
+          groomingChat,
+        );
+        const raw = await finalizeImplementationPlan(
+          contextText,
+          JSON.stringify(triageHistory),
+        );
         const data = parseAgentJson<ImplementationPlan>(raw);
         if (!data) throw new Error("Could not parse plan output");
         set({ plan: data, viewingStage: "plan" });
@@ -818,12 +1008,17 @@ export const useImplementTicketStore = create<ImplementTicketState>()(
           const guidanceInput = prependSkill(
             prependSkill(ticketText, skills.patterns, "CODEBASE PATTERNS"),
             skills.implementation,
-            "IMPLEMENTATION STANDARDS"
+            "IMPLEMENTATION STANDARDS",
           );
-          const guidanceRaw = await runImplementationGuidance(guidanceInput, JSON.stringify(data));
+          const guidanceRaw = await runImplementationGuidance(
+            guidanceInput,
+            JSON.stringify(data),
+          );
           const guidanceData = parseAgentJson<GuidanceOutput>(guidanceRaw);
           if (guidanceData) set({ guidance: guidanceData });
-        } catch { /* guidance failure is non-fatal — implementation can proceed with plan alone */ }
+        } catch {
+          /* guidance failure is non-fatal — implementation can proceed with plan alone */
+        }
 
         get().markComplete("triage");
         get().markComplete("plan");
@@ -835,10 +1030,18 @@ export const useImplementTicketStore = create<ImplementTicketState>()(
 
     // ── Implementation ─────────────────────────────────────────────────────────
     runImplementationStage: async () => {
-      set({ currentStage: "implementation", viewingStage: "implementation", implementationStreamText: "" });
+      set({
+        currentStage: "implementation",
+        viewingStage: "implementation",
+        implementationStreamText: "",
+      });
       try {
         const { ticketText, plan, guidance } = get();
-        const raw = await runImplementationAgent(ticketText, JSON.stringify(plan), guidance ? JSON.stringify(guidance) : "");
+        const raw = await runImplementationAgent(
+          ticketText,
+          JSON.stringify(plan),
+          guidance ? JSON.stringify(guidance) : "",
+        );
         const data = parseAgentJson<ImplementationOutput>(raw);
         if (!data) throw new Error("Could not parse implementation output");
         set({ implementation: data });
@@ -851,16 +1054,24 @@ export const useImplementTicketStore = create<ImplementTicketState>()(
 
     // ── Tests ──────────────────────────────────────────────────────────────────
     runTestsStage: async () => {
-      set({ currentStage: "tests", viewingStage: "tests", testsStreamText: "" });
+      set({
+        currentStage: "tests",
+        viewingStage: "tests",
+        testsStreamText: "",
+      });
       try {
         const { ticketText, plan, implementation } = get();
         let diff = "";
-        try { diff = await getRepoDiff(); } catch { /* no worktree — proceed without diff */ }
+        try {
+          diff = await getRepoDiff();
+        } catch {
+          /* no worktree — proceed without diff */
+        }
         const raw = await runTestSuggestions(
           ticketText,
           JSON.stringify(plan),
           JSON.stringify(implementation),
-          diff
+          diff,
         );
         const data = parseAgentJson<TestOutput>(raw);
         if (!data) throw new Error("Could not parse test output");
@@ -874,11 +1085,19 @@ export const useImplementTicketStore = create<ImplementTicketState>()(
 
     // ── Review ─────────────────────────────────────────────────────────────────
     runReviewStage: async () => {
-      set({ currentStage: "review", viewingStage: "review", reviewStreamText: "" });
+      set({
+        currentStage: "review",
+        viewingStage: "review",
+        reviewStreamText: "",
+      });
       try {
         const { ticketText, plan, implementation, tests, skills } = get();
         let diff = "";
-        try { diff = await getRepoDiff(); } catch { /* no worktree — proceed without diff */ }
+        try {
+          diff = await getRepoDiff();
+        } catch {
+          /* no worktree — proceed without diff */
+        }
         const reviewPlanJson = skills.review
           ? `=== REVIEW STANDARDS (follow these) ===\n${skills.review}\n\n${JSON.stringify(plan)}`
           : JSON.stringify(plan);
@@ -887,7 +1106,7 @@ export const useImplementTicketStore = create<ImplementTicketState>()(
           reviewPlanJson,
           JSON.stringify(implementation),
           JSON.stringify(tests),
-          diff
+          diff,
         );
         const data = parseAgentJson<PlanReviewOutput>(raw);
         if (!data) throw new Error("Could not parse review output");
@@ -908,7 +1127,7 @@ export const useImplementTicketStore = create<ImplementTicketState>()(
           ticketText,
           JSON.stringify(plan),
           JSON.stringify(implementation),
-          JSON.stringify(review)
+          JSON.stringify(review),
         );
         const data = parseAgentJson<PrDescriptionOutput>(raw);
         if (!data) throw new Error("Could not parse PR description output");
@@ -922,14 +1141,18 @@ export const useImplementTicketStore = create<ImplementTicketState>()(
 
     // ── Retrospective ──────────────────────────────────────────────────────────
     runRetroStage: async () => {
-      set({ currentStage: "retro", viewingStage: "retro", retroStreamText: "" });
+      set({
+        currentStage: "retro",
+        viewingStage: "retro",
+        retroStreamText: "",
+      });
       try {
         const { ticketText, plan, implementation, review } = get();
         const raw = await runRetrospectiveAgent(
           ticketText,
           JSON.stringify(plan),
           JSON.stringify(implementation),
-          JSON.stringify(review)
+          JSON.stringify(review),
         );
         const data = parseAgentJson<RetrospectiveOutput>(raw);
         if (!data) throw new Error("Could not parse retrospective output");
@@ -946,14 +1169,30 @@ export const useImplementTicketStore = create<ImplementTicketState>()(
       set({ pendingApproval: null, proceeding: true });
       try {
         switch (stage) {
-          case "grooming":   await get().runImpactStage(); break;
-          case "impact":     await get().runTriageStage(); break;
-          case "plan":           await get().runImplementationStage(); break;
-          case "implementation": await get().runTestsStage(); break;
-          case "tests":      await get().runReviewStage(); break;
-          case "review":     await get().runPrStage(); break;
-          case "pr":         await get().runRetroStage(); break;
-          case "retro":      set({ currentStage: "complete" }); break;
+          case "grooming":
+            await get().runImpactStage();
+            break;
+          case "impact":
+            await get().runTriageStage();
+            break;
+          case "plan":
+            await get().runImplementationStage();
+            break;
+          case "implementation":
+            await get().runTestsStage();
+            break;
+          case "tests":
+            await get().runReviewStage();
+            break;
+          case "review":
+            await get().runPrStage();
+            break;
+          case "pr":
+            await get().runRetroStage();
+            break;
+          case "retro":
+            set({ currentStage: "complete" });
+            break;
         }
       } finally {
         set({ proceeding: false });
@@ -962,29 +1201,62 @@ export const useImplementTicketStore = create<ImplementTicketState>()(
 
     // ── Checkpoint chat ────────────────────────────────────────────────────────
     sendCheckpointMessage: async (stage, input) => {
-      const { checkpointChats, ticketText, grooming, impact, skills, groomingChat } = get();
+      const {
+        checkpointChats,
+        ticketText,
+        grooming,
+        impact,
+        skills,
+        groomingChat,
+      } = get();
       const stageLabels: Partial<Record<Stage, string>> = {
-        grooming: "GROOMING", impact: "IMPACT ANALYSIS", plan: "IMPLEMENTATION PLAN",
-        implementation: "IMPLEMENTATION RESULT", tests: "TEST SUGGESTIONS",
-        review: "CODE REVIEW", pr: "PR DESCRIPTION", retro: "RETROSPECTIVE",
+        grooming: "GROOMING",
+        impact: "IMPACT ANALYSIS",
+        plan: "IMPLEMENTATION PLAN",
+        implementation: "IMPLEMENTATION RESULT",
+        tests: "TEST SUGGESTIONS",
+        review: "CODE REVIEW",
+        pr: "PR DESCRIPTION",
+        retro: "RETROSPECTIVE",
       };
       const s = get();
       const stageOutput =
-        stage === "grooming"  ? s.grooming :
-        stage === "impact"    ? s.impact :
-        stage === "plan"           ? s.plan :
-        stage === "implementation" ? s.implementation :
-        stage === "tests"          ? s.tests :
-        stage === "review"    ? s.review :
-        stage === "pr"        ? s.prDescription :
-        stage === "retro"     ? s.retrospective : null;
+        stage === "grooming"
+          ? s.grooming
+          : stage === "impact"
+            ? s.impact
+            : stage === "plan"
+              ? s.plan
+              : stage === "implementation"
+                ? s.implementation
+                : stage === "tests"
+                  ? s.tests
+                  : stage === "review"
+                    ? s.review
+                    : stage === "pr"
+                      ? s.prDescription
+                      : stage === "retro"
+                        ? s.retrospective
+                        : null;
 
       // Post-implementation stages benefit from having the implementation output in context.
-      const postImplStages: Stage[] = ["implementation", "tests", "review", "pr", "retro"];
+      const postImplStages: Stage[] = [
+        "implementation",
+        "tests",
+        "review",
+        "pr",
+        "retro",
+      ];
       const isPostImpl = postImplStages.includes(stage);
 
       const contextParts = [
-        compilePipelineContext(ticketText, grooming, impact, skills, groomingChat),
+        compilePipelineContext(
+          ticketText,
+          grooming,
+          impact,
+          skills,
+          groomingChat,
+        ),
         isPostImpl && s.plan
           ? `=== IMPLEMENTATION PLAN ===\n${JSON.stringify(s.plan, null, 2)}`
           : "",
@@ -999,16 +1271,25 @@ export const useImplementTicketStore = create<ImplementTicketState>()(
       const context = contextParts.filter(Boolean).join("\n\n");
 
       const prev = checkpointChats[stage] ?? [];
-      const newHistory: TriageMessage[] = [...prev, { role: "user", content: input }];
+      const newHistory: TriageMessage[] = [
+        ...prev,
+        { role: "user", content: input },
+      ];
       set({ checkpointChats: { ...checkpointChats, [stage]: newHistory } });
 
       try {
-        const response = await runCheckpointChatTurn(context, JSON.stringify(newHistory));
+        const response = await runCheckpointChatTurn(
+          context,
+          JSON.stringify(newHistory),
+        );
         set((st) => ({
           checkpointStreamText: "",
           checkpointChats: {
             ...st.checkpointChats,
-            [stage]: [...(st.checkpointChats[stage] ?? newHistory), { role: "assistant", content: response }],
+            [stage]: [
+              ...(st.checkpointChats[stage] ?? newHistory),
+              { role: "assistant", content: response },
+            ],
           },
         }));
       } catch (e) {
@@ -1017,7 +1298,10 @@ export const useImplementTicketStore = create<ImplementTicketState>()(
           checkpointStreamText: "",
           checkpointChats: {
             ...st.checkpointChats,
-            [stage]: [...(st.checkpointChats[stage] ?? newHistory), { role: "assistant", content: errMsg }],
+            [stage]: [
+              ...(st.checkpointChats[stage] ?? newHistory),
+              { role: "assistant", content: errMsg },
+            ],
           },
         }));
       }
@@ -1025,7 +1309,13 @@ export const useImplementTicketStore = create<ImplementTicketState>()(
 
     // ── Grooming conversation ──────────────────────────────────────────────────
     sendGroomingChatMessage: async (input) => {
-      const { groomingChat, grooming, groomingEdits, ticketText, selectedIssue } = get();
+      const {
+        groomingChat,
+        grooming,
+        groomingEdits,
+        ticketText,
+        selectedIssue,
+      } = get();
 
       if (groomingChat.length === 0 && get().groomingBaseline === null) {
         set({ groomingBaseline: grooming });
@@ -1042,16 +1332,35 @@ export const useImplementTicketStore = create<ImplementTicketState>()(
         JSON.stringify(grooming, null, 2),
         "=== CURRENT SUGGESTED EDITS (with IDs — use same IDs to update, new IDs to add) ===",
         JSON.stringify(
-          groomingEdits.map(({ id, field, section, current, suggested, reasoning, status }) => ({
-            id, field, section, current, suggested, reasoning, status,
-          })),
+          groomingEdits.map(
+            ({
+              id,
+              field,
+              section,
+              current,
+              suggested,
+              reasoning,
+              status,
+            }) => ({
+              id,
+              field,
+              section,
+              current,
+              suggested,
+              reasoning,
+              status,
+            }),
+          ),
           null,
-          2
+          2,
         ),
       ].join("\n");
 
       try {
-        const response = await runGroomingChatTurn(systemContext, JSON.stringify(newHistory));
+        const response = await runGroomingChatTurn(
+          systemContext,
+          JSON.stringify(newHistory),
+        );
         const parsed = parseAgentJson<{
           message: string;
           updated_edits: Omit<SuggestedEdit, "status">[];
@@ -1060,13 +1369,18 @@ export const useImplementTicketStore = create<ImplementTicketState>()(
 
         const displayMessage = parsed?.message ?? response;
         set({
-          groomingChat: [...newHistory, { role: "assistant", content: displayMessage }],
+          groomingChat: [
+            ...newHistory,
+            { role: "assistant", content: displayMessage },
+          ],
         });
 
         if (parsed) {
           if (parsed.updated_edits && parsed.updated_edits.length > 0) {
             set((st) => {
-              const existingById = new Map(st.groomingEdits.map((e) => [e.id, e]));
+              const existingById = new Map(
+                st.groomingEdits.map((e) => [e.id, e]),
+              );
               const merged = [...st.groomingEdits];
               for (const incoming of parsed.updated_edits) {
                 const existing = existingById.get(incoming.id);
@@ -1074,7 +1388,10 @@ export const useImplementTicketStore = create<ImplementTicketState>()(
                   const idx = merged.findIndex((e) => e.id === incoming.id);
                   merged[idx] = {
                     ...incoming,
-                    status: existing.status === "pending" ? "pending" : existing.status,
+                    status:
+                      existing.status === "pending"
+                        ? "pending"
+                        : existing.status,
                   };
                 } else {
                   merged.push({ ...incoming, status: "pending" });
@@ -1089,9 +1406,16 @@ export const useImplementTicketStore = create<ImplementTicketState>()(
         }
 
         if (selectedIssue && grooming) {
-          set({ groomingBlockers: detectGroomingBlockers(selectedIssue, get().grooming!) });
+          set({
+            groomingBlockers: detectGroomingBlockers(
+              selectedIssue,
+              get().grooming!,
+            ),
+          });
         }
-      } catch { /* silently handle */ }
+      } catch {
+        /* silently handle */
+      }
     },
 
     // ── Push grooming edits to JIRA ────────────────────────────────────────────
@@ -1103,17 +1427,28 @@ export const useImplementTicketStore = create<ImplementTicketState>()(
 
       set({ jiraUpdateStatus: "saving", jiraUpdateError: "" });
       try {
-        const descriptionFields: SuggestedEdit["field"][] = ["description", "acceptance_criteria"];
-        const descriptionEdits = approved.filter((e) => descriptionFields.includes(e.field));
-        const otherEdits = approved.filter((e) => !descriptionFields.includes(e.field));
+        const descriptionFields: SuggestedEdit["field"][] = [
+          "description",
+          "acceptance_criteria",
+        ];
+        const descriptionEdits = approved.filter((e) =>
+          descriptionFields.includes(e.field),
+        );
+        const otherEdits = approved.filter(
+          (e) => !descriptionFields.includes(e.field),
+        );
 
         if (descriptionEdits.length > 0 || grooming) {
           const g = grooming;
           const lines: string[] = [];
           if (g) lines.push(g.ticket_summary, "");
 
-          const descEdit = descriptionEdits.find((e) => e.field === "description");
-          const acEdit = descriptionEdits.find((e) => e.field === "acceptance_criteria");
+          const descEdit = descriptionEdits.find(
+            (e) => e.field === "description",
+          );
+          const acEdit = descriptionEdits.find(
+            (e) => e.field === "acceptance_criteria",
+          );
 
           if (descEdit) {
             lines.push(descEdit.suggested, "");
@@ -1126,7 +1461,11 @@ export const useImplementTicketStore = create<ImplementTicketState>()(
             lines.push("");
           }
 
-          await updateJiraIssue(selectedIssue.key, null, lines.join("\n").trim());
+          await updateJiraIssue(
+            selectedIssue.key,
+            null,
+            lines.join("\n").trim(),
+          );
         }
 
         if (otherEdits.length > 0) {
@@ -1174,7 +1513,7 @@ export const useImplementTicketStore = create<ImplementTicketState>()(
       }
       set({ kbSaved: true });
     },
-  })
+  }),
 );
 
 // ── File-backed persistence ────────────────────────────────────────────────────
@@ -1209,7 +1548,11 @@ export async function hydrateImplementStore(): Promise<void> {
   const sessions =
     cached.sessions instanceof Map
       ? cached.sessions
-      : new Map(Object.entries((cached.sessions ?? {}) as Record<string, PipelineSession>));
+      : new Map(
+          Object.entries(
+            (cached.sessions ?? {}) as Record<string, PipelineSession>,
+          ),
+        );
   useImplementTicketStore.setState({
     ...cached,
     completedStages,
@@ -1223,18 +1566,3 @@ export async function hydrateImplementStore(): Promise<void> {
 useImplementTicketStore.subscribe((state) => {
   saveCache(IMPLEMENT_STORE_KEY, serializableState(state));
 });
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

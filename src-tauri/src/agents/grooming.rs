@@ -54,10 +54,13 @@ pub async fn run_grooming_agent(
     let (client, api_key) = dispatch::llm_client().await?;
 
     let file_block = if file_contents.trim().is_empty() {
-        let _ = app.emit("grooming-progress", serde_json::json!({
-            "phase": "analysis",
-            "message": "Analysing ticket (no codebase context — configure a worktree in Settings to enable codebase reading)…"
-        }));
+        let _ = app.emit(
+            "grooming-progress",
+            serde_json::json!({
+                "phase": "analysis",
+                "message": "Analysing ticket (no codebase context provided)…"
+            }),
+        );
         String::new()
     } else {
         let file_count = file_contents.matches("--- ").count();
@@ -122,6 +125,7 @@ pub async fn run_grooming_agent(
         "grooming-stream",
     )
     .await;
+
     let _ = app.emit(
         "grooming-progress",
         serde_json::json!({

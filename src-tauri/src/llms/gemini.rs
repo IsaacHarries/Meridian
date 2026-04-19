@@ -407,6 +407,30 @@ pub async fn complete_gemini(
         .ok_or_else(|| "Unexpected response shape from Gemini API.".to_string())
 }
 
+pub async fn complete_gemini_streaming(
+    app: &tauri::AppHandle,
+    client: &Client,
+    api_key: &str,
+    model: &str,
+    system: &str,
+    user: &str,
+    max_tokens: u32,
+    stream_event: &str,
+) -> Result<String, String> {
+    let history = vec![serde_json::json!({ "role": "user", "content": user })];
+    complete_multi_gemini(
+        app,
+        client,
+        api_key,
+        model,
+        system,
+        &history,
+        max_tokens,
+        stream_event,
+    )
+    .await
+}
+
 pub async fn complete_multi_gemini(
     app: &tauri::AppHandle,
     client: &Client,

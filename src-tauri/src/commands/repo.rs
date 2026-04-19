@@ -145,13 +145,24 @@ pub async fn sync_worktree() -> Result<WorktreeInfo, String> {
     let path = worktree_path()?;
     let branch = base_branch();
 
-    // Fetch
-    git(&path, &["fetch", "origin"]).map_err(|e| format!("git fetch failed: {e}"))?;
+    // Check if 'origin' remote exists
+    let remotes = git(&path, &["remote"]).unwrap_or_default();
+    let has_origin = remotes.lines().any(|r| r.trim() == "origin");
 
-    // Reset hard to origin/<branch>
-    let remote_ref = format!("origin/{branch}");
-    git(&path, &["reset", "--hard", &remote_ref])
-        .map_err(|e| format!("git reset to {remote_ref} failed: {e}"))?;
+    if has_origin {
+        // Fetch
+        git(&path, &["fetch", "origin"]).map_err(|e| format!("git fetch failed: {e}"))?;
+
+        // Reset hard to origin/<branch>
+        let remote_ref = format!("origin/{branch}");
+        git(&path, &["reset", "--hard", &remote_ref])
+            .map_err(|e| format!("git reset to {remote_ref} failed: {e}"))?;
+    } else {
+        // No origin, just ensure the local base branch is checked out and reset hard to HEAD
+        // to ensure a clean state for the agent, if the branch exists.
+        let _ = git(&path, &["checkout", &branch]);
+        let _ = git(&path, &["reset", "--hard", "HEAD"]);
+    }
 
     let head_commit = git(&path, &["rev-parse", "--short", "HEAD"])
         .map(|s| s.trim().to_string())
@@ -243,7 +254,7 @@ pub async fn grep_repo_files(pattern: String, path: Option<String>) -> Result<Ve
         "grep",
         "-n",             // line numbers
         "--heading",      // group by file
-        "-E",             // extended regex
+        "-F",             // fixed strings (no regex)
         "--max-count=50", // max 50 matches per file
         &pattern,
     ];

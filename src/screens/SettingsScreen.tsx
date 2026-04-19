@@ -744,7 +744,19 @@ function AiProviderSection() {
             .split(",")
             .map((s: string) => s.trim())
             .filter(Boolean);
-          if (parsed.length > 0) setOrder(parsed);
+          if (parsed.length > 0) {
+            const missing = DEFAULT_ORDER.filter((p) => !parsed.includes(p));
+            const merged = [...parsed, ...missing];
+
+            // Ensure "local" is always the last option if present
+            const localIdx = merged.indexOf("local");
+            if (localIdx !== -1 && localIdx !== merged.length - 1) {
+              merged.splice(localIdx, 1);
+              merged.push("local");
+            }
+
+            setOrder(merged);
+          }
         }
       })
       .catch(() => {});
@@ -753,7 +765,7 @@ function AiProviderSection() {
   async function handleModeChange(value: string) {
     setMode(value);
     try {
-      await saveCredential("ai_provider", value);
+      await setPreference("ai_provider", value);
     } catch {
       /* non-critical */
     }
@@ -762,7 +774,7 @@ function AiProviderSection() {
   async function persistOrder(next: string[]) {
     setOrder(next);
     try {
-      await saveCredential("ai_provider_order", next.join(","));
+      await setPreference("ai_provider_order", next.join(","));
     } catch {
       /* non-critical */
     }
@@ -1781,7 +1793,7 @@ function CopilotSection({
                 : "bg-background text-muted-foreground hover:text-foreground hover:bg-muted",
             )}
           >
-            Google Account
+            GitHub Account
           </button>
         </div>
 
@@ -1838,7 +1850,7 @@ function CopilotSection({
           ) : (
             <div className="space-y-3">
               <CredentialField
-                id="settings-gemini-key"
+                id="settings-copilot-token"
                 label="GitHub Token"
                 placeholder="AIza…"
                 masked
@@ -1966,11 +1978,11 @@ function CopilotSection({
 
         <SectionMessage {...status} />
 
-        {/* Model picker — visible when Gemini is configured */}
+        {/* Model picker — visible when Copilot is configured */}
         {isConfigured && (
           <div className="space-y-1.5 pt-2 border-t">
             <label className="text-xs font-medium text-muted-foreground">
-              Gemini Model
+              Copilot Model
             </label>
             <select
               value={selectedModel}
@@ -1990,8 +2002,8 @@ function CopilotSection({
               ))}
             </select>
             <p className="text-[11px] text-muted-foreground">
-              Used when Gemini is the active provider. Flash is recommended for
-              speed and cost; Pro for the highest quality.
+              Used when GitHub Copilot is the active provider. Includes GPT-4o,
+              o3-mini, and Claude 3.5 Sonnet.
             </p>
 
             <div className="pt-2 space-y-1.5">
@@ -1999,9 +2011,9 @@ function CopilotSection({
                 Custom models
               </label>
               <p className="text-[11px] text-muted-foreground -mt-0.5">
-                Add any Gemini model ID Google has published (e.g.{" "}
-                <code>gemini-3.1-pro-preview</code>). Useful when a new model
-                ships before Meridian's built-in list is updated.
+                Add any model ID supported by GitHub Copilot (e.g.{" "}
+                <code>o1-preview</code>). Useful when a new model ships before
+                Meridian's built-in list is updated.
               </p>
               <div className="flex gap-2">
                 <Input
@@ -2016,7 +2028,7 @@ function CopilotSection({
                       handleAddCustomModel();
                     }
                   }}
-                  placeholder="gemini-…"
+                  placeholder="o3-mini…"
                   disabled={savingCustom}
                   className="h-8 text-xs"
                 />

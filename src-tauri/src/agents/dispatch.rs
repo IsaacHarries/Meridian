@@ -7,14 +7,14 @@ use std::time::Duration;
 
 /// "claude" | "gemini" | "local" | "auto"  (default: "auto" = Claude first, Gemini on quota error)
 pub fn get_ai_provider() -> String {
-    get_credential("ai_provider")
+    crate::storage::preferences::get_pref("ai_provider")
         .filter(|p| !p.trim().is_empty())
         .unwrap_or_else(|| "auto".to_string())
 }
 
 /// Returns the user-configured fallback order, e.g. ["claude", "gemini", "local"].
 pub fn get_provider_order() -> Vec<String> {
-    let raw = get_credential("ai_provider_order").unwrap_or_default();
+    let raw = crate::storage::preferences::get_pref("ai_provider_order").unwrap_or_default();
     if raw.trim().is_empty() {
         return vec![
             "claude".to_string(),
@@ -48,16 +48,12 @@ pub fn is_quota_error(err: &str) -> bool {
 pub async fn llm_client() -> Result<(Client, String), String> {
     use crate::http::make_corporate_client;
     let client = make_corporate_client(Duration::from_secs(60))?;
-    let auth_method = get_credential("claude_auth_method").unwrap_or_else(|| "api_key".to_string());
-    if auth_method == "oauth" {
-        claude::refresh_oauth_if_needed(&client).await?;
-    }
     let api_key = get_credential("anthropic_api_key").unwrap_or_default();
     Ok((client, api_key))
 }
 
 pub async fn try_provider_single(
-    _app: &tauri::AppHandle,
+    app: &tauri::AppHandle,
     provider: &str,
     client: &Client,
     claude_key: &str,
@@ -67,6 +63,21 @@ pub async fn try_provider_single(
 ) -> Result<String, String> {
     match provider {
         "claude" => {
+            let auth_method =
+                get_credential("claude_auth_method").unwrap_or_else(|| "api_key".to_string());
+            if auth_method == "oauth" {
+                claude::refresh_oauth_if_needed(client).await?;
+                let fresh_key = get_credential("anthropic_api_key").unwrap_or_default();
+                return claude::complete(
+                    client,
+                    &fresh_key,
+                    &claude::get_active_model(),
+                    system,
+                    user,
+                    max_tokens,
+                )
+                .await;
+            }
             if claude_key.is_empty() {
                 Err("not configured".to_string())
             } else {
@@ -128,12 +139,18 @@ pub async fn try_provider_multi(
 ) -> Result<String, String> {
     match provider {
         "claude" => {
-            if claude_key.is_empty() {
+            let auth_method =
+                get_credential("claude_auth_method").unwrap_or_else(|| "api_key".to_string());
+            if auth_method == "oauth" {
+                claude::refresh_oauth_if_needed(client).await?;
+            }
+            let key = get_credential("anthropic_api_key").unwrap_or_else(|| claude_key.to_string());
+            if key.is_empty() {
                 Err("not configured".to_string())
             } else {
                 claude::complete_multi(
                     client,
-                    claude_key,
+                    &key,
                     &claude::get_active_model(),
                     system,
                     history_json,
@@ -176,8 +193,15 @@ pub async fn try_provider_multi(
             let token = get_credential("copilot_api_key").unwrap_or(token);
             let history: Vec<serde_json::Value> = serde_json::from_str(history_json)
                 .map_err(|e| format!("Invalid history JSON: {e}"))?;
-            crate::llms::copilot::complete_multi_copilot(
-                client, &token, &model, system, &history, max_tokens,
+            crate::llms::copilot::complete_multi_copilot_streaming(
+                app,
+                client,
+                &token,
+                &model,
+                system,
+                &history,
+                max_tokens,
+                stream_event,
             )
             .await
         }
@@ -264,13 +288,20 @@ pub async fn dispatch_streaming(
     for p in &providers_to_try {
         let result = match p.as_str() {
             "claude" => {
-                if claude_key.is_empty() {
+                let auth_method =
+                    get_credential("claude_auth_method").unwrap_or_else(|| "api_key".to_string());
+                if auth_method == "oauth" {
+                    claude::refresh_oauth_if_needed(client).await?;
+                }
+                let key =
+                    get_credential("anthropic_api_key").unwrap_or_else(|| claude_key.to_string());
+                if key.is_empty() {
                     Err("not configured".to_string())
                 } else {
                     claude::complete_claude_streaming(
                         app,
                         client,
-                        claude_key,
+                        &key,
                         &claude::get_active_model(),
                         system,
                         user,
@@ -279,6 +310,72 @@ pub async fn dispatch_streaming(
                     )
                     .await
                 }
+            }
+            "gemini" => {
+                let key = match get_credential("gemini_api_key") {
+                    Some(k) if !k.trim().is_empty() => k,
+                    _ => {
+                        failure_reasons.push("Gemini: not configured".to_string());
+                        continue;
+                    }
+                };
+                let model = match crate::storage::preferences::get_pref("gemini_model")
+                    .or_else(|| get_credential("gemini_model"))
+                    .filter(|m| !m.trim().is_empty())
+                {
+                    Some(m) => m,
+                    None => {
+                        failure_reasons.push("Gemini: no model selected in Settings.".to_string());
+                        continue;
+                    }
+                };
+                gemini::complete_gemini_streaming(
+                    app,
+                    client,
+                    &key,
+                    &model,
+                    system,
+                    user,
+                    max_tokens,
+                    stream_event,
+                )
+                .await
+            }
+            "copilot" => {
+                let token = match get_credential("copilot_api_key") {
+                    Some(t) if !t.trim().is_empty() => t,
+                    _ => {
+                        failure_reasons.push("Copilot: not configured".to_string());
+                        continue;
+                    }
+                };
+                let model = match crate::storage::preferences::get_pref("copilot_model")
+                    .or_else(|| get_credential("copilot_model"))
+                    .filter(|m| !m.trim().is_empty())
+                {
+                    Some(m) => m,
+                    None => {
+                        failure_reasons.push("Copilot: no model selected in Settings.".to_string());
+                        continue;
+                    }
+                };
+                if let Err(e) = crate::llms::copilot::refresh_copilot_token_if_needed(client).await
+                {
+                    failure_reasons.push(format!("copilot: {e}"));
+                    continue;
+                }
+                let token = get_credential("copilot_api_key").unwrap_or(token);
+                crate::llms::copilot::complete_copilot_streaming(
+                    app,
+                    client,
+                    &token,
+                    &model,
+                    system,
+                    user,
+                    max_tokens,
+                    stream_event,
+                )
+                .await
             }
             "local" => {
                 let base = match local_llm::local_llm_base_url() {
@@ -349,13 +446,20 @@ pub async fn dispatch_multi_streaming(
     for p in &providers_to_try {
         let result = match p.as_str() {
             "claude" => {
-                if claude_key.is_empty() {
+                let auth_method =
+                    get_credential("claude_auth_method").unwrap_or_else(|| "api_key".to_string());
+                if auth_method == "oauth" {
+                    claude::refresh_oauth_if_needed(client).await?;
+                }
+                let key =
+                    get_credential("anthropic_api_key").unwrap_or_else(|| claude_key.to_string());
+                if key.is_empty() {
                     Err("not configured".to_string())
                 } else {
                     claude::complete_multi_claude_streaming(
                         app,
                         client,
-                        claude_key,
+                        &key,
                         &claude::get_active_model(),
                         system,
                         history_json,
@@ -486,13 +590,20 @@ pub async fn dispatch_multi_streaming_with_tools(
     for p in &providers_to_try {
         let result = match p.as_str() {
             "claude" => {
-                if claude_key.is_empty() {
+                let auth_method =
+                    get_credential("claude_auth_method").unwrap_or_else(|| "api_key".to_string());
+                if auth_method == "oauth" {
+                    claude::refresh_oauth_if_needed(client).await?;
+                }
+                let key =
+                    get_credential("anthropic_api_key").unwrap_or_else(|| claude_key.to_string());
+                if key.is_empty() {
                     Err("not configured".to_string())
                 } else {
                     claude::complete_multi_claude_tool_loop(
                         app,
                         client,
-                        claude_key,
+                        &key,
                         &claude::get_active_model(),
                         system,
                         history_json,
