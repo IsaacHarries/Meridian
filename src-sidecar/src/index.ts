@@ -12,7 +12,10 @@ process.on("unhandledRejection", (reason) => {
   console.error("Unhandled rejection:", reason);
 });
 
-const rl = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
+const rl = readline.createInterface({
+  input: process.stdin,
+  crlfDelay: Infinity,
+});
 
 rl.on("line", async (line) => {
   const trimmed = line.trim();

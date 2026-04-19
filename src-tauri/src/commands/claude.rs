@@ -156,8 +156,7 @@ pub async fn refresh_oauth_if_needed(client: &Client) -> Result<(), String> {
 const BILLING_SALT: &str = "59cf53e54c78";
 const CC_VERSION: &str = "2.1.90";
 const CC_ENTRYPOINT: &str = "cli";
-const CLAUDE_CODE_IDENTITY: &str =
-    "You are Claude Code, Anthropic's official CLI for Claude.";
+const CLAUDE_CODE_IDENTITY: &str = "You are Claude Code, Anthropic's official CLI for Claude.";
 
 fn sha256_hex(input: &str) -> String {
     use sha2::{Digest, Sha256};
@@ -299,12 +298,11 @@ pub fn build_messages_body(
 // ── Gemini support ─────────────────────────────────────────────────────────────
 
 const GEMINI_DEFAULT_MODEL: &str = "gemini-2.5-flash";
-const GEMINI_BASE_URL: &str =
-    "https://generativelanguage.googleapis.com/v1beta/models";
+const GEMINI_BASE_URL: &str = "https://generativelanguage.googleapis.com/v1beta/models";
 
 pub const AVAILABLE_GEMINI_MODELS: &[(&str, &str)] = &[
     ("gemini-2.5-flash", "Gemini 2.5 Flash — Fast & economical"),
-    ("gemini-2.5-pro",   "Gemini 2.5 Pro   — Most capable"),
+    ("gemini-2.5-pro", "Gemini 2.5 Pro   — Most capable"),
 ];
 
 fn get_active_gemini_model() -> String {
@@ -426,8 +424,8 @@ async fn complete_multi_gemini(
 ) -> Result<String, String> {
     let url = format!("{GEMINI_BASE_URL}/{model}:generateContent?key={api_key}");
 
-    let history: serde_json::Value = serde_json::from_str(history_json)
-        .map_err(|e| format!("Invalid history JSON: {e}"))?;
+    let history: serde_json::Value =
+        serde_json::from_str(history_json).map_err(|e| format!("Invalid history JSON: {e}"))?;
 
     // Gemini uses "model" where Claude uses "assistant".
     let contents: Vec<serde_json::Value> = history
@@ -527,11 +525,21 @@ pub async fn get_gemini_models() -> Vec<(String, String)> {
                 .iter()
                 .filter_map(|v| v.as_str())
                 .collect();
-            if !supported.contains(&"generateContent") { return None; }
-            if id.contains("imagen") || id.contains("veo") || id.contains("embedding")
-                || id.contains("tts") || id.contains("aqa") { return None; }
+            if !supported.contains(&"generateContent") {
+                return None;
+            }
+            if id.contains("imagen")
+                || id.contains("veo")
+                || id.contains("embedding")
+                || id.contains("tts")
+                || id.contains("aqa")
+            {
+                return None;
+            }
             // Skip live/preview models for stability.
-            if id.contains("live") || id.contains("preview") || id.contains("exp") { return None; }
+            if id.contains("live") || id.contains("preview") || id.contains("exp") {
+                return None;
+            }
 
             let display = m["displayName"].as_str().unwrap_or(id).to_string();
             Some((id.to_string(), display))
@@ -560,22 +568,18 @@ pub async fn validate_gemini(api_key: String) -> Result<String, String> {
     let client = make_corporate_client(Duration::from_secs(10))
         .map_err(|e| format!("HTTP client error: {e}"))?;
 
-    let url = format!(
-        "https://generativelanguage.googleapis.com/v1beta/models?key={key}&pageSize=1"
-    );
+    let url =
+        format!("https://generativelanguage.googleapis.com/v1beta/models?key={key}&pageSize=1");
 
-    let resp = client
-        .get(&url)
-        .send()
-        .await
-        .map_err(|e| {
-            if e.is_connect() || e.is_timeout() {
-                "Could not reach generativelanguage.googleapis.com. \
-                 Check your internet connection.".to_string()
-            } else {
-                format!("Request failed: {e}")
-            }
-        })?;
+    let resp = client.get(&url).send().await.map_err(|e| {
+        if e.is_connect() || e.is_timeout() {
+            "Could not reach generativelanguage.googleapis.com. \
+                 Check your internet connection."
+                .to_string()
+        } else {
+            format!("Request failed: {e}")
+        }
+    })?;
 
     match resp.status() {
         s if s.is_success() => {
@@ -601,28 +605,25 @@ pub async fn test_gemini_stored() -> Result<String, String> {
     let client = make_corporate_client(Duration::from_secs(10))
         .map_err(|e| format!("HTTP client error: {e}"))?;
 
-    let url = format!(
-        "https://generativelanguage.googleapis.com/v1beta/models?key={key}&pageSize=1"
-    );
+    let url =
+        format!("https://generativelanguage.googleapis.com/v1beta/models?key={key}&pageSize=1");
 
-    let resp = client
-        .get(&url)
-        .send()
-        .await
-        .map_err(|e| {
-            if e.is_connect() || e.is_timeout() {
-                "Could not reach generativelanguage.googleapis.com. \
-                 Check your internet connection.".to_string()
-            } else {
-                format!("Request failed: {e}")
-            }
-        })?;
+    let resp = client.get(&url).send().await.map_err(|e| {
+        if e.is_connect() || e.is_timeout() {
+            "Could not reach generativelanguage.googleapis.com. \
+                 Check your internet connection."
+                .to_string()
+        } else {
+            format!("Request failed: {e}")
+        }
+    })?;
 
     match resp.status() {
         s if s.is_success() => Ok("Connected to Gemini API successfully.".to_string()),
         reqwest::StatusCode::UNAUTHORIZED | reqwest::StatusCode::FORBIDDEN => {
             Err("Gemini rejected the stored API key. \
-                 Re-enter it in settings to update it.".to_string())
+                 Re-enter it in settings to update it."
+                .to_string())
         }
         s => Err(format!("Unexpected response from Gemini API (HTTP {s}).")),
     }
@@ -651,7 +652,7 @@ fn make_local_client() -> Result<Client, String> {
         // Ollama can take many minutes to generate a long review; a total-request
         // timeout would fire mid-stream and produce "error decoding response body".
         .connect_timeout(Duration::from_secs(15))
-        .danger_accept_invalid_certs(true)  // self-signed certs are common
+        .danger_accept_invalid_certs(true) // self-signed certs are common
         .build()
         .map_err(|e| format!("HTTP client error: {e}"))
 }
@@ -727,8 +728,8 @@ async fn complete_multi_local(
     let client = make_local_client()?;
     let url = format!("{base_url}/chat/completions");
 
-    let history: serde_json::Value = serde_json::from_str(history_json)
-        .map_err(|e| format!("Invalid history JSON: {e}"))?;
+    let history: serde_json::Value =
+        serde_json::from_str(history_json).map_err(|e| format!("Invalid history JSON: {e}"))?;
 
     let mut messages: Vec<serde_json::Value> =
         vec![serde_json::json!({ "role": "system", "content": system })];
@@ -803,8 +804,8 @@ async fn complete_multi_local_streaming(
     let client = make_local_client()?;
     let url = format!("{base_url}/chat/completions");
 
-    let history: serde_json::Value = serde_json::from_str(history_json)
-        .map_err(|e| format!("Invalid history JSON: {e}"))?;
+    let history: serde_json::Value =
+        serde_json::from_str(history_json).map_err(|e| format!("Invalid history JSON: {e}"))?;
 
     let mut messages: Vec<serde_json::Value> =
         vec![serde_json::json!({ "role": "system", "content": system })];
@@ -871,17 +872,24 @@ async fn complete_multi_local_streaming(
             let line = buffer[..nl].trim().to_string();
             buffer = buffer[nl + 1..].to_string();
 
-            if !line.starts_with("data: ") { continue; }
+            if !line.starts_with("data: ") {
+                continue;
+            }
             let data = &line["data: ".len()..];
-            if data == "[DONE]" { break; }
+            if data == "[DONE]" {
+                break;
+            }
 
             if let Ok(json) = serde_json::from_str::<serde_json::Value>(data) {
                 if let Some(text) = json["choices"][0]["delta"]["content"].as_str() {
                     if !text.is_empty() {
                         full_text.push_str(text);
-                        let _ = app.emit(stream_event, serde_json::json!({
-                            "delta": text,
-                        }));
+                        let _ = app.emit(
+                            stream_event,
+                            serde_json::json!({
+                                "delta": text,
+                            }),
+                        );
                     }
                 }
             }
@@ -908,8 +916,8 @@ async fn complete_multi_claude_streaming(
     use futures_util::StreamExt;
     use tauri::Emitter;
 
-    let messages: serde_json::Value = serde_json::from_str(history_json)
-        .map_err(|e| format!("Invalid history JSON: {e}"))?;
+    let messages: serde_json::Value =
+        serde_json::from_str(history_json).map_err(|e| format!("Invalid history JSON: {e}"))?;
 
     let body = build_messages_body(api_key, model, system, messages, max_tokens, true, None);
 
@@ -927,21 +935,20 @@ async fn complete_multi_claude_streaming(
             req.header("x-api-key", api_key)
         } else {
             req.header("Authorization", format!("Bearer {api_key}"))
-                .header("anthropic-beta", "oauth-2025-04-20,claude-code-20250219,files-api-2025-04-14")
+                .header(
+                    "anthropic-beta",
+                    "oauth-2025-04-20,claude-code-20250219,files-api-2025-04-14",
+                )
                 .header("anthropic-client-platform", "claude_code_cli")
         };
 
-        let resp = req
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| {
-                if e.is_connect() || e.is_timeout() {
-                    "Could not reach api.anthropic.com. Check your internet connection.".to_string()
-                } else {
-                    format!("Request failed: {e}")
-                }
-            })?;
+        let resp = req.json(&body).send().await.map_err(|e| {
+            if e.is_connect() || e.is_timeout() {
+                "Could not reach api.anthropic.com. Check your internet connection.".to_string()
+            } else {
+                format!("Request failed: {e}")
+            }
+        })?;
 
         if resp.status().as_u16() == 429 && attempt < MAX_RETRIES {
             let wait_ms = retry_after_ms(resp.headers(), delay_ms);
@@ -975,7 +982,9 @@ async fn complete_multi_claude_streaming(
             let line = buffer[..nl].trim().to_string();
             buffer = buffer[nl + 1..].to_string();
 
-            if !line.starts_with("data: ") { continue; }
+            if !line.starts_with("data: ") {
+                continue;
+            }
             let data = &line["data: ".len()..];
 
             if let Ok(json) = serde_json::from_str::<serde_json::Value>(data) {
@@ -986,9 +995,12 @@ async fn complete_multi_claude_streaming(
                             if let Some(text) = json["delta"]["text"].as_str() {
                                 if !text.is_empty() {
                                     full_text.push_str(text);
-                                    let _ = app.emit(stream_event, serde_json::json!({
-                                        "delta": text,
-                                    }));
+                                    let _ = app.emit(
+                                        stream_event,
+                                        serde_json::json!({
+                                            "delta": text,
+                                        }),
+                                    );
                                 }
                             }
                         }
@@ -1011,7 +1023,6 @@ async fn complete_multi_claude_streaming(
     }
     Ok(full_text)
 }
-
 
 /// Streaming single-turn completion via local LLM (OpenAI SSE format).
 /// Emits `{stream_event}` Tauri events for each token chunk received.
@@ -1108,13 +1119,19 @@ async fn complete_local_streaming(
                     if !delta.is_empty() {
                         full_text.push_str(delta);
                         // Emit the accumulated text so far as the progress message
-                        let _ = app.emit(stream_event, serde_json::json!({
-                            "delta": delta,
-                        }));
+                        let _ = app.emit(
+                            stream_event,
+                            serde_json::json!({
+                                "delta": delta,
+                            }),
+                        );
                     }
                 }
                 // Check for finish reason
-                if json["choices"][0]["finish_reason"].as_str().map_or(false, |r| r != "null" && !r.is_empty() && r != "") {
+                if json["choices"][0]["finish_reason"]
+                    .as_str()
+                    .map_or(false, |r| r != "null" && !r.is_empty() && r != "")
+                {
                     break;
                 }
             }
@@ -1127,7 +1144,6 @@ async fn complete_local_streaming(
 
     Ok(full_text)
 }
-
 
 /// Provider-aware dispatch that streams from the local LLM when it's the active
 /// provider, and falls back to the standard (non-streaming) path for Claude/Gemini.
@@ -1156,20 +1172,46 @@ async fn dispatch_streaming(
                 if claude_key.is_empty() {
                     Err("not configured".to_string())
                 } else {
-                    complete_claude_streaming(app, client, claude_key, &get_active_model(), system, user, max_tokens, stream_event).await
+                    complete_claude_streaming(
+                        app,
+                        client,
+                        claude_key,
+                        &get_active_model(),
+                        system,
+                        user,
+                        max_tokens,
+                        stream_event,
+                    )
+                    .await
                 }
             }
             "local" => {
                 let base = match local_llm_base_url() {
                     Some(b) => b,
-                    None => { failure_reasons.push("Local LLM: not configured".to_string()); continue; }
+                    None => {
+                        failure_reasons.push("Local LLM: not configured".to_string());
+                        continue;
+                    }
                 };
                 let model = match get_local_llm_model() {
                     Some(m) => m,
-                    None => { failure_reasons.push("Local LLM: no model selected".to_string()); continue; }
+                    None => {
+                        failure_reasons.push("Local LLM: no model selected".to_string());
+                        continue;
+                    }
                 };
                 let key = get_credential("local_llm_api_key");
-                complete_local_streaming(app, &base, key.as_deref(), &model, system, user, max_tokens, stream_event).await
+                complete_local_streaming(
+                    app,
+                    &base,
+                    key.as_deref(),
+                    &model,
+                    system,
+                    user,
+                    max_tokens,
+                    stream_event,
+                )
+                .await
             }
             p => try_provider_single(app, p, client, claude_key, system, user, max_tokens).await,
         };
@@ -1273,7 +1315,11 @@ pub async fn validate_local_llm(url: String, api_key: String) -> Result<String, 
     };
 
     let client = make_local_client()?;
-    let key_opt = if api_key.trim().is_empty() { None } else { Some(api_key.trim()) };
+    let key_opt = if api_key.trim().is_empty() {
+        None
+    } else {
+        Some(api_key.trim())
+    };
 
     // Try /models first (OpenAI-compatible)
     let mut req = client.get(format!("{base}/models"));
@@ -1299,7 +1345,9 @@ pub async fn validate_local_llm(url: String, api_key: String) -> Result<String, 
     };
 
     if !ok {
-        return Err(format!("Server at {base} responded with an unexpected error."));
+        return Err(format!(
+            "Server at {base} responded with an unexpected error."
+        ));
     }
 
     store_credential("local_llm_url", &base)?;
@@ -1313,10 +1361,8 @@ pub async fn validate_local_llm(url: String, api_key: String) -> Result<String, 
 /// Test the already-stored Local LLM server URL without re-saving it.
 #[tauri::command]
 pub async fn test_local_llm_stored() -> Result<String, String> {
-    let base = local_llm_base_url()
-        .ok_or("Local LLM server URL is not configured.")?;
-    let key_opt = get_credential("local_llm_api_key")
-        .filter(|k| !k.trim().is_empty());
+    let base = local_llm_base_url().ok_or("Local LLM server URL is not configured.")?;
+    let key_opt = get_credential("local_llm_api_key").filter(|k| !k.trim().is_empty());
 
     let client = make_local_client()?;
 
@@ -1332,10 +1378,12 @@ pub async fn test_local_llm_stored() -> Result<String, String> {
             let ollama_root = base.trim_end_matches("/v1");
             match client.get(format!("{ollama_root}/api/tags")).send().await {
                 Ok(r) => r.status().is_success(),
-                Err(e) => return Err(format!(
-                    "Could not connect to {base}. \
+                Err(e) => {
+                    return Err(format!(
+                        "Could not connect to {base}. \
                      Is the server running?\n\nError: {e}"
-                )),
+                    ))
+                }
             }
         }
     };
@@ -1343,7 +1391,9 @@ pub async fn test_local_llm_stored() -> Result<String, String> {
     if ok {
         Ok(format!("Connected to local LLM server at {base}."))
     } else {
-        Err(format!("Server at {base} responded with an unexpected error."))
+        Err(format!(
+            "Server at {base} responded with an unexpected error."
+        ))
     }
 }
 
@@ -1355,8 +1405,11 @@ pub const DEFAULT_MODEL: &str = "claude-sonnet-4-6";
 /// user has not yet configured credentials.
 pub const AVAILABLE_MODELS: &[(&str, &str)] = &[
     ("claude-haiku-4-5-20251001", "Claude Haiku 4.5  — Fastest"),
-    ("claude-sonnet-4-6",         "Claude Sonnet 4.6 — Balanced (recommended)"),
-    ("claude-opus-4-6",           "Claude Opus 4.6   — Most capable"),
+    (
+        "claude-sonnet-4-6",
+        "Claude Sonnet 4.6 — Balanced (recommended)",
+    ),
+    ("claude-opus-4-6", "Claude Opus 4.6   — Most capable"),
 ];
 
 /// Read the user-selected model from the credential store, falling back to the
@@ -1387,7 +1440,11 @@ fn model_label(id: &str) -> String {
     let version = parts.windows(2).find_map(|w| {
         let major: u32 = w[0].parse().ok()?;
         let minor: u32 = w[1].parse().ok()?;
-        if major >= 3 { Some(format!("{major}.{minor}")) } else { None }
+        if major >= 3 {
+            Some(format!("{major}.{minor}"))
+        } else {
+            None
+        }
     });
 
     match version {
@@ -1398,17 +1455,25 @@ fn model_label(id: &str) -> String {
 
 /// Tier sort weight: Haiku < Sonnet < Opus (ascending capability).
 fn tier_weight(id: &str) -> u8 {
-    if id.contains("haiku") { 0 }
-    else if id.contains("sonnet") { 1 }
-    else if id.contains("opus") { 2 }
-    else { 3 }
+    if id.contains("haiku") {
+        0
+    } else if id.contains("sonnet") {
+        1
+    } else if id.contains("opus") {
+        2
+    } else {
+        3
+    }
 }
 
 /// Fetch the live model list from `GET /v1/models`, filter to current Claude
 /// 4.x+ models, and return them sorted Haiku → Sonnet → Opus (newest version
 /// first within each tier).  Returns `Err` on any network or parse failure so
 /// callers can fall back gracefully.
-async fn fetch_models_live(client: &Client, api_key: &str) -> Result<Vec<(String, String)>, String> {
+async fn fetch_models_live(
+    client: &Client,
+    api_key: &str,
+) -> Result<Vec<(String, String)>, String> {
     let req = client
         .get("https://api.anthropic.com/v1/models")
         .header("anthropic-version", "2023-06-01");
@@ -1417,11 +1482,17 @@ async fn fetch_models_live(client: &Client, api_key: &str) -> Result<Vec<(String
         req.header("x-api-key", api_key)
     } else {
         req.header("Authorization", format!("Bearer {api_key}"))
-            .header("anthropic-beta", "oauth-2025-04-20,claude-code-20250219,files-api-2025-04-14")
+            .header(
+                "anthropic-beta",
+                "oauth-2025-04-20,claude-code-20250219,files-api-2025-04-14",
+            )
             .header("anthropic-client-platform", "claude_code_cli")
     };
 
-    let resp = req.send().await.map_err(|e| format!("Models API request failed: {e}"))?;
+    let resp = req
+        .send()
+        .await
+        .map_err(|e| format!("Models API request failed: {e}"))?;
 
     if !resp.status().is_success() {
         return Err(format!("Models API returned HTTP {}", resp.status()));
@@ -1443,9 +1514,15 @@ async fn fetch_models_live(client: &Client, api_key: &str) -> Result<Vec<(String
         .iter()
         .filter_map(|m| {
             let id = m["id"].as_str()?;
-            if !id.starts_with("claude-") { return None; }
-            if id.contains("claude-3") || id.contains("instant") { return None; }
-            if id.ends_with("-latest") || id.contains("preview") { return None; }
+            if !id.starts_with("claude-") {
+                return None;
+            }
+            if id.contains("claude-3") || id.contains("instant") {
+                return None;
+            }
+            if id.ends_with("-latest") || id.contains("preview") {
+                return None;
+            }
             // Require a recognisable tier name so we can label it properly.
             if !id.contains("opus") && !id.contains("sonnet") && !id.contains("haiku") {
                 return None;
@@ -1555,21 +1632,20 @@ async fn complete(
             req.header("x-api-key", api_key)
         } else {
             req.header("Authorization", format!("Bearer {api_key}"))
-                .header("anthropic-beta", "oauth-2025-04-20,claude-code-20250219,files-api-2025-04-14")
+                .header(
+                    "anthropic-beta",
+                    "oauth-2025-04-20,claude-code-20250219,files-api-2025-04-14",
+                )
                 .header("anthropic-client-platform", "claude_code_cli")
         };
 
-        let resp = req
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| {
-                if e.is_connect() || e.is_timeout() {
-                    "Could not reach api.anthropic.com. Check your internet connection.".to_string()
-                } else {
-                    format!("Request failed: {e}")
-                }
-            })?;
+        let resp = req.json(&body).send().await.map_err(|e| {
+            if e.is_connect() || e.is_timeout() {
+                "Could not reach api.anthropic.com. Check your internet connection.".to_string()
+            } else {
+                format!("Request failed: {e}")
+            }
+        })?;
 
         if resp.status().as_u16() == 429 && attempt < MAX_RETRIES {
             let wait_ms = retry_after_ms(resp.headers(), delay_ms);
@@ -1638,21 +1714,20 @@ async fn complete_claude_streaming(
             req.header("x-api-key", api_key)
         } else {
             req.header("Authorization", format!("Bearer {api_key}"))
-                .header("anthropic-beta", "oauth-2025-04-20,claude-code-20250219,files-api-2025-04-14")
+                .header(
+                    "anthropic-beta",
+                    "oauth-2025-04-20,claude-code-20250219,files-api-2025-04-14",
+                )
                 .header("anthropic-client-platform", "claude_code_cli")
         };
 
-        let resp = req
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| {
-                if e.is_connect() || e.is_timeout() {
-                    "Could not reach api.anthropic.com. Check your internet connection.".to_string()
-                } else {
-                    format!("Request failed: {e}")
-                }
-            })?;
+        let resp = req.json(&body).send().await.map_err(|e| {
+            if e.is_connect() || e.is_timeout() {
+                "Could not reach api.anthropic.com. Check your internet connection.".to_string()
+            } else {
+                format!("Request failed: {e}")
+            }
+        })?;
 
         if resp.status().as_u16() == 429 && attempt < MAX_RETRIES {
             let wait_ms = retry_after_ms(resp.headers(), delay_ms);
@@ -1702,9 +1777,12 @@ async fn complete_claude_streaming(
                             if let Some(text) = json["delta"]["text"].as_str() {
                                 if !text.is_empty() {
                                     full_text.push_str(text);
-                                    let _ = app.emit(stream_event, serde_json::json!({
-                                        "delta": text,
-                                    }));
+                                    let _ = app.emit(
+                                        stream_event,
+                                        serde_json::json!({
+                                            "delta": text,
+                                        }),
+                                    );
                                 }
                             }
                         }
@@ -1738,8 +1816,8 @@ async fn complete_multi(
     history_json: &str,
     max_tokens: u32,
 ) -> Result<String, String> {
-    let messages: serde_json::Value = serde_json::from_str(history_json)
-        .map_err(|e| format!("Invalid history JSON: {e}"))?;
+    let messages: serde_json::Value =
+        serde_json::from_str(history_json).map_err(|e| format!("Invalid history JSON: {e}"))?;
 
     let body = build_messages_body(api_key, model, system, messages, max_tokens, false, None);
 
@@ -1757,21 +1835,20 @@ async fn complete_multi(
             req.header("x-api-key", api_key)
         } else {
             req.header("Authorization", format!("Bearer {api_key}"))
-                .header("anthropic-beta", "oauth-2025-04-20,claude-code-20250219,files-api-2025-04-14")
+                .header(
+                    "anthropic-beta",
+                    "oauth-2025-04-20,claude-code-20250219,files-api-2025-04-14",
+                )
                 .header("anthropic-client-platform", "claude_code_cli")
         };
 
-        let resp = req
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| {
-                if e.is_connect() || e.is_timeout() {
-                    "Could not reach api.anthropic.com. Check your internet connection.".to_string()
-                } else {
-                    format!("Request failed: {e}")
-                }
-            })?;
+        let resp = req.json(&body).send().await.map_err(|e| {
+            if e.is_connect() || e.is_timeout() {
+                "Could not reach api.anthropic.com. Check your internet connection.".to_string()
+            } else {
+                format!("Request failed: {e}")
+            }
+        })?;
 
         if resp.status().as_u16() == 429 && attempt < MAX_RETRIES {
             let wait_ms = retry_after_ms(resp.headers(), delay_ms);
@@ -1829,17 +1906,17 @@ const MAX_TOOL_ROUNDS: usize = 8;
 // ── Tool definitions ──────────────────────────────────────────────────────────
 
 /// All supported tool names as constants.
-const TOOL_FETCH_URL:       &str = "fetch_url";
-const TOOL_READ_REPO_FILE:  &str = "read_repo_file";
-const TOOL_GREP_REPO:       &str = "grep_repo";
-const TOOL_SEARCH_JIRA:     &str = "search_jira";
-const TOOL_GET_JIRA_ISSUE:  &str = "get_jira_issue";
-const TOOL_GET_PR_DIFF:     &str = "get_pr_diff";
+const TOOL_FETCH_URL: &str = "fetch_url";
+const TOOL_READ_REPO_FILE: &str = "read_repo_file";
+const TOOL_GREP_REPO: &str = "grep_repo";
+const TOOL_SEARCH_JIRA: &str = "search_jira";
+const TOOL_GET_JIRA_ISSUE: &str = "get_jira_issue";
+const TOOL_GET_PR_DIFF: &str = "get_pr_diff";
 const TOOL_GET_PR_COMMENTS: &str = "get_pr_comments";
-const TOOL_GIT_LOG:         &str = "git_log";
-const TOOL_SEARCH_NPM:      &str = "search_npm";
-const TOOL_SEARCH_CRATES:   &str = "search_crates";
-const TOOL_REQUEST_TOOL:    &str = "request_tool";
+const TOOL_GIT_LOG: &str = "git_log";
+const TOOL_SEARCH_NPM: &str = "search_npm";
+const TOOL_SEARCH_CRATES: &str = "search_crates";
+const TOOL_REQUEST_TOOL: &str = "request_tool";
 
 /// The JSON tool definitions sent to Claude on every conversational turn.
 fn all_tools_def() -> serde_json::Value {
@@ -2036,7 +2113,9 @@ async fn execute_tool(name: &str, input: &serde_json::Value) -> String {
     match name {
         TOOL_FETCH_URL => {
             let url = input["url"].as_str().unwrap_or("");
-            if url.is_empty() { return "[fetch_url: missing url]".to_string(); }
+            if url.is_empty() {
+                return "[fetch_url: missing url]".to_string();
+            }
             use crate::commands::fetch_url::fetch_url_content;
             match fetch_url_content(url.to_string()).await {
                 Ok(c) => c,
@@ -2046,7 +2125,9 @@ async fn execute_tool(name: &str, input: &serde_json::Value) -> String {
 
         TOOL_READ_REPO_FILE => {
             let path = input["path"].as_str().unwrap_or("");
-            if path.is_empty() { return "[read_repo_file: missing path]".to_string(); }
+            if path.is_empty() {
+                return "[read_repo_file: missing path]".to_string();
+            }
             use crate::commands::repo::read_repo_file;
             match read_repo_file(path.to_string()).await {
                 Ok(c) => format!("=== {path} ===\n{c}"),
@@ -2056,8 +2137,10 @@ async fn execute_tool(name: &str, input: &serde_json::Value) -> String {
 
         TOOL_GREP_REPO => {
             let pattern = input["pattern"].as_str().unwrap_or("").to_string();
-            let path    = input["path"].as_str().map(str::to_string);
-            if pattern.is_empty() { return "[grep_repo: missing pattern]".to_string(); }
+            let path = input["path"].as_str().map(str::to_string);
+            if pattern.is_empty() {
+                return "[grep_repo: missing pattern]".to_string();
+            }
             use crate::commands::repo::grep_repo_files;
             match grep_repo_files(pattern.clone(), path).await {
                 Ok(lines) if lines.is_empty() => format!("[grep_repo: no matches for '{pattern}']"),
@@ -2081,10 +2164,14 @@ async fn execute_tool(name: &str, input: &serde_json::Value) -> String {
 
         TOOL_SEARCH_JIRA => {
             let query = input["query"].as_str().unwrap_or("").to_string();
-            if query.is_empty() { return "[search_jira: missing query]".to_string(); }
+            if query.is_empty() {
+                return "[search_jira: missing query]".to_string();
+            }
             use crate::commands::jira::search_jira_issues;
             match search_jira_issues(query.clone(), 10).await {
-                Ok(issues) if issues.is_empty() => format!("[search_jira: no results for '{query}']"),
+                Ok(issues) if issues.is_empty() => {
+                    format!("[search_jira: no results for '{query}']")
+                }
                 Ok(issues) => {
                     let mut out = format!("JIRA search results for '{query}':\n\n");
                     for issue in &issues {
@@ -2094,7 +2181,9 @@ async fn execute_tool(name: &str, input: &serde_json::Value) -> String {
                             issue.summary,
                             issue.issue_type,
                             issue.status,
-                            issue.story_points.map_or("?".to_string(), |p| p.to_string()),
+                            issue
+                                .story_points
+                                .map_or("?".to_string(), |p| p.to_string()),
                             issue.description.as_deref().unwrap_or("(no description)"),
                         ));
                     }
@@ -2106,7 +2195,9 @@ async fn execute_tool(name: &str, input: &serde_json::Value) -> String {
 
         TOOL_GET_JIRA_ISSUE => {
             let key = input["key"].as_str().unwrap_or("").to_string();
-            if key.is_empty() { return "[get_jira_issue: missing key]".to_string(); }
+            if key.is_empty() {
+                return "[get_jira_issue: missing key]".to_string();
+            }
             use crate::commands::jira::get_issue;
             match get_issue(key.clone()).await {
                 Ok(issue) => format!(
@@ -2154,14 +2245,20 @@ async fn execute_tool(name: &str, input: &serde_json::Value) -> String {
                 Ok(comments) => {
                     let mut out = format!("Comments on PR {pr_id}:\n\n");
                     for c in comments.iter().take(50) {
-                        let loc = c.inline.as_ref()
-                            .map(|i| format!(" ({}{})", i.path, i.to_line.map_or(String::new(), |l| format!(" L{l}"))))
+                        let loc = c
+                            .inline
+                            .as_ref()
+                            .map(|i| {
+                                format!(
+                                    " ({}{})",
+                                    i.path,
+                                    i.to_line.map_or(String::new(), |l| format!(" L{l}"))
+                                )
+                            })
                             .unwrap_or_default();
                         out.push_str(&format!(
                             "[{}{}]: {}\n\n",
-                            c.author.display_name,
-                            loc,
-                            c.content,
+                            c.author.display_name, loc, c.content,
                         ));
                     }
                     out
@@ -2172,8 +2269,8 @@ async fn execute_tool(name: &str, input: &serde_json::Value) -> String {
 
         TOOL_GIT_LOG => {
             let file = input["file"].as_str();
-            let max  = input["max_commits"].as_u64().unwrap_or(20).min(50) as u32;
-            use crate::commands::repo::{get_repo_log, get_file_history};
+            let max = input["max_commits"].as_u64().unwrap_or(20).min(50) as u32;
+            use crate::commands::repo::{get_file_history, get_repo_log};
             let result = if let Some(f) = file {
                 get_file_history(f.to_string(), max).await
             } else {
@@ -2187,13 +2284,17 @@ async fn execute_tool(name: &str, input: &serde_json::Value) -> String {
 
         TOOL_SEARCH_NPM => {
             let package = input["package"].as_str().unwrap_or("").trim().to_string();
-            if package.is_empty() { return "[search_npm: missing package name]".to_string(); }
+            if package.is_empty() {
+                return "[search_npm: missing package name]".to_string();
+            }
             search_npm_registry(&package).await
         }
 
         TOOL_SEARCH_CRATES => {
             let name = input["name"].as_str().unwrap_or("").trim().to_string();
-            if name.is_empty() { return "[search_crates: missing crate name]".to_string(); }
+            if name.is_empty() {
+                return "[search_crates: missing crate name]".to_string();
+            }
             search_crates_io(&name).await
         }
 
@@ -2201,10 +2302,10 @@ async fn execute_tool(name: &str, input: &serde_json::Value) -> String {
             // No execution — just surface the request as structured JSON so the
             // frontend can render a special card. Return an acknowledgement so the
             // model can write its final reply explaining the situation.
-            let name        = input["name"].as_str().unwrap_or("(unnamed)");
+            let name = input["name"].as_str().unwrap_or("(unnamed)");
             let description = input["description"].as_str().unwrap_or("");
-            let why_needed  = input["why_needed"].as_str().unwrap_or("");
-            let example     = input["example_call"].as_str().unwrap_or("");
+            let why_needed = input["why_needed"].as_str().unwrap_or("");
+            let example = input["example_call"].as_str().unwrap_or("");
             format!(
                 "[tool_request_received]\n\
                  Your request for the '{}' tool has been surfaced to the developer in the UI.\n\
@@ -2229,37 +2330,36 @@ async fn search_npm_registry(package: &str) -> String {
         Ok(c) => c,
         Err(e) => return format!("[search_npm: http client error: {e}]"),
     };
-    let url = format!("https://registry.npmjs.org/-/v1/search?text={}&size=5",
-        urlencoding_simple(package));
+    let url = format!(
+        "https://registry.npmjs.org/-/v1/search?text={}&size=5",
+        urlencoding_simple(package)
+    );
     match client.get(&url).send().await {
-        Ok(resp) if resp.status().is_success() => {
-            match resp.json::<serde_json::Value>().await {
-                Ok(json) => {
-                    let objects = json["objects"].as_array()
-                        .cloned()
-                        .unwrap_or_default();
-                    if objects.is_empty() {
-                        return format!("[search_npm: no results for '{package}']");
-                    }
-                    let mut out = format!("npm search results for '{package}':\n\n");
-                    for obj in objects.iter().take(5) {
-                        let p = &obj["package"];
-                        let name    = p["name"].as_str().unwrap_or("?");
-                        let version = p["version"].as_str().unwrap_or("?");
-                        let desc    = p["description"].as_str().unwrap_or("(no description)");
-                        let weekly  = obj["score"]["detail"]["popularity"].as_f64()
-                            .map(|v| format!("{:.0}%", v * 100.0))
-                            .unwrap_or_else(|| "?".to_string());
-                        let links   = p["links"]["npm"].as_str().unwrap_or("");
-                        out.push_str(&format!(
-                            "**{name}** v{version}\n{desc}\nPopularity: {weekly} | {links}\n\n"
-                        ));
-                    }
-                    out
+        Ok(resp) if resp.status().is_success() => match resp.json::<serde_json::Value>().await {
+            Ok(json) => {
+                let objects = json["objects"].as_array().cloned().unwrap_or_default();
+                if objects.is_empty() {
+                    return format!("[search_npm: no results for '{package}']");
                 }
-                Err(e) => format!("[search_npm: parse error: {e}]"),
+                let mut out = format!("npm search results for '{package}':\n\n");
+                for obj in objects.iter().take(5) {
+                    let p = &obj["package"];
+                    let name = p["name"].as_str().unwrap_or("?");
+                    let version = p["version"].as_str().unwrap_or("?");
+                    let desc = p["description"].as_str().unwrap_or("(no description)");
+                    let weekly = obj["score"]["detail"]["popularity"]
+                        .as_f64()
+                        .map(|v| format!("{:.0}%", v * 100.0))
+                        .unwrap_or_else(|| "?".to_string());
+                    let links = p["links"]["npm"].as_str().unwrap_or("");
+                    out.push_str(&format!(
+                        "**{name}** v{version}\n{desc}\nPopularity: {weekly} | {links}\n\n"
+                    ));
+                }
+                out
             }
-        }
+            Err(e) => format!("[search_npm: parse error: {e}]"),
+        },
         Ok(resp) => format!("[search_npm: HTTP {}]", resp.status()),
         Err(e) => format!("[search_npm: request failed: {e}]"),
     }
@@ -2271,39 +2371,40 @@ async fn search_crates_io(name: &str) -> String {
         Ok(c) => c,
         Err(e) => return format!("[search_crates: http client error: {e}]"),
     };
-    let url = format!("https://crates.io/api/v1/crates?q={}&per_page=5",
-        urlencoding_simple(name));
+    let url = format!(
+        "https://crates.io/api/v1/crates?q={}&per_page=5",
+        urlencoding_simple(name)
+    );
     match client
         .get(&url)
-        .header("User-Agent", "Meridian/1.0 (https://github.com/meridian-app)")
+        .header(
+            "User-Agent",
+            "Meridian/1.0 (https://github.com/meridian-app)",
+        )
         .send()
         .await
     {
-        Ok(resp) if resp.status().is_success() => {
-            match resp.json::<serde_json::Value>().await {
-                Ok(json) => {
-                    let crates = json["crates"].as_array()
-                        .cloned()
-                        .unwrap_or_default();
-                    if crates.is_empty() {
-                        return format!("[search_crates: no results for '{name}']");
-                    }
-                    let mut out = format!("crates.io search results for '{name}':\n\n");
-                    for c in crates.iter().take(5) {
-                        let cname     = c["name"].as_str().unwrap_or("?");
-                        let version   = c["newest_version"].as_str().unwrap_or("?");
-                        let desc      = c["description"].as_str().unwrap_or("(no description)");
-                        let downloads = c["downloads"].as_u64().unwrap_or(0);
-                        let repo      = c["repository"].as_str().unwrap_or("");
-                        out.push_str(&format!(
-                            "**{cname}** v{version}\n{desc}\nDownloads: {downloads} | {repo}\n\n"
-                        ));
-                    }
-                    out
+        Ok(resp) if resp.status().is_success() => match resp.json::<serde_json::Value>().await {
+            Ok(json) => {
+                let crates = json["crates"].as_array().cloned().unwrap_or_default();
+                if crates.is_empty() {
+                    return format!("[search_crates: no results for '{name}']");
                 }
-                Err(e) => format!("[search_crates: parse error: {e}]"),
+                let mut out = format!("crates.io search results for '{name}':\n\n");
+                for c in crates.iter().take(5) {
+                    let cname = c["name"].as_str().unwrap_or("?");
+                    let version = c["newest_version"].as_str().unwrap_or("?");
+                    let desc = c["description"].as_str().unwrap_or("(no description)");
+                    let downloads = c["downloads"].as_u64().unwrap_or(0);
+                    let repo = c["repository"].as_str().unwrap_or("");
+                    out.push_str(&format!(
+                        "**{cname}** v{version}\n{desc}\nDownloads: {downloads} | {repo}\n\n"
+                    ));
+                }
+                out
             }
-        }
+            Err(e) => format!("[search_crates: parse error: {e}]"),
+        },
         Ok(resp) => format!("[search_crates: HTTP {}]", resp.status()),
         Err(e) => format!("[search_crates: request failed: {e}]"),
     }
@@ -2311,11 +2412,13 @@ async fn search_crates_io(name: &str) -> String {
 
 /// Minimal percent-encoding for URL query parameters (encodes spaces and special chars).
 fn urlencoding_simple(s: &str) -> String {
-    s.chars().map(|c| match c {
-        'A'..='Z' | 'a'..='z' | '0'..='9' | '-' | '_' | '.' | '~' => c.to_string(),
-        ' ' => "+".to_string(),
-        c => format!("%{:02X}", c as u32),
-    }).collect()
+    s.chars()
+        .map(|c| match c {
+            'A'..='Z' | 'a'..='z' | '0'..='9' | '-' | '_' | '.' | '~' => c.to_string(),
+            ' ' => "+".to_string(),
+            c => format!("%{:02X}", c as u32),
+        })
+        .collect()
 }
 
 // ── Text-based tool tag extraction (Gemini / local) ───────────────────────────
@@ -2348,9 +2451,16 @@ fn extract_text_tool_call(text: &str) -> Option<TextToolCall> {
 
     // Find first < ... /> block that looks like one of our tool tags
     let tools = [
-        TOOL_FETCH_URL, TOOL_READ_REPO_FILE, TOOL_GREP_REPO,
-        TOOL_SEARCH_JIRA, TOOL_GET_JIRA_ISSUE, TOOL_GET_PR_DIFF,
-        TOOL_GET_PR_COMMENTS, TOOL_GIT_LOG, TOOL_SEARCH_NPM, TOOL_SEARCH_CRATES,
+        TOOL_FETCH_URL,
+        TOOL_READ_REPO_FILE,
+        TOOL_GREP_REPO,
+        TOOL_SEARCH_JIRA,
+        TOOL_GET_JIRA_ISSUE,
+        TOOL_GET_PR_DIFF,
+        TOOL_GET_PR_COMMENTS,
+        TOOL_GIT_LOG,
+        TOOL_SEARCH_NPM,
+        TOOL_SEARCH_CRATES,
         TOOL_REQUEST_TOOL,
     ];
 
@@ -2372,7 +2482,7 @@ fn extract_text_tool_call(text: &str) -> Option<TextToolCall> {
                     }
                     TOOL_GREP_REPO => {
                         let pattern = attr(tag_str, "pattern").unwrap_or("");
-                        let path    = attr(tag_str, "path");
+                        let path = attr(tag_str, "path");
                         serde_json::json!({ "pattern": pattern, "path": path })
                     }
                     TOOL_SEARCH_JIRA => {
@@ -2405,10 +2515,10 @@ fn extract_text_tool_call(text: &str) -> Option<TextToolCall> {
                         serde_json::json!({ "name": name })
                     }
                     TOOL_REQUEST_TOOL => {
-                        let name        = attr(tag_str, "name").unwrap_or("");
+                        let name = attr(tag_str, "name").unwrap_or("");
                         let description = attr(tag_str, "description").unwrap_or("");
-                        let why_needed  = attr(tag_str, "why_needed").unwrap_or("");
-                        let example     = attr(tag_str, "example_call").unwrap_or("");
+                        let why_needed = attr(tag_str, "why_needed").unwrap_or("");
+                        let example = attr(tag_str, "example_call").unwrap_or("");
                         serde_json::json!({
                             "name": name,
                             "description": description,
@@ -2439,22 +2549,35 @@ fn strip_tool_tag(text: &str, tag: &str) -> String {
 /// Human-readable label for what a tool call is doing (shown in the stream).
 fn tool_progress_label(name: &str, input: &serde_json::Value) -> String {
     match name {
-        TOOL_FETCH_URL =>       format!("Fetching {}…", input["url"].as_str().unwrap_or("URL")),
-        TOOL_READ_REPO_FILE =>  format!("Reading {}…", input["path"].as_str().unwrap_or("file")),
-        TOOL_GREP_REPO =>       format!("Searching codebase for '{}'…", input["pattern"].as_str().unwrap_or("")),
-        TOOL_SEARCH_JIRA =>     format!("Searching JIRA for '{}'…", input["query"].as_str().unwrap_or("")),
-        TOOL_GET_JIRA_ISSUE =>  format!("Fetching ticket {}…", input["key"].as_str().unwrap_or("")),
-        TOOL_GET_PR_DIFF =>     format!("Fetching PR {} diff…", input["pr_id"]),
+        TOOL_FETCH_URL => format!("Fetching {}…", input["url"].as_str().unwrap_or("URL")),
+        TOOL_READ_REPO_FILE => format!("Reading {}…", input["path"].as_str().unwrap_or("file")),
+        TOOL_GREP_REPO => format!(
+            "Searching codebase for '{}'…",
+            input["pattern"].as_str().unwrap_or("")
+        ),
+        TOOL_SEARCH_JIRA => format!(
+            "Searching JIRA for '{}'…",
+            input["query"].as_str().unwrap_or("")
+        ),
+        TOOL_GET_JIRA_ISSUE => format!("Fetching ticket {}…", input["key"].as_str().unwrap_or("")),
+        TOOL_GET_PR_DIFF => format!("Fetching PR {} diff…", input["pr_id"]),
         TOOL_GET_PR_COMMENTS => format!("Fetching PR {} comments…", input["pr_id"]),
-        TOOL_GIT_LOG => {
-            match input["file"].as_str() {
-                Some(f) => format!("Reading git history for {f}…"),
-                None    => "Reading git history…".to_string(),
-            }
-        }
-        TOOL_SEARCH_NPM =>    format!("Searching npm for '{}'…", input["package"].as_str().unwrap_or("")),
-        TOOL_SEARCH_CRATES => format!("Searching crates.io for '{}'…", input["name"].as_str().unwrap_or("")),
-        TOOL_REQUEST_TOOL =>  format!("Requesting new tool: '{}'…", input["name"].as_str().unwrap_or("")),
+        TOOL_GIT_LOG => match input["file"].as_str() {
+            Some(f) => format!("Reading git history for {f}…"),
+            None => "Reading git history…".to_string(),
+        },
+        TOOL_SEARCH_NPM => format!(
+            "Searching npm for '{}'…",
+            input["package"].as_str().unwrap_or("")
+        ),
+        TOOL_SEARCH_CRATES => format!(
+            "Searching crates.io for '{}'…",
+            input["name"].as_str().unwrap_or("")
+        ),
+        TOOL_REQUEST_TOOL => format!(
+            "Requesting new tool: '{}'…",
+            input["name"].as_str().unwrap_or("")
+        ),
         other => format!("Running tool {other}…"),
     }
 }
@@ -2479,13 +2602,11 @@ async fn complete_multi_claude_tool_loop(
 
     let tools_def = all_tools_def();
 
-    let base_messages: serde_json::Value = serde_json::from_str(history_json)
-        .map_err(|e| format!("Invalid history JSON: {e}"))?;
+    let base_messages: serde_json::Value =
+        serde_json::from_str(history_json).map_err(|e| format!("Invalid history JSON: {e}"))?;
 
-    let mut messages: Vec<serde_json::Value> = base_messages
-        .as_array()
-        .cloned()
-        .unwrap_or_default();
+    let mut messages: Vec<serde_json::Value> =
+        base_messages.as_array().cloned().unwrap_or_default();
 
     // Accumulates the full visible conversation across all rounds so the stream
     // "text" field (which the frontend displays) always shows the complete
@@ -2516,7 +2637,10 @@ async fn complete_multi_claude_tool_loop(
                 req.header("x-api-key", api_key)
             } else {
                 req.header("Authorization", format!("Bearer {api_key}"))
-                    .header("anthropic-beta", "oauth-2025-04-20,claude-code-20250219,files-api-2025-04-14")
+                    .header(
+                        "anthropic-beta",
+                        "oauth-2025-04-20,claude-code-20250219,files-api-2025-04-14",
+                    )
                     .header("anthropic-client-platform", "claude_code_cli")
             };
 
@@ -2563,7 +2687,9 @@ async fn complete_multi_claude_tool_loop(
                 let line = buffer[..nl].trim().to_string();
                 buffer = buffer[nl + 1..].to_string();
 
-                if !line.starts_with("data: ") { continue; }
+                if !line.starts_with("data: ") {
+                    continue;
+                }
                 let data = &line["data: ".len()..];
 
                 if let Ok(json) = serde_json::from_str::<serde_json::Value>(data) {
@@ -2590,10 +2716,13 @@ async fn complete_multi_claude_tool_loop(
                                         if !text.is_empty() {
                                             round_text.push_str(text);
                                             accumulated_text.push_str(text);
-                                            let _ = app.emit(stream_event, serde_json::json!({
-                                                "delta": text,
-                                                "text": &accumulated_text,
-                                            }));
+                                            let _ = app.emit(
+                                                stream_event,
+                                                serde_json::json!({
+                                                    "delta": text,
+                                                    "text": &accumulated_text,
+                                                }),
+                                            );
                                         }
                                     }
                                 }
@@ -2624,32 +2753,38 @@ async fn complete_multi_claude_tool_loop(
         let used_tool = stop_reason.as_deref() == Some("tool_use") && tool_use_id.is_some();
 
         if used_tool {
-            let name     = tool_name.clone().unwrap_or_default();
-            let tool_id  = tool_use_id.clone().unwrap_or_default();
-            let input: serde_json::Value = serde_json::from_str(&tool_input_json)
-                .unwrap_or(serde_json::json!({}));
+            let name = tool_name.clone().unwrap_or_default();
+            let tool_id = tool_use_id.clone().unwrap_or_default();
+            let input: serde_json::Value =
+                serde_json::from_str(&tool_input_json).unwrap_or(serde_json::json!({}));
 
             let label = tool_progress_label(&name, &input);
             // Append the tool-running label to the accumulated text so the user
             // can see what the agent is doing without losing the preceding text.
             let tool_separator = format!("\n\n[{}]\n", label);
             accumulated_text.push_str(&tool_separator);
-            let _ = app.emit(stream_event, serde_json::json!({
-                "delta": &tool_separator,
-                "text":  &accumulated_text,
-            }));
+            let _ = app.emit(
+                stream_event,
+                serde_json::json!({
+                    "delta": &tool_separator,
+                    "text":  &accumulated_text,
+                }),
+            );
 
             let result = execute_tool(&name, &input).await;
 
             // If the agent requested a new tool, emit a dedicated event so the
             // frontend can render a tool-request card in the chat UI.
             if name == TOOL_REQUEST_TOOL {
-                let _ = app.emit("agent-tool-request", serde_json::json!({
-                    "name":        input["name"].as_str().unwrap_or(""),
-                    "description": input["description"].as_str().unwrap_or(""),
-                    "why_needed":  input["why_needed"].as_str().unwrap_or(""),
-                    "example_call":input["example_call"].as_str().unwrap_or(""),
-                }));
+                let _ = app.emit(
+                    "agent-tool-request",
+                    serde_json::json!({
+                        "name":        input["name"].as_str().unwrap_or(""),
+                        "description": input["description"].as_str().unwrap_or(""),
+                        "why_needed":  input["why_needed"].as_str().unwrap_or(""),
+                        "example_call":input["example_call"].as_str().unwrap_or(""),
+                    }),
+                );
             }
 
             messages.push(serde_json::json!({
@@ -2713,28 +2848,47 @@ async fn complete_multi_text_tool_loop(
         let reply = match provider {
             "claude" => {
                 complete_multi_claude_streaming(
-                    app, client, claude_key, &get_active_model(),
-                    &augmented_system, &current_history, max_tokens, stream_event,
-                ).await?
+                    app,
+                    client,
+                    claude_key,
+                    &get_active_model(),
+                    &augmented_system,
+                    &current_history,
+                    max_tokens,
+                    stream_event,
+                )
+                .await?
             }
             "local" => {
-                let base = local_llm_base_url()
-                    .ok_or_else(|| "Local LLM: not configured.".to_string())?;
+                let base =
+                    local_llm_base_url().ok_or_else(|| "Local LLM: not configured.".to_string())?;
                 let model = get_local_llm_model()
                     .ok_or_else(|| "Local LLM: no model selected.".to_string())?;
                 let key = get_credential("local_llm_api_key");
                 complete_multi_local_streaming(
-                    app, &base, key.as_deref(), &model,
-                    &augmented_system, &current_history, max_tokens, stream_event,
-                ).await?
+                    app,
+                    &base,
+                    key.as_deref(),
+                    &model,
+                    &augmented_system,
+                    &current_history,
+                    max_tokens,
+                    stream_event,
+                )
+                .await?
             }
             "gemini" => {
                 let key = get_credential("gemini_api_key")
                     .ok_or_else(|| "Gemini: not configured.".to_string())?;
                 complete_multi_gemini(
-                    client, &key, &get_active_gemini_model(),
-                    &augmented_system, &current_history, max_tokens,
-                ).await?
+                    client,
+                    &key,
+                    &get_active_gemini_model(),
+                    &augmented_system,
+                    &current_history,
+                    max_tokens,
+                )
+                .await?
             }
             p => return Err(format!("Unknown provider: {p}")),
         };
@@ -2754,21 +2908,27 @@ async fn complete_multi_text_tool_loop(
             // Append the tool-running separator and emit the cumulative text
             let tool_separator = format!("\n\n[{}]\n", label);
             accumulated_text.push_str(&tool_separator);
-            let _ = app.emit(stream_event, serde_json::json!({
-                "delta": &tool_separator,
-                "text":  &accumulated_text,
-            }));
+            let _ = app.emit(
+                stream_event,
+                serde_json::json!({
+                    "delta": &tool_separator,
+                    "text":  &accumulated_text,
+                }),
+            );
 
             let result = execute_tool(&call.name, &call.input).await;
 
             // Emit dedicated event for tool requests
             if call.name == TOOL_REQUEST_TOOL {
-                let _ = app.emit("agent-tool-request", serde_json::json!({
-                    "name":        call.input["name"].as_str().unwrap_or(""),
-                    "description": call.input["description"].as_str().unwrap_or(""),
-                    "why_needed":  call.input["why_needed"].as_str().unwrap_or(""),
-                    "example_call":call.input["example_call"].as_str().unwrap_or(""),
-                }));
+                let _ = app.emit(
+                    "agent-tool-request",
+                    serde_json::json!({
+                        "name":        call.input["name"].as_str().unwrap_or(""),
+                        "description": call.input["description"].as_str().unwrap_or(""),
+                        "why_needed":  call.input["why_needed"].as_str().unwrap_or(""),
+                        "example_call":call.input["example_call"].as_str().unwrap_or(""),
+                    }),
+                );
             }
 
             let mut history: Vec<serde_json::Value> =
@@ -2778,8 +2938,8 @@ async fn complete_multi_text_tool_loop(
                 "role": "user",
                 "content": format!("[Tool result: {}]\n\n{}", label, result)
             }));
-            current_history = serde_json::to_string(&history)
-                .unwrap_or_else(|_| current_history.clone());
+            current_history =
+                serde_json::to_string(&history).unwrap_or_else(|_| current_history.clone());
 
             if round + 1 == MAX_TOOL_ROUNDS {
                 final_text = accumulated_text.clone();
@@ -2829,16 +2989,30 @@ async fn dispatch_multi_streaming_with_tools(
                     Err("not configured".to_string())
                 } else {
                     complete_multi_claude_tool_loop(
-                        app, client, claude_key, &get_active_model(),
-                        system, history_json, max_tokens, stream_event,
-                    ).await
+                        app,
+                        client,
+                        claude_key,
+                        &get_active_model(),
+                        system,
+                        history_json,
+                        max_tokens,
+                        stream_event,
+                    )
+                    .await
                 }
             }
             other => {
                 complete_multi_text_tool_loop(
-                    app, client, claude_key, other,
-                    system, history_json, max_tokens, stream_event,
-                ).await
+                    app,
+                    client,
+                    claude_key,
+                    other,
+                    system,
+                    history_json,
+                    max_tokens,
+                    stream_event,
+                )
+                .await
             }
         };
 
@@ -2873,7 +3047,11 @@ async fn dispatch_multi_streaming_with_tools(
 fn get_provider_order() -> Vec<String> {
     let raw = get_credential("ai_provider_order").unwrap_or_default();
     if raw.trim().is_empty() {
-        return vec!["claude".to_string(), "gemini".to_string(), "local".to_string()];
+        return vec![
+            "claude".to_string(),
+            "gemini".to_string(),
+            "local".to_string(),
+        ];
     }
     raw.split(',')
         .map(|s| s.trim().to_string())
@@ -2897,19 +3075,35 @@ async fn try_provider_single(
             if claude_key.is_empty() {
                 Err("not configured".to_string())
             } else {
-                complete(client, claude_key, &get_active_model(), system, user, max_tokens).await
+                complete(
+                    client,
+                    claude_key,
+                    &get_active_model(),
+                    system,
+                    user,
+                    max_tokens,
+                )
+                .await
             }
         }
         "gemini" => {
             let key = get_credential("gemini_api_key")
                 .ok_or_else(|| "Gemini: not configured.".to_string())?;
-            complete_gemini(client, &key, &get_active_gemini_model(), system, user, max_tokens).await
+            complete_gemini(
+                client,
+                &key,
+                &get_active_gemini_model(),
+                system,
+                user,
+                max_tokens,
+            )
+            .await
         }
         "local" => {
-            let base = local_llm_base_url()
-                .ok_or_else(|| "Local LLM: not configured.".to_string())?;
-            let model = get_local_llm_model()
-                .ok_or_else(|| "Local LLM: no model selected.".to_string())?;
+            let base =
+                local_llm_base_url().ok_or_else(|| "Local LLM: not configured.".to_string())?;
+            let model =
+                get_local_llm_model().ok_or_else(|| "Local LLM: no model selected.".to_string())?;
             let key = get_credential("local_llm_api_key");
             complete_local(&base, key.as_deref(), &model, system, user, max_tokens).await
         }
@@ -2932,21 +3126,45 @@ async fn try_provider_multi(
             if claude_key.is_empty() {
                 Err("not configured".to_string())
             } else {
-                complete_multi(client, claude_key, &get_active_model(), system, history_json, max_tokens).await
+                complete_multi(
+                    client,
+                    claude_key,
+                    &get_active_model(),
+                    system,
+                    history_json,
+                    max_tokens,
+                )
+                .await
             }
         }
         "gemini" => {
             let key = get_credential("gemini_api_key")
                 .ok_or_else(|| "Gemini: not configured.".to_string())?;
-            complete_multi_gemini(client, &key, &get_active_gemini_model(), system, history_json, max_tokens).await
+            complete_multi_gemini(
+                client,
+                &key,
+                &get_active_gemini_model(),
+                system,
+                history_json,
+                max_tokens,
+            )
+            .await
         }
         "local" => {
-            let base = local_llm_base_url()
-                .ok_or_else(|| "Local LLM: not configured.".to_string())?;
-            let model = get_local_llm_model()
-                .ok_or_else(|| "Local LLM: no model selected.".to_string())?;
+            let base =
+                local_llm_base_url().ok_or_else(|| "Local LLM: not configured.".to_string())?;
+            let model =
+                get_local_llm_model().ok_or_else(|| "Local LLM: no model selected.".to_string())?;
             let key = get_credential("local_llm_api_key");
-            complete_multi_local(&base, key.as_deref(), &model, system, history_json, max_tokens).await
+            complete_multi_local(
+                &base,
+                key.as_deref(),
+                &model,
+                system,
+                history_json,
+                max_tokens,
+            )
+            .await
         }
         p => Err(format!("Unknown provider: {p}")),
     }
@@ -2964,7 +3182,8 @@ async fn dispatch(
 
     // Single-provider modes — no fallback.
     if provider != "auto" {
-        return try_provider_single(app, &provider, client, claude_key, system, user, max_tokens).await;
+        return try_provider_single(app, &provider, client, claude_key, system, user, max_tokens)
+            .await;
     }
 
     // Auto mode: walk the ordered list, skip unconfigured, fall back on quota errors.
@@ -2984,7 +3203,11 @@ async fn dispatch(
         }
     }
 
-    let summary = if failure_reasons.is_empty() { "No providers configured.".to_string() } else { failure_reasons.join("; ") };
+    let summary = if failure_reasons.is_empty() {
+        "No providers configured.".to_string()
+    } else {
+        failure_reasons.join("; ")
+    };
     Err(format!("All providers failed — {summary}"))
 }
 
@@ -2999,14 +3222,24 @@ async fn dispatch_multi(
     let provider = get_ai_provider();
 
     if provider != "auto" {
-        return try_provider_multi(app, &provider, client, claude_key, system, history_json, max_tokens).await;
+        return try_provider_multi(
+            app,
+            &provider,
+            client,
+            claude_key,
+            system,
+            history_json,
+            max_tokens,
+        )
+        .await;
     }
 
     let order = get_provider_order();
     let mut failure_reasons: Vec<String> = Vec::new();
 
     for p in &order {
-        match try_provider_multi(app, p, client, claude_key, system, history_json, max_tokens).await {
+        match try_provider_multi(app, p, client, claude_key, system, history_json, max_tokens).await
+        {
             Ok(r) => return Ok(r),
             Err(e) if e.contains("not configured") || e.contains("no model") => {
                 failure_reasons.push(format!("{p}: not configured"));
@@ -3018,10 +3251,13 @@ async fn dispatch_multi(
         }
     }
 
-    let summary = if failure_reasons.is_empty() { "No providers configured.".to_string() } else { failure_reasons.join("; ") };
+    let summary = if failure_reasons.is_empty() {
+        "No providers configured.".to_string()
+    } else {
+        failure_reasons.join("; ")
+    };
     Err(format!("All providers failed — {summary}"))
 }
-
 
 /// Streaming multi-turn dispatch — mirrors `dispatch_multi` but emits token deltas.
 /// Falls back to non-streaming for providers that lack a streaming multi-turn path (e.g. Gemini).
@@ -3050,23 +3286,52 @@ async fn dispatch_multi_streaming(
                 if claude_key.is_empty() {
                     Err("not configured".to_string())
                 } else {
-                    complete_multi_claude_streaming(app, client, claude_key, &get_active_model(), system, history_json, max_tokens, stream_event).await
+                    complete_multi_claude_streaming(
+                        app,
+                        client,
+                        claude_key,
+                        &get_active_model(),
+                        system,
+                        history_json,
+                        max_tokens,
+                        stream_event,
+                    )
+                    .await
                 }
             }
             "local" => {
                 let base = match local_llm_base_url() {
                     Some(b) => b,
-                    None => { failure_reasons.push("Local LLM: not configured".to_string()); continue; }
+                    None => {
+                        failure_reasons.push("Local LLM: not configured".to_string());
+                        continue;
+                    }
                 };
                 let model = match get_local_llm_model() {
                     Some(m) => m,
-                    None => { failure_reasons.push("Local LLM: no model selected".to_string()); continue; }
+                    None => {
+                        failure_reasons.push("Local LLM: no model selected".to_string());
+                        continue;
+                    }
                 };
                 let key = get_credential("local_llm_api_key");
-                complete_multi_local_streaming(app, &base, key.as_deref(), &model, system, history_json, max_tokens, stream_event).await
+                complete_multi_local_streaming(
+                    app,
+                    &base,
+                    key.as_deref(),
+                    &model,
+                    system,
+                    history_json,
+                    max_tokens,
+                    stream_event,
+                )
+                .await
             }
             // Gemini has no streaming multi-turn path — use standard non-streaming fallback.
-            p => try_provider_multi(app, p, client, claude_key, system, history_json, max_tokens).await,
+            p => {
+                try_provider_multi(app, p, client, claude_key, system, history_json, max_tokens)
+                    .await
+            }
         };
 
         match result {
@@ -3088,12 +3353,18 @@ async fn dispatch_multi_streaming(
 /// Agent 1a — Grooming File Probe: ask Claude which files to read before full grooming.
 /// Returns JSON: { "files": ["path/to/file", ...], "grep_patterns": ["pattern", ...] }
 #[tauri::command]
-pub async fn run_grooming_file_probe(app: tauri::AppHandle, ticket_text: String) -> Result<String, String> {
+pub async fn run_grooming_file_probe(
+    app: tauri::AppHandle,
+    ticket_text: String,
+) -> Result<String, String> {
     use tauri::Emitter;
-    let _ = app.emit("grooming-progress", serde_json::json!({
-        "phase": "probe",
-        "message": "Identifying relevant files in the codebase…"
-    }));
+    let _ = app.emit(
+        "grooming-progress",
+        serde_json::json!({
+            "phase": "probe",
+            "message": "Identifying relevant files in the codebase…"
+        }),
+    );
     let (client, api_key) = llm_client().await?;
     let system = "You are a codebase navigation agent. Given a JIRA ticket, identify the \
         source files most relevant to understanding and implementing it. \
@@ -3110,13 +3381,26 @@ pub async fn run_grooming_file_probe(app: tauri::AppHandle, ticket_text: String)
         - Do not include test files, lock files, or generated files\n\
         - Return an empty arrays if the ticket is too vague to identify specific files";
     let user = format!("Identify relevant files for this ticket:\n\n{ticket_text}");
-    dispatch_streaming(&app, &client, &api_key, system, &user, 600, "grooming-stream").await
+    dispatch_streaming(
+        &app,
+        &client,
+        &api_key,
+        system,
+        &user,
+        600,
+        "grooming-stream",
+    )
+    .await
 }
 
 /// Agent 1 — Grooming: analyse ticket and identify relevant code areas.
 /// file_contents is the injected codebase context (file contents from the probe phase).
 #[tauri::command]
-pub async fn run_grooming_agent(app: tauri::AppHandle, ticket_text: String, file_contents: String) -> Result<String, String> {
+pub async fn run_grooming_agent(
+    app: tauri::AppHandle,
+    ticket_text: String,
+    file_contents: String,
+) -> Result<String, String> {
     use tauri::Emitter;
     let (client, api_key) = llm_client().await?;
 
@@ -3179,17 +3463,33 @@ pub async fn run_grooming_agent(app: tauri::AppHandle, ticket_text: String, file
         - Keep each suggested text concise and actionable";
 
     let user = format!("Groom this ticket:\n\n{ticket_text}{file_block}");
-    let result = dispatch_streaming(&app, &client, &api_key, system, &user, 3000, "grooming-stream").await;
-    let _ = app.emit("grooming-progress", serde_json::json!({
-        "phase": "done",
-        "message": if result.is_ok() { "Analysis complete." } else { "Analysis failed." }
-    }));
+    let result = dispatch_streaming(
+        &app,
+        &client,
+        &api_key,
+        system,
+        &user,
+        3000,
+        "grooming-stream",
+    )
+    .await;
+    let _ = app.emit(
+        "grooming-progress",
+        serde_json::json!({
+            "phase": "done",
+            "message": if result.is_ok() { "Analysis complete." } else { "Analysis failed." }
+        }),
+    );
     result
 }
 
 /// Agent 2 — Impact Analysis: assess the blast radius of the planned change.
 #[tauri::command]
-pub async fn run_impact_analysis(app: tauri::AppHandle, ticket_text: String, grooming_json: String) -> Result<String, String> {
+pub async fn run_impact_analysis(
+    app: tauri::AppHandle,
+    ticket_text: String,
+    grooming_json: String,
+) -> Result<String, String> {
     let (client, api_key) = llm_client().await?;
     let system = "You are an impact analysis agent. Given a ticket and its grooming analysis, \
         assess the blast radius of the change. Return ONLY valid JSON (no markdown fences):\n\
@@ -3203,7 +3503,16 @@ pub async fn run_impact_analysis(app: tauri::AppHandle, ticket_text: String, gro
           \"recommendations\": \"<key things to be careful about>\"\n\
         }";
     let user = format!("Ticket:\n{ticket_text}\n\nGrooming analysis:\n{grooming_json}");
-    dispatch_streaming(&app, &client, &api_key, system, &user, 1500, "impact-stream").await
+    dispatch_streaming(
+        &app,
+        &client,
+        &api_key,
+        system,
+        &user,
+        1500,
+        "impact-stream",
+    )
+    .await
 }
 
 /// Agent 3a — Triage turn: one conversational exchange in the planning session.
@@ -3226,7 +3535,16 @@ pub async fn run_triage_turn(
         - Be concise and practical\n\
         Respond in plain text. Do NOT produce JSON."
     );
-    dispatch_multi_streaming(&app, &client, &api_key, &system, &history_json, 800, "triage-stream").await
+    dispatch_multi_streaming(
+        &app,
+        &client,
+        &api_key,
+        &system,
+        &history_json,
+        800,
+        "triage-stream",
+    )
+    .await
 }
 
 /// Checkpoint chat turn: general Q&A at any post-triage pipeline stage.
@@ -3248,7 +3566,16 @@ pub async fn run_checkpoint_chat_turn(
         what they need to do or what the implications are. \
         Respond in plain text. Do NOT produce JSON."
     );
-    dispatch_multi_streaming(&app, &client, &api_key, &system, &history_json, 800, "checkpoint-chat-stream").await
+    dispatch_multi_streaming(
+        &app,
+        &client,
+        &api_key,
+        &system,
+        &history_json,
+        800,
+        "checkpoint-chat-stream",
+    )
+    .await
 }
 
 /// Grooming chat turn: structured back-and-forth during ticket grooming.
@@ -3291,7 +3618,16 @@ pub async fn run_grooming_chat_turn(
         - To remove a suggestion, omit its id from updated_edits (the frontend will not delete it — include it with a note in reasoning if it should be withdrawn)\n\
         - Keep the message focused and concise"
     );
-    dispatch_multi_streaming(&app, &client, &api_key, &system, &history_json, 1200, "grooming-chat-stream").await
+    dispatch_multi_streaming(
+        &app,
+        &client,
+        &api_key,
+        &system,
+        &history_json,
+        1200,
+        "grooming-chat-stream",
+    )
+    .await
 }
 
 /// Agent 3b — Finalize plan: extract a structured implementation plan from the triage conversation.
@@ -3346,7 +3682,16 @@ pub async fn run_implementation_guidance(
           \"definition_of_done\": [\"<how to know the step is complete>\", ...]\n\
         }";
     let user = format!("Ticket:\n{ticket_text}\n\nImplementation plan:\n{plan_json}");
-    dispatch_streaming(&app, &client, &api_key, system, &user, 2000, "guidance-stream").await
+    dispatch_streaming(
+        &app,
+        &client,
+        &api_key,
+        system,
+        &user,
+        2000,
+        "guidance-stream",
+    )
+    .await
 }
 
 /// Agent 4b — Implementation: actually write code for each file in the plan.
@@ -3370,19 +3715,19 @@ pub async fn run_implementation_agent(
     let (client, api_key) = llm_client().await?;
 
     // Parse the plan to get the file list.
-    let plan: serde_json::Value = serde_json::from_str(&plan_json)
-        .map_err(|e| format!("Invalid plan JSON: {e}"))?;
+    let plan: serde_json::Value =
+        serde_json::from_str(&plan_json).map_err(|e| format!("Invalid plan JSON: {e}"))?;
 
-    let files = plan["files"]
-        .as_array()
-        .cloned()
-        .unwrap_or_default();
+    let files = plan["files"].as_array().cloned().unwrap_or_default();
 
     let emit = |msg: &str| {
         let _ = app.emit("implementation-stream", serde_json::json!({ "delta": msg }));
     };
 
-    emit(&format!("Starting implementation — {} file(s) to process\n\n", files.len()));
+    emit(&format!(
+        "Starting implementation — {} file(s) to process\n\n",
+        files.len()
+    ));
 
     let mut files_changed: Vec<serde_json::Value> = Vec::new();
     let mut deviations: Vec<String> = Vec::new();
@@ -3393,10 +3738,19 @@ pub async fn run_implementation_agent(
             Some(p) => p.to_string(),
             None => continue,
         };
-        let action = file_entry["action"].as_str().unwrap_or("modify").to_string();
+        let action = file_entry["action"]
+            .as_str()
+            .unwrap_or("modify")
+            .to_string();
         let description = file_entry["description"].as_str().unwrap_or("").to_string();
 
-        emit(&format!("[{}/{}] {} — {}\n", idx + 1, files.len(), action.to_uppercase(), path));
+        emit(&format!(
+            "[{}/{}] {} — {}\n",
+            idx + 1,
+            files.len(),
+            action.to_uppercase(),
+            path
+        ));
 
         if action == "delete" {
             // Deletion: remove the file from the worktree.
@@ -3418,8 +3772,7 @@ pub async fn run_implementation_agent(
         }
 
         // Read the current file content (may not exist for new files).
-        let current_content = super::repo::read_repo_file_internal(&path)
-            .unwrap_or_default();
+        let current_content = super::repo::read_repo_file_internal(&path).unwrap_or_default();
 
         let is_new = current_content.is_empty() && action == "create";
 
@@ -3427,9 +3780,7 @@ pub async fn run_implementation_agent(
         let file_context = if current_content.is_empty() {
             format!("File `{path}` does not exist yet — create it from scratch.")
         } else {
-            format!(
-                "Current content of `{path}`:\n```\n{current_content}\n```"
-            )
+            format!("Current content of `{path}`:\n```\n{current_content}\n```")
         };
 
         let system = "You are an expert software engineer implementing a JIRA ticket. \
@@ -3465,7 +3816,8 @@ pub async fn run_implementation_agent(
 
         emit(&format!("  Generating new content…\n"));
 
-        let raw = match complete(&client, &api_key, &get_active_model(), system, &user, 8000).await {
+        let raw = match complete(&client, &api_key, &get_active_model(), system, &user, 8000).await
+        {
             Ok(r) => r,
             Err(e) => {
                 emit(&format!("  ERROR: Claude call failed for {path}: {e}\n"));
@@ -3489,7 +3841,9 @@ pub async fn run_implementation_agent(
                 match serde_json::from_str(stripped) {
                     Ok(v) => v,
                     Err(e) => {
-                        emit(&format!("  ERROR: Could not parse response for {path}: {e}\n"));
+                        emit(&format!(
+                            "  ERROR: Could not parse response for {path}: {e}\n"
+                        ));
                         deviations.push(format!("Could not parse response for {path}: {e}"));
                         skipped.push(path.clone());
                         continue;
@@ -3507,8 +3861,12 @@ pub async fn run_implementation_agent(
             }
         };
 
-        let summary = parsed["summary"].as_str().unwrap_or("No summary").to_string();
-        let deviation = parsed["deviation"].as_str()
+        let summary = parsed["summary"]
+            .as_str()
+            .unwrap_or("No summary")
+            .to_string();
+        let deviation = parsed["deviation"]
+            .as_str()
             .filter(|d| !d.is_empty() && *d != "null")
             .map(str::to_string);
 
@@ -3539,7 +3897,10 @@ pub async fn run_implementation_agent(
         emit(&format!("\n  WARNING: Could not stage changes: {e}\n"));
     }
 
-    emit(&format!("\nImplementation complete — {} file(s) changed", files_changed.len()));
+    emit(&format!(
+        "\nImplementation complete — {} file(s) changed",
+        files_changed.len()
+    ));
     if !skipped.is_empty() {
         emit(&format!(", {} skipped", skipped.len()));
     }
@@ -3633,7 +3994,16 @@ pub async fn run_plan_review(
     let user = format!(
         "Ticket:\n{ticket_text}\n\nImplementation plan:\n{plan_json}\n\nImplementation result:\n{impl_json}\n\nTest plan:\n{test_json}\n\nCode diff:\n{diff_section}"
     );
-    dispatch_streaming(&app, &client, &api_key, system, &user, 1500, "review-stream").await
+    dispatch_streaming(
+        &app,
+        &client,
+        &api_key,
+        system,
+        &user,
+        1500,
+        "review-stream",
+    )
+    .await
 }
 
 /// Agent 7 — PR Description: generate a complete pull request description.
@@ -3782,7 +4152,9 @@ fn annotate_diff_with_line_numbers(diff: &str) -> String {
             // Format: @@ -A,B +C,D @@ optional context
             if let Some(plus_pos) = line.find('+') {
                 let rest = &line[plus_pos + 1..];
-                let end = rest.find(|c: char| !c.is_ascii_digit()).unwrap_or(rest.len());
+                let end = rest
+                    .find(|c: char| !c.is_ascii_digit())
+                    .unwrap_or(rest.len());
                 if let Ok(n) = rest[..end].parse::<u32>() {
                     new_line = n;
                 }
@@ -3998,10 +4370,10 @@ fn cap_findings_by_severity(findings_json: &str, max_chars: usize) -> (String, u
     // Severity ordering: blocking = 0, non_blocking = 1, nitpick = 2, unknown = 3
     let severity_rank = |f: &serde_json::Value| -> u8 {
         match f.get("severity").and_then(|s| s.as_str()).unwrap_or("") {
-            "blocking"     => 0,
+            "blocking" => 0,
             "non_blocking" => 1,
-            "nitpick"      => 2,
-            _              => 3,
+            "nitpick" => 2,
+            _ => 3,
         }
     };
 
@@ -4034,12 +4406,14 @@ fn build_review_system_prompt(app: &tauri::AppHandle) -> String {
     let mut prompt = SYNTHESIS_SYSTEM.to_string();
 
     let review_skill = get_skill(app, "review");
-    let impl_skill   = get_skill(app, "implementation");
+    let impl_skill = get_skill(app, "implementation");
 
     if review_skill.is_some() || impl_skill.is_some() {
         prompt.push_str("\n\n=== PROJECT-SPECIFIC REVIEW STANDARDS (Agent Skills) ===\n");
-        prompt.push_str("The following conventions are specific to this codebase. \
-            Apply them when evaluating findings — they take precedence over generic heuristics.\n");
+        prompt.push_str(
+            "The following conventions are specific to this codebase. \
+            Apply them when evaluating findings — they take precedence over generic heuristics.\n",
+        );
         if let Some(s) = review_skill {
             prompt.push_str("\n--- Review Standards ---\n");
             prompt.push_str(&s);
@@ -4071,12 +4445,19 @@ pub async fn review_pr(app: tauri::AppHandle, review_text: String) -> Result<Str
     // Local LLMs typically have 8k-32k context; cloud models can handle much more.
     let provider = get_ai_provider();
     let effective_provider = if provider == "auto" {
-        get_provider_order().into_iter().next().unwrap_or_else(|| "claude".to_string())
+        get_provider_order()
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| "claude".to_string())
     } else {
         provider
     };
     // Conservative: leave room for the system prompt + response tokens
-    let chunk_chars: usize = if effective_provider == "local" { 12_000 } else { 80_000 };
+    let chunk_chars: usize = if effective_provider == "local" {
+        12_000
+    } else {
+        80_000
+    };
 
     let chunks = split_review_into_chunks(&review_text, chunk_chars);
     let needs_chunking = chunks.len() > 1;
@@ -4095,22 +4476,38 @@ pub async fn review_pr(app: tauri::AppHandle, review_text: String) -> Result<Str
         for (i, chunk) in chunks.iter().enumerate() {
             // Check for cancellation before starting each chunk
             if REVIEW_CANCELLED.load(Ordering::Relaxed) {
-                let _ = app.emit("pr-review-progress", serde_json::json!({
-                    "phase": "cancelled",
-                    "message": "Review cancelled."
-                }));
+                let _ = app.emit(
+                    "pr-review-progress",
+                    serde_json::json!({
+                        "phase": "cancelled",
+                        "message": "Review cancelled."
+                    }),
+                );
                 return Err("Review cancelled by user.".to_string());
             }
 
-            let _ = app.emit("pr-review-progress", serde_json::json!({
-                "phase": "analysis",
-                "message": format!("Reviewing chunk {}/{total} ({} chars)…", i + 1, chunk.len())
-            }));
+            let _ = app.emit(
+                "pr-review-progress",
+                serde_json::json!({
+                    "phase": "analysis",
+                    "message": format!("Reviewing chunk {}/{total} ({} chars)…", i + 1, chunk.len())
+                }),
+            );
             // Signal the frontend to clear the stream display before each new chunk
             let _ = app.emit("pr-review-stream-reset", serde_json::json!({}));
 
             let user = format!("Find all review findings in this diff chunk:\n\n{chunk}");
-            match dispatch_streaming(&app, &client, &api_key, CHUNK_SYSTEM, &user, 2000, "pr-review-stream").await {
+            match dispatch_streaming(
+                &app,
+                &client,
+                &api_key,
+                CHUNK_SYSTEM,
+                &user,
+                2000,
+                "pr-review-stream",
+            )
+            .await
+            {
                 Ok(raw) => {
                     // Strip optional markdown fences the model may have added
                     let cleaned = raw
@@ -4146,10 +4543,13 @@ pub async fn review_pr(app: tauri::AppHandle, review_text: String) -> Result<Str
     // ── Synthesis pass (always streamed) ─────────────────────────────────────
     // Check for cancellation before the synthesis pass too
     if REVIEW_CANCELLED.load(Ordering::Relaxed) {
-        let _ = app.emit("pr-review-progress", serde_json::json!({
-            "phase": "cancelled",
-            "message": "Review cancelled."
-        }));
+        let _ = app.emit(
+            "pr-review-progress",
+            serde_json::json!({
+                "phase": "cancelled",
+                "message": "Review cancelled."
+            }),
+        );
         return Err("Review cancelled by user.".to_string());
     }
 
@@ -4159,7 +4559,11 @@ pub async fn review_pr(app: tauri::AppHandle, review_text: String) -> Result<Str
         // Cap findings by severity before building the synthesis prompt so the
         // combined input never blows the model's context window.
         // Budget: for local models leave ~4k chars for findings; cloud gets 40k.
-        let findings_budget: usize = if effective_provider == "local" { 4_000 } else { 40_000 };
+        let findings_budget: usize = if effective_provider == "local" {
+            4_000
+        } else {
+            40_000
+        };
         let (capped_findings_json, dropped_count) =
             cap_findings_by_severity(&all_findings_json, findings_budget);
 
@@ -4192,10 +4596,13 @@ pub async fn review_pr(app: tauri::AppHandle, review_text: String) -> Result<Str
              Produce the final review report JSON."
         )
     } else {
-        let _ = app.emit("pr-review-progress", serde_json::json!({
-            "phase": "analysis",
-            "message": "Analysing diff across five review lenses…"
-        }));
+        let _ = app.emit(
+            "pr-review-progress",
+            serde_json::json!({
+                "phase": "analysis",
+                "message": "Analysing diff across five review lenses…"
+            }),
+        );
         // For single-chunk diffs, pass the full diff directly to synthesis,
         // with the diff annotated so the model can read line numbers directly.
         // Prepend a structured instruction so the model applies all five lenses
@@ -4216,17 +4623,23 @@ pub async fn review_pr(app: tauri::AppHandle, review_text: String) -> Result<Str
     };
 
     let result = dispatch_streaming(
-        &app, &client, &api_key,
+        &app,
+        &client,
+        &api_key,
         &build_review_system_prompt(&app),
         &synthesis_user,
         4000,
         "pr-review-stream",
-    ).await;
+    )
+    .await;
 
-    let _ = app.emit("pr-review-progress", serde_json::json!({
-        "phase": "done",
-        "message": if result.is_ok() { "Review complete." } else { "Review failed." }
-    }));
+    let _ = app.emit(
+        "pr-review-progress",
+        serde_json::json!({
+            "phase": "done",
+            "message": if result.is_ok() { "Review complete." } else { "Review failed." }
+        }),
+    );
     result
 }
 
@@ -4244,14 +4657,20 @@ pub async fn chat_pr_review(
     // Load project-specific skills — Review Standards and Implementation Standards
     // both inform what "good code" means for this codebase.
     let review_skill = get_skill(&app, "review");
-    let impl_skill   = get_skill(&app, "implementation");
+    let impl_skill = get_skill(&app, "implementation");
     let skills_block = if review_skill.is_some() || impl_skill.is_some() {
         let mut block = String::from(
             "\n\n=== PROJECT-SPECIFIC CONVENTIONS (Agent Skills) ===\n\
-            These codebase-specific standards must inform any code you write or suggest:\n"
+            These codebase-specific standards must inform any code you write or suggest:\n",
         );
-        if let Some(s) = review_skill { block.push_str("\n--- Review Standards ---\n"); block.push_str(&s); }
-        if let Some(s) = impl_skill   { block.push_str("\n--- Implementation Standards ---\n"); block.push_str(&s); }
+        if let Some(s) = review_skill {
+            block.push_str("\n--- Review Standards ---\n");
+            block.push_str(&s);
+        }
+        if let Some(s) = impl_skill {
+            block.push_str("\n--- Implementation Standards ---\n");
+            block.push_str(&s);
+        }
         block
     } else {
         String::new()
@@ -4277,15 +4696,28 @@ pub async fn chat_pr_review(
           below. For example: if the standards specify Vitest, use Vitest syntax — not Jest \
           or any other framework.{skills_block}"
     );
-    dispatch_multi_streaming_with_tools(&app, &client, &api_key, &system, &history_json, 1024, "pr-review-chat-stream").await
+    dispatch_multi_streaming_with_tools(
+        &app,
+        &client,
+        &api_key,
+        &system,
+        &history_json,
+        1024,
+        "pr-review-chat-stream",
+    )
+    .await
 }
 
 /// Generate workload rebalancing suggestions from pre-compiled capacity text.
 #[tauri::command]
-pub async fn generate_workload_suggestions(app: tauri::AppHandle, workload_text: String) -> Result<String, String> {
+pub async fn generate_workload_suggestions(
+    app: tauri::AppHandle,
+    workload_text: String,
+) -> Result<String, String> {
     let (client, api_key) = llm_client().await?;
 
-    let system = "You are a scrum master assistant helping balance work across a development team. \
+    let system =
+        "You are a scrum master assistant helping balance work across a development team. \
         Analyse the workload data and suggest specific, actionable ticket reassignments. \
         Be concrete: name the ticket key, the current assignee, and the suggested new assignee. \
         Consider both story point load and PR review load when assessing capacity. \
@@ -4307,7 +4739,10 @@ pub async fn generate_workload_suggestions(app: tauri::AppHandle, workload_text:
 
 /// Assess a JIRA ticket for development readiness and return a JSON quality report.
 #[tauri::command]
-pub async fn assess_ticket_quality(app: tauri::AppHandle, ticket_text: String) -> Result<String, String> {
+pub async fn assess_ticket_quality(
+    app: tauri::AppHandle,
+    ticket_text: String,
+) -> Result<String, String> {
     let (client, api_key) = llm_client().await?;
 
     let system = "You are a senior engineering lead reviewing JIRA tickets for sprint readiness. \
@@ -4336,10 +4771,14 @@ pub async fn assess_ticket_quality(app: tauri::AppHandle, ticket_text: String) -
 
 /// Generate a sprint retrospective summary from pre-compiled sprint data.
 #[tauri::command]
-pub async fn generate_sprint_retrospective(app: tauri::AppHandle, sprint_text: String) -> Result<String, String> {
+pub async fn generate_sprint_retrospective(
+    app: tauri::AppHandle,
+    sprint_text: String,
+) -> Result<String, String> {
     let (client, api_key) = llm_client().await?;
 
-    let system = "You are an experienced agile coach helping a scrum master run sprint retrospectives. \
+    let system =
+        "You are an experienced agile coach helping a scrum master run sprint retrospectives. \
         Write concise, honest, and actionable retrospective summaries based on sprint metrics. \
         Be specific — reference story points, completion rates, and PR data where relevant. \
         Avoid generic filler. Each section should be 2-4 bullet points.";
@@ -4444,7 +4883,10 @@ pub async fn chat_address_pr(
 }
 
 #[tauri::command]
-pub async fn generate_standup_briefing(app: tauri::AppHandle, standup_text: String) -> Result<String, String> {
+pub async fn generate_standup_briefing(
+    app: tauri::AppHandle,
+    standup_text: String,
+) -> Result<String, String> {
     let (client, api_key) = llm_client().await?;
 
     let system = "You are a scrum master assistant. \
@@ -4466,4 +4908,185 @@ pub async fn generate_standup_briefing(app: tauri::AppHandle, standup_text: Stri
     );
 
     dispatch(&app, &client, &api_key, system, &user, 1024).await
+}
+
+// ── OAuth billing-header tests ────────────────────────────────────────────────
+
+#[cfg(test)]
+mod oauth_billing_tests {
+    use super::*;
+
+    #[test]
+    fn sha256_hex_known_input() {
+        // SHA-256("hello") = 2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824
+        assert_eq!(
+            sha256_hex("hello"),
+            "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+        );
+    }
+
+    #[test]
+    fn cch_is_5_hex_chars() {
+        let cch = compute_cch("any message");
+        assert_eq!(cch.len(), 5);
+        assert!(cch.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn version_suffix_is_3_hex_chars() {
+        let suffix = compute_version_suffix("any message text that's long enough", "2.1.90");
+        assert_eq!(suffix.len(), 3);
+        assert!(suffix.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn version_suffix_pads_short_messages_with_zero() {
+        // Index 7 and 20 are out of bounds for "hello" (len 5), so both default
+        // to '0'. Index 4 is 'o'. Sampled string = "o00".
+        // The resulting suffix should still be 3 hex chars and stable.
+        let a = compute_version_suffix("hello", "2.1.90");
+        let b = compute_version_suffix("hello", "2.1.90");
+        assert_eq!(a, b, "hash is deterministic");
+        assert_eq!(a.len(), 3);
+    }
+
+    #[test]
+    fn billing_header_format() {
+        let h = build_billing_header("Say hello.");
+        assert!(h.starts_with("x-anthropic-billing-header: cc_version="));
+        assert!(h.contains("cc_entrypoint=cli"));
+        assert!(h.contains("cch="));
+        assert!(h.ends_with(';'));
+    }
+
+    #[test]
+    fn first_user_text_plain_string() {
+        let msgs = json!([{"role": "user", "content": "hello there"}]);
+        assert_eq!(first_user_text(&msgs), "hello there");
+    }
+
+    #[test]
+    fn first_user_text_content_blocks() {
+        let msgs = json!([
+            {"role": "user", "content": [
+                {"type": "text", "text": "first text block"},
+                {"type": "text", "text": "second"}
+            ]}
+        ]);
+        assert_eq!(first_user_text(&msgs), "first text block");
+    }
+
+    #[test]
+    fn first_user_text_skips_non_user_messages() {
+        let msgs = json!([
+            {"role": "assistant", "content": "assistant reply"},
+            {"role": "user", "content": "real user message"}
+        ]);
+        assert_eq!(first_user_text(&msgs), "real user message");
+    }
+
+    #[test]
+    fn first_user_text_empty_when_no_user() {
+        let msgs = json!([{"role": "assistant", "content": "only assistant"}]);
+        assert_eq!(first_user_text(&msgs), "");
+    }
+
+    #[test]
+    fn api_key_path_uses_plain_string_system() {
+        let body = build_messages_body(
+            "sk-ant-api03-abc",
+            "claude-sonnet-4-6",
+            "You are a helpful assistant.",
+            json!([{"role": "user", "content": "hi"}]),
+            100,
+            false,
+            None,
+        );
+        assert_eq!(body["system"], json!("You are a helpful assistant."));
+        assert_eq!(body["messages"][0]["content"], json!("hi"));
+        assert!(body.get("stream").is_none());
+    }
+
+    #[test]
+    fn oauth_path_builds_system_array_with_billing_and_identity() {
+        let body = build_messages_body(
+            "sk-ant-oat01-xyz",
+            "claude-sonnet-4-6",
+            "", // no user system
+            json!([{"role": "user", "content": "Say hello."}]),
+            32,
+            false,
+            None,
+        );
+        let system = body["system"].as_array().expect("system must be array for OAuth");
+        assert_eq!(system.len(), 2, "billing header + identity only");
+        assert!(system[0]["text"]
+            .as_str()
+            .unwrap()
+            .starts_with("x-anthropic-billing-header:"));
+        assert_eq!(system[1]["text"], json!(CLAUDE_CODE_IDENTITY));
+        // Empty user system → user message unchanged
+        assert_eq!(body["messages"][0]["content"], json!("Say hello."));
+    }
+
+    #[test]
+    fn oauth_path_moves_user_system_into_first_user_message() {
+        let body = build_messages_body(
+            "sk-ant-oat01-xyz",
+            "claude-sonnet-4-6",
+            "You are a code reviewer.",
+            json!([{"role": "user", "content": "Review this diff."}]),
+            500,
+            true,
+            None,
+        );
+        let system = body["system"].as_array().unwrap();
+        assert_eq!(system.len(), 2, "user system must NOT live in system[]");
+        // The Meridian system prompt is prepended to the first user message.
+        let first_user = body["messages"][0]["content"].as_str().unwrap();
+        assert!(first_user.starts_with("You are a code reviewer."));
+        assert!(first_user.contains("Review this diff."));
+        assert_eq!(body["stream"], json!(true));
+    }
+
+    #[test]
+    fn oauth_path_prepends_to_array_content() {
+        let body = build_messages_body(
+            "sk-ant-oat01-xyz",
+            "claude-sonnet-4-6",
+            "Prefix.",
+            json!([{
+                "role": "user",
+                "content": [{"type": "text", "text": "existing block"}]
+            }]),
+            100,
+            false,
+            None,
+        );
+        let blocks = body["messages"][0]["content"].as_array().unwrap();
+        assert_eq!(blocks[0]["text"], json!("Prefix."));
+        assert_eq!(blocks[1]["text"], json!("existing block"));
+    }
+
+    #[test]
+    fn oauth_path_forwards_tools() {
+        let tools = json!([{"name": "fetch_url", "description": "..."}]);
+        let body = build_messages_body(
+            "sk-ant-oat01-xyz",
+            "claude-sonnet-4-6",
+            "",
+            json!([{"role": "user", "content": "do it"}]),
+            100,
+            true,
+            Some(tools.clone()),
+        );
+        assert_eq!(body["tools"], tools);
+    }
+
+    #[test]
+    fn billing_hash_stable_across_calls() {
+        let a = build_billing_header("Say hello.");
+        let b = build_billing_header("Say hello.");
+        assert_eq!(a, b);
+    }
 }

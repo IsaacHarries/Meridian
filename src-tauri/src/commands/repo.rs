@@ -1,6 +1,6 @@
+use serde::Serialize;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use serde::Serialize;
 
 use super::credentials::get_credential;
 use super::preferences::get_pref;
@@ -26,8 +26,7 @@ fn worktree_path() -> Result<PathBuf, String> {
 }
 
 fn base_branch() -> String {
-    get_config("repo_base_branch")
-        .unwrap_or_else(|| "develop".to_string())
+    get_config("repo_base_branch").unwrap_or_else(|| "develop".to_string())
 }
 
 /// Returns the PR review–specific worktree path if configured, otherwise falls
@@ -86,12 +85,16 @@ fn sandboxed(root: &Path, rel: &str) -> Result<PathBuf, String> {
     let rel = rel.trim_start_matches('/').trim_start_matches("./");
     let full = root.join(rel);
     // Canonicalise both so symlinks can't escape
-    let canon_full = full.canonicalize()
+    let canon_full = full
+        .canonicalize()
         .map_err(|_| format!("Path not found: {rel}"))?;
-    let canon_root = root.canonicalize()
+    let canon_root = root
+        .canonicalize()
         .map_err(|_| "Could not canonicalise worktree root".to_string())?;
     if !canon_full.starts_with(&canon_root) {
-        return Err(format!("Path '{rel}' would escape the worktree root — not allowed."));
+        return Err(format!(
+            "Path '{rel}' would escape the worktree root — not allowed."
+        ));
     }
     Ok(canon_full)
 }
@@ -143,8 +146,7 @@ pub async fn sync_worktree() -> Result<WorktreeInfo, String> {
     let branch = base_branch();
 
     // Fetch
-    git(&path, &["fetch", "origin"])
-        .map_err(|e| format!("git fetch failed: {e}"))?;
+    git(&path, &["fetch", "origin"]).map_err(|e| format!("git fetch failed: {e}"))?;
 
     // Reset hard to origin/<branch>
     let remote_ref = format!("origin/{branch}");
@@ -178,8 +180,17 @@ pub async fn glob_repo_files(pattern: String) -> Result<Vec<String>, String> {
 
     // Use `git ls-files` with fnmatch-style patterns — respects .gitignore automatically.
     // Fall back to a plain find for patterns that don't match gitignore-aware ls-files.
-    let output = git(&root, &["ls-files", "--cached", "--others", "--exclude-standard", &pattern])
-        .unwrap_or_default();
+    let output = git(
+        &root,
+        &[
+            "ls-files",
+            "--cached",
+            "--others",
+            "--exclude-standard",
+            &pattern,
+        ],
+    )
+    .unwrap_or_default();
 
     let mut results: Vec<String> = output
         .lines()
@@ -201,8 +212,7 @@ pub async fn glob_repo_files(pattern: String) -> Result<Vec<String>, String> {
             .output()
             .map_err(|e| format!("find error: {e}"))?;
         let all = String::from_utf8_lossy(&out.stdout);
-        let pat = glob::Pattern::new(&pattern)
-            .map_err(|e| format!("Invalid glob pattern: {e}"))?;
+        let pat = glob::Pattern::new(&pattern).map_err(|e| format!("Invalid glob pattern: {e}"))?;
         results = all
             .lines()
             .filter_map(|line| {
@@ -231,9 +241,9 @@ pub async fn grep_repo_files(pattern: String, path: Option<String>) -> Result<Ve
 
     let mut args = vec![
         "grep",
-        "-n",           // line numbers
-        "--heading",    // group by file
-        "-E",           // extended regex
+        "-n",             // line numbers
+        "--heading",      // group by file
+        "-E",             // extended regex
         "--max-count=50", // max 50 matches per file
         &pattern,
     ];
@@ -258,11 +268,7 @@ pub async fn grep_repo_files(pattern: String, path: Option<String>) -> Result<Ve
         0 => {
             // Matches found — collect output lines
             let stdout = String::from_utf8_lossy(&out.stdout);
-            let lines: Vec<String> = stdout
-                .lines()
-                .take(200)
-                .map(str::to_string)
-                .collect();
+            let lines: Vec<String> = stdout.lines().take(200).map(str::to_string).collect();
             Ok(lines)
         }
         1 => {
@@ -315,8 +321,7 @@ pub fn write_repo_file_internal(path: &str, content: &str) -> Result<(), String>
         std::fs::create_dir_all(parent)
             .map_err(|e| format!("Could not create directories for '{}': {e}", path))?;
     }
-    std::fs::write(&resolved, content)
-        .map_err(|e| format!("Could not write '{}': {e}", path))
+    std::fs::write(&resolved, content).map_err(|e| format!("Could not write '{}': {e}", path))
 }
 
 /// Non-command helper used by the implementation agent in claude.rs.
@@ -340,8 +345,8 @@ pub async fn read_repo_file(path: String) -> Result<String, String> {
     let root = worktree_path()?;
     let full = sandboxed(&root, &path)?;
 
-    let content = std::fs::read_to_string(&full)
-        .map_err(|e| format!("Could not read '{}': {e}", path))?;
+    let content =
+        std::fs::read_to_string(&full).map_err(|e| format!("Could not read '{}': {e}", path))?;
 
     // Cap at ~500 KB
     const MAX_BYTES: usize = 512 * 1024;
@@ -388,8 +393,7 @@ pub async fn write_repo_file(path: String, content: String) -> Result<(), String
         std::fs::create_dir_all(parent)
             .map_err(|e| format!("Could not create directories for '{}': {e}", path))?;
     }
-    std::fs::write(&full, content)
-        .map_err(|e| format!("Could not write '{}': {e}", path))?;
+    std::fs::write(&full, content).map_err(|e| format!("Could not write '{}': {e}", path))?;
     Ok(())
 }
 
@@ -463,8 +467,7 @@ fn checkout_branch_in(path: &Path, branch: &str) -> Result<WorktreeInfo, String>
     let remote_ref = format!("origin/{branch}");
 
     // 1. Fetch
-    git(path, &["fetch", "origin", branch])
-        .map_err(|e| format!("git fetch failed: {e}"))?;
+    git(path, &["fetch", "origin", branch]).map_err(|e| format!("git fetch failed: {e}"))?;
 
     // 2. Stash any uncommitted changes (including untracked files) so the
     //    checkout / reset cannot fail with "local changes would be overwritten".
@@ -473,8 +476,17 @@ fn checkout_branch_in(path: &Path, branch: &str) -> Result<WorktreeInfo, String>
     if !status_out.trim().is_empty() {
         // --include-untracked stashes new files too; --quiet suppresses the
         // "Saved working directory…" message from appearing in error output.
-        git(path, &["stash", "push", "--include-untracked", "-m", "meridian: auto-stash before branch checkout"])
-            .map_err(|e| format!("git stash failed: {e}"))?;
+        git(
+            path,
+            &[
+                "stash",
+                "push",
+                "--include-untracked",
+                "-m",
+                "meridian: auto-stash before branch checkout",
+            ],
+        )
+        .map_err(|e| format!("git stash failed: {e}"))?;
     }
 
     // 3. Does a local branch with this exact name already exist?
@@ -593,8 +605,7 @@ pub async fn run_in_terminal(command: String) -> Result<(), String> {
     let path = pr_review_worktree_path()?;
     let path_str = path.to_string_lossy();
 
-    let terminal = get_config("pr_review_terminal")
-        .unwrap_or_else(|| "iTerm2".to_string());
+    let terminal = get_config("pr_review_terminal").unwrap_or_else(|| "iTerm2".to_string());
     let terminal = terminal.trim().to_string();
 
     let script = if terminal.to_lowercase() == "iterm2" || terminal == "iTerm2" {
@@ -700,7 +711,8 @@ pub async fn write_pr_address_file(path: String, content: String) -> Result<(), 
         .parent()
         .ok_or_else(|| format!("Invalid path: {path}"))?;
     // Create parent dirs if missing
-    std::fs::create_dir_all(parent).map_err(|e| format!("Failed to create dirs for {path}: {e}"))?;
+    std::fs::create_dir_all(parent)
+        .map_err(|e| format!("Failed to create dirs for {path}: {e}"))?;
     let canon_parent = parent
         .canonicalize()
         .map_err(|_| format!("Could not resolve parent directory for {path}"))?;
@@ -747,4 +759,3 @@ pub async fn push_pr_address_branch() -> Result<(), String> {
     git(&root, &["push", "origin", &branch])?;
     Ok(())
 }
-

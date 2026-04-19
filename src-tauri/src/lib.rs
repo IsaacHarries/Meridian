@@ -5,51 +5,128 @@ pub mod jira;
 pub mod sidecar;
 
 use commands::{
-    credential_status, delete_credential, save_credential, get_non_secret_config,     validate_anthropic, validate_bitbucket,
-    validate_jira, test_anthropic_stored, ping_anthropic, import_claude_code_token, test_jira_stored, test_bitbucket_stored, debug_jira_endpoints, assess_ticket_quality, generate_standup_briefing, generate_sprint_retrospective,
-    start_claude_oauth,
-    generate_workload_suggestions, review_pr, cancel_review, chat_pr_review,
-    analyze_pr_comments, chat_address_pr,
-    get_claude_models, get_gemini_models, validate_gemini, test_gemini_stored,
-    get_local_models, validate_local_llm, test_local_llm_stored,
-    // Agent pipeline
-    run_grooming_file_probe, run_grooming_agent, run_grooming_chat_turn,
-    run_impact_analysis, run_triage_turn, run_checkpoint_chat_turn, finalize_implementation_plan,
-    run_implementation_guidance, run_implementation_agent, run_test_suggestions, run_plan_review,
-    run_pr_description_gen, run_retrospective_agent,
-    // JIRA data commands
-    get_active_sprint, get_all_active_sprints, get_all_active_sprint_issues,
-    get_active_sprint_issues, get_completed_sprints, get_future_sprints, get_issue,
-    get_my_sprint_issues, get_sprint_issues, get_sprint_issues_by_id, search_jira_issues,
-    update_jira_issue, update_jira_fields,
-    // JIRA diagnostic / field discovery
-    get_raw_issue_fields, get_jira_fields,
-    // Bitbucket data commands
-    get_merged_prs, get_open_prs, get_pr, get_pr_comments, get_pr_diff, get_pr_tasks, get_prs_for_review,
-    get_my_open_prs,
-    approve_pr, unapprove_pr, request_changes_pr, unrequest_changes_pr,
-    post_pr_comment, create_pr_task, resolve_pr_task, delete_pr_comment, update_pr_comment,
-    // Knowledge base
-    load_knowledge_entries, save_knowledge_entry, delete_knowledge_entry, export_knowledge_markdown,
-    // Agent skills
-    load_agent_skills, save_agent_skill, delete_agent_skill,
-    // Store cache (file-backed persistence for Zustand stores)
-    save_store_cache, load_store_cache, delete_store_cache, get_store_cache_info, clear_all_store_caches,
-    // Preferences (plain JSON, survives cache clears)
-    get_preferences, set_preference, delete_preference,
-    // Repo / worktree
-    validate_worktree, sync_worktree,
-    glob_repo_files, grep_repo_files, read_repo_file, write_repo_file,
-    get_repo_diff, get_repo_log, get_file_history,
+    analyze_pr_comments,
+    approve_pr,
+    assess_ticket_quality,
+    cancel_review,
+    chat_address_pr,
+    chat_pr_review,
+    checkout_pr_address_branch,
+    checkout_pr_review_branch,
     checkout_worktree_branch,
-    validate_pr_review_worktree, checkout_pr_review_branch,
-    run_in_terminal,
-    validate_pr_address_worktree, checkout_pr_address_branch,
-    read_pr_address_file, write_pr_address_file,
-    get_pr_address_diff, commit_pr_address_changes, push_pr_address_branch,
-
+    clear_all_store_caches,
+    commit_pr_address_changes,
+    create_pr_task,
+    credential_status,
+    debug_jira_endpoints,
+    delete_agent_skill,
+    delete_credential,
+    delete_knowledge_entry,
+    delete_pr_comment,
+    delete_preference,
+    delete_store_cache,
+    export_knowledge_markdown,
     // URL fetch
     fetch_url_content,
+    finalize_implementation_plan,
+    generate_sprint_retrospective,
+    generate_standup_briefing,
+    generate_workload_suggestions,
+    // JIRA data commands
+    get_active_sprint,
+    get_active_sprint_issues,
+    get_all_active_sprint_issues,
+    get_all_active_sprints,
+    get_claude_models,
+    get_completed_sprints,
+    get_file_history,
+    get_future_sprints,
+    get_gemini_models,
+    get_issue,
+    get_jira_fields,
+    get_local_models,
+    // Bitbucket data commands
+    get_merged_prs,
+    get_my_open_prs,
+    get_my_sprint_issues,
+    get_non_secret_config,
+    get_open_prs,
+    get_pr,
+    get_pr_address_diff,
+    get_pr_comments,
+    get_pr_diff,
+    get_pr_tasks,
+    // Preferences (plain JSON, survives cache clears)
+    get_preferences,
+    get_prs_for_review,
+    // JIRA diagnostic / field discovery
+    get_raw_issue_fields,
+    get_repo_diff,
+    get_repo_log,
+    get_sprint_issues,
+    get_sprint_issues_by_id,
+    get_store_cache_info,
+    glob_repo_files,
+    grep_repo_files,
+    import_claude_code_token,
+    // Agent skills
+    load_agent_skills,
+    // Knowledge base
+    load_knowledge_entries,
+    load_store_cache,
+    ping_anthropic,
+    post_pr_comment,
+    push_pr_address_branch,
+
+    read_pr_address_file,
+    read_repo_file,
+    request_changes_pr,
+    resolve_pr_task,
+    review_pr,
+    run_checkpoint_chat_turn,
+    run_grooming_agent,
+    run_grooming_chat_turn,
+    // Agent pipeline
+    run_grooming_file_probe,
+    run_impact_analysis,
+    run_implementation_agent,
+    run_implementation_guidance,
+    run_in_terminal,
+    run_plan_review,
+    run_pr_description_gen,
+    run_retrospective_agent,
+    run_test_suggestions,
+    run_triage_turn,
+    save_agent_skill,
+    save_credential,
+    save_knowledge_entry,
+    // Store cache (file-backed persistence for Zustand stores)
+    save_store_cache,
+    search_jira_issues,
+    set_preference,
+    start_claude_oauth,
+    sync_worktree,
+    test_anthropic_stored,
+    test_bitbucket_stored,
+    test_gemini_stored,
+    test_jira_stored,
+    test_local_llm_stored,
+    unapprove_pr,
+    unrequest_changes_pr,
+    update_jira_fields,
+    update_jira_issue,
+    update_pr_comment,
+    validate_anthropic,
+    validate_bitbucket,
+    validate_gemini,
+    validate_jira,
+    validate_local_llm,
+    validate_pr_address_worktree,
+    validate_pr_review_worktree,
+    // Repo / worktree
+    validate_worktree,
+    write_pr_address_file,
+    write_repo_file,
 };
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -59,7 +136,10 @@ pub fn run() {
     // terminal when running `pnpm tauri dev`.
     std::panic::set_hook(Box::new(|info| {
         eprintln!("[MERIDIAN PANIC] {info}");
-        eprintln!("[MERIDIAN PANIC] backtrace:\n{:?}", std::backtrace::Backtrace::capture());
+        eprintln!(
+            "[MERIDIAN PANIC] backtrace:\n{:?}",
+            std::backtrace::Backtrace::capture()
+        );
     }));
 
     eprintln!("[MERIDIAN] run() called — building Tauri app");

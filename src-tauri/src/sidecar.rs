@@ -47,7 +47,11 @@ fn find_node_binary() -> Result<String, String> {
         .filter(|o| o.status.success())
         .and_then(|o| {
             let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
-            if s.is_empty() { None } else { Some(s) }
+            if s.is_empty() {
+                None
+            } else {
+                Some(s)
+            }
         });
     if let Some(path) = via_which {
         return Ok(path);
@@ -70,10 +74,7 @@ fn find_node_binary() -> Result<String, String> {
     if let Some(home) = dirs::home_dir() {
         let nvm_base = home.join(".nvm/versions/node");
         if let Ok(entries) = std::fs::read_dir(&nvm_base) {
-            let mut versions: Vec<_> = entries
-                .flatten()
-                .filter(|e| e.path().is_dir())
-                .collect();
+            let mut versions: Vec<_> = entries.flatten().filter(|e| e.path().is_dir()).collect();
             // Sort descending so the newest version is first.
             versions.sort_by(|a, b| b.file_name().cmp(&a.file_name()));
             for entry in versions {
@@ -85,11 +86,9 @@ fn find_node_binary() -> Result<String, String> {
         }
     }
 
-    Err(
-        "Cannot find a Node.js binary. \
+    Err("Cannot find a Node.js binary. \
          Install Node.js via Homebrew (`brew install node`) or nvm."
-            .to_string(),
-    )
+        .to_string())
 }
 
 // ── Protocol types ────────────────────────────────────────────────────────────
@@ -116,7 +115,10 @@ struct SidecarRequest {
 #[derive(Deserialize, Debug, Clone)]
 #[serde(tag = "type", rename_all = "camelCase")]
 enum SidecarOutputEvent {
-    Text { id: String, delta: String },
+    Text {
+        id: String,
+        delta: String,
+    },
     Result {
         id: String,
         #[serde(rename = "sessionId")]
@@ -309,8 +311,7 @@ pub async fn dispatch_sidecar(
         cwd,
         session_id,
     };
-    let mut line =
-        serde_json::to_string(&req).map_err(|e| format!("Serialize error: {e}"))?;
+    let mut line = serde_json::to_string(&req).map_err(|e| format!("Serialize error: {e}"))?;
     line.push('\n');
 
     {
@@ -318,7 +319,9 @@ pub async fn dispatch_sidecar(
         w.write_all(line.as_bytes())
             .await
             .map_err(|e| format!("Stdin write error: {e}"))?;
-        w.flush().await.map_err(|e| format!("Stdin flush error: {e}"))?;
+        w.flush()
+            .await
+            .map_err(|e| format!("Stdin flush error: {e}"))?;
     }
 
     let mut full_text = String::new();

@@ -401,9 +401,7 @@ pub async fn start_claude_oauth() -> Result<String, String> {
         wait_for_oauth_callback(listener, &state),
     )
     .await
-    .map_err(|_| {
-        "Authorization timed out after 3 minutes. Please try again.".to_string()
-    })??;
+    .map_err(|_| "Authorization timed out after 3 minutes. Please try again.".to_string())??;
 
     // Exchange the authorization code for tokens.
     // The Claude SDK uses JSON with Content-Type: application/json (not form-encoded),

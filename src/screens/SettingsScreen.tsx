@@ -9,17 +9,49 @@ import {
   setMockClaudeMode,
 } from "@/lib/tauri";
 import { getPreferences, setPreference } from "@/lib/preferences";
-import { BACKGROUNDS, CATEGORY_LABELS, BackgroundRenderer, type BgCategory, getBackgroundId, setBackgroundId } from "@/lib/backgrounds";
-import { CheckCircle, AlertCircle, Loader2, X, RotateCcw, FlaskConical, Sparkles, ChevronRight, FlaskRound, Trash2 } from "lucide-react";
+import {
+  BACKGROUNDS,
+  CATEGORY_LABELS,
+  BackgroundRenderer,
+  type BgCategory,
+  getBackgroundId,
+  setBackgroundId,
+} from "@/lib/backgrounds";
+import {
+  CheckCircle,
+  AlertCircle,
+  Loader2,
+  X,
+  RotateCcw,
+  FlaskConical,
+  Sparkles,
+  ChevronRight,
+  FlaskRound,
+  Trash2,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { HeaderSettingsButton } from "@/components/HeaderSettingsButton";
-import { APP_HEADER_BAR, APP_HEADER_ROW_PANEL, APP_HEADER_TITLE } from "@/components/appHeaderLayout";
+import {
+  APP_HEADER_BAR,
+  APP_HEADER_ROW_PANEL,
+  APP_HEADER_TITLE,
+} from "@/components/appHeaderLayout";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { CredentialField } from "@/components/CredentialField";
-import { ScopeList, JIRA_PERMISSIONS, BITBUCKET_SCOPES } from "@/components/ScopeList";
+import {
+  ScopeList,
+  JIRA_PERMISSIONS,
+  BITBUCKET_SCOPES,
+} from "@/components/ScopeList";
 import {
   type CredentialStatus,
   anthropicComplete,
@@ -56,15 +88,32 @@ import {
   validatePrReviewWorktree,
   validatePrAddressWorktree,
 } from "@/lib/tauri";
-import { useImplementTicketStore, IMPLEMENT_STORE_KEY, INITIAL as IMPLEMENT_INITIAL } from "@/stores/implementTicketStore";
+import {
+  useImplementTicketStore,
+  IMPLEMENT_STORE_KEY,
+  INITIAL as IMPLEMENT_INITIAL,
+} from "@/stores/implementTicketStore";
 import { usePrReviewStore, PR_REVIEW_STORE_KEY } from "@/stores/prReviewStore";
 
 // ── Theme section ─────────────────────────────────────────────────────────────
 
-const ACCENTS: AccentColor[] = ["slate", "blue", "violet", "green", "orange", "rose"];
+const ACCENTS: AccentColor[] = [
+  "slate",
+  "blue",
+  "violet",
+  "green",
+  "orange",
+  "rose",
+];
 
-
-const BG_CATEGORIES: BgCategory[] = ["meridian", "space", "jwst", "abstract", "patterns", "minimal"];
+const BG_CATEGORIES: BgCategory[] = [
+  "meridian",
+  "space",
+  "jwst",
+  "abstract",
+  "patterns",
+  "minimal",
+];
 
 function ThemeSection() {
   const { config, setAccent } = useTheme();
@@ -79,10 +128,11 @@ function ThemeSection() {
     <Card>
       <CardHeader>
         <CardTitle className="text-base">Appearance</CardTitle>
-        <CardDescription>Choose your accent colour and background.</CardDescription>
+        <CardDescription>
+          Choose your accent colour and background.
+        </CardDescription>
       </CardHeader>
       <CardContent className="space-y-6">
-
         {/* Accent */}
         <div className="space-y-2">
           <p className="text-sm font-medium">Accent colour</p>
@@ -115,7 +165,9 @@ function ThemeSection() {
             const bgs = BACKGROUNDS.filter((b) => b.category === cat);
             return (
               <div key={cat}>
-                <p className="text-xs text-muted-foreground mb-2">{CATEGORY_LABELS[cat]}</p>
+                <p className="text-xs text-muted-foreground mb-2">
+                  {CATEGORY_LABELS[cat]}
+                </p>
                 <div className="flex flex-wrap gap-2">
                   {bgs.map((bg) => (
                     <button
@@ -136,7 +188,9 @@ function ThemeSection() {
                       </div>
                       {/* Label overlay */}
                       <div className="absolute bottom-0 inset-x-0 bg-background/80 backdrop-blur-sm px-1 py-0.5">
-                        <p className="text-[10px] text-center font-medium leading-tight truncate">{bg.name}</p>
+                        <p className="text-[10px] text-center font-medium leading-tight truncate">
+                          {bg.name}
+                        </p>
                       </div>
                       {selectedBg === bg.id && (
                         <div className="absolute top-1 right-1 w-3 h-3 rounded-full bg-primary" />
@@ -205,7 +259,13 @@ function VerifiedBadge({ result }: { result: TestResult }) {
   return null;
 }
 
-function SectionMessage({ state, message }: { state: SectionState; message: string }) {
+function SectionMessage({
+  state,
+  message,
+}: {
+  state: SectionState;
+  message: string;
+}) {
   if (state === "idle" || state === "editing" || !message) return null;
   return (
     <div
@@ -213,39 +273,60 @@ function SectionMessage({ state, message }: { state: SectionState; message: stri
         state === "loading"
           ? "bg-muted text-muted-foreground"
           : state === "success"
-          ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
-          : "bg-destructive/10 text-destructive"
+            ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
+            : "bg-destructive/10 text-destructive"
       }`}
     >
-      {state === "loading" && <Loader2 className="h-4 w-4 animate-spin shrink-0 mt-0.5" />}
-      {state === "success" && <CheckCircle className="h-4 w-4 shrink-0 mt-0.5" />}
+      {state === "loading" && (
+        <Loader2 className="h-4 w-4 animate-spin shrink-0 mt-0.5" />
+      )}
+      {state === "success" && (
+        <CheckCircle className="h-4 w-4 shrink-0 mt-0.5" />
+      )}
       {state === "error" && <AlertCircle className="h-4 w-4 shrink-0 mt-0.5" />}
       <span>{message}</span>
     </div>
   );
 }
 
-function AnthropicSection({ isConfigured, onSaved }: { isConfigured: boolean; onSaved: () => void }) {
+function AnthropicSection({
+  isConfigured,
+  onSaved,
+}: {
+  isConfigured: boolean;
+  onSaved: () => void;
+}) {
   const [authMethod, setAuthMethod] = useState<"api_key" | "oauth">("api_key");
   const [editing, setEditing] = useState(false);
   const [apiKey, setApiKey] = useState("");
-  const [status, setStatus] = useState<SectionStatus>({ state: "idle", message: "" });
+  const [status, setStatus] = useState<SectionStatus>({
+    state: "idle",
+    message: "",
+  });
   const [testResult, setTestResult] = useState<TestResult>("untested");
   const [importing, setImporting] = useState(false);
   const [models, setModels] = useState<[string, string][]>([]);
   const [selectedModel, setSelectedModel] = useState("");
 
   useEffect(() => {
-    getClaudeModels().then(setModels).catch(() => {});
-    getNonSecretConfig().then(cfg => {
-      if (cfg.claude_model) setSelectedModel(cfg.claude_model);
-      if (cfg.claude_auth_method === "oauth") setAuthMethod("oauth");
-    }).catch(() => {});
+    getClaudeModels()
+      .then(setModels)
+      .catch(() => {});
+    getNonSecretConfig()
+      .then((cfg) => {
+        if (cfg.claude_model) setSelectedModel(cfg.claude_model);
+        if (cfg.claude_auth_method === "oauth") setAuthMethod("oauth");
+      })
+      .catch(() => {});
   }, []);
 
   async function handleModelChange(modelId: string) {
     setSelectedModel(modelId);
-    try { await saveCredential("claude_model", modelId); } catch { /* non-critical */ }
+    try {
+      await saveCredential("claude_model", modelId);
+    } catch {
+      /* non-critical */
+    }
   }
 
   async function handleAuthMethodChange(method: "api_key" | "oauth") {
@@ -253,7 +334,11 @@ function AnthropicSection({ isConfigured, onSaved }: { isConfigured: boolean; on
     setEditing(false);
     setStatus({ state: "idle", message: "" });
     setTestResult("untested");
-    try { await saveCredential("claude_auth_method", method); } catch { /* non-critical */ }
+    try {
+      await saveCredential("claude_auth_method", method);
+    } catch {
+      /* non-critical */
+    }
   }
 
   function startEditing() {
@@ -265,7 +350,10 @@ function AnthropicSection({ isConfigured, onSaved }: { isConfigured: boolean; on
 
   async function handleImportClaudePro() {
     setImporting(true);
-    setStatus({ state: "loading", message: "Opening browser for Claude authorization…" });
+    setStatus({
+      state: "loading",
+      message: "Opening browser for Claude authorization…",
+    });
     try {
       const msg = await startClaudeOauth();
       setTestResult("success");
@@ -299,9 +387,10 @@ function AnthropicSection({ isConfigured, onSaved }: { isConfigured: boolean; on
     setStatus({ state: "loading", message: "Testing connection…" });
     setTestResult("untested");
     try {
-      const msg = apiKey === MASKED_SENTINEL
-        ? await testAnthropicStored()
-        : await validateAnthropic(apiKey.trim());
+      const msg =
+        apiKey === MASKED_SENTINEL
+          ? await testAnthropicStored()
+          : await validateAnthropic(apiKey.trim());
       setTestResult("success");
       setStatus({ state: "success", message: msg });
     } catch (err) {
@@ -347,7 +436,9 @@ function AnthropicSection({ isConfigured, onSaved }: { isConfigured: boolean; on
       await deleteCredential("anthropic_api_key");
       setTestResult("untested");
       onSaved();
-    } catch { /* fine if not present */ }
+    } catch {
+      /* fine if not present */
+    }
   }
 
   return (
@@ -356,7 +447,9 @@ function AnthropicSection({ isConfigured, onSaved }: { isConfigured: boolean; on
         <div className="flex items-center justify-between">
           <div>
             <CardTitle className="text-base">Anthropic</CardTitle>
-            <CardDescription className="text-xs mt-0.5">Claude authentication for all AI workflows</CardDescription>
+            <CardDescription className="text-xs mt-0.5">
+              Claude authentication for all AI workflows
+            </CardDescription>
           </div>
           <div className="flex items-center gap-2">
             <VerifiedBadge result={testResult} />
@@ -373,7 +466,7 @@ function AnthropicSection({ isConfigured, onSaved }: { isConfigured: boolean; on
               "px-3 py-1.5 text-xs font-medium transition-colors",
               authMethod === "api_key"
                 ? "bg-primary text-primary-foreground"
-                : "bg-background text-muted-foreground hover:text-foreground hover:bg-muted"
+                : "bg-background text-muted-foreground hover:text-foreground hover:bg-muted",
             )}
           >
             API Key
@@ -384,7 +477,7 @@ function AnthropicSection({ isConfigured, onSaved }: { isConfigured: boolean; on
               "px-3 py-1.5 text-xs font-medium transition-colors border-l",
               authMethod === "oauth"
                 ? "bg-primary text-primary-foreground"
-                : "bg-background text-muted-foreground hover:text-foreground hover:bg-muted"
+                : "bg-background text-muted-foreground hover:text-foreground hover:bg-muted",
             )}
           >
             Claude.ai
@@ -392,24 +485,51 @@ function AnthropicSection({ isConfigured, onSaved }: { isConfigured: boolean; on
         </div>
 
         {/* API Key flow */}
-        {authMethod === "api_key" && (
-          !editing ? (
+        {authMethod === "api_key" &&
+          (!editing ? (
             <div className="flex flex-wrap gap-2">
               <Button variant="outline" size="sm" onClick={startEditing}>
                 {isConfigured ? "Update key" : "Add key"}
               </Button>
               {isConfigured && (
-                <Button variant="outline" size="sm" onClick={handleTestStored} disabled={status.state === "loading"}>
-                  {status.state === "loading" ? <><Loader2 className="h-3 w-3 animate-spin" /> Testing…</> : "Test connection"}
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleTestStored}
+                  disabled={status.state === "loading"}
+                >
+                  {status.state === "loading" ? (
+                    <>
+                      <Loader2 className="h-3 w-3 animate-spin" /> Testing…
+                    </>
+                  ) : (
+                    "Test connection"
+                  )}
                 </Button>
               )}
               {isConfigured && (
-                <Button variant="outline" size="sm" onClick={handlePing} disabled={status.state === "loading"}>
-                  {status.state === "loading" ? <><Loader2 className="h-3 w-3 animate-spin" /> Sending…</> : "Send test message"}
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handlePing}
+                  disabled={status.state === "loading"}
+                >
+                  {status.state === "loading" ? (
+                    <>
+                      <Loader2 className="h-3 w-3 animate-spin" /> Sending…
+                    </>
+                  ) : (
+                    "Send test message"
+                  )}
                 </Button>
               )}
               {isConfigured && (
-                <Button variant="ghost" size="sm" className="text-muted-foreground gap-1" onClick={handleReset}>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="text-muted-foreground gap-1"
+                  onClick={handleReset}
+                >
                   <RotateCcw className="h-3 w-3" /> Reset
                 </Button>
               )}
@@ -422,27 +542,49 @@ function AnthropicSection({ isConfigured, onSaved }: { isConfigured: boolean; on
                 placeholder="sk-ant-api03-…"
                 masked
                 value={apiKey}
-                onChange={(v) => { setApiKey(v); setTestResult("untested"); }}
+                onChange={(v) => {
+                  setApiKey(v);
+                  setTestResult("untested");
+                }}
                 disabled={status.state === "loading"}
               />
               <div className="flex gap-2">
-                <Button size="sm" onClick={handleSave} disabled={!apiKey.trim() || apiKey === MASKED_SENTINEL || status.state === "loading"}>
-                  {status.state === "loading" ? <Loader2 className="h-3 w-3 animate-spin" /> : "Save key"}
+                <Button
+                  size="sm"
+                  onClick={handleSave}
+                  disabled={
+                    !apiKey.trim() ||
+                    apiKey === MASKED_SENTINEL ||
+                    status.state === "loading"
+                  }
+                >
+                  {status.state === "loading" ? (
+                    <Loader2 className="h-3 w-3 animate-spin" />
+                  ) : (
+                    "Save key"
+                  )}
                 </Button>
-                <Button size="sm" variant="outline" onClick={handleTest} disabled={!apiKey.trim() || status.state === "loading"}>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={handleTest}
+                  disabled={!apiKey.trim() || status.state === "loading"}
+                >
                   Test connection
                 </Button>
-                <Button variant="ghost" size="sm" onClick={handleCancel}>Cancel</Button>
+                <Button variant="ghost" size="sm" onClick={handleCancel}>
+                  Cancel
+                </Button>
               </div>
             </div>
-          )
-        )}
+          ))}
 
         {/* OAuth flow */}
         {authMethod === "oauth" && (
           <div className="space-y-2">
             <p className="text-xs text-muted-foreground">
-              Authorize Meridian to use your Claude.ai account. A browser window will open to complete sign-in — no API key or CLI required.
+              Authorize Meridian to use your Claude.ai account. A browser window
+              will open to complete sign-in — no API key or CLI required.
             </p>
             <div className="flex flex-wrap gap-2">
               <Button
@@ -452,18 +594,46 @@ function AnthropicSection({ isConfigured, onSaved }: { isConfigured: boolean; on
                 disabled={importing || status.state === "loading"}
                 className="gap-1.5"
               >
-                {importing
-                  ? <><Loader2 className="h-3 w-3 animate-spin" /> Connecting…</>
-                  : isConfigured ? "Re-authorize" : "Connect with Claude"}
+                {importing ? (
+                  <>
+                    <Loader2 className="h-3 w-3 animate-spin" /> Connecting…
+                  </>
+                ) : isConfigured ? (
+                  "Re-authorize"
+                ) : (
+                  "Connect with Claude"
+                )}
               </Button>
               {isConfigured && (
-                <Button variant="outline" size="sm" onClick={handleTestStored} disabled={status.state === "loading"}>
-                  {status.state === "loading" ? <><Loader2 className="h-3 w-3 animate-spin" /> Testing…</> : "Test connection"}
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleTestStored}
+                  disabled={status.state === "loading"}
+                >
+                  {status.state === "loading" ? (
+                    <>
+                      <Loader2 className="h-3 w-3 animate-spin" /> Testing…
+                    </>
+                  ) : (
+                    "Test connection"
+                  )}
                 </Button>
               )}
               {isConfigured && (
-                <Button variant="outline" size="sm" onClick={handlePing} disabled={status.state === "loading"}>
-                  {status.state === "loading" ? <><Loader2 className="h-3 w-3 animate-spin" /> Sending…</> : "Send test message"}
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handlePing}
+                  disabled={status.state === "loading"}
+                >
+                  {status.state === "loading" ? (
+                    <>
+                      <Loader2 className="h-3 w-3 animate-spin" /> Sending…
+                    </>
+                  ) : (
+                    "Send test message"
+                  )}
                 </Button>
               )}
             </div>
@@ -475,19 +645,24 @@ function AnthropicSection({ isConfigured, onSaved }: { isConfigured: boolean; on
         {/* Model picker — visible when Anthropic is configured */}
         {isConfigured && models.length > 0 && (
           <div className="space-y-1.5 pt-2 border-t">
-            <label className="text-xs font-medium text-muted-foreground">Claude Model</label>
+            <label className="text-xs font-medium text-muted-foreground">
+              Claude Model
+            </label>
             <select
               value={selectedModel}
-              onChange={e => handleModelChange(e.target.value)}
+              onChange={(e) => handleModelChange(e.target.value)}
               className="w-full rounded-md border border-input bg-background px-3 py-1.5 text-xs text-foreground shadow-sm focus:outline-none focus:ring-1 focus:ring-ring"
             >
               {!selectedModel && <option value="">— select a model —</option>}
               {models.map(([id, label]) => (
-                <option key={id} value={id}>{label}</option>
+                <option key={id} value={id}>
+                  {label}
+                </option>
               ))}
             </select>
             <p className="text-[11px] text-muted-foreground">
-              Used for all AI features. Sonnet is recommended for quality; Haiku is faster and lower cost.
+              Used for all AI features. Sonnet is recommended for quality; Haiku
+              is faster and lower cost.
             </p>
           </div>
         )}
@@ -501,16 +676,31 @@ const MASKED_SENTINEL = "••••••••";
 // ── AI Provider selector ───────────────────────────────────────────────────────
 
 const AI_PROVIDER_MODES = [
-  { value: "auto",   label: "Auto (ordered fallback)" },
-  { value: "claude", label: "Claude only"  },
-  { value: "gemini", label: "Gemini only"  },
-  { value: "local",  label: "Local LLM only" },
+  { value: "auto", label: "Auto (ordered fallback)" },
+  { value: "claude", label: "Claude only" },
+  { value: "gemini", label: "Gemini only" },
+  { value: "local", label: "Local LLM only" },
 ] as const;
 
-const PROVIDER_META: Record<string, { label: string; color: string; dot: string }> = {
-  claude: { label: "Claude",    color: "border-orange-400/40 bg-orange-400/10 text-orange-400",  dot: "bg-orange-400" },
-  gemini: { label: "Gemini",    color: "border-blue-400/40  bg-blue-400/10  text-blue-400",    dot: "bg-blue-400"   },
-  local:  { label: "Local LLM", color: "border-purple-400/40 bg-purple-400/10 text-purple-400", dot: "bg-purple-400" },
+const PROVIDER_META: Record<
+  string,
+  { label: string; color: string; dot: string }
+> = {
+  claude: {
+    label: "Claude",
+    color: "border-orange-400/40 bg-orange-400/10 text-orange-400",
+    dot: "bg-orange-400",
+  },
+  gemini: {
+    label: "Gemini",
+    color: "border-blue-400/40  bg-blue-400/10  text-blue-400",
+    dot: "bg-blue-400",
+  },
+  local: {
+    label: "Local LLM",
+    color: "border-purple-400/40 bg-purple-400/10 text-purple-400",
+    dot: "bg-purple-400",
+  },
 };
 
 const DEFAULT_ORDER = ["claude", "gemini", "local"];
@@ -518,31 +708,44 @@ const DEFAULT_ORDER = ["claude", "gemini", "local"];
 function AiProviderSection() {
   const [mode, setMode] = useState("auto");
   const [order, setOrder] = useState<string[]>(DEFAULT_ORDER);
-  const dragSrc    = useRef<number | null>(null);
+  const dragSrc = useRef<number | null>(null);
   const dragOffset = useRef({ x: 0, y: 0 });
-  const dragWidth  = useRef(0);
+  const dragWidth = useRef(0);
   const [draggingIdx, setDraggingIdx] = useState<number | null>(null);
   const [insertBefore, setInsertBefore] = useState<number | null>(null);
   const [dragPos, setDragPos] = useState<{ x: number; y: number } | null>(null);
 
   useEffect(() => {
-    getNonSecretConfig().then(cfg => {
-      if (cfg.ai_provider) setMode(cfg.ai_provider);
-      if (cfg.ai_provider_order) {
-        const parsed = cfg.ai_provider_order.split(",").map((s: string) => s.trim()).filter(Boolean);
-        if (parsed.length > 0) setOrder(parsed);
-      }
-    }).catch(() => {});
+    getNonSecretConfig()
+      .then((cfg) => {
+        if (cfg.ai_provider) setMode(cfg.ai_provider);
+        if (cfg.ai_provider_order) {
+          const parsed = cfg.ai_provider_order
+            .split(",")
+            .map((s: string) => s.trim())
+            .filter(Boolean);
+          if (parsed.length > 0) setOrder(parsed);
+        }
+      })
+      .catch(() => {});
   }, []);
 
   async function handleModeChange(value: string) {
     setMode(value);
-    try { await saveCredential("ai_provider", value); } catch { /* non-critical */ }
+    try {
+      await saveCredential("ai_provider", value);
+    } catch {
+      /* non-critical */
+    }
   }
 
   async function persistOrder(next: string[]) {
     setOrder(next);
-    try { await saveCredential("ai_provider_order", next.join(",")); } catch { /* non-critical */ }
+    try {
+      await saveCredential("ai_provider_order", next.join(","));
+    } catch {
+      /* non-critical */
+    }
   }
 
   // Live preview order
@@ -555,8 +758,10 @@ function AiProviderSection() {
 
   // Find the insertion index among non-dragged rows by cursor Y position
   function getInsertBefore(clientY: number, fromProvider: string): number {
-    const rows = Array.from(document.querySelectorAll("[data-dnd-provider]")) as HTMLElement[];
-    const others = rows.filter(r => r.dataset.dndProvider !== fromProvider);
+    const rows = Array.from(
+      document.querySelectorAll("[data-dnd-provider]"),
+    ) as HTMLElement[];
+    const others = rows.filter((r) => r.dataset.dndProvider !== fromProvider);
     for (let i = 0; i < others.length; i++) {
       const rect = others[i].getBoundingClientRect();
       if (clientY < rect.top + rect.height / 2) return i;
@@ -564,14 +769,17 @@ function AiProviderSection() {
     return others.length;
   }
 
-  function handlePointerDown(e: React.PointerEvent<HTMLDivElement>, idx: number) {
+  function handlePointerDown(
+    e: React.PointerEvent<HTMLDivElement>,
+    idx: number,
+  ) {
     if (e.button !== 0) return;
     e.preventDefault();
 
     const rect = e.currentTarget.getBoundingClientRect();
     dragOffset.current = { x: e.clientX - rect.left, y: e.clientY - rect.top };
-    dragWidth.current  = rect.width;
-    dragSrc.current    = idx;
+    dragWidth.current = rect.width;
+    dragSrc.current = idx;
 
     const fromProvider = order[idx]; // capture before re-render changes DOM
 
@@ -591,7 +799,8 @@ function AiProviderSection() {
       const from = dragSrc.current;
       dragSrc.current = null;
       // Compute final drop position before clearing state (DOM still correct here)
-      const ib = from !== null ? getInsertBefore(ev.clientY, fromProvider) : null;
+      const ib =
+        from !== null ? getInsertBefore(ev.clientY, fromProvider) : null;
       setDraggingIdx(null);
       setInsertBefore(null);
       setDragPos(null);
@@ -611,35 +820,39 @@ function AiProviderSection() {
 
     function cleanup() {
       document.removeEventListener("pointermove", onMove);
-      document.removeEventListener("pointerup",   onUp);
+      document.removeEventListener("pointerup", onUp);
       document.removeEventListener("pointercancel", onCancel);
     }
 
-    document.addEventListener("pointermove",   onMove);
-    document.addEventListener("pointerup",     onUp);
+    document.addEventListener("pointermove", onMove);
+    document.addEventListener("pointerup", onUp);
     document.addEventListener("pointercancel", onCancel);
   }
 
   const modeDesc: Record<string, string> = {
-    auto:   "Providers are tried in the order below. If one exceeds its quota, the next is used automatically.",
+    auto: "Providers are tried in the order below. If one exceeds its quota, the next is used automatically.",
     claude: "Always use Claude exclusively. No fallback.",
     gemini: "Always use Gemini exclusively. No fallback.",
-    local:  "Always use the local model exclusively. Requires a running server.",
+    local: "Always use the local model exclusively. Requires a running server.",
   };
 
   const ghostProvider = draggingIdx !== null ? order[draggingIdx] : null;
-  const ghostMeta     = ghostProvider ? PROVIDER_META[ghostProvider] ?? null : null;
+  const ghostMeta = ghostProvider
+    ? (PROVIDER_META[ghostProvider] ?? null)
+    : null;
 
   return (
     <Card>
       <CardHeader className="pb-3">
         <CardTitle className="text-base">AI Provider Priority</CardTitle>
-        <CardDescription className="text-xs mt-0.5">{modeDesc[mode]}</CardDescription>
+        <CardDescription className="text-xs mt-0.5">
+          {modeDesc[mode]}
+        </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
         {/* Mode selector */}
         <div className="flex flex-wrap gap-2">
-          {AI_PROVIDER_MODES.map(p => (
+          {AI_PROVIDER_MODES.map((p) => (
             <button
               key={p.value}
               onClick={() => handleModeChange(p.value)}
@@ -662,9 +875,11 @@ function AiProviderSection() {
             </p>
             {liveOrder.map((provider, displayIdx) => {
               const originalIdx = order.indexOf(provider);
-              const isDragging  = originalIdx === draggingIdx;
-              const meta        = PROVIDER_META[provider] ?? {
-                label: provider, color: "border-border bg-muted/40 text-foreground", dot: "bg-muted-foreground",
+              const isDragging = originalIdx === draggingIdx;
+              const meta = PROVIDER_META[provider] ?? {
+                label: provider,
+                color: "border-border bg-muted/40 text-foreground",
+                dot: "bg-muted-foreground",
               };
 
               if (isDragging) {
@@ -684,19 +899,25 @@ function AiProviderSection() {
                 <div
                   key={provider}
                   data-dnd-provider={provider}
-                  onPointerDown={e => handlePointerDown(e, originalIdx)}
+                  onPointerDown={(e) => handlePointerDown(e, originalIdx)}
                   className={[
                     "flex items-center gap-3 rounded-lg border px-3 py-2 text-xs",
                     "select-none cursor-grab transition-all duration-200",
                     meta.color,
                   ].join(" ")}
                 >
-                  <span className="opacity-40 shrink-0 text-base leading-none pointer-events-none">⠿</span>
+                  <span className="opacity-40 shrink-0 text-base leading-none pointer-events-none">
+                    ⠿
+                  </span>
                   <span className="w-4 h-4 rounded-full bg-black/20 flex items-center justify-center text-[10px] font-bold shrink-0 pointer-events-none">
                     {displayIdx + 1}
                   </span>
-                  <span className={`w-2 h-2 rounded-full shrink-0 pointer-events-none ${meta.dot}`} />
-                  <span className="flex-1 font-medium pointer-events-none">{meta.label}</span>
+                  <span
+                    className={`w-2 h-2 rounded-full shrink-0 pointer-events-none ${meta.dot}`}
+                  />
+                  <span className="flex-1 font-medium pointer-events-none">
+                    {meta.label}
+                  </span>
                 </div>
               );
             })}
@@ -708,12 +929,12 @@ function AiProviderSection() {
       {dragPos && ghostMeta && draggingIdx !== null && (
         <div
           style={{
-            position:      "fixed",
-            left:          dragPos.x - dragOffset.current.x,
-            top:           dragPos.y - dragOffset.current.y,
-            width:         dragWidth.current,
+            position: "fixed",
+            left: dragPos.x - dragOffset.current.x,
+            top: dragPos.y - dragOffset.current.y,
+            width: dragWidth.current,
             pointerEvents: "none",
-            zIndex:        9999,
+            zIndex: 9999,
           }}
           className={[
             "flex items-center gap-3 rounded-lg border px-3 py-2 text-xs",
@@ -735,10 +956,19 @@ function AiProviderSection() {
 
 // ── Gemini section ─────────────────────────────────────────────────────────────
 
-function GeminiSection({ isConfigured, onSaved }: { isConfigured: boolean; onSaved: () => void }) {
+function GeminiSection({
+  isConfigured,
+  onSaved,
+}: {
+  isConfigured: boolean;
+  onSaved: () => void;
+}) {
   const [editing, setEditing] = useState(false);
   const [apiKey, setApiKey] = useState("");
-  const [status, setStatus] = useState<SectionStatus>({ state: "idle", message: "" });
+  const [status, setStatus] = useState<SectionStatus>({
+    state: "idle",
+    message: "",
+  });
   const [testResult, setTestResult] = useState<TestResult>("untested");
   const [models, setModels] = useState<[string, string][]>([]);
   const [selectedModel, setSelectedModel] = useState("");
@@ -752,7 +982,11 @@ function GeminiSection({ isConfigured, onSaved }: { isConfigured: boolean; onSav
 
   async function handleModelChange(modelId: string) {
     setSelectedModel(modelId);
-    try { await saveCredential("gemini_model", modelId); } catch { /* non-critical */ }
+    try {
+      await saveCredential("gemini_model", modelId);
+    } catch {
+      /* non-critical */
+    }
   }
 
   function startEditing() {
@@ -772,7 +1006,9 @@ function GeminiSection({ isConfigured, onSaved }: { isConfigured: boolean; onSav
       setEditing(false);
       onSaved();
       // Refresh model list with the new key
-      getGeminiModels().then(setModels).catch(() => {});
+      getGeminiModels()
+        .then(setModels)
+        .catch(() => {});
     } catch (err) {
       setTestResult("error");
       setStatus({ state: "error", message: String(err) });
@@ -803,7 +1039,9 @@ function GeminiSection({ isConfigured, onSaved }: { isConfigured: boolean; onSav
       await deleteCredential("gemini_api_key");
       setTestResult("untested");
       onSaved();
-    } catch { /* fine */ }
+    } catch {
+      /* fine */
+    }
   }
 
   return (
@@ -812,7 +1050,9 @@ function GeminiSection({ isConfigured, onSaved }: { isConfigured: boolean; onSav
         <div className="flex items-center justify-between">
           <div>
             <CardTitle className="text-base">Google Gemini</CardTitle>
-            <CardDescription className="text-xs mt-0.5">Alternative AI provider for fallback or cost optimisation</CardDescription>
+            <CardDescription className="text-xs mt-0.5">
+              Alternative AI provider for fallback or cost optimisation
+            </CardDescription>
           </div>
           <div className="flex items-center gap-2">
             <VerifiedBadge result={testResult} />
@@ -827,12 +1067,28 @@ function GeminiSection({ isConfigured, onSaved }: { isConfigured: boolean; onSav
               {isConfigured ? "Update key" : "Add key"}
             </Button>
             {isConfigured && (
-              <Button variant="outline" size="sm" onClick={handleTestStored} disabled={status.state === "loading"}>
-                {status.state === "loading" ? <><Loader2 className="h-3 w-3 animate-spin" /> Testing…</> : "Test connection"}
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleTestStored}
+                disabled={status.state === "loading"}
+              >
+                {status.state === "loading" ? (
+                  <>
+                    <Loader2 className="h-3 w-3 animate-spin" /> Testing…
+                  </>
+                ) : (
+                  "Test connection"
+                )}
               </Button>
             )}
             {isConfigured && (
-              <Button variant="ghost" size="sm" className="text-destructive hover:text-destructive" onClick={handleReset}>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="text-destructive hover:text-destructive"
+                onClick={handleReset}
+              >
                 Remove
               </Button>
             )}
@@ -845,25 +1101,45 @@ function GeminiSection({ isConfigured, onSaved }: { isConfigured: boolean; onSav
                 <Input
                   type="password"
                   value={apiKey}
-                  onChange={e => setApiKey(e.target.value)}
+                  onChange={(e) => setApiKey(e.target.value)}
                   placeholder="AIza…"
                   className="text-xs h-8 font-mono"
-                  onFocus={() => { if (apiKey === MASKED_SENTINEL) setApiKey(""); }}
+                  onFocus={() => {
+                    if (apiKey === MASKED_SENTINEL) setApiKey("");
+                  }}
                 />
               </div>
               <p className="text-xs text-muted-foreground mt-1">
                 Get a free key at{" "}
-                <a href="https://aistudio.google.com/apikey" target="_blank" rel="noreferrer"
-                  className="underline hover:text-foreground">
+                <a
+                  href="https://aistudio.google.com/apikey"
+                  target="_blank"
+                  rel="noreferrer"
+                  className="underline hover:text-foreground"
+                >
                   aistudio.google.com/apikey
                 </a>
               </p>
             </div>
             <div className="flex gap-2">
-              <Button size="sm" onClick={handleSave} disabled={!apiKey.trim() || apiKey === MASKED_SENTINEL || status.state === "loading"}>
-                {status.state === "loading" ? <Loader2 className="h-3 w-3 animate-spin" /> : "Save & Test"}
+              <Button
+                size="sm"
+                onClick={handleSave}
+                disabled={
+                  !apiKey.trim() ||
+                  apiKey === MASKED_SENTINEL ||
+                  status.state === "loading"
+                }
+              >
+                {status.state === "loading" ? (
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                ) : (
+                  "Save & Test"
+                )}
               </Button>
-              <Button variant="outline" size="sm" onClick={handleCancel}>Cancel</Button>
+              <Button variant="outline" size="sm" onClick={handleCancel}>
+                Cancel
+              </Button>
             </div>
           </div>
         )}
@@ -875,15 +1151,18 @@ function GeminiSection({ isConfigured, onSaved }: { isConfigured: boolean; onSav
             <Label className="text-xs">Gemini Model</Label>
             <select
               value={selectedModel}
-              onChange={e => handleModelChange(e.target.value)}
+              onChange={(e) => handleModelChange(e.target.value)}
               className="mt-1 w-full text-xs rounded-md border border-input bg-background px-2 py-1.5 text-foreground"
             >
               {models.map(([id, label]) => (
-                <option key={id} value={id}>{label}</option>
+                <option key={id} value={id}>
+                  {label}
+                </option>
               ))}
             </select>
             <p className="text-[11px] text-muted-foreground">
-              Used when Gemini is the active provider. Gemini 2.0 Flash is recommended for speed and cost.
+              Used when Gemini is the active provider. Gemini 2.0 Flash is
+              recommended for speed and cost.
             </p>
           </div>
         )}
@@ -894,32 +1173,49 @@ function GeminiSection({ isConfigured, onSaved }: { isConfigured: boolean; onSav
 
 // ── Local LLM section ──────────────────────────────────────────────────────────
 
-function LocalLlmSection({ isConfigured, onSaved }: { isConfigured: boolean; onSaved: () => void }) {
+function LocalLlmSection({
+  isConfigured,
+  onSaved,
+}: {
+  isConfigured: boolean;
+  onSaved: () => void;
+}) {
   const [editing, setEditing] = useState(false);
   const [serverUrl, setServerUrl] = useState("");
   const [apiKey, setApiKey] = useState("");
-  const [status, setStatus] = useState<SectionStatus>({ state: "idle", message: "" });
+  const [status, setStatus] = useState<SectionStatus>({
+    state: "idle",
+    message: "",
+  });
   const [testResult, setTestResult] = useState<TestResult>("untested");
   const [models, setModels] = useState<[string, string][]>([]);
   const [selectedModel, setSelectedModel] = useState("");
   const [customModel, setCustomModel] = useState("");
 
   useEffect(() => {
-    getNonSecretConfig().then(cfg => {
-      if (cfg.local_llm_url) {
-        setServerUrl(cfg.local_llm_url);
-        setLocalLlmUrlCache(cfg.local_llm_url);
-      }
-      if (cfg.local_llm_model) setSelectedModel(cfg.local_llm_model);
-    }).catch(() => {});
+    getNonSecretConfig()
+      .then((cfg) => {
+        if (cfg.local_llm_url) {
+          setServerUrl(cfg.local_llm_url);
+          setLocalLlmUrlCache(cfg.local_llm_url);
+        }
+        if (cfg.local_llm_model) setSelectedModel(cfg.local_llm_model);
+      })
+      .catch(() => {});
     if (isConfigured) {
-      getLocalModels().then(setModels).catch(() => {});
+      getLocalModels()
+        .then(setModels)
+        .catch(() => {});
     }
   }, [isConfigured]);
 
   async function handleModelChange(value: string) {
     setSelectedModel(value);
-    try { await saveCredential("local_llm_model", value); } catch { /* non-critical */ }
+    try {
+      await saveCredential("local_llm_model", value);
+    } catch {
+      /* non-critical */
+    }
   }
 
   function startEditing() {
@@ -975,7 +1271,9 @@ function LocalLlmSection({ isConfigured, onSaved }: { isConfigured: boolean; onS
       setTestResult("untested");
       setModels([]);
       onSaved();
-    } catch { /* fine */ }
+    } catch {
+      /* fine */
+    }
   }
 
   async function handleRefreshModels() {
@@ -983,13 +1281,24 @@ function LocalLlmSection({ isConfigured, onSaved }: { isConfigured: boolean; onS
     try {
       const list = await getLocalModels();
       setModels(list);
-      setStatus({ state: list.length > 0 ? "success" : "idle", message: list.length > 0 ? `${list.length} model${list.length !== 1 ? "s" : ""} found.` : "No models found. Make sure at least one model is pulled in Ollama." });
+      setStatus({
+        state: list.length > 0 ? "success" : "idle",
+        message:
+          list.length > 0
+            ? `${list.length} model${list.length !== 1 ? "s" : ""} found.`
+            : "No models found. Make sure at least one model is pulled in Ollama.",
+      });
     } catch (err) {
       setStatus({ state: "error", message: String(err) });
     }
   }
 
-  const displayModels = models.length > 0 ? models : (selectedModel ? [[selectedModel, selectedModel]] as [string,string][] : []);
+  const displayModels =
+    models.length > 0
+      ? models
+      : selectedModel
+        ? ([[selectedModel, selectedModel]] as [string, string][])
+        : [];
 
   return (
     <Card>
@@ -1014,12 +1323,28 @@ function LocalLlmSection({ isConfigured, onSaved }: { isConfigured: boolean; onS
               {isConfigured ? "Update server" : "Add server"}
             </Button>
             {isConfigured && (
-              <Button variant="outline" size="sm" onClick={handleTestStored} disabled={status.state === "loading"}>
-                {status.state === "loading" ? <><Loader2 className="h-3 w-3 animate-spin" /> Testing…</> : "Test connection"}
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleTestStored}
+                disabled={status.state === "loading"}
+              >
+                {status.state === "loading" ? (
+                  <>
+                    <Loader2 className="h-3 w-3 animate-spin" /> Testing…
+                  </>
+                ) : (
+                  "Test connection"
+                )}
               </Button>
             )}
             {isConfigured && (
-              <Button variant="ghost" size="sm" className="text-destructive hover:text-destructive" onClick={handleReset}>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="text-destructive hover:text-destructive"
+                onClick={handleReset}
+              >
                 Remove
               </Button>
             )}
@@ -1030,30 +1355,49 @@ function LocalLlmSection({ isConfigured, onSaved }: { isConfigured: boolean; onS
               <Label className="text-xs">Server URL</Label>
               <Input
                 value={serverUrl}
-                onChange={e => setServerUrl(e.target.value)}
+                onChange={(e) => setServerUrl(e.target.value)}
                 placeholder="http://localhost:11434"
                 className="text-xs h-8 font-mono mt-1"
               />
               <p className="text-xs text-muted-foreground mt-1">
-                Ollama default: <code className="bg-muted px-1 rounded">http://localhost:11434</code>
-                {" · "}LM Studio: <code className="bg-muted px-1 rounded">http://localhost:1234</code>
+                Ollama default:{" "}
+                <code className="bg-muted px-1 rounded">
+                  http://localhost:11434
+                </code>
+                {" · "}LM Studio:{" "}
+                <code className="bg-muted px-1 rounded">
+                  http://localhost:1234
+                </code>
               </p>
             </div>
             <div>
-              <Label className="text-xs">API Key <span className="text-muted-foreground">(optional)</span></Label>
+              <Label className="text-xs">
+                API Key{" "}
+                <span className="text-muted-foreground">(optional)</span>
+              </Label>
               <Input
                 type="password"
                 value={apiKey}
-                onChange={e => setApiKey(e.target.value)}
+                onChange={(e) => setApiKey(e.target.value)}
                 placeholder="Leave blank if not required"
                 className="text-xs h-8 font-mono mt-1"
               />
             </div>
             <div className="flex gap-2">
-              <Button size="sm" onClick={handleSave} disabled={!serverUrl.trim() || status.state === "loading"}>
-                {status.state === "loading" ? <Loader2 className="h-3 w-3 animate-spin" /> : "Save & Test"}
+              <Button
+                size="sm"
+                onClick={handleSave}
+                disabled={!serverUrl.trim() || status.state === "loading"}
+              >
+                {status.state === "loading" ? (
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                ) : (
+                  "Save & Test"
+                )}
               </Button>
-              <Button variant="outline" size="sm" onClick={handleCancel}>Cancel</Button>
+              <Button variant="outline" size="sm" onClick={handleCancel}>
+                Cancel
+              </Button>
             </div>
           </div>
         )}
@@ -1074,18 +1418,22 @@ function LocalLlmSection({ isConfigured, onSaved }: { isConfigured: boolean; onS
             {displayModels.length > 0 ? (
               <select
                 value={selectedModel}
-                onChange={e => handleModelChange(e.target.value)}
+                onChange={(e) => handleModelChange(e.target.value)}
                 className="w-full text-xs rounded-md border border-input bg-background px-2 py-1.5 text-foreground"
               >
                 {displayModels.map(([id, label]) => (
-                  <option key={id} value={id}>{label}</option>
+                  <option key={id} value={id}>
+                    {label}
+                  </option>
                 ))}
               </select>
             ) : (
               <Input
                 value={customModel}
-                onChange={e => setCustomModel(e.target.value)}
-                onBlur={() => { if (customModel.trim()) handleModelChange(customModel.trim()); }}
+                onChange={(e) => setCustomModel(e.target.value)}
+                onBlur={() => {
+                  if (customModel.trim()) handleModelChange(customModel.trim());
+                }}
                 placeholder="e.g. llama3.2:latest"
                 className="text-xs h-8 font-mono"
               />
@@ -1097,12 +1445,21 @@ function LocalLlmSection({ isConfigured, onSaved }: { isConfigured: boolean; onS
   );
 }
 
-function JiraSection({ isConfigured, onSaved }: { isConfigured: boolean; onSaved: () => void }) {
+function JiraSection({
+  isConfigured,
+  onSaved,
+}: {
+  isConfigured: boolean;
+  onSaved: () => void;
+}) {
   const [editing, setEditing] = useState(false);
   const [baseUrl, setBaseUrl] = useState("");
   const [email, setEmail] = useState("");
   const [apiToken, setApiToken] = useState("");
-  const [status, setStatus] = useState<SectionStatus>({ state: "idle", message: "" });
+  const [status, setStatus] = useState<SectionStatus>({
+    state: "idle",
+    message: "",
+  });
   const [testResult, setTestResult] = useState<TestResult>("untested");
 
   async function startEditing() {
@@ -1110,10 +1467,14 @@ function JiraSection({ isConfigured, onSaved }: { isConfigured: boolean; onSaved
       const config = await getNonSecretConfig();
       setBaseUrl(config["jira_base_url"] ?? "");
       setEmail(config["jira_email"] ?? "");
-      const hasStoredCreds = !!(config["jira_base_url"] || config["jira_email"]);
+      const hasStoredCreds = !!(
+        config["jira_base_url"] || config["jira_email"]
+      );
       setApiToken(hasStoredCreds ? MASKED_SENTINEL : "");
     } catch {
-      setBaseUrl(""); setEmail(""); setApiToken("");
+      setBaseUrl("");
+      setEmail("");
+      setApiToken("");
     }
     setTestResult("untested");
     setStatus({ state: "idle", message: "" });
@@ -1148,9 +1509,10 @@ function JiraSection({ isConfigured, onSaved }: { isConfigured: boolean; onSaved
     setStatus({ state: "loading", message: "Testing connection…" });
     setTestResult("untested");
     try {
-      const msg = apiToken === MASKED_SENTINEL
-        ? await testJiraStored()
-        : await validateJira(baseUrl.trim(), email.trim(), apiToken.trim());
+      const msg =
+        apiToken === MASKED_SENTINEL
+          ? await testJiraStored()
+          : await validateJira(baseUrl.trim(), email.trim(), apiToken.trim());
       setTestResult("success");
       setStatus({ state: "success", message: msg });
     } catch (err) {
@@ -1176,13 +1538,19 @@ function JiraSection({ isConfigured, onSaved }: { isConfigured: boolean; onSaved
 
   function handleCancel() {
     setEditing(false);
-    setBaseUrl(""); setEmail(""); setApiToken("");
+    setBaseUrl("");
+    setEmail("");
+    setApiToken("");
     setStatus({ state: "idle", message: "" });
   }
 
   async function handleReset() {
     for (const key of ["jira_base_url", "jira_email", "jira_api_token"]) {
-      try { await deleteCredential(key); } catch { /* already gone */ }
+      try {
+        await deleteCredential(key);
+      } catch {
+        /* already gone */
+      }
     }
     setTestResult("untested");
     onSaved();
@@ -1198,7 +1566,9 @@ function JiraSection({ isConfigured, onSaved }: { isConfigured: boolean; onSaved
         <div className="flex items-center justify-between">
           <div>
             <CardTitle className="text-base">JIRA</CardTitle>
-            <CardDescription className="text-xs mt-0.5">Sprint data, tickets, and standup briefings</CardDescription>
+            <CardDescription className="text-xs mt-0.5">
+              Sprint data, tickets, and standup briefings
+            </CardDescription>
           </div>
           <div className="flex items-center gap-2">
             <VerifiedBadge result={testResult} />
@@ -1213,12 +1583,28 @@ function JiraSection({ isConfigured, onSaved }: { isConfigured: boolean; onSaved
               {isConfigured ? "Update credentials" : "Add credentials"}
             </Button>
             {isConfigured && (
-              <Button variant="outline" size="sm" onClick={handleTestStored} disabled={status.state === "loading"}>
-                {status.state === "loading" ? <><Loader2 className="h-3 w-3 animate-spin" /> Testing…</> : "Test connection"}
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleTestStored}
+                disabled={status.state === "loading"}
+              >
+                {status.state === "loading" ? (
+                  <>
+                    <Loader2 className="h-3 w-3 animate-spin" /> Testing…
+                  </>
+                ) : (
+                  "Test connection"
+                )}
               </Button>
             )}
             {isConfigured && (
-              <Button variant="ghost" size="sm" className="text-muted-foreground gap-1" onClick={handleReset}>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="text-muted-foreground gap-1"
+                onClick={handleReset}
+              >
                 <RotateCcw className="h-3 w-3" /> Reset
               </Button>
             )}
@@ -1226,17 +1612,72 @@ function JiraSection({ isConfigured, onSaved }: { isConfigured: boolean; onSaved
         ) : (
           <div className="space-y-3">
             <ScopeList {...JIRA_PERMISSIONS} />
-            <CredentialField id="s-jira-url" label="Workspace URL" placeholder="https://yourcompany.atlassian.net" value={baseUrl} onChange={(v) => { setBaseUrl(v); setTestResult("untested"); }} disabled={savingJira || testingJira} />
-            <CredentialField id="s-jira-email" label="Email" placeholder="you@yourcompany.com" value={email} onChange={(v) => { setEmail(v); setTestResult("untested"); }} disabled={savingJira || testingJira} />
-            <CredentialField id="s-jira-token" label="API Token" placeholder="ATATT3x…" masked value={apiToken} onChange={(v) => { setApiToken(v); setTestResult("untested"); }} disabled={savingJira || testingJira} helperText={isConfigured && apiToken === MASKED_SENTINEL ? "Token already saved — clear to replace" : "Go to id.atlassian.com → Security → API tokens and create a classic token (starts with ATATT3x)."} />
+            <CredentialField
+              id="s-jira-url"
+              label="Workspace URL"
+              placeholder="https://yourcompany.atlassian.net"
+              value={baseUrl}
+              onChange={(v) => {
+                setBaseUrl(v);
+                setTestResult("untested");
+              }}
+              disabled={savingJira || testingJira}
+            />
+            <CredentialField
+              id="s-jira-email"
+              label="Email"
+              placeholder="you@yourcompany.com"
+              value={email}
+              onChange={(v) => {
+                setEmail(v);
+                setTestResult("untested");
+              }}
+              disabled={savingJira || testingJira}
+            />
+            <CredentialField
+              id="s-jira-token"
+              label="API Token"
+              placeholder="ATATT3x…"
+              masked
+              value={apiToken}
+              onChange={(v) => {
+                setApiToken(v);
+                setTestResult("untested");
+              }}
+              disabled={savingJira || testingJira}
+              helperText={
+                isConfigured && apiToken === MASKED_SENTINEL
+                  ? "Token already saved — clear to replace"
+                  : "Go to id.atlassian.com → Security → API tokens and create a classic token (starts with ATATT3x)."
+              }
+            />
             <div className="flex gap-2">
-              <Button size="sm" onClick={handleSave} disabled={!canSave || savingJira || testingJira}>
-                {savingJira ? <Loader2 className="h-3 w-3 animate-spin" /> : "Save credentials"}
+              <Button
+                size="sm"
+                onClick={handleSave}
+                disabled={!canSave || savingJira || testingJira}
+              >
+                {savingJira ? (
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                ) : (
+                  "Save credentials"
+                )}
               </Button>
-              <Button size="sm" variant="outline" onClick={handleTest} disabled={!canSave || savingJira || testingJira}>
-                {testingJira ? <Loader2 className="h-3 w-3 animate-spin" /> : "Test connection"}
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={handleTest}
+                disabled={!canSave || savingJira || testingJira}
+              >
+                {testingJira ? (
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                ) : (
+                  "Test connection"
+                )}
               </Button>
-              <Button variant="ghost" size="sm" onClick={handleCancel}>Cancel</Button>
+              <Button variant="ghost" size="sm" onClick={handleCancel}>
+                Cancel
+              </Button>
             </div>
           </div>
         )}
@@ -1246,12 +1687,21 @@ function JiraSection({ isConfigured, onSaved }: { isConfigured: boolean; onSaved
   );
 }
 
-function BitbucketSection({ isConfigured, onSaved }: { isConfigured: boolean; onSaved: () => void }) {
+function BitbucketSection({
+  isConfigured,
+  onSaved,
+}: {
+  isConfigured: boolean;
+  onSaved: () => void;
+}) {
   const [editing, setEditing] = useState(false);
   const [workspace, setWorkspace] = useState("");
   const [email, setEmail] = useState("");
   const [accessToken, setAccessToken] = useState("");
-  const [status, setStatus] = useState<SectionStatus>({ state: "idle", message: "" });
+  const [status, setStatus] = useState<SectionStatus>({
+    state: "idle",
+    message: "",
+  });
   const [testResult, setTestResult] = useState<TestResult>("untested");
 
   async function startEditing() {
@@ -1262,7 +1712,9 @@ function BitbucketSection({ isConfigured, onSaved }: { isConfigured: boolean; on
       const hasStoredCreds = !!config["bitbucket_workspace"];
       setAccessToken(hasStoredCreds ? MASKED_SENTINEL : "");
     } catch {
-      setWorkspace(""); setEmail(""); setAccessToken("");
+      setWorkspace("");
+      setEmail("");
+      setAccessToken("");
     }
     setTestResult("untested");
     setStatus({ state: "idle", message: "" });
@@ -1276,7 +1728,8 @@ function BitbucketSection({ isConfigured, onSaved }: { isConfigured: boolean; on
     try {
       await saveCredential("bitbucket_workspace", workspace.trim());
       await saveCredential("bitbucket_email", email.trim());
-      if (accessToken !== MASKED_SENTINEL) await saveCredential("bitbucket_access_token", accessToken.trim());
+      if (accessToken !== MASKED_SENTINEL)
+        await saveCredential("bitbucket_access_token", accessToken.trim());
       setTestResult("untested");
       setStatus({ state: "success", message: "Credentials saved." });
       onSaved();
@@ -1292,9 +1745,14 @@ function BitbucketSection({ isConfigured, onSaved }: { isConfigured: boolean; on
     setStatus({ state: "loading", message: "Testing connection…" });
     setTestResult("untested");
     try {
-      const msg = accessToken === MASKED_SENTINEL
-        ? await testBitbucketStored()
-        : await validateBitbucket(workspace.trim(), email.trim(), accessToken.trim());
+      const msg =
+        accessToken === MASKED_SENTINEL
+          ? await testBitbucketStored()
+          : await validateBitbucket(
+              workspace.trim(),
+              email.trim(),
+              accessToken.trim(),
+            );
       setTestResult("success");
       setStatus({ state: "success", message: msg });
     } catch (err) {
@@ -1320,13 +1778,24 @@ function BitbucketSection({ isConfigured, onSaved }: { isConfigured: boolean; on
 
   function handleCancel() {
     setEditing(false);
-    setWorkspace(""); setEmail(""); setAccessToken("");
+    setWorkspace("");
+    setEmail("");
+    setAccessToken("");
     setStatus({ state: "idle", message: "" });
   }
 
   async function handleReset() {
-    for (const key of ["bitbucket_workspace", "bitbucket_email", "bitbucket_access_token", "bitbucket_username"]) {
-      try { await deleteCredential(key); } catch { /* already gone */ }
+    for (const key of [
+      "bitbucket_workspace",
+      "bitbucket_email",
+      "bitbucket_access_token",
+      "bitbucket_username",
+    ]) {
+      try {
+        await deleteCredential(key);
+      } catch {
+        /* already gone */
+      }
     }
     setTestResult("untested");
     onSaved();
@@ -1342,7 +1811,9 @@ function BitbucketSection({ isConfigured, onSaved }: { isConfigured: boolean; on
         <div className="flex items-center justify-between">
           <div>
             <CardTitle className="text-base">Bitbucket</CardTitle>
-            <CardDescription className="text-xs mt-0.5">PR reviews, team metrics, and workload analysis</CardDescription>
+            <CardDescription className="text-xs mt-0.5">
+              PR reviews, team metrics, and workload analysis
+            </CardDescription>
           </div>
           <div className="flex items-center gap-2">
             <VerifiedBadge result={testResult} />
@@ -1357,12 +1828,28 @@ function BitbucketSection({ isConfigured, onSaved }: { isConfigured: boolean; on
               {isConfigured ? "Update credentials" : "Add credentials"}
             </Button>
             {isConfigured && (
-              <Button variant="outline" size="sm" onClick={handleTestStored} disabled={status.state === "loading"}>
-                {status.state === "loading" ? <><Loader2 className="h-3 w-3 animate-spin" /> Testing…</> : "Test connection"}
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleTestStored}
+                disabled={status.state === "loading"}
+              >
+                {status.state === "loading" ? (
+                  <>
+                    <Loader2 className="h-3 w-3 animate-spin" /> Testing…
+                  </>
+                ) : (
+                  "Test connection"
+                )}
               </Button>
             )}
             {isConfigured && (
-              <Button variant="ghost" size="sm" className="text-muted-foreground gap-1" onClick={handleReset}>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="text-muted-foreground gap-1"
+                onClick={handleReset}
+              >
                 <RotateCcw className="h-3 w-3" /> Reset
               </Button>
             )}
@@ -1370,17 +1857,74 @@ function BitbucketSection({ isConfigured, onSaved }: { isConfigured: boolean; on
         ) : (
           <div className="space-y-3">
             <ScopeList {...BITBUCKET_SCOPES} />
-            <CredentialField id="s-bb-ws" label="Workspace slug" placeholder="your-workspace" value={workspace} onChange={(v) => { setWorkspace(v); setTestResult("untested"); }} disabled={savingBb || testingBb} helperText="The short name in your Bitbucket workspace URL: bitbucket.org/your-workspace" />
-            <CredentialField id="s-bb-email" label="Email" placeholder="you@yourcompany.com" value={email} onChange={(v) => { setEmail(v); setTestResult("untested"); }} disabled={savingBb || testingBb} helperText="The email address you use to sign in to Bitbucket" />
-            <CredentialField id="s-bb-token" label="Access Token" placeholder="ATCTT3x…" masked value={accessToken} onChange={(v) => { setAccessToken(v); setTestResult("untested"); }} disabled={savingBb || testingBb} helperText={isConfigured && accessToken === MASKED_SENTINEL ? "Token already saved — clear to enter a new one" : "HTTP access token from Bitbucket workspace or repository settings → Access tokens."} />
+            <CredentialField
+              id="s-bb-ws"
+              label="Workspace slug"
+              placeholder="your-workspace"
+              value={workspace}
+              onChange={(v) => {
+                setWorkspace(v);
+                setTestResult("untested");
+              }}
+              disabled={savingBb || testingBb}
+              helperText="The short name in your Bitbucket workspace URL: bitbucket.org/your-workspace"
+            />
+            <CredentialField
+              id="s-bb-email"
+              label="Email"
+              placeholder="you@yourcompany.com"
+              value={email}
+              onChange={(v) => {
+                setEmail(v);
+                setTestResult("untested");
+              }}
+              disabled={savingBb || testingBb}
+              helperText="The email address you use to sign in to Bitbucket"
+            />
+            <CredentialField
+              id="s-bb-token"
+              label="Access Token"
+              placeholder="ATCTT3x…"
+              masked
+              value={accessToken}
+              onChange={(v) => {
+                setAccessToken(v);
+                setTestResult("untested");
+              }}
+              disabled={savingBb || testingBb}
+              helperText={
+                isConfigured && accessToken === MASKED_SENTINEL
+                  ? "Token already saved — clear to enter a new one"
+                  : "HTTP access token from Bitbucket workspace or repository settings → Access tokens."
+              }
+            />
             <div className="flex gap-2">
-              <Button size="sm" onClick={handleSave} disabled={!canSaveBb || savingBb || testingBb}>
-                {savingBb ? <Loader2 className="h-3 w-3 animate-spin" /> : "Save credentials"}
+              <Button
+                size="sm"
+                onClick={handleSave}
+                disabled={!canSaveBb || savingBb || testingBb}
+              >
+                {savingBb ? (
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                ) : (
+                  "Save credentials"
+                )}
               </Button>
-              <Button size="sm" variant="outline" onClick={handleTest} disabled={!canSaveBb || savingBb || testingBb}>
-                {testingBb ? <Loader2 className="h-3 w-3 animate-spin" /> : "Test connection"}
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={handleTest}
+                disabled={!canSaveBb || savingBb || testingBb}
+              >
+                {testingBb ? (
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                ) : (
+                  "Test connection"
+                )}
               </Button>
-              <Button variant="ghost" size="sm" onClick={handleCancel}>Cancel</Button>
+              <Button variant="ghost" size="sm" onClick={handleCancel}>
+                Cancel
+              </Button>
             </div>
           </div>
         )}
@@ -1409,10 +1953,20 @@ function ConfigSection({
   const [prAddressWorktreePath, setPrAddressWorktreePath] = useState("");
   const [prTerminal, setPrTerminal] = useState("iTerm2");
   const [editing, setEditing] = useState(!jiraBoardId || !bitbucketRepoSlug);
-  const [status, setStatus] = useState<SectionStatus>({ state: "idle", message: "" });
-  const [worktreeStatus, setWorktreeStatus] = useState<SectionStatus>({ state: "idle", message: "" });
-  const [prWorktreeStatus, setPrWorktreeStatus] = useState<SectionStatus>({ state: "idle", message: "" });
-  const [prAddressWorktreeStatus, setPrAddressWorktreeStatus] = useState<SectionStatus>({ state: "idle", message: "" });
+  const [status, setStatus] = useState<SectionStatus>({
+    state: "idle",
+    message: "",
+  });
+  const [worktreeStatus, setWorktreeStatus] = useState<SectionStatus>({
+    state: "idle",
+    message: "",
+  });
+  const [prWorktreeStatus, setPrWorktreeStatus] = useState<SectionStatus>({
+    state: "idle",
+    message: "",
+  });
+  const [prAddressWorktreeStatus, setPrAddressWorktreeStatus] =
+    useState<SectionStatus>({ state: "idle", message: "" });
 
   async function startEditing() {
     try {
@@ -1425,7 +1979,8 @@ function ConfigSection({
       setPrAddressWorktreePath(prefs["pr_address_worktree_path"] ?? "");
       setPrTerminal(prefs["pr_review_terminal"] || "iTerm2");
     } catch {
-      setBoardId(""); setRepoSlug("");
+      setBoardId("");
+      setRepoSlug("");
     }
     setStatus({ state: "idle", message: "" });
     setEditing(true);
@@ -1434,34 +1989,61 @@ function ConfigSection({
   // Auto-load on first mount if already in editing state (incomplete config)
   useEffect(() => {
     if (editing) {
-      getPreferences().then(prefs => {
-          setBoardId(prev => prev || (prefs["jira_board_id"] ?? ""));
-          setRepoSlug(prev => prev || (prefs["bitbucket_repo_slug"] ?? ""));
-          setWorktreePath(prev => prev || (prefs["repo_worktree_path"] ?? ""));
-          setBaseBranch(prev => prev || (prefs["repo_base_branch"] || "develop"));
-          setPrReviewWorktreePath(prev => prev || (prefs["pr_review_worktree_path"] ?? ""));
-          setPrAddressWorktreePath(prev => prev || (prefs["pr_address_worktree_path"] ?? ""));
-          setPrTerminal(prev => prev !== "iTerm2" ? prev : (prefs["pr_review_terminal"] || "iTerm2"));
-      }).catch(() => {});
+      getPreferences()
+        .then((prefs) => {
+          setBoardId((prev) => prev || (prefs["jira_board_id"] ?? ""));
+          setRepoSlug((prev) => prev || (prefs["bitbucket_repo_slug"] ?? ""));
+          setWorktreePath(
+            (prev) => prev || (prefs["repo_worktree_path"] ?? ""),
+          );
+          setBaseBranch(
+            (prev) => prev || prefs["repo_base_branch"] || "develop",
+          );
+          setPrReviewWorktreePath(
+            (prev) => prev || (prefs["pr_review_worktree_path"] ?? ""),
+          );
+          setPrAddressWorktreePath(
+            (prev) => prev || (prefs["pr_address_worktree_path"] ?? ""),
+          );
+          setPrTerminal((prev) =>
+            prev !== "iTerm2" ? prev : prefs["pr_review_terminal"] || "iTerm2",
+          );
+        })
+        .catch(() => {});
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   async function handleSave() {
-    if (!boardId.trim() && !repoSlug.trim() && !worktreePath.trim() && !prReviewWorktreePath.trim() && !prAddressWorktreePath.trim()) return;
+    if (
+      !boardId.trim() &&
+      !repoSlug.trim() &&
+      !worktreePath.trim() &&
+      !prReviewWorktreePath.trim() &&
+      !prAddressWorktreePath.trim()
+    )
+      return;
     setStatus({ state: "loading", message: "Saving…" });
     try {
       if (boardId.trim()) await setPreference("jira_board_id", boardId.trim());
-      if (repoSlug.trim()) await setPreference("bitbucket_repo_slug", repoSlug.trim());
-      if (worktreePath.trim()) await setPreference("repo_worktree_path", worktreePath.trim());
+      if (repoSlug.trim())
+        await setPreference("bitbucket_repo_slug", repoSlug.trim());
+      if (worktreePath.trim())
+        await setPreference("repo_worktree_path", worktreePath.trim());
       await setPreference("repo_base_branch", baseBranch.trim() || "develop");
       if (prReviewWorktreePath.trim()) {
-        await setPreference("pr_review_worktree_path", prReviewWorktreePath.trim());
+        await setPreference(
+          "pr_review_worktree_path",
+          prReviewWorktreePath.trim(),
+        );
       } else {
         await setPreference("pr_review_worktree_path", "");
       }
       if (prAddressWorktreePath.trim()) {
-        await setPreference("pr_address_worktree_path", prAddressWorktreePath.trim());
+        await setPreference(
+          "pr_address_worktree_path",
+          prAddressWorktreePath.trim(),
+        );
       } else {
         await setPreference("pr_address_worktree_path", "");
       }
@@ -1515,7 +2097,10 @@ function ConfigSection({
     setPrAddressWorktreeStatus({ state: "loading", message: "Validating…" });
     const prefs = await getPreferences();
     const prev = prefs["pr_address_worktree_path"] ?? "";
-    await setPreference("pr_address_worktree_path", prAddressWorktreePath.trim());
+    await setPreference(
+      "pr_address_worktree_path",
+      prAddressWorktreePath.trim(),
+    );
     try {
       const info = await validatePrAddressWorktree();
       setPrAddressWorktreeStatus({
@@ -1577,7 +2162,9 @@ function ConfigSection({
               helperText="The repo slug from your Bitbucket URL: /repositories/workspace/my-repo"
             />
             <div className="border-t pt-3 mt-1 space-y-3">
-              <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Implementation Worktree</p>
+              <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                Implementation Worktree
+              </p>
               <CredentialField
                 id="cfg-worktree-path"
                 label="Worktree Path"
@@ -1610,7 +2197,9 @@ function ConfigSection({
                     Test worktree
                   </Button>
                   {worktreeStatus.state !== "idle" && (
-                    <span className={`text-xs ${worktreeStatus.state === "success" ? "text-green-600" : "text-destructive"}`}>
+                    <span
+                      className={`text-xs ${worktreeStatus.state === "success" ? "text-green-600" : "text-destructive"}`}
+                    >
                       {worktreeStatus.message}
                     </span>
                   )}
@@ -1618,7 +2207,9 @@ function ConfigSection({
               )}
             </div>
             <div className="border-t pt-3 mt-1 space-y-3">
-              <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">PR Review Worktree</p>
+              <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                PR Review Worktree
+              </p>
               <CredentialField
                 id="cfg-pr-review-worktree-path"
                 label="PR Review Worktree Path"
@@ -1642,14 +2233,18 @@ function ConfigSection({
                     Test PR review worktree
                   </Button>
                   {prWorktreeStatus.state !== "idle" && (
-                    <span className={`text-xs ${prWorktreeStatus.state === "success" ? "text-green-600" : "text-destructive"}`}>
+                    <span
+                      className={`text-xs ${prWorktreeStatus.state === "success" ? "text-green-600" : "text-destructive"}`}
+                    >
                       {prWorktreeStatus.message}
                     </span>
                   )}
                 </div>
               )}
               <div className="space-y-1.5">
-                <Label htmlFor="cfg-pr-terminal" className="text-xs">Terminal Application</Label>
+                <Label htmlFor="cfg-pr-terminal" className="text-xs">
+                  Terminal Application
+                </Label>
                 <select
                   id="cfg-pr-terminal"
                   value={prTerminal}
@@ -1664,12 +2259,15 @@ function ConfigSection({
                   <option value="Alacritty">Alacritty</option>
                 </select>
                 <p className="text-[11px] text-muted-foreground">
-                  The terminal app that opens when you press the play button in PR Review.
+                  The terminal app that opens when you press the play button in
+                  PR Review.
                 </p>
               </div>
             </div>
             <div className="border-t pt-3 mt-1 space-y-3">
-              <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Address PR Comments Worktree</p>
+              <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                Address PR Comments Worktree
+              </p>
               <CredentialField
                 id="cfg-pr-address-worktree-path"
                 label="PR Address Worktree Path"
@@ -1693,7 +2291,9 @@ function ConfigSection({
                     Test PR address worktree
                   </Button>
                   {prAddressWorktreeStatus.state !== "idle" && (
-                    <span className={`text-xs ${prAddressWorktreeStatus.state === "success" ? "text-green-600" : "text-destructive"}`}>
+                    <span
+                      className={`text-xs ${prAddressWorktreeStatus.state === "success" ? "text-green-600" : "text-destructive"}`}
+                    >
                       {prAddressWorktreeStatus.message}
                     </span>
                   )}
@@ -1705,7 +2305,12 @@ function ConfigSection({
                 size="sm"
                 onClick={handleSave}
                 disabled={
-                  (!boardId.trim() && !repoSlug.trim() && !worktreePath.trim() && !prReviewWorktreePath.trim() && !prAddressWorktreePath.trim()) || status.state === "loading"
+                  (!boardId.trim() &&
+                    !repoSlug.trim() &&
+                    !worktreePath.trim() &&
+                    !prReviewWorktreePath.trim() &&
+                    !prAddressWorktreePath.trim()) ||
+                  status.state === "loading"
                 }
               >
                 {status.state === "loading" ? (
@@ -1762,11 +2367,16 @@ function CacheSection() {
     try {
       const result = await getStoreCacheInfo();
       setInfo(result);
-    } catch { /* non-critical */ }
-    finally { setLoading(false); }
+    } catch {
+      /* non-critical */
+    } finally {
+      setLoading(false);
+    }
   }
 
-  useEffect(() => { loadInfo(); }, []);
+  useEffect(() => {
+    loadInfo();
+  }, []);
 
   const totalBytes = info ? Object.values(info).reduce((a, b) => a + b, 0) : 0;
   const hasCache = totalBytes > 0;
@@ -1781,7 +2391,10 @@ function CacheSection() {
       await clearAllStoreCaches();
       // Reset in-memory store state too
       resetImplementSession();
-      useImplementTicketStore.setState({ ...IMPLEMENT_INITIAL, sessions: new Map() });
+      useImplementTicketStore.setState({
+        ...IMPLEMENT_INITIAL,
+        sessions: new Map(),
+      });
       usePrReviewStore.setState({
         sessions: new Map(),
         prsForReview: [],
@@ -1793,8 +2406,11 @@ function CacheSection() {
       setInfo({});
       setDone(true);
       setConfirmed(false);
-    } catch { /* non-critical */ }
-    finally { setClearing(false); }
+    } catch {
+      /* non-critical */
+    } finally {
+      setClearing(false);
+    }
   }
 
   return (
@@ -1804,11 +2420,15 @@ function CacheSection() {
           <div>
             <CardTitle className="text-base">Session Cache</CardTitle>
             <CardDescription className="text-xs mt-0.5">
-              Pipeline and PR review sessions are saved to disk so they survive app restarts
+              Pipeline and PR review sessions are saved to disk so they survive
+              app restarts
             </CardDescription>
           </div>
           {hasCache && (
-            <Badge variant="outline" className="gap-1 text-muted-foreground shrink-0">
+            <Badge
+              variant="outline"
+              className="gap-1 text-muted-foreground shrink-0"
+            >
               {formatBytes(totalBytes)}
             </Badge>
           )}
@@ -1822,21 +2442,29 @@ function CacheSection() {
         ) : info && Object.keys(info).length > 0 ? (
           <div className="space-y-1.5">
             {Object.entries(info).map(([key, size]) => (
-              <div key={key} className="flex items-center justify-between text-xs">
+              <div
+                key={key}
+                className="flex items-center justify-between text-xs"
+              >
                 <span className="text-muted-foreground">
                   {CACHE_KEY_LABELS[key] ?? key}
                 </span>
-                <span className="font-mono text-muted-foreground">{formatBytes(size)}</span>
+                <span className="font-mono text-muted-foreground">
+                  {formatBytes(size)}
+                </span>
               </div>
             ))}
           </div>
         ) : (
-          <p className="text-xs text-muted-foreground">No session cache on disk.</p>
+          <p className="text-xs text-muted-foreground">
+            No session cache on disk.
+          </p>
         )}
 
         {done && (
           <p className="text-xs text-emerald-600 dark:text-emerald-400 flex items-center gap-1">
-            <CheckCircle className="h-3 w-3" /> Cache cleared. All session data has been removed.
+            <CheckCircle className="h-3 w-3" /> Cache cleared. All session data
+            has been removed.
           </p>
         )}
 
@@ -1869,7 +2497,10 @@ function CacheSection() {
           <Button
             variant="ghost"
             size="sm"
-            onClick={() => { setDone(false); loadInfo(); }}
+            onClick={() => {
+              setDone(false);
+              loadInfo();
+            }}
             disabled={loading}
             className="text-muted-foreground"
           >
@@ -1879,8 +2510,8 @@ function CacheSection() {
 
         {confirmed && (
           <p className="text-xs text-amber-600 dark:text-amber-400">
-            This will permanently delete all saved pipeline sessions and PR review data.
-            In-progress work will be lost.
+            This will permanently delete all saved pipeline sessions and PR
+            review data. In-progress work will be lost.
           </p>
         )}
       </CardContent>
@@ -1917,17 +2548,24 @@ function MockModeSection({ onToggle }: { onToggle: () => void }) {
               )}
             </div>
             <p className="text-xs text-muted-foreground leading-relaxed">
-              Replace JIRA and Bitbucket API calls with realistic local mock data. Useful for
-              testing without API access. Claude still calls the API unless{" "}
-              <span className="font-medium text-foreground">Mock AI responses</span> is enabled
-              below.
+              Replace JIRA and Bitbucket API calls with realistic local mock
+              data. Useful for testing without API access. Claude still calls
+              the API unless{" "}
+              <span className="font-medium text-foreground">
+                Mock AI responses
+              </span>{" "}
+              is enabled below.
             </p>
           </div>
           <Button
             variant={enabled ? "default" : "outline"}
             size="sm"
             onClick={toggle}
-            className={enabled ? "bg-amber-500 hover:bg-amber-600 text-white shrink-0" : "shrink-0"}
+            className={
+              enabled
+                ? "bg-amber-500 hover:bg-amber-600 text-white shrink-0"
+                : "shrink-0"
+            }
           >
             {enabled ? "Disable" : "Enable"}
           </Button>
@@ -1936,7 +2574,8 @@ function MockModeSection({ onToggle }: { onToggle: () => void }) {
           <div className="mt-3 ml-13 flex items-start gap-2 rounded-md bg-amber-500/10 border border-amber-500/20 px-3 py-2">
             <AlertCircle className="h-3.5 w-3.5 text-amber-600 shrink-0 mt-0.5" />
             <p className="text-xs text-amber-700 dark:text-amber-400">
-              Navigate back to the landing screen to reload data sources with mock mode active.
+              Navigate back to the landing screen to reload data sources with
+              mock mode active.
             </p>
           </div>
         )}
@@ -1972,9 +2611,10 @@ function MockClaudeModeSection({ onToggle }: { onToggle: () => void }) {
               )}
             </div>
             <p className="text-xs text-muted-foreground leading-relaxed">
-              Return pre-recorded agent responses for pipelines, standup, retros, workload, ticket
-              quality, and PR review — no Anthropic API calls made. JIRA and Bitbucket are
-              unaffected (enable Mock Data Mode for those).
+              Return pre-recorded agent responses for pipelines, standup,
+              retros, workload, ticket quality, and PR review — no Anthropic API
+              calls made. JIRA and Bitbucket are unaffected (enable Mock Data
+              Mode for those).
             </p>
           </div>
           <Button
@@ -1994,7 +2634,8 @@ function MockClaudeModeSection({ onToggle }: { onToggle: () => void }) {
           <div className="mt-3 ml-13 flex items-start gap-2 rounded-md bg-violet-500/10 border border-violet-500/20 px-3 py-2">
             <AlertCircle className="h-3.5 w-3.5 text-violet-600 shrink-0 mt-0.5" />
             <p className="text-xs text-violet-700 dark:text-violet-400">
-              Anthropic is treated as configured while this is on. Re-run any workflow to see pre-recorded output.
+              Anthropic is treated as configured while this is on. Re-run any
+              workflow to see pre-recorded output.
             </p>
           </div>
         )}
@@ -2022,9 +2663,11 @@ function DataTestSection({ fullyConfigured }: { fullyConfigured: boolean }) {
         lines.push(`Active sprint: "${sprint.name}" (${sprint.state})`);
         if (sprint.endDate) {
           const days = Math.ceil(
-            (new Date(sprint.endDate).getTime() - Date.now()) / 86_400_000
+            (new Date(sprint.endDate).getTime() - Date.now()) / 86_400_000,
           );
-          lines.push(`  ${days > 0 ? `${days} days remaining` : "Sprint ended"}`);
+          lines.push(
+            `  ${days > 0 ? `${days} days remaining` : "Sprint ended"}`,
+          );
         }
       } else {
         lines.push("No active sprint found.");
@@ -2157,7 +2800,12 @@ export function SettingsScreen({ onClose, onNavigate }: SettingsScreenProps) {
           <div className="min-w-0 flex-1" aria-hidden />
           <div className="flex shrink-0 items-center gap-1">
             <HeaderSettingsButton />
-            <Button variant="ghost" size="icon" onClick={onClose} aria-label="Close settings">
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={onClose}
+              aria-label="Close settings"
+            >
               <X className="h-4 w-4" />
             </Button>
           </div>
@@ -2184,7 +2832,10 @@ export function SettingsScreen({ onClose, onNavigate }: SettingsScreenProps) {
                 onSaved={refresh}
               />
               <AiProviderSection />
-              <JiraSection isConfigured={jiraCredentialsSet(credStatus)} onSaved={refresh} />
+              <JiraSection
+                isConfigured={jiraCredentialsSet(credStatus)}
+                onSaved={refresh}
+              />
               <BitbucketSection
                 isConfigured={bitbucketCredentialsSet(credStatus)}
                 onSaved={refresh}
@@ -2247,9 +2898,9 @@ export function SettingsScreen({ onClose, onNavigate }: SettingsScreenProps) {
                     <div className="flex-1">
                       <p className="text-sm font-medium">Agent Skills</p>
                       <p className="text-xs text-muted-foreground">
-                        Configure domain knowledge injected into AI agents — grooming
-                        conventions, codebase patterns, implementation standards, review
-                        criteria
+                        Configure domain knowledge injected into AI agents —
+                        grooming conventions, codebase patterns, implementation
+                        standards, review criteria
                       </p>
                     </div>
                     <ChevronRight className="h-4 w-4 text-muted-foreground" />
@@ -2265,9 +2916,13 @@ export function SettingsScreen({ onClose, onNavigate }: SettingsScreenProps) {
         )}
 
         <div className="text-xs text-muted-foreground space-y-1 border-t pt-6">
-          <p>All credentials are stored in your macOS Keychain and never leave your machine.</p>
           <p>
-            They are used exclusively in the Tauri backend layer and never exposed to the UI.
+            All credentials are stored in your macOS Keychain and never leave
+            your machine.
+          </p>
+          <p>
+            They are used exclusively in the Tauri backend layer and never
+            exposed to the UI.
           </p>
         </div>
       </main>

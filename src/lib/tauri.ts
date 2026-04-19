@@ -14,7 +14,8 @@ function isLocalLlmConnectionError(err: string): boolean {
     e.includes("could not connect to local llm") ||
     e.includes("make sure ollama") ||
     e.includes("make sure lm studio") ||
-    (e.includes("local llm") && (e.includes("connect") || e.includes("reach") || e.includes("refused")))
+    (e.includes("local llm") &&
+      (e.includes("connect") || e.includes("reach") || e.includes("refused")))
   );
 }
 
@@ -40,7 +41,9 @@ function showLocalLlmDownToast(_err: string) {
     urlHint.includes("ollama") ||
     !urlHint.includes("1234");
 
-  const startCmd = isOllama ? "ollama serve" : "Start LM Studio and enable the local server";
+  const startCmd = isOllama
+    ? "ollama serve"
+    : "Start LM Studio and enable the local server";
   const description = isOllama
     ? `Could not connect to ${urlHint}. Start the server with: ${startCmd}`
     : `Could not connect to ${urlHint}. ${startCmd}.`;
@@ -56,7 +59,10 @@ function showLocalLlmDownToast(_err: string) {
  * Wrapper around invoke that automatically detects local-LLM-server-down errors
  * and shows a helpful toast. Re-throws the error so callers still see it.
  */
-async function invokeWithLlmCheck<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
+async function invokeWithLlmCheck<T>(
+  cmd: string,
+  args?: Record<string, unknown>,
+): Promise<T> {
   try {
     return await invoke<T>(cmd, args);
   } catch (e) {
@@ -164,7 +170,12 @@ export function jiraComplete(s: CredentialStatus) {
 
 /** Fully ready: credentials + repo slug configured. */
 export function bitbucketComplete(s: CredentialStatus) {
-  return s.bitbucketWorkspace && s.bitbucketEmail && s.bitbucketAccessToken && s.bitbucketRepoSlug;
+  return (
+    s.bitbucketWorkspace &&
+    s.bitbucketEmail &&
+    s.bitbucketAccessToken &&
+    s.bitbucketRepoSlug
+  );
 }
 
 // ── Credential commands ───────────────────────────────────────────────────────
@@ -194,7 +205,10 @@ export async function getCredentialStatus(): Promise<CredentialStatus> {
   return merged;
 }
 
-export async function saveCredential(key: string, value: string): Promise<void> {
+export async function saveCredential(
+  key: string,
+  value: string,
+): Promise<void> {
   return invoke("save_credential", { key, value });
 }
 
@@ -216,7 +230,7 @@ export async function validateAnthropic(apiKey: string): Promise<string> {
 export async function validateJira(
   baseUrl: string,
   email: string,
-  apiToken: string
+  apiToken: string,
 ): Promise<string> {
   return invoke<string>("validate_jira", { baseUrl, email, apiToken });
 }
@@ -224,9 +238,13 @@ export async function validateJira(
 export async function validateBitbucket(
   workspace: string,
   email: string,
-  accessToken: string
+  accessToken: string,
 ): Promise<string> {
-  return invoke<string>("validate_bitbucket", { workspace, email, accessToken });
+  return invoke<string>("validate_bitbucket", {
+    workspace,
+    email,
+    accessToken,
+  });
 }
 
 /** Test the stored Anthropic key without passing it through the frontend. */
@@ -289,7 +307,10 @@ export async function getLocalModels(): Promise<[string, string][]> {
  * Validate a local LLM server URL (and optional API key) by connecting to it.
  * Normalises the URL to end with /v1, saves on success; throws on failure.
  */
-export async function validateLocalLlm(url: string, apiKey: string): Promise<string> {
+export async function validateLocalLlm(
+  url: string,
+  apiKey: string,
+): Promise<string> {
   return invoke<string>("validate_local_llm", { url, apiKey });
 }
 
@@ -315,28 +336,41 @@ export async function debugJiraEndpoints(): Promise<string> {
 
 // ── Claude commands ───────────────────────────────────────────────────────────
 
-export async function generateStandupBriefing(standupText: string): Promise<string> {
+export async function generateStandupBriefing(
+  standupText: string,
+): Promise<string> {
   if (isMockClaudeMode()) {
     const { MOCK_STANDUP_MARKDOWN } = await import("./mockClaudeResponses");
     return MOCK_STANDUP_MARKDOWN;
   }
-  return invokeWithLlmCheck<string>("generate_standup_briefing", { standupText });
+  return invokeWithLlmCheck<string>("generate_standup_briefing", {
+    standupText,
+  });
 }
 
-export async function generateSprintRetrospective(sprintText: string): Promise<string> {
+export async function generateSprintRetrospective(
+  sprintText: string,
+): Promise<string> {
   if (isMockClaudeMode()) {
-    const { MOCK_SPRINT_RETRO_MARKDOWN } = await import("./mockClaudeResponses");
+    const { MOCK_SPRINT_RETRO_MARKDOWN } =
+      await import("./mockClaudeResponses");
     return MOCK_SPRINT_RETRO_MARKDOWN;
   }
-  return invokeWithLlmCheck<string>("generate_sprint_retrospective", { sprintText });
+  return invokeWithLlmCheck<string>("generate_sprint_retrospective", {
+    sprintText,
+  });
 }
 
-export async function generateWorkloadSuggestions(workloadText: string): Promise<string> {
+export async function generateWorkloadSuggestions(
+  workloadText: string,
+): Promise<string> {
   if (isMockClaudeMode()) {
     const { MOCK_WORKLOAD_MARKDOWN } = await import("./mockClaudeResponses");
     return MOCK_WORKLOAD_MARKDOWN;
   }
-  return invokeWithLlmCheck<string>("generate_workload_suggestions", { workloadText });
+  return invokeWithLlmCheck<string>("generate_workload_suggestions", {
+    workloadText,
+  });
 }
 
 export async function reviewPr(reviewText: string): Promise<string> {
@@ -353,8 +387,14 @@ export async function cancelReview(): Promise<void> {
 }
 
 /** Conversational follow-up chat about a completed PR review. */
-export async function chatPrReview(contextText: string, historyJson: string): Promise<string> {
-  return invokeWithLlmCheck<string>("chat_pr_review", { contextText, historyJson });
+export async function chatPrReview(
+  contextText: string,
+  historyJson: string,
+): Promise<string> {
+  return invokeWithLlmCheck<string>("chat_pr_review", {
+    contextText,
+    historyJson,
+  });
 }
 
 // ── PR review report types ────────────────────────────────────────────────────
@@ -394,14 +434,17 @@ export interface ReviewReport {
 export function parseReviewReport(raw: string): ReviewReport | null {
   try {
     // Strip markdown fences if present
-    let cleaned = raw.replace(/^```(?:json)?\n?/m, "").replace(/\n?```$/m, "").trim();
+    let cleaned = raw
+      .replace(/^```(?:json)?\n?/m, "")
+      .replace(/\n?```$/m, "")
+      .trim();
 
     // Sanitise bare unquoted line_range values produced by some models, e.g.:
     //   "line_range": L96-L127   →   "line_range": "L96-L127"
     // Matches: "line_range": followed by whitespace and a non-null, non-quote, non-digit token
     cleaned = cleaned.replace(
       /"line_range"\s*:\s*(?!null\b|")(L[\w\-]+)/g,
-      '"line_range": "$1"'
+      '"line_range": "$1"',
     );
 
     return JSON.parse(cleaned) as ReviewReport;
@@ -487,13 +530,17 @@ export async function getAllActiveSprints(): Promise<JiraSprint[]> {
   return invoke<JiraSprint[]>("get_all_active_sprints");
 }
 
-export async function getAllActiveSprintIssues(): Promise<Array<[JiraSprint, JiraIssue[]]>> {
+export async function getAllActiveSprintIssues(): Promise<
+  Array<[JiraSprint, JiraIssue[]]>
+> {
   if (isMockMode()) {
     const { ACTIVE_SPRINT, SPRINT_ISSUES_BY_ID } = await import("./mockData");
     if (!ACTIVE_SPRINT) return [];
     return [[ACTIVE_SPRINT, SPRINT_ISSUES_BY_ID[23] ?? []]];
   }
-  return invoke<Array<[JiraSprint, JiraIssue[]]>>("get_all_active_sprint_issues");
+  return invoke<Array<[JiraSprint, JiraIssue[]]>>(
+    "get_all_active_sprint_issues",
+  );
 }
 
 export async function getActiveSprintIssues(): Promise<JiraIssue[]> {
@@ -520,7 +567,9 @@ export async function getSprintIssues(sprintId: number): Promise<JiraIssue[]> {
   return invoke<JiraIssue[]>("get_sprint_issues", { sprintId });
 }
 
-export async function getSprintIssuesById(sprintId: number): Promise<JiraIssue[]> {
+export async function getSprintIssuesById(
+  sprintId: number,
+): Promise<JiraIssue[]> {
   if (isMockMode()) {
     const { SPRINT_ISSUES_BY_ID } = await import("./mockData");
     return SPRINT_ISSUES_BY_ID[sprintId] ?? [];
@@ -538,7 +587,9 @@ export async function getIssue(issueKey: string): Promise<JiraIssue> {
   return invoke<JiraIssue>("get_issue", { issueKey });
 }
 
-export async function getCompletedSprints(limit: number): Promise<JiraSprint[]> {
+export async function getCompletedSprints(
+  limit: number,
+): Promise<JiraSprint[]> {
   if (isMockMode()) {
     const { COMPLETED_SPRINTS } = await import("./mockData");
     return COMPLETED_SPRINTS.slice(0, limit);
@@ -553,7 +604,7 @@ export async function getFutureSprints(limit: number): Promise<JiraSprint[]> {
 
 export async function searchJiraIssues(
   jql: string,
-  maxResults: number
+  maxResults: number,
 ): Promise<JiraIssue[]> {
   if (isMockMode()) {
     const { SPRINT_ISSUES_BY_ID } = await import("./mockData");
@@ -563,7 +614,7 @@ export async function searchJiraIssues(
       (i) =>
         i.summary.toLowerCase().includes(q) ||
         i.key.toLowerCase().includes(q) ||
-        i.status.toLowerCase().includes(q)
+        i.status.toLowerCase().includes(q),
     );
     return filtered.slice(0, maxResults);
   }
@@ -579,7 +630,9 @@ export interface RawIssueField {
   value: string;
 }
 
-export async function getRawIssueFields(issueKey: string): Promise<RawIssueField[]> {
+export async function getRawIssueFields(
+  issueKey: string,
+): Promise<RawIssueField[]> {
   return invoke<RawIssueField[]>("get_raw_issue_fields", { issueKey });
 }
 
@@ -674,11 +727,15 @@ export async function getMergedPrs(sinceIso?: string): Promise<BitbucketPr[]> {
     const { MERGED_PRS } = await import("./mockData");
     if (sinceIso) {
       const since = new Date(sinceIso).getTime();
-      return MERGED_PRS.filter((pr) => new Date(pr.updatedOn).getTime() >= since);
+      return MERGED_PRS.filter(
+        (pr) => new Date(pr.updatedOn).getTime() >= since,
+      );
     }
     return MERGED_PRS;
   }
-  return invoke<BitbucketPr[]>("get_merged_prs", { sinceIso: sinceIso ?? null });
+  return invoke<BitbucketPr[]>("get_merged_prs", {
+    sinceIso: sinceIso ?? null,
+  });
 }
 
 export async function getPrsForReview(): Promise<BitbucketPr[]> {
@@ -686,7 +743,7 @@ export async function getPrsForReview(): Promise<BitbucketPr[]> {
     const { OPEN_PRS } = await import("./mockData");
     // PRs where the current user (user-1) is a reviewer and hasn't approved yet
     return OPEN_PRS.filter((pr) =>
-      pr.reviewers.some((r) => r.user.nickname === "isaac.chen" && !r.approved)
+      pr.reviewers.some((r) => r.user.nickname === "isaac.chen" && !r.approved),
     );
   }
   return invoke<BitbucketPr[]>("get_prs_for_review");
@@ -783,12 +840,23 @@ export async function resolvePrTask(
   return invoke<BitbucketTask>("resolve_pr_task", { prId, taskId, resolved });
 }
 
-export async function deletePrComment(prId: number, commentId: number): Promise<void> {
+export async function deletePrComment(
+  prId: number,
+  commentId: number,
+): Promise<void> {
   return invoke<void>("delete_pr_comment", { prId, commentId });
 }
 
-export async function updatePrComment(prId: number, commentId: number, content: string): Promise<BitbucketComment> {
-  return invoke<BitbucketComment>("update_pr_comment", { prId, commentId, content });
+export async function updatePrComment(
+  prId: number,
+  commentId: number,
+  content: string,
+): Promise<BitbucketComment> {
+  return invoke<BitbucketComment>("update_pr_comment", {
+    prId,
+    commentId,
+    content,
+  });
 }
 
 // ── Knowledge base types ──────────────────────────────────────────────────────
@@ -989,16 +1057,24 @@ export interface TriageMessage {
 
 // ── Agent pipeline commands ───────────────────────────────────────────────────
 
-export async function runGroomingAgent(ticketText: string, fileContents: string): Promise<string> {
+export async function runGroomingAgent(
+  ticketText: string,
+  fileContents: string,
+): Promise<string> {
   if (isMockClaudeMode()) {
     const { MOCK_GROOMING_JSON } = await import("./mockClaudeResponses");
     return MOCK_GROOMING_JSON;
   }
-  return invokeWithLlmCheck<string>("run_grooming_agent", { ticketText, fileContents });
+  return invokeWithLlmCheck<string>("run_grooming_agent", {
+    ticketText,
+    fileContents,
+  });
 }
 
 /** Phase-1 probe: ask the agent which files to read before full grooming. */
-export async function runGroomingFileProbe(ticketText: string): Promise<string> {
+export async function runGroomingFileProbe(
+  ticketText: string,
+): Promise<string> {
   if (isMockClaudeMode()) {
     return JSON.stringify({ files: [], grep_patterns: [] });
   }
@@ -1009,38 +1085,64 @@ export async function runGroomingFileProbe(ticketText: string): Promise<string> 
  * Grooming conversation turn — returns structured JSON:
  * { message, updated_edits, updated_questions }
  */
-export async function runGroomingChatTurn(contextText: string, historyJson: string): Promise<string> {
+export async function runGroomingChatTurn(
+  contextText: string,
+  historyJson: string,
+): Promise<string> {
   if (isMockClaudeMode()) {
     return JSON.stringify({
-      message: "I've updated my understanding. The suggested edits reflect the agreed wording. Feel free to ask any more questions or approve the grooming to proceed.",
+      message:
+        "I've updated my understanding. The suggested edits reflect the agreed wording. Feel free to ask any more questions or approve the grooming to proceed.",
       updated_edits: [],
       updated_questions: [],
     });
   }
-  return invokeWithLlmCheck<string>("run_grooming_chat_turn", { contextText, historyJson });
+  return invokeWithLlmCheck<string>("run_grooming_chat_turn", {
+    contextText,
+    historyJson,
+  });
 }
 
-export async function runImpactAnalysis(ticketText: string, groomingJson: string): Promise<string> {
+export async function runImpactAnalysis(
+  ticketText: string,
+  groomingJson: string,
+): Promise<string> {
   if (isMockClaudeMode()) {
     const { MOCK_IMPACT_JSON } = await import("./mockClaudeResponses");
     return MOCK_IMPACT_JSON;
   }
-  return invokeWithLlmCheck<string>("run_impact_analysis", { ticketText, groomingJson });
+  return invokeWithLlmCheck<string>("run_impact_analysis", {
+    ticketText,
+    groomingJson,
+  });
 }
 
-export async function runTriageTurn(contextText: string, historyJson: string): Promise<string> {
+export async function runTriageTurn(
+  contextText: string,
+  historyJson: string,
+): Promise<string> {
   if (isMockClaudeMode()) {
-    const { MOCK_TRIAGE_ASSISTANT_REPLY } = await import("./mockClaudeResponses");
+    const { MOCK_TRIAGE_ASSISTANT_REPLY } =
+      await import("./mockClaudeResponses");
     return MOCK_TRIAGE_ASSISTANT_REPLY;
   }
-  return invokeWithLlmCheck<string>("run_triage_turn", { contextText, historyJson });
+  return invokeWithLlmCheck<string>("run_triage_turn", {
+    contextText,
+    historyJson,
+  });
 }
 
-export async function runCheckpointChatTurn(contextText: string, historyJson: string): Promise<string> {
+export async function runCheckpointChatTurn(
+  contextText: string,
+  historyJson: string,
+): Promise<string> {
   if (isMockClaudeMode()) {
     return "Happy to help clarify. Based on the stage output, everything looks on track. Let me know if you have specific questions.";
   }
-  return invokeWithLlmCheck<string>("run_checkpoint_chat_turn", { contextText, historyJson });
+  return invokeWithLlmCheck<string>("run_checkpoint_chat_turn", {
+    contextText,
+    historyJson,
+  });
 }
 
 export async function updateJiraIssue(
@@ -1063,56 +1165,119 @@ export async function updateJiraFields(
   return invoke("update_jira_fields", { issueKey, fieldsJson });
 }
 
-export async function finalizeImplementationPlan(contextText: string, conversationJson: string): Promise<string> {
+export async function finalizeImplementationPlan(
+  contextText: string,
+  conversationJson: string,
+): Promise<string> {
   if (isMockClaudeMode()) {
-    const { MOCK_IMPLEMENTATION_PLAN_JSON } = await import("./mockClaudeResponses");
+    const { MOCK_IMPLEMENTATION_PLAN_JSON } =
+      await import("./mockClaudeResponses");
     return MOCK_IMPLEMENTATION_PLAN_JSON;
   }
-  return invokeWithLlmCheck<string>("finalize_implementation_plan", { contextText, conversationJson });
+  return invokeWithLlmCheck<string>("finalize_implementation_plan", {
+    contextText,
+    conversationJson,
+  });
 }
 
-export async function runImplementationAgent(ticketText: string, planJson: string, guidanceJson: string): Promise<string> {
-  return invokeWithLlmCheck<string>("run_implementation_agent", { ticketText, planJson, guidanceJson });
+export async function runImplementationAgent(
+  ticketText: string,
+  planJson: string,
+  guidanceJson: string,
+): Promise<string> {
+  return invokeWithLlmCheck<string>("run_implementation_agent", {
+    ticketText,
+    planJson,
+    guidanceJson,
+  });
 }
 
-export async function runImplementationGuidance(ticketText: string, planJson: string): Promise<string> {
+export async function runImplementationGuidance(
+  ticketText: string,
+  planJson: string,
+): Promise<string> {
   if (isMockClaudeMode()) {
     const { MOCK_GUIDANCE_JSON } = await import("./mockClaudeResponses");
     return MOCK_GUIDANCE_JSON;
   }
-  return invokeWithLlmCheck<string>("run_implementation_guidance", { ticketText, planJson });
+  return invokeWithLlmCheck<string>("run_implementation_guidance", {
+    ticketText,
+    planJson,
+  });
 }
 
-export async function runTestSuggestions(ticketText: string, planJson: string, implJson: string, diff: string): Promise<string> {
+export async function runTestSuggestions(
+  ticketText: string,
+  planJson: string,
+  implJson: string,
+  diff: string,
+): Promise<string> {
   if (isMockClaudeMode()) {
     const { MOCK_TESTS_JSON } = await import("./mockClaudeResponses");
     return MOCK_TESTS_JSON;
   }
-  return invokeWithLlmCheck<string>("run_test_suggestions", { ticketText, planJson, implJson, diff });
+  return invokeWithLlmCheck<string>("run_test_suggestions", {
+    ticketText,
+    planJson,
+    implJson,
+    diff,
+  });
 }
 
-export async function runPlanReview(ticketText: string, planJson: string, implJson: string, testJson: string, diff: string): Promise<string> {
+export async function runPlanReview(
+  ticketText: string,
+  planJson: string,
+  implJson: string,
+  testJson: string,
+  diff: string,
+): Promise<string> {
   if (isMockClaudeMode()) {
     const { MOCK_PLAN_REVIEW_JSON } = await import("./mockClaudeResponses");
     return MOCK_PLAN_REVIEW_JSON;
   }
-  return invokeWithLlmCheck<string>("run_plan_review", { ticketText, planJson, implJson, testJson, diff });
+  return invokeWithLlmCheck<string>("run_plan_review", {
+    ticketText,
+    planJson,
+    implJson,
+    testJson,
+    diff,
+  });
 }
 
-export async function runPrDescriptionGen(ticketText: string, planJson: string, implJson: string, reviewJson: string): Promise<string> {
+export async function runPrDescriptionGen(
+  ticketText: string,
+  planJson: string,
+  implJson: string,
+  reviewJson: string,
+): Promise<string> {
   if (isMockClaudeMode()) {
     const { MOCK_PR_DESCRIPTION_JSON } = await import("./mockClaudeResponses");
     return MOCK_PR_DESCRIPTION_JSON;
   }
-  return invokeWithLlmCheck<string>("run_pr_description_gen", { ticketText, planJson, implJson, reviewJson });
+  return invokeWithLlmCheck<string>("run_pr_description_gen", {
+    ticketText,
+    planJson,
+    implJson,
+    reviewJson,
+  });
 }
 
-export async function runRetrospectiveAgent(ticketText: string, planJson: string, implJson: string, reviewJson: string): Promise<string> {
+export async function runRetrospectiveAgent(
+  ticketText: string,
+  planJson: string,
+  implJson: string,
+  reviewJson: string,
+): Promise<string> {
   if (isMockClaudeMode()) {
     const { MOCK_RETROSPECTIVE_JSON } = await import("./mockClaudeResponses");
     return MOCK_RETROSPECTIVE_JSON;
   }
-  return invokeWithLlmCheck<string>("run_retrospective_agent", { ticketText, planJson, implJson, reviewJson });
+  return invokeWithLlmCheck<string>("run_retrospective_agent", {
+    ticketText,
+    planJson,
+    implJson,
+    reviewJson,
+  });
 }
 
 // ── Repo / worktree types & commands ─────────────────────────────────────────
@@ -1146,7 +1311,10 @@ export async function globRepoFiles(pattern: string): Promise<string[]> {
  * Search file contents with an extended regex.
  * @param path Optional subdirectory to restrict the search to.
  */
-export async function grepRepoFiles(pattern: string, path?: string): Promise<string[]> {
+export async function grepRepoFiles(
+  pattern: string,
+  path?: string,
+): Promise<string[]> {
   return invoke<string[]>("grep_repo_files", { pattern, path: path ?? null });
 }
 
@@ -1166,7 +1334,10 @@ export async function getRepoLog(maxCommits: number): Promise<string> {
 }
 
 /** Get the git log for a specific file (to understand history). */
-export async function getFileHistory(path: string, maxCommits: number): Promise<string> {
+export async function getFileHistory(
+  path: string,
+  maxCommits: number,
+): Promise<string> {
   return invoke<string>("get_file_history", { path, maxCommits });
 }
 
@@ -1174,7 +1345,9 @@ export async function getFileHistory(path: string, maxCommits: number): Promise<
  * Check out a branch in the configured worktree (fetch + checkout/reset).
  * Used by the PR Review Assistant before analysis.
  */
-export async function checkoutWorktreeBranch(branch: string): Promise<WorktreeInfo> {
+export async function checkoutWorktreeBranch(
+  branch: string,
+): Promise<WorktreeInfo> {
   return invoke<WorktreeInfo>("checkout_worktree_branch", { branch });
 }
 
@@ -1190,7 +1363,9 @@ export async function validatePrReviewWorktree(): Promise<WorktreeInfo> {
  * Check out a branch in the PR review worktree (fetch + checkout/reset).
  * Uses `pr_review_worktree_path` if set, otherwise falls back to `repo_worktree_path`.
  */
-export async function checkoutPrReviewBranch(branch: string): Promise<WorktreeInfo> {
+export async function checkoutPrReviewBranch(
+  branch: string,
+): Promise<WorktreeInfo> {
   return invoke<WorktreeInfo>("checkout_pr_review_branch", { branch });
 }
 
@@ -1216,7 +1391,9 @@ export async function validatePrAddressWorktree(): Promise<WorktreeInfo> {
 /**
  * Check out a branch in the PR address worktree (fetch + checkout/reset).
  */
-export async function checkoutPrAddressBranch(branch: string): Promise<WorktreeInfo> {
+export async function checkoutPrAddressBranch(
+  branch: string,
+): Promise<WorktreeInfo> {
   return invoke<WorktreeInfo>("checkout_pr_address_branch", { branch });
 }
 
@@ -1229,7 +1406,10 @@ export async function readPrAddressFile(path: string): Promise<string> {
  * Write a file in the PR address worktree (relative path).
  * Sandboxed to the worktree root.
  */
-export async function writePrAddressFile(path: string, content: string): Promise<void> {
+export async function writePrAddressFile(
+  path: string,
+  content: string,
+): Promise<void> {
   return invoke<void>("write_pr_address_file", { path, content });
 }
 
@@ -1275,7 +1455,10 @@ export async function loadAgentSkills(): Promise<Record<SkillType, string>> {
   return invoke<Record<SkillType, string>>("load_agent_skills");
 }
 
-export async function saveAgentSkill(skillType: SkillType, content: string): Promise<void> {
+export async function saveAgentSkill(
+  skillType: SkillType,
+  content: string,
+): Promise<void> {
   return invoke("save_agent_skill", { skillType, content });
 }
 
@@ -1285,7 +1468,10 @@ export async function deleteAgentSkill(skillType: SkillType): Promise<void> {
 
 export function parseAgentJson<T>(raw: string): T | null {
   try {
-    const cleaned = raw.replace(/^```(?:json)?\n?/m, "").replace(/\n?```$/m, "").trim();
+    const cleaned = raw
+      .replace(/^```(?:json)?\n?/m, "")
+      .replace(/\n?```$/m, "")
+      .trim();
     return JSON.parse(cleaned) as T;
   } catch {
     return null;
