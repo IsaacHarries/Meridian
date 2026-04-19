@@ -2,7 +2,6 @@
 // Credentials are always read from the OS keychain in the backend and never returned to the frontend.
 
 pub mod bitbucket;
-pub mod claude;
 pub mod credentials;
 pub mod fetch_url;
 pub mod jira;
@@ -13,42 +12,30 @@ pub mod skills;
 pub mod store_cache;
 pub mod validate;
 
+use crate::agents;
+use crate::llms;
+
+pub use agents::briefing::{
+    generate_sprint_retrospective, generate_standup_briefing, generate_workload_suggestions,
+};
+pub use agents::dispatch::llm_client;
+pub use agents::grooming::{
+    assess_ticket_quality, run_grooming_agent, run_grooming_chat_turn, run_grooming_file_probe,
+};
+pub use agents::implementation::{
+    run_implementation_agent, run_implementation_guidance, run_plan_review, run_pr_description_gen,
+    run_retrospective_agent, run_test_suggestions,
+};
+pub use agents::planning::{
+    finalize_implementation_plan, run_checkpoint_chat_turn, run_impact_analysis, run_triage_turn,
+};
+pub use agents::review::{
+    analyze_pr_comments, chat_address_pr, chat_pr_review, review_pr as review_pr_agent,
+};
 pub use bitbucket::{
     approve_pr, create_pr_task, delete_pr_comment, get_merged_prs, get_my_open_prs, get_open_prs,
     get_pr, get_pr_comments, get_pr_diff, get_pr_tasks, get_prs_for_review, post_pr_comment,
     request_changes_pr, resolve_pr_task, unapprove_pr, unrequest_changes_pr, update_pr_comment,
-};
-pub use claude::{
-    analyze_pr_comments,
-    assess_ticket_quality,
-    cancel_review,
-    chat_address_pr,
-    chat_pr_review,
-    finalize_implementation_plan,
-    generate_sprint_retrospective,
-    generate_standup_briefing,
-    generate_workload_suggestions,
-    get_claude_models,
-    get_gemini_models,
-    get_local_models,
-    review_pr,
-    run_checkpoint_chat_turn,
-    run_grooming_agent,
-    run_grooming_chat_turn,
-    // Agent pipeline
-    run_grooming_file_probe,
-    run_impact_analysis,
-    run_implementation_agent,
-    run_implementation_guidance,
-    run_plan_review,
-    run_pr_description_gen,
-    run_retrospective_agent,
-    run_test_suggestions,
-    run_triage_turn,
-    test_gemini_stored,
-    test_local_llm_stored,
-    validate_gemini,
-    validate_local_llm,
 };
 pub use credentials::{
     credential_status, delete_credential, get_non_secret_config, save_credential,
@@ -75,6 +62,12 @@ pub use jira::{
 pub use knowledge::{
     delete_knowledge_entry, export_knowledge_markdown, load_knowledge_entries, save_knowledge_entry,
 };
+pub use llms::claude::{cancel_review, get_claude_models};
+pub use llms::gemini::{
+    add_custom_gemini_model, get_custom_gemini_models, get_gemini_models,
+    remove_custom_gemini_model, test_gemini_stored, validate_gemini,
+};
+pub use llms::local_llm::{get_local_models, test_local_llm_stored, validate_local_llm};
 pub use preferences::{delete_preference, get_preferences, set_preference};
 pub use repo::{
     checkout_pr_address_branch, checkout_pr_review_branch, checkout_worktree_branch,

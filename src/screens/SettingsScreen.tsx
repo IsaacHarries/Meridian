@@ -77,6 +77,9 @@ import {
   deleteCredential,
   saveCredential,
   getGeminiModels,
+  getCustomGeminiModels,
+  addCustomGeminiModel,
+  removeCustomGeminiModel,
   getLocalModels,
   getActiveSprint,
   getOpenPrs,
@@ -325,7 +328,7 @@ function AnthropicSection({
   async function handleModelChange(modelId: string) {
     setSelectedModel(modelId);
     try {
-      await saveCredential("claude_model", modelId);
+      await setPreference("claude_model", modelId);
     } catch {
       /* non-critical */
     }
@@ -975,24 +978,71 @@ function GeminiSection({
   const [testResult, setTestResult] = useState<TestResult>("untested");
   const [connecting, setConnecting] = useState(false);
   const [models, setModels] = useState<[string, string][]>([]);
+  const [customModels, setCustomModels] = useState<string[]>([]);
   const [selectedModel, setSelectedModel] = useState("");
+  const [customModelDraft, setCustomModelDraft] = useState("");
+  const [customModelErr, setCustomModelErr] = useState("");
+  const [savingCustom, setSavingCustom] = useState(false);
+
+  async function refreshModelLists() {
+    const [list, custom] = await Promise.all([
+      getGeminiModels(),
+      getCustomGeminiModels(),
+    ]);
+    setModels(list);
+    setCustomModels(custom);
+  }
 
   useEffect(() => {
-    getGeminiModels()
-      .then(setModels)
-      .catch(() => {});
+    refreshModelLists().catch((err) => {
+      if (isConfigured) {
+        setStatus({
+          state: "error",
+          message: `Failed to load models: ${err}`,
+        });
+      }
+    });
     getNonSecretConfig()
       .then((cfg) => {
         if (cfg.gemini_model) setSelectedModel(cfg.gemini_model);
         if (cfg.gemini_auth_method === "oauth") setAuthMethod("oauth");
       })
       .catch(() => {});
-  }, []);
+  }, [isConfigured]);
+
+  async function handleAddCustomModel() {
+    const id = customModelDraft.trim();
+    if (!id) return;
+    setSavingCustom(true);
+    setCustomModelErr("");
+    try {
+      const updated = await addCustomGeminiModel(id);
+      setCustomModels(updated);
+      setModels(await getGeminiModels());
+      setCustomModelDraft("");
+      if (!selectedModel) handleModelChange(id);
+    } catch (err) {
+      setCustomModelErr(String(err));
+    } finally {
+      setSavingCustom(false);
+    }
+  }
+
+  async function handleRemoveCustomModel(id: string) {
+    try {
+      const updated = await removeCustomGeminiModel(id);
+      setCustomModels(updated);
+      setModels(await getGeminiModels());
+      if (selectedModel === id) handleModelChange("");
+    } catch (err) {
+      setCustomModelErr(String(err));
+    }
+  }
 
   async function handleModelChange(modelId: string) {
     setSelectedModel(modelId);
     try {
-      await saveCredential("gemini_model", modelId);
+      await setPreference("gemini_model", modelId);
     } catch {
       /* non-critical */
     }
@@ -1030,9 +1080,12 @@ function GeminiSection({
       setStatus({ state: "success", message: msg });
       setEditing(false);
       onSaved();
-      getGeminiModels()
-        .then(setModels)
-        .catch(() => {});
+      refreshModelLists().catch((err) => {
+        setStatus({
+          state: "error",
+          message: `${msg} (but failed to load models: ${err})`,
+        });
+      });
     } catch (err) {
       setTestResult("error");
       setStatus({ state: "error", message: String(err) });
@@ -1052,9 +1105,12 @@ function GeminiSection({
       setStatus({ state: "success", message: msg });
       setEditing(false);
       onSaved();
-      getGeminiModels()
-        .then(setModels)
-        .catch(() => {});
+      refreshModelLists().catch((err) => {
+        setStatus({
+          state: "error",
+          message: `${msg} (but failed to load models: ${err})`,
+        });
+      });
     } catch (err) {
       setTestResult("error");
       setStatus({ state: "error", message: String(err) });
@@ -1343,7 +1399,7 @@ function GeminiSection({
         <SectionMessage {...status} />
 
         {/* Model picker — visible when Gemini is configured */}
-        {isConfigured && models.length > 0 && (
+        {isConfigured && (
           <div className="space-y-1.5 pt-2 border-t">
             <label className="text-xs font-medium text-muted-foreground">
               Gemini Model
@@ -1354,6 +1410,11 @@ function GeminiSection({
               className="w-full rounded-md border border-input bg-background px-3 py-1.5 text-xs text-foreground shadow-sm focus:outline-none focus:ring-1 focus:ring-ring"
             >
               {!selectedModel && <option value="">— select a model —</option>}
+              {models.length === 0 && !selectedModel && (
+                <option value="" disabled>
+                  Loading models...
+                </option>
+              )}
               {models.map(([id, label]) => (
                 <option key={id} value={id}>
                   {label}
@@ -1364,6 +1425,73 @@ function GeminiSection({
               Used when Gemini is the active provider. Flash is recommended for
               speed and cost; Pro for the highest quality.
             </p>
+
+            <div className="pt-2 space-y-1.5">
+              <label className="text-xs font-medium text-muted-foreground">
+                Custom models
+              </label>
+              <p className="text-[11px] text-muted-foreground -mt-0.5">
+                Add any Gemini model ID Google has published (e.g.{" "}
+                <code>gemini-3.1-pro-preview</code>). Useful when a new model
+                ships before Meridian's built-in list is updated.
+              </p>
+              <div className="flex gap-2">
+                <Input
+                  value={customModelDraft}
+                  onChange={(e) => {
+                    setCustomModelDraft(e.target.value);
+                    if (customModelErr) setCustomModelErr("");
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      handleAddCustomModel();
+                    }
+                  }}
+                  placeholder="gemini-…"
+                  disabled={savingCustom}
+                  className="h-8 text-xs"
+                />
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={handleAddCustomModel}
+                  disabled={!customModelDraft.trim() || savingCustom}
+                >
+                  {savingCustom ? (
+                    <Loader2 className="h-3 w-3 animate-spin" />
+                  ) : (
+                    "Add"
+                  )}
+                </Button>
+              </div>
+              {customModelErr && (
+                <p className="text-[11px] text-destructive">
+                  {customModelErr}
+                </p>
+              )}
+              {customModels.length > 0 && (
+                <ul className="space-y-1 pt-1">
+                  {customModels.map((id) => (
+                    <li
+                      key={id}
+                      className="flex items-center justify-between rounded-md border px-2 py-1 text-xs"
+                    >
+                      <code className="font-mono">{id}</code>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-6 px-2 text-muted-foreground hover:text-destructive"
+                        onClick={() => handleRemoveCustomModel(id)}
+                        aria-label={`Remove ${id}`}
+                      >
+                        <Trash2 className="h-3 w-3" />
+                      </Button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
           </div>
         )}
       </CardContent>

@@ -1,18 +1,19 @@
-use crate::commands::credentials::get_credential;
-use crate::commands::preferences::get_pref;
-use crate::jira::{CustomFieldConfig, JiraClient, JiraFieldMeta, JiraIssue, JiraSprint, RawIssueField};
+use crate::integrations::jira::{
+    CustomFieldConfig, JiraClient, JiraFieldMeta, JiraIssue, JiraSprint, RawIssueField,
+};
+use crate::storage::credentials::get_credential;
+use crate::storage::preferences::get_pref;
 
 fn get_config(key: &str) -> Option<String> {
     get_pref(key).or_else(|| get_credential(key))
 }
 
 fn jira_client() -> Result<(JiraClient, i64), String> {
-    let base_url = get_credential("jira_base_url")
-        .ok_or("JIRA URL not configured. Check Settings.")?;
-    let email = get_credential("jira_email")
-        .ok_or("JIRA email not configured. Check Settings.")?;
-    let api_token = get_credential("jira_api_token")
-        .ok_or("JIRA API token not configured. Check Settings.")?;
+    let base_url =
+        get_credential("jira_base_url").ok_or("JIRA URL not configured. Check Settings.")?;
+    let email = get_credential("jira_email").ok_or("JIRA email not configured. Check Settings.")?;
+    let api_token =
+        get_credential("jira_api_token").ok_or("JIRA API token not configured. Check Settings.")?;
     let board_id_str = get_config("jira_board_id")
         .ok_or("JIRA board ID not configured. Check Settings → Configuration.")?;
     let board_id: i64 = board_id_str
@@ -23,7 +24,6 @@ fn jira_client() -> Result<(JiraClient, i64), String> {
     let client = JiraClient::new(base_url, email, api_token)?;
     Ok((client, board_id))
 }
-
 
 /// Active sprint for the configured board.
 #[tauri::command]
@@ -156,11 +156,7 @@ pub async fn update_jira_issue(
 /// Custom fields: "customfield_10034", etc. All text values are wrapped in ADF
 /// doc nodes for the v3 API (except "summary" which is a plain string).
 #[tauri::command]
-pub async fn update_jira_fields(
-    issue_key: String,
-    fields_json: String,
-) -> Result<(), String> {
+pub async fn update_jira_fields(issue_key: String, fields_json: String) -> Result<(), String> {
     let (client, _) = jira_client()?;
     client.update_fields(&issue_key, &fields_json).await
 }
-

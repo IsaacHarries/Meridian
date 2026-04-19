@@ -2,8 +2,8 @@ use serde::Serialize;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use super::credentials::get_credential;
-use super::preferences::get_pref;
+use crate::storage::credentials::get_credential;
+use crate::storage::preferences::get_pref;
 
 /// Read a config value: preferences first, credential store as migration fallback.
 fn get_config(key: &str) -> Option<String> {

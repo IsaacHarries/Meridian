@@ -2,8 +2,9 @@ use base64::Engine as _;
 use reqwest::{Client, StatusCode};
 use std::time::Duration;
 
-use super::credentials::{get_credential, store_credential};
 use crate::http::make_corporate_client;
+use crate::llms::gemini;
+use crate::storage::credentials::{get_credential, store_credential};
 
 fn make_client() -> Result<Client, String> {
     make_corporate_client(Duration::from_secs(10))
@@ -27,9 +28,9 @@ pub async fn validate_anthropic(api_key: String) -> Result<String, String> {
 /// not just connectivity.
 #[tauri::command]
 pub async fn ping_anthropic() -> Result<String, String> {
-    use super::claude::{build_messages_body, refresh_oauth_if_needed};
-    use super::credentials::get_credential;
     use crate::http::make_corporate_client;
+    use crate::llms::claude::{build_messages_body, refresh_oauth_if_needed};
+    use crate::storage::credentials::get_credential;
 
     let api_key = get_credential("anthropic_api_key")
         .ok_or("No Claude credentials found. Authenticate in Settings first.")?;
@@ -107,8 +108,8 @@ pub async fn ping_anthropic() -> Result<String, String> {
 /// credentials (API key or OAuth → Code Assist). Mirrors `ping_anthropic`.
 #[tauri::command]
 pub async fn ping_gemini() -> Result<String, String> {
-    use super::credentials::get_credential;
     use crate::http::make_corporate_client;
+    use crate::storage::credentials::get_credential;
 
     let key = get_credential("gemini_api_key")
         .filter(|k| !k.trim().is_empty())
@@ -116,11 +117,11 @@ pub async fn ping_gemini() -> Result<String, String> {
 
     let model = get_credential("gemini_model")
         .filter(|m| !m.trim().is_empty())
-        .unwrap_or_else(|| "gemini-2.5-flash".to_string());
+        .ok_or("No Gemini model selected. Please select a model in Settings first.")?;
 
     let client = make_corporate_client(Duration::from_secs(30))?;
 
-    let reply = super::claude::complete_gemini_for_ping(&client, &key, &model).await?;
+    let reply = gemini::complete_gemini_for_ping(&client, &key, &model).await?;
     Ok(format!(
         "Message sent successfully. Gemini replied: \"{reply}\""
     ))
@@ -172,7 +173,7 @@ pub async fn import_claude_code_token() -> Result<String, String> {
         .as_u64()
         .ok_or("Missing expiresAt in Claude Code credential")?;
 
-    use super::credentials::store_credential;
+    use crate::storage::credentials::store_credential;
     store_credential("anthropic_api_key", access_token)?;
     store_credential("claude_auth_method", "oauth")?;
     store_credential(
@@ -506,7 +507,7 @@ pub async fn start_gemini_oauth() -> Result<String, String> {
 
     // Onboard the user to Code Assist so subsequent generation calls have a
     // project ID. Surfaces a clear error if the free-tier signup fails.
-    super::claude::ensure_gemini_codeassist_project(&client, access_token).await?;
+    gemini::ensure_gemini_codeassist_project(&client, access_token).await?;
 
     Ok(
         "Connected to Google Account successfully. Meridian will use your Gemini subscription."

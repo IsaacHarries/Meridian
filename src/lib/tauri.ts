@@ -291,6 +291,23 @@ export async function getGeminiModels(): Promise<[string, string][]> {
   return invoke<[string, string][]>("get_gemini_models");
 }
 
+/** Return just the user-added custom Gemini model IDs. */
+export async function getCustomGeminiModels(): Promise<string[]> {
+  return invoke<string[]>("get_custom_gemini_models");
+}
+
+/** Persist a new custom Gemini model ID. Returns the updated custom list. */
+export async function addCustomGeminiModel(modelId: string): Promise<string[]> {
+  return invoke<string[]>("add_custom_gemini_model", { modelId });
+}
+
+/** Remove a user-added custom Gemini model. Returns the updated custom list. */
+export async function removeCustomGeminiModel(
+  modelId: string,
+): Promise<string[]> {
+  return invoke<string[]>("remove_custom_gemini_model", { modelId });
+}
+
 /**
  * Validate a Gemini API key by making a lightweight models-list request.
  * Saves the key on success; throws on failure.

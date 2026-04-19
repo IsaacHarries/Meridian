@@ -1,6 +1,8 @@
-use crate::bitbucket::{BitbucketClient, BitbucketComment, BitbucketPr, BitbucketTask};
-use crate::commands::credentials::get_credential;
-use crate::commands::preferences::get_pref;
+use crate::integrations::bitbucket::{
+    BitbucketClient, BitbucketComment, BitbucketPr, BitbucketTask,
+};
+use crate::storage::credentials::get_credential;
+use crate::storage::preferences::get_pref;
 
 fn get_config(key: &str) -> Option<String> {
     get_pref(key).or_else(|| get_credential(key))
@@ -130,7 +132,7 @@ pub async fn post_pr_comment(
     inline_path: Option<String>,
     inline_to_line: Option<i64>,
     parent_id: Option<i64>,
-) -> Result<crate::bitbucket::BitbucketComment, String> {
+) -> Result<crate::integrations::bitbucket::BitbucketComment, String> {
     let client = bitbucket_client()?;
     client
         .post_pr_comment(
@@ -149,7 +151,7 @@ pub async fn create_pr_task(
     pr_id: i64,
     comment_id: i64,
     content: String,
-) -> Result<crate::bitbucket::BitbucketTask, String> {
+) -> Result<crate::integrations::bitbucket::BitbucketTask, String> {
     let client = bitbucket_client()?;
     client.create_pr_task(pr_id, comment_id, &content).await
 }
@@ -160,7 +162,7 @@ pub async fn resolve_pr_task(
     pr_id: i64,
     task_id: i64,
     resolved: bool,
-) -> Result<crate::bitbucket::BitbucketTask, String> {
+) -> Result<crate::integrations::bitbucket::BitbucketTask, String> {
     let client = bitbucket_client()?;
     client.resolve_pr_task(pr_id, task_id, resolved).await
 }
@@ -178,10 +180,9 @@ pub async fn update_pr_comment(
     pr_id: i64,
     comment_id: i64,
     new_content: String,
-) -> Result<crate::bitbucket::BitbucketComment, String> {
+) -> Result<crate::integrations::bitbucket::BitbucketComment, String> {
     let client = bitbucket_client()?;
-    client.update_pr_comment(pr_id, comment_id, &new_content).await
+    client
+        .update_pr_comment(pr_id, comment_id, &new_content)
+        .await
 }
-
-
-

@@ -1,8 +1,9 @@
-pub mod bitbucket;
+pub mod agents;
 pub mod commands;
 pub mod http;
-pub mod jira;
-pub mod sidecar;
+pub mod integrations;
+pub mod llms;
+pub mod storage;
 
 use commands::{
     analyze_pr_comments,
@@ -41,7 +42,10 @@ use commands::{
     get_completed_sprints,
     get_file_history,
     get_future_sprints,
+    add_custom_gemini_model,
+    get_custom_gemini_models,
     get_gemini_models,
+    remove_custom_gemini_model,
     get_issue,
     get_jira_fields,
     get_local_models,
@@ -83,7 +87,7 @@ use commands::{
     read_repo_file,
     request_changes_pr,
     resolve_pr_task,
-    review_pr,
+    review_pr_agent as review_pr,
     run_checkpoint_chat_turn,
     run_grooming_agent,
     run_grooming_chat_turn,
@@ -148,10 +152,10 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .manage(sidecar::SidecarState::new())
+        .manage(crate::integrations::sidecar::SidecarState::new())
         .setup(|app| {
-            commands::credentials::init_store_path(app.handle());
-            commands::preferences::init_prefs_path(app.handle());
+            storage::credentials::init_store_path(app.handle());
+            storage::preferences::init_prefs_path(app.handle());
             eprintln!("[MERIDIAN] setup hook complete");
             Ok(())
         })
@@ -168,6 +172,9 @@ pub fn run() {
             chat_address_pr,
             get_claude_models,
             get_gemini_models,
+            get_custom_gemini_models,
+            add_custom_gemini_model,
+            remove_custom_gemini_model,
             validate_gemini,
             test_gemini_stored,
             get_local_models,
