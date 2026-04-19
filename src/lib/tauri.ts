@@ -1026,6 +1026,13 @@ export async function runTriageTurn(contextText: string, historyJson: string): P
   return invokeWithLlmCheck<string>("run_triage_turn", { contextText, historyJson });
 }
 
+export async function runCheckpointChatTurn(contextText: string, historyJson: string): Promise<string> {
+  if (isMockClaudeMode()) {
+    return "Happy to help clarify. Based on the stage output, everything looks on track. Let me know if you have specific questions.";
+  }
+  return invokeWithLlmCheck<string>("run_checkpoint_chat_turn", { contextText, historyJson });
+}
+
 export async function updateJiraIssue(
   issueKey: string,
   summary: string | null,
@@ -1066,36 +1073,36 @@ export async function runImplementationGuidance(ticketText: string, planJson: st
   return invokeWithLlmCheck<string>("run_implementation_guidance", { ticketText, planJson });
 }
 
-export async function runTestSuggestions(planJson: string, guidanceJson: string): Promise<string> {
+export async function runTestSuggestions(ticketText: string, planJson: string, implJson: string, diff: string): Promise<string> {
   if (isMockClaudeMode()) {
     const { MOCK_TESTS_JSON } = await import("./mockClaudeResponses");
     return MOCK_TESTS_JSON;
   }
-  return invokeWithLlmCheck<string>("run_test_suggestions", { planJson, guidanceJson });
+  return invokeWithLlmCheck<string>("run_test_suggestions", { ticketText, planJson, implJson, diff });
 }
 
-export async function runPlanReview(planJson: string, guidanceJson: string, testJson: string): Promise<string> {
+export async function runPlanReview(ticketText: string, planJson: string, implJson: string, testJson: string, diff: string): Promise<string> {
   if (isMockClaudeMode()) {
     const { MOCK_PLAN_REVIEW_JSON } = await import("./mockClaudeResponses");
     return MOCK_PLAN_REVIEW_JSON;
   }
-  return invokeWithLlmCheck<string>("run_plan_review", { planJson, guidanceJson, testJson });
+  return invokeWithLlmCheck<string>("run_plan_review", { ticketText, planJson, implJson, testJson, diff });
 }
 
-export async function runPrDescriptionGen(ticketText: string, planJson: string, reviewJson: string): Promise<string> {
+export async function runPrDescriptionGen(ticketText: string, planJson: string, implJson: string, reviewJson: string): Promise<string> {
   if (isMockClaudeMode()) {
     const { MOCK_PR_DESCRIPTION_JSON } = await import("./mockClaudeResponses");
     return MOCK_PR_DESCRIPTION_JSON;
   }
-  return invokeWithLlmCheck<string>("run_pr_description_gen", { ticketText, planJson, reviewJson });
+  return invokeWithLlmCheck<string>("run_pr_description_gen", { ticketText, planJson, implJson, reviewJson });
 }
 
-export async function runRetrospectiveAgent(ticketText: string, planJson: string, reviewJson: string): Promise<string> {
+export async function runRetrospectiveAgent(ticketText: string, planJson: string, implJson: string, reviewJson: string): Promise<string> {
   if (isMockClaudeMode()) {
     const { MOCK_RETROSPECTIVE_JSON } = await import("./mockClaudeResponses");
     return MOCK_RETROSPECTIVE_JSON;
   }
-  return invokeWithLlmCheck<string>("run_retrospective_agent", { ticketText, planJson, reviewJson });
+  return invokeWithLlmCheck<string>("run_retrospective_agent", { ticketText, planJson, implJson, reviewJson });
 }
 
 // ── Repo / worktree types & commands ─────────────────────────────────────────

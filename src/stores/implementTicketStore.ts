@@ -32,12 +32,14 @@ import {
   runGroomingAgent,
   runImpactAnalysis,
   runTriageTurn,
+  runCheckpointChatTurn,
   runGroomingChatTurn,
   finalizeImplementationPlan,
   runImplementationGuidance,
   runImplementationAgent,
   runTestSuggestions,
   runPlanReview,
+  getRepoDiff,
   runPrDescriptionGen,
   runRetrospectiveAgent,
   updateJiraIssue,
@@ -57,7 +59,6 @@ export type Stage =
   | "impact"
   | "triage"
   | "plan"
-  | "guidance"
   | "implementation"
   | "tests"
   | "review"
@@ -146,7 +147,8 @@ export function compilePipelineContext(
   ticketText: string,
   grooming: GroomingOutput | null,
   impact: ImpactOutput | null,
-  skills: Partial<Record<SkillType, string>> = {}
+  skills: Partial<Record<SkillType, string>> = {},
+  groomingChat: TriageMessage[] = []
 ): string {
   const parts: string[] = [];
   if (skills.grooming)
@@ -160,6 +162,11 @@ export function compilePipelineContext(
   parts.push(`=== TICKET ===\n${ticketText}`);
   if (grooming)
     parts.push(`=== GROOMING ANALYSIS ===\n${JSON.stringify(grooming, null, 2)}`);
+  if (groomingChat.length > 0)
+    parts.push(
+      `=== GROOMING Q&A (questions asked and answered during grooming — treat these answers as resolved) ===\n` +
+      groomingChat.map(m => `${m.role === "user" ? "User" : "Agent"}: ${m.content}`).join("\n\n")
+    );
   if (impact)
     parts.push(`=== IMPACT ANALYSIS ===\n${JSON.stringify(impact, null, 2)}`);
   return parts.join("\n\n");
@@ -300,6 +307,14 @@ interface ImplementTicketState {
   // ── Live progress (written by backend event listeners) ───────────────────────
   groomingProgress: string;
   groomingStreamText: string;
+  impactStreamText: string;
+  triageStreamText: string;
+  planStreamText: string;
+  testsStreamText: string;
+  reviewStreamText: string;
+  prStreamText: string;
+  retroStreamText: string;
+  checkpointStreamText: string;
 
   // ── Checkpoint chats (per stage follow-up conversations) ─────────────────────
   checkpointChats: Partial<Record<Stage, TriageMessage[]>>;
@@ -338,7 +353,6 @@ interface ImplementTicketState {
   runTriageStage: () => Promise<void>;
   sendTriageMessage: (input: string) => Promise<void>;
   finalizePlan: () => Promise<void>;
-  runGuidanceStage: () => Promise<void>;
   runImplementationStage: () => Promise<void>;
   runTestsStage: () => Promise<void>;
   runReviewStage: () => Promise<void>;
@@ -356,6 +370,8 @@ interface ImplementTicketState {
   clearError: (stage: Stage) => void;
   runGroomingStage: () => Promise<void>;
   retryStage: (stage: Stage) => Promise<void>;
+  /** Routes a chat message to the correct agent based on the active pipeline stage. */
+  sendPipelineMessage: (input: string) => Promise<void>;
 }
 
 // ── Initial state (no session) ─────────────────────────────────────────────────
@@ -369,7 +385,6 @@ export const INITIAL: Omit<
   | "runTriageStage"
   | "sendTriageMessage"
   | "finalizePlan"
-  | "runGuidanceStage"
   | "runImplementationStage"
   | "runTestsStage"
   | "runReviewStage"
@@ -387,6 +402,7 @@ export const INITIAL: Omit<
   | "clearError"
   | "runGroomingStage"
   | "retryStage"
+  | "sendPipelineMessage"
 > = {
   selectedIssue: null,
   currentStage: "select",
@@ -415,6 +431,14 @@ export const INITIAL: Omit<
   jiraUpdateError: "",
   groomingProgress: "",
   groomingStreamText: "",
+  impactStreamText: "",
+  triageStreamText: "",
+  planStreamText: "",
+  testsStreamText: "",
+  reviewStreamText: "",
+  prStreamText: "",
+  retroStreamText: "",
+  checkpointStreamText: "",
   checkpointChats: {},
   errors: {},
   kbSaved: false,
@@ -511,15 +535,14 @@ export const useImplementTicketStore = create<ImplementTicketState>()(
             groomingStreamText: "", filesRead: [],
           });
           break;
-        case "impact": outputResets.impact = null; break;
-        case "triage": outputResets.triageHistory = []; break;
-        case "plan": outputResets.plan = null; break;
-        case "guidance": outputResets.guidance = null; break;
-        case "implementation": Object.assign(outputResets, { implementation: null, implementationStreamText: "" }); break;
-        case "tests": outputResets.tests = null; break;
-        case "review": outputResets.review = null; break;
-        case "pr": outputResets.prDescription = null; break;
-        case "retro": outputResets.retrospective = null; break;
+        case "impact": Object.assign(outputResets, { impact: null, impactStreamText: "" }); break;
+        case "triage": Object.assign(outputResets, { triageHistory: [], triageStreamText: "" }); break;
+        case "plan": Object.assign(outputResets, { plan: null, guidance: null, planStreamText: "" }); break;
+        case "implementation": Object.assign(outputResets, { implementation: null, implementationStreamText: "", guidance: null }); break;
+        case "tests": Object.assign(outputResets, { tests: null, testsStreamText: "" }); break;
+        case "review": Object.assign(outputResets, { review: null, reviewStreamText: "" }); break;
+        case "pr": Object.assign(outputResets, { prDescription: null, prStreamText: "" }); break;
+        case "retro": Object.assign(outputResets, { retrospective: null, retroStreamText: "" }); break;
       }
 
       set({ errors, completedStages, pendingApproval, ...outputResets });
@@ -529,7 +552,6 @@ export const useImplementTicketStore = create<ImplementTicketState>()(
         case "impact": await get().runImpactStage(); break;
         case "triage": await get().runTriageStage(); break;
         case "plan": await get().finalizePlan(); break;
-        case "guidance": await get().runGuidanceStage(); break;
         case "implementation": await get().runImplementationStage(); break;
         case "tests": await get().runTestsStage(); break;
         case "review": await get().runReviewStage(); break;
@@ -722,11 +744,15 @@ export const useImplementTicketStore = create<ImplementTicketState>()(
 
     // ── Impact ─────────────────────────────────────────────────────────────────
     runImpactStage: async () => {
-      set({ currentStage: "impact", viewingStage: "impact" });
+      set({ currentStage: "impact", viewingStage: "impact", impactStreamText: "" });
       try {
-        const { ticketText, grooming, skills } = get();
+        const { ticketText, grooming, skills, groomingChat } = get();
+        const groomingWithQa = groomingChat.length > 0
+          ? JSON.stringify(grooming) + "\n\n=== GROOMING Q&A (resolved) ===\n" +
+            groomingChat.map(m => `${m.role === "user" ? "User" : "Agent"}: ${m.content}`).join("\n\n")
+          : JSON.stringify(grooming);
         const impactInput = prependSkill(ticketText, skills.patterns, "CODEBASE PATTERNS");
-        const raw = await runImpactAnalysis(impactInput, JSON.stringify(grooming));
+        const raw = await runImpactAnalysis(impactInput, groomingWithQa);
         const data = parseAgentJson<ImpactOutput>(raw);
         if (!data) throw new Error("Could not parse impact output");
         set({ impact: data });
@@ -739,9 +765,9 @@ export const useImplementTicketStore = create<ImplementTicketState>()(
 
     // ── Triage ─────────────────────────────────────────────────────────────────
     runTriageStage: async () => {
-      set({ currentStage: "triage", viewingStage: "triage" });
-      const { ticketText, grooming, impact, skills } = get();
-      const contextText = compilePipelineContext(ticketText, grooming, impact, skills);
+      set({ currentStage: "triage", viewingStage: "triage", triageStreamText: "" });
+      const { ticketText, grooming, impact, skills, groomingChat } = get();
+      const contextText = compilePipelineContext(ticketText, grooming, impact, skills, groomingChat);
       try {
         const initialMessage =
           "Please analyse this ticket and propose a concrete implementation approach. Ask any clarifying questions you need answered before we can finalise the plan.";
@@ -754,22 +780,25 @@ export const useImplementTicketStore = create<ImplementTicketState>()(
             { role: "user", content: initialMessage },
             { role: "assistant", content: response },
           ],
+          triageStreamText: "",
         });
       } catch (e) {
+        set({ triageStreamText: "" });
         get().setError("triage", String(e));
       }
     },
 
     sendTriageMessage: async (input) => {
-      const { triageHistory, ticketText, grooming, impact, skills } = get();
+      const { triageHistory, ticketText, grooming, impact, skills, groomingChat } = get();
       const userMsg: TriageMessage = { role: "user", content: input };
       const newHistory = [...triageHistory, userMsg];
       set({ triageHistory: newHistory });
       try {
-        const contextText = compilePipelineContext(ticketText, grooming, impact, skills);
+        const contextText = compilePipelineContext(ticketText, grooming, impact, skills, groomingChat);
         const response = await runTriageTurn(contextText, JSON.stringify(newHistory));
-        set({ triageHistory: [...newHistory, { role: "assistant", content: response }] });
+        set({ triageHistory: [...newHistory, { role: "assistant", content: response }], triageStreamText: "" });
       } catch (e) {
+        set({ triageStreamText: "" });
         get().setError("triage", String(e));
       }
     },
@@ -777,12 +806,25 @@ export const useImplementTicketStore = create<ImplementTicketState>()(
     finalizePlan: async () => {
       set({ currentStage: "plan" });
       try {
-        const { ticketText, grooming, impact, skills, triageHistory } = get();
-        const contextText = compilePipelineContext(ticketText, grooming, impact, skills);
+        const { ticketText, grooming, impact, skills, triageHistory, groomingChat } = get();
+        const contextText = compilePipelineContext(ticketText, grooming, impact, skills, groomingChat);
         const raw = await finalizeImplementationPlan(contextText, JSON.stringify(triageHistory));
         const data = parseAgentJson<ImplementationPlan>(raw);
         if (!data) throw new Error("Could not parse plan output");
         set({ plan: data, viewingStage: "plan" });
+
+        // Run guidance silently as part of plan finalization (not a separate user-visible stage)
+        try {
+          const guidanceInput = prependSkill(
+            prependSkill(ticketText, skills.patterns, "CODEBASE PATTERNS"),
+            skills.implementation,
+            "IMPLEMENTATION STANDARDS"
+          );
+          const guidanceRaw = await runImplementationGuidance(guidanceInput, JSON.stringify(data));
+          const guidanceData = parseAgentJson<GuidanceOutput>(guidanceRaw);
+          if (guidanceData) set({ guidance: guidanceData });
+        } catch { /* guidance failure is non-fatal — implementation can proceed with plan alone */ }
+
         get().markComplete("triage");
         get().markComplete("plan");
         set({ pendingApproval: "plan" });
@@ -791,33 +833,12 @@ export const useImplementTicketStore = create<ImplementTicketState>()(
       }
     },
 
-    // ── Guidance ───────────────────────────────────────────────────────────────
-    runGuidanceStage: async () => {
-      set({ currentStage: "guidance", viewingStage: "guidance" });
-      try {
-        const { ticketText, plan, skills } = get();
-        const guidanceInput = prependSkill(
-          prependSkill(ticketText, skills.patterns, "CODEBASE PATTERNS"),
-          skills.implementation,
-          "IMPLEMENTATION STANDARDS"
-        );
-        const raw = await runImplementationGuidance(guidanceInput, JSON.stringify(plan));
-        const data = parseAgentJson<GuidanceOutput>(raw);
-        if (!data) throw new Error("Could not parse guidance output");
-        set({ guidance: data });
-        get().markComplete("guidance");
-        set({ pendingApproval: "guidance" });
-      } catch (e) {
-        get().setError("guidance", String(e));
-      }
-    },
-
     // ── Implementation ─────────────────────────────────────────────────────────
     runImplementationStage: async () => {
       set({ currentStage: "implementation", viewingStage: "implementation", implementationStreamText: "" });
       try {
         const { ticketText, plan, guidance } = get();
-        const raw = await runImplementationAgent(ticketText, JSON.stringify(plan), JSON.stringify(guidance));
+        const raw = await runImplementationAgent(ticketText, JSON.stringify(plan), guidance ? JSON.stringify(guidance) : "");
         const data = parseAgentJson<ImplementationOutput>(raw);
         if (!data) throw new Error("Could not parse implementation output");
         set({ implementation: data });
@@ -830,10 +851,17 @@ export const useImplementTicketStore = create<ImplementTicketState>()(
 
     // ── Tests ──────────────────────────────────────────────────────────────────
     runTestsStage: async () => {
-      set({ currentStage: "tests", viewingStage: "tests" });
+      set({ currentStage: "tests", viewingStage: "tests", testsStreamText: "" });
       try {
-        const { plan, guidance } = get();
-        const raw = await runTestSuggestions(JSON.stringify(plan), JSON.stringify(guidance));
+        const { ticketText, plan, implementation } = get();
+        let diff = "";
+        try { diff = await getRepoDiff(); } catch { /* no worktree — proceed without diff */ }
+        const raw = await runTestSuggestions(
+          ticketText,
+          JSON.stringify(plan),
+          JSON.stringify(implementation),
+          diff
+        );
         const data = parseAgentJson<TestOutput>(raw);
         if (!data) throw new Error("Could not parse test output");
         set({ tests: data });
@@ -846,13 +874,21 @@ export const useImplementTicketStore = create<ImplementTicketState>()(
 
     // ── Review ─────────────────────────────────────────────────────────────────
     runReviewStage: async () => {
-      set({ currentStage: "review", viewingStage: "review" });
+      set({ currentStage: "review", viewingStage: "review", reviewStreamText: "" });
       try {
-        const { plan, guidance, tests, skills } = get();
+        const { ticketText, plan, implementation, tests, skills } = get();
+        let diff = "";
+        try { diff = await getRepoDiff(); } catch { /* no worktree — proceed without diff */ }
         const reviewPlanJson = skills.review
           ? `=== REVIEW STANDARDS (follow these) ===\n${skills.review}\n\n${JSON.stringify(plan)}`
           : JSON.stringify(plan);
-        const raw = await runPlanReview(reviewPlanJson, JSON.stringify(guidance), JSON.stringify(tests));
+        const raw = await runPlanReview(
+          ticketText,
+          reviewPlanJson,
+          JSON.stringify(implementation),
+          JSON.stringify(tests),
+          diff
+        );
         const data = parseAgentJson<PlanReviewOutput>(raw);
         if (!data) throw new Error("Could not parse review output");
         set({ review: data });
@@ -865,10 +901,15 @@ export const useImplementTicketStore = create<ImplementTicketState>()(
 
     // ── PR Description ─────────────────────────────────────────────────────────
     runPrStage: async () => {
-      set({ currentStage: "pr", viewingStage: "pr" });
+      set({ currentStage: "pr", viewingStage: "pr", prStreamText: "" });
       try {
-        const { ticketText, plan, review } = get();
-        const raw = await runPrDescriptionGen(ticketText, JSON.stringify(plan), JSON.stringify(review));
+        const { ticketText, plan, implementation, review } = get();
+        const raw = await runPrDescriptionGen(
+          ticketText,
+          JSON.stringify(plan),
+          JSON.stringify(implementation),
+          JSON.stringify(review)
+        );
         const data = parseAgentJson<PrDescriptionOutput>(raw);
         if (!data) throw new Error("Could not parse PR description output");
         set({ prDescription: data });
@@ -881,10 +922,15 @@ export const useImplementTicketStore = create<ImplementTicketState>()(
 
     // ── Retrospective ──────────────────────────────────────────────────────────
     runRetroStage: async () => {
-      set({ currentStage: "retro", viewingStage: "retro" });
+      set({ currentStage: "retro", viewingStage: "retro", retroStreamText: "" });
       try {
-        const { ticketText, plan, review } = get();
-        const raw = await runRetrospectiveAgent(ticketText, JSON.stringify(plan), JSON.stringify(review));
+        const { ticketText, plan, implementation, review } = get();
+        const raw = await runRetrospectiveAgent(
+          ticketText,
+          JSON.stringify(plan),
+          JSON.stringify(implementation),
+          JSON.stringify(review)
+        );
         const data = parseAgentJson<RetrospectiveOutput>(raw);
         if (!data) throw new Error("Could not parse retrospective output");
         set({ retrospective: data });
@@ -902,8 +948,7 @@ export const useImplementTicketStore = create<ImplementTicketState>()(
         switch (stage) {
           case "grooming":   await get().runImpactStage(); break;
           case "impact":     await get().runTriageStage(); break;
-          case "plan":           await get().runGuidanceStage(); break;
-          case "guidance":       await get().runImplementationStage(); break;
+          case "plan":           await get().runImplementationStage(); break;
           case "implementation": await get().runTestsStage(); break;
           case "tests":      await get().runReviewStage(); break;
           case "review":     await get().runPrStage(); break;
@@ -917,50 +962,59 @@ export const useImplementTicketStore = create<ImplementTicketState>()(
 
     // ── Checkpoint chat ────────────────────────────────────────────────────────
     sendCheckpointMessage: async (stage, input) => {
-      const { checkpointChats, ticketText, grooming, impact, skills } = get();
-      const stageLabels: Record<string, string> = {
+      const { checkpointChats, ticketText, grooming, impact, skills, groomingChat } = get();
+      const stageLabels: Partial<Record<Stage, string>> = {
         grooming: "GROOMING", impact: "IMPACT ANALYSIS", plan: "IMPLEMENTATION PLAN",
-        guidance: "IMPLEMENTATION GUIDANCE", implementation: "IMPLEMENTATION RESULT",
-        tests: "TEST SUGGESTIONS", review: "PLAN REVIEW", pr: "PR DESCRIPTION", retro: "RETROSPECTIVE",
+        implementation: "IMPLEMENTATION RESULT", tests: "TEST SUGGESTIONS",
+        review: "CODE REVIEW", pr: "PR DESCRIPTION", retro: "RETROSPECTIVE",
       };
       const s = get();
       const stageOutput =
         stage === "grooming"  ? s.grooming :
         stage === "impact"    ? s.impact :
-        stage === "plan"      ? s.plan :
-        stage === "guidance"       ? s.guidance :
+        stage === "plan"           ? s.plan :
         stage === "implementation" ? s.implementation :
         stage === "tests"          ? s.tests :
         stage === "review"    ? s.review :
         stage === "pr"        ? s.prDescription :
         stage === "retro"     ? s.retrospective : null;
 
-      const context = [
-        compilePipelineContext(ticketText, grooming, impact, skills),
+      // Post-implementation stages benefit from having the implementation output in context.
+      const postImplStages: Stage[] = ["implementation", "tests", "review", "pr", "retro"];
+      const isPostImpl = postImplStages.includes(stage);
+
+      const contextParts = [
+        compilePipelineContext(ticketText, grooming, impact, skills, groomingChat),
+        isPostImpl && s.plan
+          ? `=== IMPLEMENTATION PLAN ===\n${JSON.stringify(s.plan, null, 2)}`
+          : "",
+        isPostImpl && s.implementation
+          ? `=== IMPLEMENTATION RESULT ===\n${JSON.stringify(s.implementation, null, 2)}`
+          : "",
         stageOutput
           ? `=== ${stageLabels[stage] ?? stage.toUpperCase()} OUTPUT ===\n${JSON.stringify(stageOutput, null, 2)}`
           : "",
-      ]
-        .filter(Boolean)
-        .join("\n\n");
+      ];
+
+      const context = contextParts.filter(Boolean).join("\n\n");
 
       const prev = checkpointChats[stage] ?? [];
       const newHistory: TriageMessage[] = [...prev, { role: "user", content: input }];
       set({ checkpointChats: { ...checkpointChats, [stage]: newHistory } });
 
       try {
-        const response = await runTriageTurn(context, JSON.stringify(newHistory));
+        const response = await runCheckpointChatTurn(context, JSON.stringify(newHistory));
         set((st) => ({
+          checkpointStreamText: "",
           checkpointChats: {
             ...st.checkpointChats,
             [stage]: [...(st.checkpointChats[stage] ?? newHistory), { role: "assistant", content: response }],
           },
         }));
       } catch (e) {
-        // Surface the error as an assistant message so the user knows what went wrong
-        // rather than seeing the chat silently go quiet.
         const errMsg = `⚠️ Something went wrong: ${String(e)}`;
         set((st) => ({
+          checkpointStreamText: "",
           checkpointChats: {
             ...st.checkpointChats,
             [stage]: [...(st.checkpointChats[stage] ?? newHistory), { role: "assistant", content: errMsg }],
@@ -1086,6 +1140,18 @@ export const useImplementTicketStore = create<ImplementTicketState>()(
         }
       } catch (e) {
         set({ jiraUpdateError: String(e), jiraUpdateStatus: "error" });
+      }
+    },
+
+    // ── Unified pipeline chat ──────────────────────────────────────────────────
+    sendPipelineMessage: async (input) => {
+      const s = get();
+      if (s.pendingApproval === "grooming") {
+        await get().sendGroomingChatMessage(input);
+      } else if (s.pendingApproval) {
+        await get().sendCheckpointMessage(s.pendingApproval, input);
+      } else if (s.currentStage === "triage") {
+        await get().sendTriageMessage(input);
       }
     },
 

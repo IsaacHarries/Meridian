@@ -2746,6 +2746,68 @@ async fn dispatch_multi(
 }
 
 
+/// Streaming multi-turn dispatch — mirrors `dispatch_multi` but emits token deltas.
+/// Falls back to non-streaming for providers that lack a streaming multi-turn path (e.g. Gemini).
+async fn dispatch_multi_streaming(
+    app: &tauri::AppHandle,
+    client: &Client,
+    claude_key: &str,
+    system: &str,
+    history_json: &str,
+    max_tokens: u32,
+    stream_event: &str,
+) -> Result<String, String> {
+    let provider = get_ai_provider();
+
+    let providers_to_try: Vec<String> = if provider == "auto" {
+        get_provider_order()
+    } else {
+        vec![provider]
+    };
+
+    let mut failure_reasons: Vec<String> = Vec::new();
+
+    for p in &providers_to_try {
+        let result = match p.as_str() {
+            "claude" => {
+                if claude_key.is_empty() {
+                    Err("not configured".to_string())
+                } else {
+                    complete_multi_claude_streaming(app, client, claude_key, &get_active_model(), system, history_json, max_tokens, stream_event).await
+                }
+            }
+            "local" => {
+                let base = match local_llm_base_url() {
+                    Some(b) => b,
+                    None => { failure_reasons.push("Local LLM: not configured".to_string()); continue; }
+                };
+                let model = match get_local_llm_model() {
+                    Some(m) => m,
+                    None => { failure_reasons.push("Local LLM: no model selected".to_string()); continue; }
+                };
+                let key = get_credential("local_llm_api_key");
+                complete_multi_local_streaming(app, &base, key.as_deref(), &model, system, history_json, max_tokens, stream_event).await
+            }
+            // Gemini has no streaming multi-turn path — use standard non-streaming fallback.
+            p => try_provider_multi(app, p, client, claude_key, system, history_json, max_tokens).await,
+        };
+
+        match result {
+            Ok(r) => return Ok(r),
+            Err(e) if e.contains("not configured") || e.contains("no model") => {
+                failure_reasons.push(format!("{p}: not configured"));
+            }
+            Err(e) if is_quota_error(&e) => {
+                failure_reasons.push(format!("{p}: rate limited / quota exceeded"));
+            }
+            Err(e) => return Err(e),
+        }
+    }
+
+    let summary = failure_reasons.join("; ");
+    Err(format!("All providers failed — {summary}"))
+}
+
 /// Agent 1a — Grooming File Probe: ask Claude which files to read before full grooming.
 /// Returns JSON: { "files": ["path/to/file", ...], "grep_patterns": ["pattern", ...] }
 #[tauri::command]
@@ -2864,7 +2926,7 @@ pub async fn run_impact_analysis(app: tauri::AppHandle, ticket_text: String, gro
           \"recommendations\": \"<key things to be careful about>\"\n\
         }";
     let user = format!("Ticket:\n{ticket_text}\n\nGrooming analysis:\n{grooming_json}");
-    dispatch(&app, &client, &api_key, system, &user, 1500).await
+    dispatch_streaming(&app, &client, &api_key, system, &user, 1500, "impact-stream").await
 }
 
 /// Agent 3a — Triage turn: one conversational exchange in the planning session.
@@ -2887,7 +2949,29 @@ pub async fn run_triage_turn(
         - Be concise and practical\n\
         Respond in plain text. Do NOT produce JSON."
     );
-    dispatch_multi_streaming_with_tools(&app, &client, &api_key, &system, &history_json, 800, "grooming-stream").await
+    dispatch_multi_streaming(&app, &client, &api_key, &system, &history_json, 800, "triage-stream").await
+}
+
+/// Checkpoint chat turn: general Q&A at any post-triage pipeline stage.
+/// Used when the user wants to ask questions or request clarifications after
+/// seeing stage output (impact, plan, implementation, tests, review, pr, retro).
+#[tauri::command]
+pub async fn run_checkpoint_chat_turn(
+    app: tauri::AppHandle,
+    context_text: String,
+    history_json: String,
+) -> Result<String, String> {
+    let (client, api_key) = llm_client().await?;
+    let system = format!(
+        "You are a senior software engineer helping a developer understand and act on pipeline \
+        output. You have full context on the ticket, pipeline history, and the current stage output below.\n\n\
+        {context_text}\n\n\
+        Answer the developer's questions clearly and concisely. Reference specific details from \
+        the stage output when relevant. If the developer asks you to change something, explain \
+        what they need to do or what the implications are. \
+        Respond in plain text. Do NOT produce JSON."
+    );
+    dispatch_multi_streaming(&app, &client, &api_key, &system, &history_json, 800, "checkpoint-chat-stream").await
 }
 
 /// Grooming chat turn: structured back-and-forth during ticket grooming.
@@ -2930,7 +3014,7 @@ pub async fn run_grooming_chat_turn(
         - To remove a suggestion, omit its id from updated_edits (the frontend will not delete it — include it with a note in reasoning if it should be withdrawn)\n\
         - Keep the message focused and concise"
     );
-    dispatch_multi(&app, &client, &api_key, &system, &history_json, 1200).await
+    dispatch_multi_streaming(&app, &client, &api_key, &system, &history_json, 1200, "grooming-chat-stream").await
 }
 
 /// Agent 3b — Finalize plan: extract a structured implementation plan from the triage conversation.
@@ -2960,7 +3044,7 @@ pub async fn finalize_implementation_plan(
         Context:\n{context_text}"
     );
     let user = format!("Triage conversation:\n{conversation_json}");
-    dispatch(&app, &client, &api_key, &system, &user, 2000).await
+    dispatch_streaming(&app, &client, &api_key, &system, &user, 2000, "plan-stream").await
 }
 
 /// Agent 4 — Implementation Guidance: step-by-step guide for executing the plan.
@@ -2985,7 +3069,7 @@ pub async fn run_implementation_guidance(
           \"definition_of_done\": [\"<how to know the step is complete>\", ...]\n\
         }";
     let user = format!("Ticket:\n{ticket_text}\n\nImplementation plan:\n{plan_json}");
-    dispatch(&app, &client, &api_key, system, &user, 2000).await
+    dispatch_streaming(&app, &client, &api_key, system, &user, 2000, "guidance-stream").await
 }
 
 /// Agent 4b — Implementation: actually write code for each file in the plan.
@@ -3087,10 +3171,15 @@ pub async fn run_implementation_agent(
               \"deviation\": \"<describe any deviation from the plan, or null if none>\"\n\
             }";
 
+        let guidance_section = if guidance_json.trim().is_empty() {
+            String::new()
+        } else {
+            format!("Implementation guidance:\n{guidance_json}\n\n")
+        };
         let user = format!(
             "Ticket:\n{ticket_text}\n\n\
              Implementation plan:\n{plan_json}\n\n\
-             Implementation guidance:\n{guidance_json}\n\n\
+             {guidance_section}\
              File to implement:\n{path}\n\
              Planned action: {action}\n\
              Plan description: {description}\n\n\
@@ -3099,7 +3188,7 @@ pub async fn run_implementation_agent(
 
         emit(&format!("  Generating new content…\n"));
 
-        let raw = match complete(&client, &api_key, "claude-sonnet-4-6", system, &user, 8000).await {
+        let raw = match complete(&client, &api_key, &get_active_model(), system, &user, 8000).await {
             Ok(r) => r,
             Err(e) => {
                 emit(&format!("  ERROR: Claude call failed for {path}: {e}\n"));
@@ -3168,6 +3257,11 @@ pub async fn run_implementation_agent(
         }
     }
 
+    // Stage all written/deleted files so the diff is available for Tests and Review agents.
+    if let Err(e) = super::repo::git_add_all_internal() {
+        emit(&format!("\n  WARNING: Could not stage changes: {e}\n"));
+    }
+
     emit(&format!("\nImplementation complete — {} file(s) changed", files_changed.len()));
     if !skipped.is_empty() {
         emit(&format!(", {} skipped", skipped.len()));
@@ -3188,16 +3282,20 @@ pub async fn run_implementation_agent(
     Ok(output.to_string())
 }
 
-/// Agent 5 — Test Suggestions: recommend tests to write for the implementation.
+/// Agent 5 — Test Suggestions: recommend tests to write based on the actual code changes.
 #[tauri::command]
 pub async fn run_test_suggestions(
     app: tauri::AppHandle,
+    ticket_text: String,
     plan_json: String,
-    guidance_json: String,
+    impl_json: String,
+    diff: String,
 ) -> Result<String, String> {
     let (client, api_key) = llm_client().await?;
-    let system = "You are a test generation advisor. Given the implementation plan and guidance, \
-        recommend specific tests to write. Think independently — challenge the implementation's assumptions. \
+    let system = "You are a test generation advisor. You will receive the ticket, implementation plan, \
+        implementation summary, and the actual git diff of what was written. \
+        Generate tests based on the real code changes, not just the intended plan. \
+        Think independently — challenge the implementation's assumptions and verify against acceptance criteria. \
         Return ONLY valid JSON (no markdown fences):\n\
         {\n\
           \"test_strategy\": \"<overall testing approach>\",\n\
@@ -3212,34 +3310,53 @@ pub async fn run_test_suggestions(
           \"edge_cases_to_test\": [\"<edge case>\", ...],\n\
           \"coverage_notes\": \"<anything deliberately not covered and why>\"\n\
         }";
-    let user = format!("Implementation plan:\n{plan_json}\n\nImplementation guidance:\n{guidance_json}");
-    dispatch(&app, &client, &api_key, system, &user, 1500).await
+    let diff_section = if diff.is_empty() {
+        "(no diff available — worktree may not be configured)".to_string()
+    } else {
+        diff
+    };
+    let user = format!(
+        "Ticket:\n{ticket_text}\n\nImplementation plan:\n{plan_json}\n\nImplementation result:\n{impl_json}\n\nCode diff:\n{diff_section}"
+    );
+    dispatch_streaming(&app, &client, &api_key, system, &user, 1500, "tests-stream").await
 }
 
-/// Agent 6 — Plan Review: critique the plan before any code is written.
+/// Agent 6 — Code Review: review the actual diff produced by the implementation agent.
 #[tauri::command]
 pub async fn run_plan_review(
     app: tauri::AppHandle,
+    ticket_text: String,
     plan_json: String,
-    guidance_json: String,
+    impl_json: String,
     test_json: String,
+    diff: String,
 ) -> Result<String, String> {
     let (client, api_key) = llm_client().await?;
-    let system = "You are a code review agent critiquing an implementation plan before coding begins. \
-        Review for completeness, correctness, and risk. \
+    let system = "You are a code review agent. You will receive the ticket, implementation plan, \
+        implementation summary, proposed tests, and the actual git diff of what was written. \
+        Review the REAL CODE CHANGES in the diff — not just the plan. \
+        Check for: correctness vs acceptance criteria, security issues, logic errors, \
+        deviations from the agreed plan, missing edge case handling, and code quality. \
         Return ONLY valid JSON (no markdown fences):\n\
         {\n\
           \"confidence\": \"ready|needs_attention|requires_rework\",\n\
-          \"summary\": \"<one sentence overall assessment>\",\n\
+          \"summary\": \"<one sentence overall assessment of the actual changes>\",\n\
           \"findings\": [\n\
             {\"severity\": \"blocking|non_blocking|suggestion\",\n\
-             \"area\": \"<plan area>\", \"feedback\": \"<specific feedback>\"}\n\
+             \"area\": \"<file or area>\", \"feedback\": \"<specific feedback with line references where possible>\"}\n\
           ],\n\
-          \"things_to_address\": [\"<must-fix before starting>\", ...],\n\
-          \"things_to_watch\": [\"<keep in mind while implementing>\", ...]\n\
+          \"things_to_address\": [\"<must-fix before merging>\", ...],\n\
+          \"things_to_watch\": [\"<notable observations for the PR reviewer>\", ...]\n\
         }";
-    let user = format!("Plan:\n{plan_json}\n\nGuidance:\n{guidance_json}\n\nTest plan:\n{test_json}");
-    dispatch(&app, &client, &api_key, system, &user, 1500).await
+    let diff_section = if diff.is_empty() {
+        "(no diff available — worktree may not be configured)".to_string()
+    } else {
+        diff
+    };
+    let user = format!(
+        "Ticket:\n{ticket_text}\n\nImplementation plan:\n{plan_json}\n\nImplementation result:\n{impl_json}\n\nTest plan:\n{test_json}\n\nCode diff:\n{diff_section}"
+    );
+    dispatch_streaming(&app, &client, &api_key, system, &user, 1500, "review-stream").await
 }
 
 /// Agent 7 — PR Description: generate a complete pull request description.
@@ -3248,18 +3365,23 @@ pub async fn run_pr_description_gen(
     app: tauri::AppHandle,
     ticket_text: String,
     plan_json: String,
+    impl_json: String,
     review_json: String,
 ) -> Result<String, String> {
     let (client, api_key) = llm_client().await?;
-    let system = "You are a PR description writer. Produce a thorough, professional PR description. \
+    let system = "You are a PR description writer. Produce a thorough, professional PR description \
+        based on what was ACTUALLY implemented (see implementation result and review notes), \
+        not just what was planned. If there were deviations from the plan, mention them. \
         Return ONLY valid JSON (no markdown fences):\n\
         {\n\
           \"title\": \"<concise PR title under 70 chars>\",\n\
           \"description\": \"<full markdown PR description including: what changed, why, how implemented, \
-            testing approach, linked JIRA ticket, anything reviewers should pay attention to>\"\n\
+            testing approach, linked JIRA ticket, deviations from plan if any, anything reviewers should pay attention to>\"\n\
         }";
-    let user = format!("Ticket:\n{ticket_text}\n\nImplementation plan:\n{plan_json}\n\nReview notes:\n{review_json}");
-    dispatch(&app, &client, &api_key, system, &user, 2000).await
+    let user = format!(
+        "Ticket:\n{ticket_text}\n\nImplementation plan:\n{plan_json}\n\nImplementation result:\n{impl_json}\n\nReview notes:\n{review_json}"
+    );
+    dispatch_streaming(&app, &client, &api_key, system, &user, 2000, "pr-stream").await
 }
 
 /// Agent 8 — Retrospective: capture learnings from the implementation session.
@@ -3268,10 +3390,12 @@ pub async fn run_retrospective_agent(
     app: tauri::AppHandle,
     ticket_text: String,
     plan_json: String,
+    impl_json: String,
     review_json: String,
 ) -> Result<String, String> {
     let (client, api_key) = llm_client().await?;
     let system = "You are a retrospective agent. Review the full implementation session and capture learnings. \
+        Pay particular attention to any deviations from the plan and what caused them. \
         Return ONLY valid JSON (no markdown fences):\n\
         {\n\
           \"what_went_well\": [\"<positive observation>\", ...],\n\
@@ -3285,8 +3409,10 @@ pub async fn run_retrospective_agent(
           ],\n\
           \"summary\": \"<one paragraph retrospective summary>\"\n\
         }";
-    let user = format!("Ticket:\n{ticket_text}\n\nImplementation plan:\n{plan_json}\n\nReview:\n{review_json}");
-    dispatch(&app, &client, &api_key, system, &user, 1500).await
+    let user = format!(
+        "Ticket:\n{ticket_text}\n\nImplementation plan:\n{plan_json}\n\nImplementation result:\n{impl_json}\n\nReview:\n{review_json}"
+    );
+    dispatch_streaming(&app, &client, &api_key, system, &user, 1500, "retro-stream").await
 }
 
 // ── PR review helpers ─────────────────────────────────────────────────────────

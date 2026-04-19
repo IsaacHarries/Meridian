@@ -320,6 +320,14 @@ pub fn write_repo_file_internal(path: &str, content: &str) -> Result<(), String>
 }
 
 /// Non-command helper used by the implementation agent in claude.rs.
+/// Stages all changes in the main implementation worktree (`git add -A`).
+pub fn git_add_all_internal() -> Result<(), String> {
+    let root = worktree_path()?;
+    git(&root, &["add", "-A"])?;
+    Ok(())
+}
+
+/// Non-command helper used by the implementation agent in claude.rs.
 /// Deletes a file from the main implementation worktree.
 pub fn delete_repo_file_internal(path: &str) -> Result<(), String> {
     let root = worktree_path()?;
@@ -398,7 +406,8 @@ pub async fn get_repo_diff() -> Result<String, String> {
         .map(|s| s.trim().to_string())
         .unwrap_or(remote_ref.clone());
 
-    let diff = git(&root, &["diff", &merge_base, "HEAD"])?;
+    // Compare working tree to merge-base so uncommitted implementation changes are included
+    let diff = git(&root, &["diff", &merge_base])?;
 
     // Cap at 1 MB
     const MAX_BYTES: usize = 1024 * 1024;

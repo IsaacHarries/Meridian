@@ -43,7 +43,6 @@ import {
   type SuggestedEdit,
   type ImpactOutput,
   type ImplementationPlan,
-  type GuidanceOutput,
   type ImplementationOutput,
   type TestOutput,
   type PlanReviewOutput,
@@ -81,18 +80,17 @@ const STAGE_LABELS: Record<Exclude<Stage, "select">, string> = {
   grooming: "Grooming",
   impact: "Impact Analysis",
   triage: "Triage",
-  plan: "Finalising Plan",
-  guidance: "Implementation Guide",
+  plan: "Implementation Plan",
   implementation: "Implementation",
   tests: "Test Suggestions",
-  review: "Plan Review",
+  review: "Code Review",
   pr: "PR Description",
   retro: "Retrospective",
   complete: "Complete",
 };
 
 const STAGE_ORDER: Exclude<Stage, "select" | "complete">[] = [
-  "grooming", "impact", "triage", "plan", "guidance", "implementation", "tests", "review", "pr", "retro",
+  "grooming", "impact", "triage", "plan", "implementation", "tests", "review", "pr", "retro",
 ];
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -799,32 +797,6 @@ function PlanPanel({ data }: { data: ImplementationPlan }) {
   );
 }
 
-function GuidancePanel({ data }: { data: GuidanceOutput }) {
-  return (
-    <div className="space-y-3">
-      {data.steps.map((step) => (
-        <div key={step.step} className="border rounded-md overflow-hidden">
-          <div className="px-3 py-2 bg-muted/30 flex items-center gap-2">
-            <span className="text-xs font-bold text-primary rounded-full border border-primary w-5 h-5 flex items-center justify-center shrink-0">{step.step}</span>
-            <span className="text-sm font-medium flex-1">{step.title}</span>
-            <code className="text-xs font-mono text-muted-foreground">{step.file}</code>
-          </div>
-          <div className="px-3 py-2 space-y-1.5">
-            <p className="text-sm"><span className="font-medium">Action:</span> {step.action}</p>
-            <p className="text-sm text-muted-foreground">{step.details}</p>
-            {step.code_hints && (
-              <pre className="text-xs font-mono bg-muted/50 rounded p-2 whitespace-pre-wrap">{step.code_hints}</pre>
-            )}
-          </div>
-        </div>
-      ))}
-      <CollapsibleList title="Patterns to Follow" items={data.patterns_to_follow} />
-      <CollapsibleList title="Common Pitfalls" items={data.common_pitfalls} icon={<AlertTriangle className="h-4 w-4 text-amber-500" />} />
-      <CollapsibleList title="Definition of Done" items={data.definition_of_done} icon={<CheckCircle2 className="h-4 w-4 text-green-500" />} />
-    </div>
-  );
-}
-
 function ImplementationPanel({ data }: { data: ImplementationOutput }) {
   return (
     <div className="space-y-3">
@@ -1021,13 +993,12 @@ function RetroPanel({ data, onSaveToKb, kbSaved }: RetroPanelProps) {
   );
 }
 
-// ── Checkpoint footer (approval gate + follow-up chat) ───────────────────────
+// ── Stage approval row (proceed gate — chat moved to right panel) ─────────────
 
 const NEXT_STAGE_LABEL: Partial<Record<Stage, string>> = {
   grooming: "Proceed to Impact Analysis",
   impact: "Proceed to Triage",
-  plan: "Proceed to Implementation Guidance",
-  guidance: "Proceed to Implementation",
+  plan: "Proceed to Implementation",
   implementation: "Proceed to Test Suggestions",
   tests: "Proceed to Code Review",
   review: "Proceed to PR Description",
@@ -1035,222 +1006,258 @@ const NEXT_STAGE_LABEL: Partial<Record<Stage, string>> = {
   retro: "Mark Pipeline Complete",
 };
 
-interface CheckpointFooterProps {
-  stage: Stage;
-  onProceed: () => void;
-  proceeding: boolean;
-  hasBlockingIssues?: boolean;
-  chat: TriageMessage[];
-  input: string;
-  onInputChange: (v: string) => void;
-  onSend: () => void;
-  sending: boolean;
-  // grooming stage only
-  groomingChatLabel?: string;
-  toolRequests?: ToolRequest[];
-  onDismissToolRequest?: (id: string) => void;
-  onSavedToolRequest?: (id: string) => void;
-}
-
-function CheckpointFooter({
-  stage, onProceed, proceeding, hasBlockingIssues,
-  chat, input, onInputChange, onSend, sending,
-  groomingChatLabel,
-  toolRequests = [],
-  onDismissToolRequest,
-  onSavedToolRequest,
-}: CheckpointFooterProps) {
-  const [chatOpen, setChatOpen] = useState(stage === "grooming"); // auto-open for grooming
-  const bottomRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (chatOpen) bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [chat, chatOpen]);
-
-  const nextLabel = NEXT_STAGE_LABEL[stage] ?? "Proceed";
-  const chatToggleLabel = groomingChatLabel ?? "Ask a follow-up question";
-
+function StreamingLoader({ label, streamText }: { label: string; streamText: string }) {
   return (
-    <div className="mt-5 border-t pt-4 space-y-3">
-      {/* Collapsible conversation */}
-      <div>
-        <button
-          onClick={() => setChatOpen(!chatOpen)}
-          className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors"
-        >
-          <ChevronRight className={`h-3.5 w-3.5 transition-transform ${chatOpen ? "rotate-90" : ""}`} />
-          {chatToggleLabel}
-          {chat.length > 0 && (
-            <span className="ml-1 px-1.5 py-0.5 rounded-full bg-muted text-xs font-medium">
-              {Math.ceil(chat.length / 2)}
-            </span>
-          )}
-        </button>
-
-        {chatOpen && (
-          <div className="mt-2 space-y-2">
-            {chat.length > 0 && (
-              <div className="space-y-2 max-h-64 overflow-y-auto pr-1">
-                {chat.map((msg, i) => (
-                  <div key={i} className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
-                    <div className={`max-w-[85%] rounded-lg px-3 py-2 text-sm leading-relaxed ${
-                      msg.role === "user" ? "bg-primary text-primary-foreground" : "bg-muted text-foreground"
-                    }`}>
-                      <p className="whitespace-pre-wrap">{msg.content}</p>
-                    </div>
-                  </div>
-                ))}
-                {toolRequests.filter(r => !r.dismissed).map(r => (
-                  <ToolRequestCard
-                    key={r.id}
-                    request={r}
-                    onDismiss={onDismissToolRequest ?? (() => {})}
-                    onSaved={onSavedToolRequest ?? (() => {})}
-                  />
-                ))}
-                {sending && (
-                  <div className="flex justify-start">
-                    <div className="bg-muted rounded-lg px-3 py-2 flex items-center gap-2 text-sm text-muted-foreground">
-                      <Loader2 className="h-3.5 w-3.5 animate-spin" /> Thinking…
-                    </div>
-                  </div>
-                )}
-                <div ref={bottomRef} />
-              </div>
-            )}
-            <div className="flex gap-2">
-              <Textarea
-                value={input}
-                onChange={(e) => onInputChange(e.target.value)}
-                placeholder={stage === "grooming"
-                  ? "Suggest changes to the ticket, acceptance criteria, or scope…"
-                  : "Ask about these findings…"}
-                className="min-h-[52px] resize-none text-sm"
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && input.trim()) {
-                    e.preventDefault();
-                    onSend();
-                  }
-                }}
-                disabled={sending || proceeding}
-              />
-              <Button size="icon" onClick={onSend} disabled={!input.trim() || sending || proceeding} title="Send (⌘↵)">
-                <Send className="h-4 w-4" />
-              </Button>
-            </div>
-            <p className="text-xs text-muted-foreground">⌘↵ to send</p>
-          </div>
-        )}
+    <div className="space-y-3">
+      <div className="flex items-center gap-2 text-sm text-muted-foreground">
+        <Loader2 className="h-4 w-4 animate-spin" /> {label}
       </div>
-
-      {/* Approval button row */}
-      <div className="flex items-center justify-between gap-3">
-        {hasBlockingIssues && (
-          <p className="text-xs text-amber-600 dark:text-amber-400 flex items-center gap-1.5">
-            <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
-            Blocking issues present — proceeding not recommended
-          </p>
-        )}
-        <Button
-          onClick={onProceed}
-          disabled={proceeding}
-          variant={hasBlockingIssues ? "outline" : "default"}
-          className="gap-2 ml-auto"
-        >
-          {proceeding ? (
-            <Loader2 className="h-4 w-4 animate-spin" />
-          ) : (
-            <ChevronRight className="h-4 w-4" />
-          )}
-          {hasBlockingIssues ? `Proceed anyway: ${nextLabel}` : nextLabel}
-        </Button>
-      </div>
+      {streamText && (
+        <pre className="text-xs font-mono bg-muted/50 rounded p-3 whitespace-pre-wrap overflow-auto max-h-96 border">
+          {streamText}
+        </pre>
+      )}
     </div>
   );
 }
 
-// ── Triage chat UI ────────────────────────────────────────────────────────────
-
-interface TriageChatProps {
-  history: TriageMessage[];
-  input: string;
-  onInputChange: (v: string) => void;
-  onSend: () => void;
-  onFinalize: () => void;
-  sending: boolean;
-  finalizing: boolean;
+interface StageApprovalRowProps {
+  stage: Stage;
+  onProceed: () => void;
+  proceeding: boolean;
+  hasBlockingIssues?: boolean;
+  onRetry?: () => void;
 }
 
-function TriageChat({ history, input, onInputChange, onSend, onFinalize, sending, finalizing }: TriageChatProps) {
+function StageApprovalRow({ stage, onProceed, proceeding, hasBlockingIssues, onRetry }: StageApprovalRowProps) {
+  const nextLabel = NEXT_STAGE_LABEL[stage] ?? "Proceed";
+  return (
+    <div className="mt-5 border-t pt-4 flex items-center justify-between gap-3">
+      {hasBlockingIssues && (
+        <p className="text-xs text-amber-600 dark:text-amber-400 flex items-center gap-1.5">
+          <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
+          Blocking issues present — proceeding not recommended
+        </p>
+      )}
+      {onRetry && (
+        <Button
+          onClick={onRetry}
+          disabled={proceeding}
+          variant="outline"
+          size="sm"
+          className="gap-2"
+        >
+          <RefreshCw className="h-3.5 w-3.5" />
+          Re-run
+        </Button>
+      )}
+      <Button
+        onClick={onProceed}
+        disabled={proceeding}
+        variant={hasBlockingIssues ? "outline" : "default"}
+        className="gap-2 ml-auto"
+      >
+        {proceeding ? (
+          <Loader2 className="h-4 w-4 animate-spin" />
+        ) : (
+          <ChevronRight className="h-4 w-4" />
+        )}
+        {hasBlockingIssues ? `Proceed anyway: ${nextLabel}` : nextLabel}
+      </Button>
+    </div>
+  );
+}
+
+// ── Persistent chat panel (right side of the split layout) ────────────────────
+
+interface PipelineChatPanelProps {
+  grooming: GroomingOutput | null;
+  groomingChat: TriageMessage[];
+  triageHistory: TriageMessage[];
+  checkpointChats: Partial<Record<Stage, TriageMessage[]>>;
+  currentStage: Stage;
+  pendingApproval: Stage | null;
+  toolRequests: ToolRequest[];
+  onDismissToolRequest: (id: string) => void;
+  onSavedToolRequest: (id: string) => void;
+  chatInput: string;
+  onChatInputChange: (v: string) => void;
+  onSend: () => void;
+  onFinalizePlan: () => void;
+  sending: boolean;
+  finalizing: boolean;
+  proceeding: boolean;
+  streamingText: string;
+}
+
+const CHAT_STAGE_LABEL: Partial<Record<Stage, string>> = {
+  grooming: "Grooming",
+  triage: "Triage",
+  impact: "Impact Analysis",
+  plan: "Implementation Plan",
+  implementation: "Implementation",
+  tests: "Test Suggestions",
+  review: "Code Review",
+  pr: "PR Description",
+  retro: "Retrospective",
+};
+
+function PipelineChatPanel({
+  grooming, groomingChat, triageHistory, checkpointChats,
+  currentStage, pendingApproval,
+  toolRequests, onDismissToolRequest, onSavedToolRequest,
+  chatInput, onChatInputChange, onSend, onFinalizePlan,
+  sending, finalizing, proceeding, streamingText,
+}: PipelineChatPanelProps) {
   const bottomRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [history]);
+  }, [groomingChat, triageHistory, checkpointChats, sending]);
+
+  // Build unified message thread with stage dividers
+  const sections: Array<{ stage: Stage; messages: TriageMessage[] }> = [];
+  if (groomingChat.length > 0) sections.push({ stage: "grooming", messages: groomingChat });
+  if (triageHistory.length > 0) sections.push({ stage: "triage", messages: triageHistory });
+  for (const stage of (["impact","plan","implementation","tests","review","pr","retro"] as Stage[])) {
+    const msgs = checkpointChats[stage];
+    if (msgs && msgs.length > 0) sections.push({ stage, messages: msgs });
+  }
+
+  // Determine if input is active
+  const isGroomingActive = (pendingApproval === "grooming" || (currentStage === "grooming" && grooming !== null));
+  const isCheckpointActive = pendingApproval !== null && pendingApproval !== "grooming";
+  const isTriageActive = currentStage === "triage" && pendingApproval === null;
+  const inputActive = isGroomingActive || isCheckpointActive || isTriageActive;
+  const agentRunning = !inputActive && currentStage !== "select" && currentStage !== "complete";
+
+  const placeholder = isGroomingActive
+    ? "Suggest changes to the ticket or ask questions…"
+    : isTriageActive
+    ? "Respond to the agent's proposal or provide clarification…"
+    : isCheckpointActive
+    ? "Ask about these findings…"
+    : agentRunning
+    ? "Agent is running…"
+    : "Pipeline complete";
+
+  const showFinalize = isTriageActive && triageHistory.length > 0;
 
   return (
-    <div className="flex flex-col gap-3">
-      <div className="space-y-3 pr-1">
-        {history.map((msg, i) => (
-          <div key={i} className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
-            <div className={`max-w-[85%] rounded-lg px-3 py-2.5 text-sm leading-relaxed ${
-              msg.role === "user"
-                ? "bg-primary text-primary-foreground"
-                : "bg-muted text-foreground"
-            }`}>
-              <p className="whitespace-pre-wrap">{msg.content}</p>
+    <div className="flex flex-col h-full min-h-0 border-l bg-background/40">
+      {/* Panel header */}
+      <div className="shrink-0 px-4 py-2.5 border-b flex items-center justify-between">
+        <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Agent Chat</p>
+        {agentRunning && (
+          <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+            <Loader2 className="h-3 w-3 animate-spin" /> Running…
+          </div>
+        )}
+      </div>
+
+      {/* Chat thread — scrollable */}
+      <div className="flex-1 min-h-0 overflow-y-auto px-4 py-3 space-y-1">
+        {sections.length === 0 && !sending && (
+          <p className="text-xs text-muted-foreground italic text-center pt-6">
+            No messages yet. The conversation will appear here once the grooming stage completes.
+          </p>
+        )}
+
+        {sections.map(({ stage, messages }) => (
+          <div key={stage}>
+            {/* Stage divider */}
+            <div className="flex items-center gap-2 py-2">
+              <div className="flex-1 h-px bg-border" />
+              <span className="text-xs text-muted-foreground px-1">{CHAT_STAGE_LABEL[stage] ?? stage}</span>
+              <div className="flex-1 h-px bg-border" />
+            </div>
+            <div className="space-y-2">
+              {messages.map((msg, i) => (
+                <div key={i} className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
+                  <div className={`max-w-[90%] rounded-lg px-3 py-2 text-sm leading-relaxed ${
+                    msg.role === "user" ? "bg-primary text-primary-foreground" : "bg-muted text-foreground"
+                  }`}>
+                    <p className="whitespace-pre-wrap">{
+                      msg.role === "assistant" && stage === "grooming"
+                        ? msg.content.replace(/```json[\s\S]*?```/g, "").trim() || msg.content
+                        : msg.content
+                    }</p>
+                  </div>
+                </div>
+              ))}
             </div>
           </div>
         ))}
+
+        {/* Tool requests */}
+        {toolRequests.filter(r => !r.dismissed).map(r => (
+          <ToolRequestCard
+            key={r.id}
+            request={r}
+            onDismiss={onDismissToolRequest}
+            onSaved={onSavedToolRequest}
+          />
+        ))}
+
+        {/* Sending indicator — shows streaming text as it arrives, falls back to spinner */}
         {sending && (
-          <div className="flex justify-start">
-            <div className="bg-muted rounded-lg px-3 py-2.5 flex items-center gap-2 text-sm text-muted-foreground">
-              <Loader2 className="h-3.5 w-3.5 animate-spin" /> Thinking…
-            </div>
+          <div className="flex justify-start pt-1">
+            {streamingText ? (
+              <pre className="text-xs font-mono bg-muted rounded-lg px-3 py-2 whitespace-pre-wrap max-w-full overflow-x-auto text-foreground">
+                {streamingText}
+              </pre>
+            ) : (
+              <div className="bg-muted rounded-lg px-3 py-2 flex items-center gap-2 text-sm text-muted-foreground">
+                <Loader2 className="h-3.5 w-3.5 animate-spin" /> Thinking…
+              </div>
+            )}
           </div>
         )}
+
         <div ref={bottomRef} />
       </div>
 
-      <div className="flex gap-2">
-        <Textarea
-          value={input}
-          onChange={(e) => onInputChange(e.target.value)}
-          placeholder="Respond to the agent's questions or provide clarification…"
-          className="min-h-[60px] resize-none text-sm"
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && input.trim()) {
-              e.preventDefault();
-              onSend();
-            }
-          }}
-          disabled={sending || finalizing}
-        />
-        <div className="flex flex-col gap-2">
+      {/* Input area — pinned to bottom */}
+      <div className="shrink-0 px-4 pb-4 pt-2 border-t space-y-2">
+        {showFinalize && (
+          <Button
+            size="sm"
+            variant="outline"
+            className="w-full gap-2"
+            onClick={onFinalizePlan}
+            disabled={finalizing || sending}
+          >
+            {finalizing ? (
+              <><Loader2 className="h-3.5 w-3.5 animate-spin" /> Finalising plan…</>
+            ) : (
+              <><CheckCircle2 className="h-3.5 w-3.5" /> Finalise Plan</>
+            )}
+          </Button>
+        )}
+        <div className="flex gap-2">
+          <Textarea
+            value={chatInput}
+            onChange={(e) => onChatInputChange(e.target.value)}
+            placeholder={placeholder}
+            className="min-h-[52px] resize-none text-sm"
+            disabled={!inputActive || sending || finalizing || proceeding}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && chatInput.trim() && inputActive) {
+                e.preventDefault();
+                onSend();
+              }
+            }}
+          />
           <Button
             size="icon"
             onClick={onSend}
-            disabled={!input.trim() || sending || finalizing}
+            disabled={!chatInput.trim() || !inputActive || sending || finalizing || proceeding}
             title="Send (⌘↵)"
           >
             <Send className="h-4 w-4" />
           </Button>
         </div>
-      </div>
-
-      <div className="mt-2 flex items-center justify-between">
-        <p className="text-xs text-muted-foreground">⌘↵ to send</p>
-        <Button
-          onClick={onFinalize}
-          disabled={sending || finalizing || history.length === 0}
-          className="gap-2"
-        >
-          {finalizing ? (
-            <><Loader2 className="h-4 w-4 animate-spin" /> Finalising plan…</>
-          ) : (
-            <><CheckCircle2 className="h-4 w-4" /> Finalise Plan →</>
-          )}
-        </Button>
+        {inputActive && <p className="text-xs text-muted-foreground">⌘↵ to send</p>}
       </div>
     </div>
   );
@@ -1360,7 +1367,6 @@ function PipelineSidebar({ currentStage, completedStages, activeStage, pendingAp
     impact: <Shield className="h-3.5 w-3.5" />,
     triage: <ClipboardList className="h-3.5 w-3.5" />,
     plan: <ClipboardList className="h-3.5 w-3.5" />,
-    guidance: <FileCode className="h-3.5 w-3.5" />,
     implementation: <FileCode className="h-3.5 w-3.5" />,
     tests: <TestTube className="h-3.5 w-3.5" />,
     review: <Shield className="h-3.5 w-3.5" />,
@@ -1417,7 +1423,6 @@ function stageToStep(stage: Stage): number | undefined {
     impact:         1,
     triage:         2,
     plan:           2,
-    guidance:       2,
     implementation: 3,
     tests:          4,
     review:         5,
@@ -1446,7 +1451,6 @@ export function ImplementTicketScreen({ credStatus, onBack }: ImplementTicketScr
     impact,
     triageHistory,
     plan,
-    guidance,
     implementation,
     implementationStreamText,
     tests,
@@ -1455,6 +1459,7 @@ export function ImplementTicketScreen({ credStatus, onBack }: ImplementTicketScr
     retrospective,
     kbSaved,
     groomingBlockers,
+
     groomingEdits,
     clarifyingQuestions,
     filesRead,
@@ -1464,6 +1469,14 @@ export function ImplementTicketScreen({ credStatus, onBack }: ImplementTicketScr
     jiraUpdateError,
     groomingProgress,
     groomingStreamText,
+    impactStreamText,
+    triageStreamText,
+    planStreamText,
+    testsStreamText,
+    reviewStreamText,
+    prStreamText,
+    retroStreamText,
+    checkpointStreamText,
     checkpointChats,
     errors,
     sessions: implementSessions,
@@ -1479,40 +1492,32 @@ export function ImplementTicketScreen({ credStatus, onBack }: ImplementTicketScr
   // ── Ephemeral UI state (local — reset on each visit is fine) ─────────────────
   const [sprintIssues, setSprintIssues] = useState<JiraIssue[]>([]);
   const [loadingIssues, setLoadingIssues] = useState(true);
-  const [triageInput, setTriageInput] = useState("");
-  const [triageSending, setTriageSending] = useState(false);
-  const [triaFinalizing, setTriaFinalizing] = useState(false);
-  const [checkpointInput, setCheckpointInput] = useState("");
-  const [checkpointSending, setCheckpointSending] = useState(false);
-  const [groomingChatInput, setGroomingChatInput] = useState("");
-  const [groomingChatSending, setGroomingChatSending] = useState(false);
+  const [chatInput, setChatInput] = useState("");
+  const [chatSending, setChatSending] = useState(false);
+  const [planFinalizing, setPlanFinalizing] = useState(false);
   const [meridianHeaderVisible, setMeridianHeaderVisible] = useState(false);
-  const [chatPaneWidth, setChatPaneWidth] = useState<number>(320);
+  const [splitPct, setSplitPct] = useState(62);
+  const splitContainerRef = useRef<HTMLDivElement>(null);
   const [toolRequests, setToolRequests] = useState<ToolRequest[]>([]);
-  const isDraggingRef = useRef(false);
-  const dragStartXRef = useRef(0);
-  const dragStartWidthRef = useRef(0);
 
-  // ── Resizable grooming split pane ────────────────────────────────────────────
+  // ── Resizable split pane (percentage-based) ───────────────────────────────────
   const onDividerMouseDown = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
-    isDraggingRef.current = true;
-    dragStartXRef.current = e.clientX;
-    dragStartWidthRef.current = chatPaneWidth;
+    const container = splitContainerRef.current;
+    if (!container) return;
+    const rect = container.getBoundingClientRect();
     const onMouseMove = (ev: MouseEvent) => {
-      if (!isDraggingRef.current) return;
-      const delta = dragStartXRef.current - ev.clientX;
-      const next = Math.min(600, Math.max(240, dragStartWidthRef.current + delta));
-      setChatPaneWidth(next);
+      const x = ev.clientX - rect.left;
+      const pct = Math.min(80, Math.max(30, (x / rect.width) * 100));
+      setSplitPct(pct);
     };
     const onMouseUp = () => {
-      isDraggingRef.current = false;
       window.removeEventListener("mousemove", onMouseMove);
       window.removeEventListener("mouseup", onMouseUp);
     };
     window.addEventListener("mousemove", onMouseMove);
     window.addEventListener("mouseup", onMouseUp);
-  }, [chatPaneWidth]);
+  }, []);
 
   // ── Backend event listeners — write directly to store ────────────────────────
   // Each listener captures the session ID at event time and drops writes for stale sessions.
@@ -1581,6 +1586,41 @@ export function ImplementTicketScreen({ credStatus, onBack }: ImplementTicketScr
     };
   }, []);
 
+  // Stream listeners for all other pipeline stages — same batched-flush pattern.
+  useEffect(() => {
+    type StreamKey = "impactStreamText" | "triageStreamText" | "planStreamText" |
+      "testsStreamText" | "reviewStreamText" | "prStreamText" | "retroStreamText" |
+      "checkpointStreamText";
+    const streams: Array<[string, StreamKey]> = [
+      ["impact-stream",          "impactStreamText"],
+      ["triage-stream",          "triageStreamText"],
+      ["plan-stream",            "planStreamText"],
+      ["tests-stream",           "testsStreamText"],
+      ["review-stream",          "reviewStreamText"],
+      ["pr-stream",              "prStreamText"],
+      ["retro-stream",           "retroStreamText"],
+      ["checkpoint-chat-stream", "checkpointStreamText"],
+    ];
+    const cleanups = streams.map(([event, key]) => {
+      const acc = { text: "", sessionId: "" };
+      let flushTimer: ReturnType<typeof setTimeout> | null = null;
+      const unlisten = listen<{ delta: string }>(event, (e) => {
+        const currentSessionId = useImplementTicketStore.getState().activeSessionId;
+        if (acc.sessionId !== currentSessionId) { acc.text = ""; acc.sessionId = currentSessionId; }
+        acc.text += e.payload.delta;
+        if (flushTimer !== null) return;
+        flushTimer = setTimeout(() => {
+          flushTimer = null;
+          if (useImplementTicketStore.getState().activeSessionId === acc.sessionId) {
+            useImplementTicketStore.getState()._set({ [key]: acc.text } as Record<StreamKey, string>);
+          }
+        }, 80);
+      });
+      return () => { if (flushTimer !== null) clearTimeout(flushTimer); unlisten.then(f => f()); };
+    });
+    return () => cleanups.forEach(f => f());
+  }, []);
+
   useEffect(() => {
     const unlisten = listen<{
       name: string; description: string; why_needed: string; example_call: string;
@@ -1610,51 +1650,25 @@ export function ImplementTicketScreen({ credStatus, onBack }: ImplementTicketScr
     return () => clearTimeout(t);
   }, []);
 
-  // ── Triage send (local input, store actions) ─────────────────────────────────
-  async function sendTriageMessage() {
-    if (!triageInput.trim()) return;
-    const input = triageInput.trim();
-    setTriageInput("");
-    setTriageSending(true);
+  // ── Unified chat send — routes to store based on current pipeline stage ───────
+  async function sendChatMessage() {
+    const msg = chatInput.trim();
+    if (!msg) return;
+    setChatInput("");
+    setChatSending(true);
     try {
-      const enriched = await enrichMessageWithUrls(input);
-      await store().sendTriageMessage(enriched);
+      const enriched = await enrichMessageWithUrls(msg);
+      await store().sendPipelineMessage(enriched);
     } catch { /* handled in store */ }
-    finally { setTriageSending(false); }
+    finally { setChatSending(false); }
   }
 
-  async function finalizePlan() {
-    setTriaFinalizing(true);
+  async function handleFinalizePlan() {
+    setPlanFinalizing(true);
     try {
       await store().finalizePlan();
     } finally {
-      setTriaFinalizing(false);
-    }
-  }
-
-  async function sendCheckpointMessage(stage: Stage) {
-    const msg = checkpointInput.trim();
-    if (!msg) return;
-    setCheckpointInput("");
-    setCheckpointSending(true);
-    try {
-      const enriched = await enrichMessageWithUrls(msg);
-      await store().sendCheckpointMessage(stage, enriched);
-    } finally {
-      setCheckpointSending(false);
-    }
-  }
-
-  async function sendGroomingChatMessage() {
-    const msg = groomingChatInput.trim();
-    if (!msg) return;
-    setGroomingChatInput("");
-    setGroomingChatSending(true);
-    try {
-      const enriched = await enrichMessageWithUrls(msg);
-      await store().sendGroomingChatMessage(enriched);
-    } finally {
-      setGroomingChatSending(false);
+      setPlanFinalizing(false);
     }
   }
 
@@ -1673,26 +1687,14 @@ export function ImplementTicketScreen({ credStatus, onBack }: ImplementTicketScr
   }, []);
 
   function renderCheckpoint(stage: Stage) {
-    // Grooming has its own inline conversation UI — skip the generic footer for it
-    if (stage === "grooming") return null;
-    // Only show the checkpoint footer if this is the current pending stage
-    // (or a past stage — user can revisit and still chat)
     if (!completedStages.has(stage)) return null;
-    const isPending = pendingApproval === stage;
     return (
-      <CheckpointFooter
+      <StageApprovalRow
         stage={stage}
         onProceed={() => store().proceedFromStage(stage)}
-        proceeding={proceeding && pendingApproval === null && currentStage !== stage}
+        proceeding={proceeding}
         hasBlockingIssues={stage === "review" && (review?.findings.some(f => f.severity === "blocking") ?? false)}
-        chat={checkpointChats[stage] ?? []}
-        input={isPending || viewingStage === stage ? checkpointInput : ""}
-        onInputChange={(v) => setCheckpointInput(v)}
-        onSend={() => sendCheckpointMessage(stage)}
-        sending={checkpointSending && viewingStage === stage}
-        toolRequests={toolRequests}
-        onDismissToolRequest={dismissToolRequest}
-        onSavedToolRequest={markToolRequestSaved}
+        onRetry={() => store().retryStage(stage)}
       />
     );
   }
@@ -1719,19 +1721,14 @@ export function ImplementTicketScreen({ credStatus, onBack }: ImplementTicketScr
 
     if (stage === "grooming") {
       if (!grooming) return (
-        <div className="space-y-3 max-w-lg">
+        <div className="space-y-3">
           <GroomingProgressBanner message={groomingProgress || "Running grooming analysis…"} streamText={groomingStreamText} />
         </div>
       );
 
-      // Two-column layout: grooming panel on the left, refine chat on the right.
-      // Both columns are independently scrollable and fill the available height.
-      // The parent container's max-w-2xl constraint is lifted for this stage (see render below).
       return (
-        <div className="flex min-h-0 h-full">
-          {/* ── Left: grooming analysis panel ── */}
-          <div className="flex-1 min-w-0 overflow-y-auto space-y-3 pr-1">
-            <GroomingPanel
+        <div className="space-y-3">
+          <GroomingPanel
             data={grooming}
             baseline={groomingBaseline}
             descriptionSections={selectedIssue?.descriptionSections}
@@ -1749,129 +1746,13 @@ export function ImplementTicketScreen({ credStatus, onBack }: ImplementTicketScr
             jiraUpdateStatus={jiraUpdateStatus}
             jiraUpdateError={jiraUpdateError}
           />
-            {groomingBlockers.length > 0 && <BlockerBanner blockers={groomingBlockers} />}
-          </div>
-
-          {/* ── Drag handle ── */}
-          {completedStages.has("grooming") && (
-            <div
-              onMouseDown={onDividerMouseDown}
-              className="w-1.5 shrink-0 mx-2 rounded-full cursor-col-resize hover:bg-muted-foreground/30 active:bg-muted-foreground/50 transition-colors"
-              title="Drag to resize"
-            />
-          )}
-
-          {/* ── Right: refine chat panel ── */}
-          {completedStages.has("grooming") && (
-            <div
-              className="shrink-0 flex flex-col min-h-0 border-l pl-5"
-              style={{ width: chatPaneWidth }}
-            >
-              {/* Header */}
-              <div className="shrink-0 pb-2">
-                <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-                  Refine this ticket
-                </p>
-              </div>
-
-              <p className="text-xs text-muted-foreground shrink-0 pb-2">
-                Answer the agent's questions or suggest changes to the ticket.
-              </p>
-
-              {/* Chat history — scrollable, fills available height */}
-              <div className="flex-1 min-h-0 overflow-y-auto space-y-2 pr-1 pb-2">
-                {groomingChat.length === 0 && !groomingChatSending && (
-                  <p className="text-xs text-muted-foreground italic text-center pt-4">
-                    No messages yet. Approve or decline edits on the left, or type a question or suggestion below.
-                  </p>
-                )}
-                {groomingChat.map((msg, i) => (
-                  <div key={i} className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
-                    <div className={`max-w-[90%] rounded-lg px-3 py-2 text-sm leading-relaxed ${
-                      msg.role === "user" ? "bg-primary text-primary-foreground" : "bg-muted text-foreground"
-                    }`}>
-                      <p className="whitespace-pre-wrap">{
-                        msg.role === "assistant"
-                          ? msg.content.replace(/```json[\s\S]*?```/g, "").trim() || msg.content
-                          : msg.content
-                      }</p>
-                    </div>
-                  </div>
-                ))}
-                {/* Tool request cards — shown inline after chat messages */}
-                {toolRequests.filter(r => !r.dismissed).map(r => (
-                  <ToolRequestCard
-                    key={r.id}
-                    request={r}
-                    onDismiss={dismissToolRequest}
-                    onSaved={markToolRequestSaved}
-                  />
-                ))}
-                {groomingChatSending && (
-                  <div className="flex justify-start">
-                    <div className="bg-muted rounded-lg px-3 py-2 flex items-center gap-2 text-sm text-muted-foreground">
-                      <Loader2 className="h-3.5 w-3.5 animate-spin" /> Updating…
-                    </div>
-                  </div>
-                )}
-              </div>
-
-              {/* Input — pinned to bottom */}
-              <div className="shrink-0 space-y-2 pt-2 border-t">
-                <div className="flex gap-2">
-                  <Textarea
-                    value={groomingChatInput}
-                    onChange={(e) => setGroomingChatInput(e.target.value)}
-                    placeholder="Suggest changes or ask questions…"
-                    className="min-h-[52px] resize-none text-sm"
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && groomingChatInput.trim()) {
-                        e.preventDefault();
-                        sendGroomingChatMessage();
-                      }
-                    }}
-                    disabled={groomingChatSending || proceeding}
-                  />
-                  <Button
-                    size="icon"
-                    onClick={sendGroomingChatMessage}
-                    disabled={!groomingChatInput.trim() || groomingChatSending || proceeding}
-                    title="Send (⌘↵)"
-                  >
-                    <Send className="h-4 w-4" />
-                  </Button>
-                </div>
-                <p className="text-xs text-muted-foreground">⌘↵ to send</p>
-
-                {/* Proceed button */}
-                <div className="flex items-center justify-between gap-2 border-t pt-2">
-                  {groomingBlockers.some(b => b.severity === "blocking") && (
-                    <p className="text-xs text-amber-600 dark:text-amber-400 flex items-center gap-1">
-                      <AlertTriangle className="h-3 w-3 shrink-0" />
-                      Blocking issues
-                    </p>
-                  )}
-                  <Button
-                    onClick={() => store().proceedFromStage("grooming")}
-                    disabled={proceeding}
-                    variant={groomingBlockers.some(b => b.severity === "blocking") ? "outline" : "default"}
-                    size="sm"
-                    className="gap-1.5 ml-auto text-xs"
-                  >
-                    {proceeding ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ChevronRight className="h-3.5 w-3.5" />}
-                    {groomingBlockers.some(b => b.severity === "blocking")
-                      ? "Proceed anyway"
-                      : "Proceed to Impact Analysis"}
-                  </Button>
-                </div>
-              </div>
-            </div>
-          )}
+          {groomingBlockers.length > 0 && <BlockerBanner blockers={groomingBlockers} />}
+          {renderCheckpoint("grooming")}
         </div>
       );
     }
     if (stage === "impact") {
-      if (!impact) return <div className="flex items-center gap-2 text-sm text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" /> Running impact analysis…</div>;
+      if (!impact) return <StreamingLoader label="Running impact analysis…" streamText={impactStreamText} />;
       return (
         <>
           <ImpactPanel data={impact} />
@@ -1888,41 +1769,22 @@ export function ImplementTicketScreen({ credStatus, onBack }: ImplementTicketScr
           </>
         );
       }
+      if (triageHistory.length === 0) {
+        return <StreamingLoader label="Starting triage conversation…" streamText={triageStreamText} />;
+      }
+      if (planFinalizing) {
+        return <StreamingLoader label="Finalising implementation plan…" streamText={planStreamText} />;
+      }
       return (
-        <TriageChat
-          history={triageHistory}
-          input={triageInput}
-          onInputChange={setTriageInput}
-          onSend={sendTriageMessage}
-          onFinalize={finalizePlan}
-          sending={triageSending}
-          finalizing={triaFinalizing}
-        />
-      );
-    }
-    if (stage === "guidance") {
-      if (!guidance) return <div className="flex items-center gap-2 text-sm text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" /> Generating implementation guidance…</div>;
-      return (
-        <>
-          <GuidancePanel data={guidance} />
-          {renderCheckpoint(stage)}
-        </>
+        <div className="rounded-md border bg-muted/20 px-4 py-3 text-sm text-muted-foreground">
+          <p className="font-medium text-foreground mb-1">Planning conversation in progress</p>
+          <p>Use the chat panel on the right to discuss the implementation approach with the agent, then click <span className="font-medium">Finalise Plan</span> when ready.</p>
+        </div>
       );
     }
     if (stage === "implementation") {
       if (!implementation) {
-        return (
-          <div className="space-y-3">
-            <div className="flex items-center gap-2 text-sm text-muted-foreground">
-              <Loader2 className="h-4 w-4 animate-spin" /> Writing code…
-            </div>
-            {implementationStreamText && (
-              <pre className="text-xs font-mono bg-muted/50 rounded p-3 whitespace-pre-wrap overflow-auto max-h-96 border">
-                {implementationStreamText}
-              </pre>
-            )}
-          </div>
-        );
+        return <StreamingLoader label="Writing code…" streamText={implementationStreamText} />;
       }
       return (
         <>
@@ -1932,7 +1794,7 @@ export function ImplementTicketScreen({ credStatus, onBack }: ImplementTicketScr
       );
     }
     if (stage === "tests") {
-      if (!tests) return <div className="flex items-center gap-2 text-sm text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" /> Generating test suggestions…</div>;
+      if (!tests) return <StreamingLoader label="Generating test suggestions…" streamText={testsStreamText} />;
       return (
         <>
           <TestsPanel data={tests} />
@@ -1941,7 +1803,7 @@ export function ImplementTicketScreen({ credStatus, onBack }: ImplementTicketScr
       );
     }
     if (stage === "review") {
-      if (!review) return <div className="flex items-center gap-2 text-sm text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" /> Reviewing the plan…</div>;
+      if (!review) return <StreamingLoader label="Reviewing code changes…" streamText={reviewStreamText} />;
       return (
         <>
           <ReviewPanel data={review} />
@@ -1950,7 +1812,7 @@ export function ImplementTicketScreen({ credStatus, onBack }: ImplementTicketScr
       );
     }
     if (stage === "pr") {
-      if (!prDescription) return <div className="flex items-center gap-2 text-sm text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" /> Generating PR description…</div>;
+      if (!prDescription) return <StreamingLoader label="Generating PR description…" streamText={prStreamText} />;
       return (
         <>
           <PrPanel data={prDescription} />
@@ -1959,7 +1821,7 @@ export function ImplementTicketScreen({ credStatus, onBack }: ImplementTicketScr
       );
     }
     if (stage === "retro") {
-      if (!retrospective) return <div className="flex items-center gap-2 text-sm text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" /> Running retrospective…</div>;
+      if (!retrospective) return <StreamingLoader label="Running retrospective…" streamText={retroStreamText} />;
       return (
         <>
           <RetroPanel data={retrospective} onSaveToKb={(entries) => store().saveToKnowledgeBase(entries)} kbSaved={kbSaved} />
@@ -2068,51 +1930,79 @@ export function ImplementTicketScreen({ credStatus, onBack }: ImplementTicketScr
                 onClickStage={(s) => store()._set({ viewingStage: s as Exclude<Stage, "select"> })}
               />
 
-              <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-                <div className="shrink-0 px-5 pt-5">
-                  <div className="mb-2 flex items-center justify-between">
-                    <div>
-                      <h2 className="text-base font-semibold">
-                        {viewingStage === "triage" && !completedStages.has("plan")
-                          ? "Triage"
-                          : viewingStage === "triage" || viewingStage === "plan"
-                            ? "Implementation Plan"
-                            : STAGE_LABELS[viewingStage as keyof typeof STAGE_LABELS]}
-                      </h2>
-                      {currentStage === "complete" && viewingStage === "retro" && (
-                        <p className="mt-0.5 flex items-center gap-1 text-xs font-medium text-green-600">
-                          <CheckCircle2 className="h-3 w-3" /> Pipeline complete
-                        </p>
-                      )}
-                    </div>
-                    {completedStages.has(viewingStage as Stage) &&
-                      viewingStage !== "triage" &&
-                      viewingStage !== "plan" && (
-                        <CopyButton
-                          text={
-                            JSON.stringify(
-                              viewingStage === "grooming"
-                                ? grooming
-                                : viewingStage === "impact"
-                                  ? impact
-                                  : viewingStage === "guidance"
-                                    ? guidance
+              {/* ── Split container: stage content | divider | chat panel ── */}
+              <div ref={splitContainerRef} className="flex min-h-0 flex-1 overflow-hidden">
+                {/* Left: stage content */}
+                <div style={{ width: `${splitPct}%` }} className="flex-none flex flex-col min-h-0 overflow-hidden">
+                  <div className="shrink-0 px-5 pt-5">
+                    <div className="mb-2 flex items-center justify-between">
+                      <div>
+                        <h2 className="text-base font-semibold">
+                          {viewingStage === "triage" && !completedStages.has("plan")
+                            ? "Triage"
+                            : viewingStage === "triage" || viewingStage === "plan"
+                              ? "Implementation Plan"
+                              : STAGE_LABELS[viewingStage as keyof typeof STAGE_LABELS]}
+                        </h2>
+                        {currentStage === "complete" && viewingStage === "retro" && (
+                          <p className="mt-0.5 flex items-center gap-1 text-xs font-medium text-green-600">
+                            <CheckCircle2 className="h-3 w-3" /> Pipeline complete
+                          </p>
+                        )}
+                      </div>
+                      {completedStages.has(viewingStage as Stage) &&
+                        (viewingStage === "grooming" || viewingStage === "impact" || viewingStage === "tests" || viewingStage === "review") && (
+                          <CopyButton
+                            text={
+                              JSON.stringify(
+                                viewingStage === "grooming"
+                                  ? grooming
+                                  : viewingStage === "impact"
+                                    ? impact
                                     : viewingStage === "tests"
                                       ? tests
-                                      : viewingStage === "review"
-                                        ? review
-                                        : null,
-                              null,
-                              2
-                            ) ?? ""
-                          }
-                          label="Copy JSON"
-                        />
-                      )}
+                                      : review,
+                                null,
+                                2
+                              ) ?? ""
+                            }
+                            label="Copy JSON"
+                          />
+                        )}
+                    </div>
+                  </div>
+                  <div className="min-h-0 flex-1 overflow-y-auto px-5 pb-5">
+                    {renderStageContent(viewingStage)}
                   </div>
                 </div>
-                <div className={`min-h-0 flex-1 ${viewingStage === "grooming" && grooming ? "overflow-hidden px-5 pb-5 flex flex-col" : "overflow-y-auto px-5 pb-5"}`}>
-                  <div className={viewingStage === "grooming" && grooming ? "flex-1 min-h-0" : ""}>{renderStageContent(viewingStage)}</div>
+
+                {/* Drag divider */}
+                <div
+                  onMouseDown={onDividerMouseDown}
+                  className="w-1 shrink-0 cursor-col-resize bg-border hover:bg-primary/30 active:bg-primary/50 transition-colors"
+                />
+
+                {/* Right: persistent chat panel */}
+                <div style={{ width: `${100 - splitPct}%` }} className="flex-none min-h-0 overflow-hidden">
+                  <PipelineChatPanel
+                    grooming={grooming}
+                    groomingChat={groomingChat}
+                    triageHistory={triageHistory}
+                    checkpointChats={checkpointChats}
+                    currentStage={currentStage}
+                    pendingApproval={pendingApproval}
+                    toolRequests={toolRequests}
+                    onDismissToolRequest={dismissToolRequest}
+                    onSavedToolRequest={markToolRequestSaved}
+                    chatInput={chatInput}
+                    onChatInputChange={setChatInput}
+                    onSend={sendChatMessage}
+                    onFinalizePlan={handleFinalizePlan}
+                    sending={chatSending}
+                    finalizing={planFinalizing}
+                    proceeding={proceeding}
+                    streamingText={currentStage === "triage" ? triageStreamText : checkpointStreamText}
+                  />
                 </div>
               </div>
             </div>

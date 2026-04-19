@@ -14,7 +14,7 @@ use commands::{
     get_local_models, validate_local_llm, test_local_llm_stored,
     // Agent pipeline
     run_grooming_file_probe, run_grooming_agent, run_grooming_chat_turn,
-    run_impact_analysis, run_triage_turn, finalize_implementation_plan,
+    run_impact_analysis, run_triage_turn, run_checkpoint_chat_turn, finalize_implementation_plan,
     run_implementation_guidance, run_implementation_agent, run_test_suggestions, run_plan_review,
     run_pr_description_gen, run_retrospective_agent,
     // JIRA data commands
@@ -97,6 +97,7 @@ pub fn run() {
             run_grooming_chat_turn,
             run_impact_analysis,
             run_triage_turn,
+            run_checkpoint_chat_turn,
             finalize_implementation_plan,
             run_implementation_guidance,
             run_implementation_agent,

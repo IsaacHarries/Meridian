@@ -35,7 +35,11 @@ import {
   getIssue,
   searchJiraIssues,
   runGroomingAgent,
+  runGroomingFileProbe,
   runGroomingChatTurn,
+  grepRepoFiles,
+  readRepoFile,
+  validateWorktree,
   updateJiraFields,
   parseAgentJson,
   openUrl,
@@ -73,6 +77,7 @@ interface GroomSession {
   drafts: DraftChange[];
   thinking: boolean;
   applying: boolean;
+  probeStatus: string;
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -255,7 +260,7 @@ function ChatInput({ disabled, onSend }: { disabled: boolean; onSend: (text: str
   );
 }
 
-function ChatPanel({ messages, thinking, onSend }: { messages: GroomChatMessage[]; thinking: boolean; onSend: (text: string) => void }) {
+function ChatPanel({ messages, thinking, probeStatus, onSend }: { messages: GroomChatMessage[]; thinking: boolean; probeStatus: string; onSend: (text: string) => void }) {
   const bottomRef = useRef<HTMLDivElement>(null);
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages, thinking]);
 
@@ -277,7 +282,8 @@ function ChatPanel({ messages, thinking, onSend }: { messages: GroomChatMessage[
           {thinking && (
             <div className="flex justify-start">
               <div className="bg-muted text-muted-foreground px-4 py-2.5 rounded-2xl rounded-tl-sm text-sm flex items-center gap-2">
-                <Loader2 className="h-3.5 w-3.5 animate-spin" /> Thinking…
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                {probeStatus || "Thinking…"}
               </div>
             </div>
           )}
@@ -564,10 +570,53 @@ export function TicketQualityScreen({ credStatus, onBack }: TicketQualityScreenP
     });
 
     const sessionKey = freshIssue.key;
-    setSession({ issue: freshIssue, chat: [], drafts: [], thinking: true, applying: false });
+    setSession({ issue: freshIssue, chat: [], drafts: [], thinking: true, applying: false, probeStatus: "" });
     try {
       const ticketText = compileTicketText(freshIssue);
-      const raw = await runGroomingAgent(ticketText, "");
+
+      // Probe the worktree for relevant files if one is configured
+      let fileContentsBlock = "";
+      let worktreeContext = "";
+      try {
+        const worktreeInfo = await validateWorktree();
+        worktreeContext = `\n\n=== CODEBASE CONTEXT ===\nWorktree: ${worktreeInfo.path}\nBranch: ${worktreeInfo.branch}`;
+        const ticketWithContext = ticketText + worktreeContext;
+
+        setSession((prev) => prev?.issue.key === sessionKey ? { ...prev, probeStatus: "Identifying relevant files…" } : prev);
+        const probeRaw = await runGroomingFileProbe(ticketWithContext);
+        const probe = parseAgentJson<{ files: string[]; grep_patterns: string[] }>(probeRaw);
+        if (probe) {
+          const MAX_TOTAL = 40 * 1024;
+          let totalSize = 0;
+          const parts: string[] = [];
+          for (const filePath of (probe.files ?? []).slice(0, 12)) {
+            try {
+              setSession((prev) => prev?.issue.key === sessionKey ? { ...prev, probeStatus: `Reading ${filePath}…` } : prev);
+              const content = await readRepoFile(filePath);
+              const chunk = `--- ${filePath} ---\n${content}\n`;
+              if (totalSize + chunk.length > MAX_TOTAL) break;
+              parts.push(chunk);
+              totalSize += chunk.length;
+            } catch { /* skip missing files */ }
+          }
+          for (const pattern of (probe.grep_patterns ?? []).slice(0, 6)) {
+            try {
+              setSession((prev) => prev?.issue.key === sessionKey ? { ...prev, probeStatus: `Searching for "${pattern}"…` } : prev);
+              const lines = await grepRepoFiles(pattern);
+              if (lines.length === 0) continue;
+              const chunk = `--- grep: ${pattern} ---\n${lines.join("\n")}\n`;
+              if (totalSize + chunk.length > MAX_TOTAL) break;
+              parts.push(chunk);
+              totalSize += chunk.length;
+            } catch { /* skip */ }
+          }
+          if (parts.length > 0) fileContentsBlock = parts.join("\n");
+        }
+      } catch { /* no worktree configured — proceed without codebase context */ }
+
+      setSession((prev) => prev?.issue.key === sessionKey ? { ...prev, probeStatus: "" } : prev);
+      const ticketWithContext = ticketText + worktreeContext;
+      const raw = await runGroomingAgent(ticketWithContext, fileContentsBlock);
       const output = parseAgentJson<GroomingOutput>(raw);
       if (!output) throw new Error("Could not parse grooming response.");
       const drafts = suggestedEditsToDraftChanges(output.suggested_edits, freshIssue);
@@ -767,7 +816,7 @@ export function TicketQualityScreen({ credStatus, onBack }: TicketQualityScreenP
         {/* ── Right pane: grooming assistant (flush to right edge, always visible) ── */}
         <div className="flex flex-col min-h-0 py-4 pl-0 pr-4" style={{ width: chatWidth, minWidth: chatWidth, maxWidth: chatWidth }}>
           {session ? (
-            <ChatPanel messages={session.chat} thinking={session.thinking} onSend={sendChatMessage} />
+            <ChatPanel messages={session.chat} thinking={session.thinking} probeStatus={session.probeStatus} onSend={sendChatMessage} />
           ) : (
             <Card className="flex flex-col flex-1 min-h-0">
               <CardHeader className="pb-2 shrink-0 border-b">
