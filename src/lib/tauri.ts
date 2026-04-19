@@ -120,6 +120,7 @@ export function setMockClaudeMode(enabled: boolean): void {
 export interface CredentialStatus {
   anthropicApiKey: boolean;
   geminiApiKey: boolean;
+  copilotApiKey: boolean;
   localLlmUrl: boolean;
   jiraBaseUrl: boolean;
   jiraEmail: boolean;
@@ -148,9 +149,11 @@ export function anthropicComplete(s: CredentialStatus) {
   return s.anthropicApiKey;
 }
 
-/** True when at least one AI provider (Anthropic, Gemini, or local LLM) is configured. */
+/** True when at least one AI provider (Anthropic, Gemini, Copilot, or local LLM) is configured. */
 export function aiProviderComplete(s: CredentialStatus) {
-  return s.anthropicApiKey || s.geminiApiKey || s.localLlmUrl;
+  return (
+    s.anthropicApiKey || s.geminiApiKey || s.copilotApiKey || s.localLlmUrl
+  );
 }
 
 /** All three auth credentials are present (board ID not required). */
@@ -319,6 +322,42 @@ export async function validateGemini(apiKey: string): Promise<string> {
 /** Test the already-stored Gemini API key without re-saving it. */
 export async function testGeminiStored(): Promise<string> {
   return invoke<string>("test_gemini_stored");
+}
+
+export async function startCopilotOauth(): Promise<string> {
+  return invoke<string>("start_copilot_oauth");
+}
+
+export async function getCopilotModels(): Promise<[string, string][]> {
+  return invoke<[string, string][]>("get_copilot_models");
+}
+
+export async function getCustomCopilotModels(): Promise<string[]> {
+  return invoke<string[]>("get_custom_copilot_models");
+}
+
+export async function addCustomCopilotModel(
+  modelId: string,
+): Promise<string[]> {
+  return invoke<string[]>("add_custom_copilot_model", { modelId });
+}
+
+export async function removeCustomCopilotModel(
+  modelId: string,
+): Promise<string[]> {
+  return invoke<string[]>("remove_custom_copilot_model", { modelId });
+}
+
+export async function validateCopilot(apiKey: string): Promise<string> {
+  return invoke<string>("validate_copilot", { apiKey });
+}
+
+export async function testCopilotStored(): Promise<string> {
+  return invoke<string>("test_copilot_stored");
+}
+
+export async function pingCopilot(): Promise<string> {
+  return invoke<string>("ping_copilot");
 }
 
 /**

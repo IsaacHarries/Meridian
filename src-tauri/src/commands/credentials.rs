@@ -12,6 +12,9 @@ const ALLOWED_KEYS: &[&str] = &[
     "gemini_auth_method",
     "gemini_oauth_json",
     "gemini_project_id",
+    "copilot_api_key",
+    "copilot_auth_method",
+    "copilot_oauth_json",
     "ai_provider_order",
     "local_llm_url",
     "local_llm_api_key",
@@ -29,6 +32,7 @@ const ALLOWED_KEYS: &[&str] = &[
 const NON_SECRET_KEYS: &[&str] = &[
     "claude_auth_method",
     "gemini_auth_method",
+    "copilot_auth_method",
     "ai_provider_order",
     "local_llm_url",
     "jira_base_url",
@@ -46,6 +50,7 @@ const NON_SECRET_KEYS: &[&str] = &[
 pub struct CredentialStatus {
     pub anthropic_api_key: bool,
     pub gemini_api_key: bool,
+    pub copilot_api_key: bool,
     pub local_llm_url: bool,
     pub jira_base_url: bool,
     pub jira_email: bool,
@@ -63,6 +68,9 @@ impl CredentialStatus {
     }
     pub fn gemini_complete(&self) -> bool {
         self.gemini_api_key
+    }
+    pub fn copilot_complete(&self) -> bool {
+        self.copilot_api_key
     }
     pub fn local_llm_complete(&self) -> bool {
         self.local_llm_url
@@ -89,6 +97,7 @@ pub fn credential_status() -> Result<CredentialStatus, String> {
     Ok(CredentialStatus {
         anthropic_api_key: has("anthropic_api_key"),
         gemini_api_key: has("gemini_api_key"),
+        copilot_api_key: has("copilot_api_key"),
         local_llm_url: has("local_llm_url"),
         jira_base_url: has("jira_base_url"),
         jira_email: has("jira_email"),

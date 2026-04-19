@@ -63,6 +63,10 @@ pub use knowledge::{
     delete_knowledge_entry, export_knowledge_markdown, load_knowledge_entries, save_knowledge_entry,
 };
 pub use llms::claude::{cancel_review, get_claude_models};
+pub use llms::copilot::{
+    add_custom_copilot_model, get_copilot_models, get_custom_copilot_models,
+    remove_custom_copilot_model, test_copilot_stored, validate_copilot,
+};
 pub use llms::gemini::{
     add_custom_gemini_model, get_custom_gemini_models, get_gemini_models,
     remove_custom_gemini_model, test_gemini_stored, validate_gemini,
@@ -82,7 +86,7 @@ pub use store_cache::{
     save_store_cache,
 };
 pub use validate::{
-    debug_jira_endpoints, import_claude_code_token, ping_anthropic, ping_gemini,
-    start_claude_oauth, start_gemini_oauth, test_anthropic_stored, test_bitbucket_stored,
-    test_jira_stored, validate_anthropic, validate_bitbucket, validate_jira,
+    debug_jira_endpoints, import_claude_code_token, ping_anthropic, ping_copilot, ping_gemini,
+    start_claude_oauth, start_copilot_oauth, start_gemini_oauth, test_anthropic_stored,
+    test_bitbucket_stored, test_jira_stored, validate_anthropic, validate_bitbucket, validate_jira,
 };

@@ -19,6 +19,7 @@ pub fn get_provider_order() -> Vec<String> {
         return vec![
             "claude".to_string(),
             "gemini".to_string(),
+            "copilot".to_string(),
             "local".to_string(),
         ];
     }
@@ -83,10 +84,25 @@ pub async fn try_provider_single(
         "gemini" => {
             let key = get_credential("gemini_api_key")
                 .ok_or_else(|| "Gemini: not configured.".to_string())?;
-            let model = get_credential("gemini_model")
-                .filter(|m| !m.trim().is_empty())
+            let model = crate::storage::preferences::get_pref("gemini_model")
+                .or_else(|| get_credential("gemini_model"))
+                .filter(|m: &String| !m.trim().is_empty())
                 .ok_or_else(|| "Gemini: no model selected in Settings.".to_string())?;
             gemini::complete_gemini(client, &key, &model, system, user, max_tokens).await
+        }
+        "copilot" => {
+            let token = get_credential("copilot_api_key")
+                .ok_or_else(|| "Copilot: not configured.".to_string())?;
+            let model = crate::storage::preferences::get_pref("copilot_model")
+                .or_else(|| get_credential("copilot_model"))
+                .filter(|m| !m.trim().is_empty())
+                .ok_or_else(|| "Copilot: no model selected in Settings.".to_string())?;
+            if let Err(e) = crate::llms::copilot::refresh_copilot_token_if_needed(client).await {
+                return Err(format!("Copilot token refresh failed: {e}"));
+            }
+            let token = get_credential("copilot_api_key").unwrap_or(token);
+            crate::llms::copilot::complete_copilot(client, &token, &model, system, user, max_tokens)
+                .await
         }
         "local" => {
             let base = local_llm::local_llm_base_url()
@@ -129,8 +145,9 @@ pub async fn try_provider_multi(
         "gemini" => {
             let key = get_credential("gemini_api_key")
                 .ok_or_else(|| "Gemini: not configured.".to_string())?;
-            let model = get_credential("gemini_model")
-                .filter(|m| !m.trim().is_empty())
+            let model = crate::storage::preferences::get_pref("gemini_model")
+                .or_else(|| get_credential("gemini_model"))
+                .filter(|m: &String| !m.trim().is_empty())
                 .ok_or_else(|| "Gemini: no model selected in Settings.".to_string())?;
             let history: Vec<serde_json::Value> = serde_json::from_str(history_json)
                 .map_err(|e| format!("Invalid history JSON: {e}"))?;
@@ -143,6 +160,24 @@ pub async fn try_provider_multi(
                 &history,
                 max_tokens,
                 stream_event,
+            )
+            .await
+        }
+        "copilot" => {
+            let token = get_credential("copilot_api_key")
+                .ok_or_else(|| "Copilot: not configured.".to_string())?;
+            let model = crate::storage::preferences::get_pref("copilot_model")
+                .or_else(|| get_credential("copilot_model"))
+                .filter(|m| !m.trim().is_empty())
+                .ok_or_else(|| "Copilot: no model selected in Settings.".to_string())?;
+            if let Err(e) = crate::llms::copilot::refresh_copilot_token_if_needed(client).await {
+                return Err(format!("Copilot token refresh failed: {e}"));
+            }
+            let token = get_credential("copilot_api_key").unwrap_or(token);
+            let history: Vec<serde_json::Value> = serde_json::from_str(history_json)
+                .map_err(|e| format!("Invalid history JSON: {e}"))?;
+            crate::llms::copilot::complete_multi_copilot(
+                client, &token, &model, system, &history, max_tokens,
             )
             .await
         }
@@ -329,6 +364,44 @@ pub async fn dispatch_multi_streaming(
                     )
                     .await
                 }
+            }
+            "copilot" => {
+                let token = match get_credential("copilot_api_key") {
+                    Some(t) if !t.trim().is_empty() => t,
+                    _ => {
+                        failure_reasons.push("Copilot: not configured".to_string());
+                        continue;
+                    }
+                };
+                let model = match crate::storage::preferences::get_pref("copilot_model")
+                    .or_else(|| get_credential("copilot_model"))
+                    .filter(|m| !m.trim().is_empty())
+                {
+                    Some(m) => m,
+                    None => {
+                        failure_reasons.push("Copilot: no model selected".to_string());
+                        continue;
+                    }
+                };
+                if let Err(e) = crate::llms::copilot::refresh_copilot_token_if_needed(client).await
+                {
+                    failure_reasons.push(format!("copilot: {e}"));
+                    continue;
+                }
+                let token = get_credential("copilot_api_key").unwrap_or(token);
+                let history: Vec<serde_json::Value> = serde_json::from_str(history_json)
+                    .map_err(|e| format!("Invalid history JSON: {e}"))?;
+                crate::llms::copilot::complete_multi_copilot_streaming(
+                    app,
+                    client,
+                    &token,
+                    &model,
+                    system,
+                    &history,
+                    max_tokens,
+                    stream_event,
+                )
+                .await
             }
             "local" => {
                 let base = match local_llm::local_llm_base_url() {
