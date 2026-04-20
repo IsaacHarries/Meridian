@@ -2858,6 +2858,7 @@ function ConfigSection({
   const [prReviewWorktreePath, setPrReviewWorktreePath] = useState("");
   const [prAddressWorktreePath, setPrAddressWorktreePath] = useState("");
   const [prTerminal, setPrTerminal] = useState("iTerm2");
+  const [buildVerifyEnabled, setBuildVerifyEnabled] = useState(false);
   const [editing, setEditing] = useState(!jiraBoardId || !bitbucketRepoSlug);
   const [status, setStatus] = useState<SectionStatus>({
     state: "idle",
@@ -2884,6 +2885,7 @@ function ConfigSection({
       setPrReviewWorktreePath(prefs["pr_review_worktree_path"] ?? "");
       setPrAddressWorktreePath(prefs["pr_address_worktree_path"] ?? "");
       setPrTerminal(prefs["pr_review_terminal"] || "iTerm2");
+      setBuildVerifyEnabled(prefs["build_verify_enabled"] === "true");
     } catch {
       setBoardId("");
       setRepoSlug("");
@@ -2913,6 +2915,9 @@ function ConfigSection({
           );
           setPrTerminal((prev) =>
             prev !== "iTerm2" ? prev : prefs["pr_review_terminal"] || "iTerm2",
+          );
+          setBuildVerifyEnabled(
+            (prev) => prev || prefs["build_verify_enabled"] === "true",
           );
         })
         .catch(() => {});
@@ -2954,6 +2959,7 @@ function ConfigSection({
         await setPreference("pr_address_worktree_path", "");
       }
       await setPreference("pr_review_terminal", prTerminal.trim() || "iTerm2");
+      await setPreference("build_verify_enabled", buildVerifyEnabled ? "true" : "false");
       setStatus({ state: "success", message: "Configuration saved." });
       setEditing(false);
       onSaved();
@@ -3205,6 +3211,25 @@ function ConfigSection({
                   )}
                 </div>
               )}
+            </div>
+            <div className="flex items-start justify-between gap-4 py-1">
+              <div>
+                <p className="text-sm font-medium">Build Verification</p>
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  After writing code, the AI automatically detects and runs the
+                  project's build command, fixes any errors, and retries (up to
+                  5 times).
+                </p>
+              </div>
+              <Button
+                size="sm"
+                variant={buildVerifyEnabled ? "default" : "outline"}
+                onClick={() => setBuildVerifyEnabled((v) => !v)}
+                disabled={status.state === "loading"}
+                className="shrink-0"
+              >
+                {buildVerifyEnabled ? "Enabled" : "Disabled"}
+              </Button>
             </div>
             <div className="flex gap-2">
               <Button
@@ -3811,6 +3836,25 @@ export function SettingsScreen({ onClose, onNavigate }: SettingsScreenProps) {
                         Configure domain knowledge injected into AI agents —
                         grooming conventions, codebase patterns, implementation
                         standards, review criteria
+                      </p>
+                    </div>
+                    <ChevronRight className="h-4 w-4 text-muted-foreground" />
+                  </CardContent>
+                </Card>
+                <Card
+                  className="cursor-pointer hover:bg-muted/40 transition-colors"
+                  onClick={() => onNavigate("tool-sandbox")}
+                >
+                  <CardContent className="flex items-center gap-4 py-4">
+                    <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-violet-500/10">
+                      <FlaskConical className="h-4 w-4 text-violet-500" />
+                    </div>
+                    <div className="flex-1">
+                      <p className="text-sm font-medium">Tool Sandbox</p>
+                      <p className="text-xs text-muted-foreground">
+                        Invoke any agent tool directly — read/write repo files,
+                        search JIRA, grep the codebase, fetch URLs — and inspect
+                        the raw output to verify each tool works
                       </p>
                     </div>
                     <ChevronRight className="h-4 w-4 text-muted-foreground" />

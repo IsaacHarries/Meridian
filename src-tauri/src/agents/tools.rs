@@ -187,8 +187,10 @@ pub const TOOL_SYSTEM_SUFFIX: &str = "\n\n\
         <fetch_url url=\"https://example.com\"/>\n\n\
     read_repo_file   — read a source file from the codebase:\n\
         <read_repo_file path=\"src/reports/index.ts\"/>\n\n\
-    write_repo_file  — write or overwrite a file (provide complete content):\n\
-        <write_repo_file path=\"src/utils/helper.ts\" content=\"// full file content here\"/>\n\n\
+    write_repo_file  — write or overwrite a file; put the COMPLETE content between the tags:\n\
+        <write_repo_file path=\"src/utils/helper.ts\">\n\
+        // complete file content here — can contain any characters\n\
+        </write_repo_file>\n\n\
     grep_repo        — search codebase by regex (optional path filter):\n\
         <grep_repo pattern=\"upsertReportPage\" path=\"src/reports\"/>\n\n\
     search_jira      — search JIRA by keyword or JQL:\n\
@@ -539,10 +541,41 @@ pub fn extract_text_tool_call(text: &str) -> Option<TextToolCall> {
         }
     }
 
+    // write_repo_file uses element form to safely carry arbitrary file content:
+    //   <write_repo_file path="...">
+    //   ...complete file content...
+    //   </write_repo_file>
+    {
+        let open_prefix = "<write_repo_file ";
+        let close_tag = "</write_repo_file>";
+        if let Some(start) = text.find(open_prefix) {
+            // Find the end of the opening tag (first > after the prefix)
+            if let Some(rel_gt) = text[start..].find('>') {
+                let open_end = start + rel_gt + 1;
+                let opening = &text[start..open_end];
+                // Must not be self-closing (no />)
+                if !opening.trim_end().ends_with("/>") {
+                    let path = attr(opening, "path").unwrap_or("").to_string();
+                    if !path.is_empty() {
+                        if let Some(rel_close) = text[open_end..].find(close_tag) {
+                            let content = text[open_end..open_end + rel_close].to_string();
+                            let full = text[start..open_end + rel_close + close_tag.len()].to_string();
+                            return Some(TextToolCall {
+                                name: TOOL_WRITE_REPO_FILE.to_string(),
+                                input: serde_json::json!({ "path": path, "content": content }),
+                                tag: full,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     let tools = [
         TOOL_FETCH_URL,
         TOOL_READ_REPO_FILE,
-        TOOL_WRITE_REPO_FILE,
+        // TOOL_WRITE_REPO_FILE handled above via element form
         TOOL_GREP_REPO,
         TOOL_SEARCH_JIRA,
         TOOL_GET_JIRA_ISSUE,
@@ -569,11 +602,6 @@ pub fn extract_text_tool_call(text: &str) -> Option<TextToolCall> {
                     TOOL_READ_REPO_FILE => {
                         let path = attr(tag_str, "path").unwrap_or("");
                         serde_json::json!({ "path": path })
-                    }
-                    TOOL_WRITE_REPO_FILE => {
-                        let path = attr(tag_str, "path").unwrap_or("");
-                        let content = attr(tag_str, "content").unwrap_or("");
-                        serde_json::json!({ "path": path, "content": content })
                     }
                     TOOL_GREP_REPO => {
                         let pattern = attr(tag_str, "pattern").unwrap_or("");

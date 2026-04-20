@@ -7,6 +7,7 @@
  */
 
 import { create } from "zustand";
+import { getPreferences } from "@/lib/preferences";
 import {
   type JiraIssue,
   type GroomingOutput,
@@ -39,6 +40,8 @@ import {
   finalizeImplementationPlan,
   runImplementationGuidance,
   runImplementationAgent,
+  runBuildCheck,
+  type BuildCheckResult,
   runTestSuggestions,
   runPlanReview,
   getRepoDiff,
@@ -297,6 +300,8 @@ interface ImplementTicketState {
   guidance: GuidanceOutput | null;
   implementation: ImplementationOutput | null;
   implementationStreamText: string;
+  buildVerification: BuildCheckResult | null;
+  buildCheckStreamText: string;
   tests: TestOutput | null;
   review: PlanReviewOutput | null;
   prDescription: PrDescriptionOutput | null;
@@ -425,6 +430,8 @@ export const INITIAL: Omit<
   guidance: null,
   implementation: null,
   implementationStreamText: "",
+  buildVerification: null,
+  buildCheckStreamText: "",
   tests: null,
   review: null,
   prDescription: null,
@@ -571,6 +578,8 @@ export const useImplementTicketStore = create<ImplementTicketState>()(
           Object.assign(outputResets, {
             implementation: null,
             implementationStreamText: "",
+            buildVerification: null,
+            buildCheckStreamText: "",
             guidance: null,
           });
           break;
@@ -1036,6 +1045,8 @@ export const useImplementTicketStore = create<ImplementTicketState>()(
         currentStage: "implementation",
         viewingStage: "implementation",
         implementationStreamText: "",
+        buildVerification: null,
+        buildCheckStreamText: "",
       });
       try {
         const { ticketText, plan, guidance } = get();
@@ -1047,6 +1058,25 @@ export const useImplementTicketStore = create<ImplementTicketState>()(
         const data = parseAgentJson<ImplementationOutput>(raw);
         if (!data) throw new Error("Could not parse implementation output");
         set({ implementation: data });
+
+        // ── Build verification (if enabled) ──────────────────────────────────
+        const prefs = await getPreferences().catch(() => ({} as Record<string, string>));
+        const buildVerifyEnabled = prefs["build_verify_enabled"] === "true";
+        if (buildVerifyEnabled) {
+          set({ buildCheckStreamText: "" });
+          try {
+            const buildRaw = await runBuildCheck(
+              ticketText,
+              JSON.stringify(plan),
+              raw,
+            );
+            const buildResult = parseAgentJson<BuildCheckResult>(buildRaw);
+            if (buildResult) set({ buildVerification: buildResult });
+          } catch (e) {
+            console.warn("[Meridian] build check failed:", e);
+          }
+        }
+
         get().markComplete("implementation");
         set({ pendingApproval: "implementation" });
       } catch (e) {
@@ -1617,6 +1647,7 @@ function serializableState(s: ImplementTicketState) {
     triageStreamText: "",
     planStreamText: "",
     implementationStreamText: "",
+    buildCheckStreamText: "",
     testsStreamText: "",
     reviewStreamText: "",
     prStreamText: "",

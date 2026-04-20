@@ -1,4 +1,5 @@
 use super::dispatch;
+use super::tools::all_tools_def;
 
 /// Agent 4 — Implementation Guidance: step-by-step guide for executing the plan.
 #[tauri::command]
@@ -253,6 +254,317 @@ pub async fn run_implementation_agent(
     });
 
     Ok(output.to_string())
+}
+
+/// Probe the worktree root for known build system markers and return their content.
+async fn probe_project_files() -> String {
+    let candidates = [
+        "package.json",
+        "Cargo.toml",
+        "Makefile",
+        "makefile",
+        "pyproject.toml",
+        "setup.py",
+        "go.mod",
+        "build.gradle",
+        "build.gradle.kts",
+        "pom.xml",
+        "CMakeLists.txt",
+        "Dockerfile",
+        "justfile",
+    ];
+    let mut found = Vec::new();
+    for name in &candidates {
+        if let Ok(content) = crate::commands::repo::read_repo_file_internal(name) {
+            // Truncate large files (package.json can be huge)
+            let excerpt = if content.len() > 2_000 {
+                format!("{}\n[…truncated]", &content[..2_000])
+            } else {
+                content
+            };
+            found.push(format!("=== {} ===\n{}", name, excerpt));
+        }
+    }
+    if found.is_empty() {
+        "(no recognised build system files found in project root)".to_string()
+    } else {
+        found.join("\n\n")
+    }
+}
+
+/// Ask the AI to choose the best build/verify command for this project.
+async fn discover_build_command(
+    app: &tauri::AppHandle,
+    ticket_text: &str,
+    plan_json: &str,
+    impl_json: &str,
+    project_files: &str,
+) -> Result<String, String> {
+    use crate::agents::dispatch;
+    use tauri::Emitter;
+
+    let (client, api_key) = dispatch::llm_client().await?;
+
+    let system = "You are a build system expert. Given a project's build configuration files, \
+        a JIRA ticket, and an implementation plan, choose the single best shell command to \
+        verify the code compiles and the basic sanity checks pass.\n\n\
+        Rules:\n\
+        - Prefer fast commands that catch real errors: type-checks, compiles, lint with errors only.\n\
+        - For Node/TypeScript projects: prefer `tsc --noEmit` or the project's `build` script.\n\
+        - For Rust: prefer `cargo check` (faster than `cargo build`).\n\
+        - For Go: `go build ./...`\n\
+        - For Python: `python -m py_compile src/**/*.py` or the project's lint/check script.\n\
+        - Do NOT choose test commands as the primary command — tests can be slow.\n\
+        - The command will run with `sh -c` in the project root, so shell features work.\n\n\
+        Return ONLY valid JSON (no markdown, no prose):\n\
+        {\"command\": \"<the shell command>\", \"reasoning\": \"<one sentence why>\"}";
+
+    let user = format!(
+        "Project files:\n{project_files}\n\n\
+        Ticket:\n{ticket_text}\n\n\
+        Implementation plan:\n{plan_json}\n\n\
+        Files changed:\n{impl_json}"
+    );
+
+    let raw = dispatch::dispatch(app, &client, &api_key, system, &user, 512).await?;
+
+    // Extract command from JSON
+    let start = raw.find('{').unwrap_or(0);
+    let end = raw.rfind('}').map(|i| i + 1).unwrap_or(raw.len());
+    let parsed: serde_json::Value =
+        serde_json::from_str(&raw[start..end]).unwrap_or_default();
+
+    let command = parsed["command"]
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| "AI returned no build command".to_string())?
+        .to_string();
+
+    let reasoning = parsed["reasoning"].as_str().unwrap_or("").to_string();
+    let _ = app.emit(
+        "build-check-stream",
+        serde_json::json!({ "delta": format!("Detected build command: {command}\n({reasoning})\n") }),
+    );
+
+    Ok(command)
+}
+
+/// Agent 4c — Build Check: auto-discover the build command then run it, fix errors, retry.
+#[tauri::command]
+pub async fn run_build_check(
+    app: tauri::AppHandle,
+    ticket_text: String,
+    plan_json: String,
+    impl_json: String,
+) -> Result<String, String> {
+    use crate::agents::dispatch;
+    use tauri::Emitter;
+
+    let emit = |msg: &str| {
+        let _ = app.emit("build-check-stream", serde_json::json!({ "delta": msg }));
+    };
+
+    // ── Discover build command ─────────────────────────────────────────────────
+    emit("Analysing project to determine build command…\n");
+    let project_files = probe_project_files().await;
+    let build_command = match discover_build_command(
+        &app, &ticket_text, &plan_json, &impl_json, &project_files,
+    )
+    .await
+    {
+        Ok(cmd) => cmd,
+        Err(e) => {
+            emit(&format!("Could not determine build command: {e}\nSkipping build verification.\n"));
+            return Ok(serde_json::json!({
+                "build_command": null,
+                "build_passed": null,
+                "attempts": []
+            })
+            .to_string());
+        }
+    };
+
+    const MAX_ATTEMPTS: u32 = 5;
+    let mut attempts: Vec<serde_json::Value> = Vec::new();
+
+    for attempt in 1..=MAX_ATTEMPTS {
+        emit(&format!(
+            "\n[Build attempt {attempt}/{MAX_ATTEMPTS}] Running: {build_command}\n"
+        ));
+
+        let (exit_code, output) =
+            match crate::commands::repo::exec_in_worktree_internal(&build_command, 180).await {
+                Ok(r) => r,
+                Err(e) => {
+                    emit(&format!("  ERROR launching command: {e}\n"));
+                    attempts.push(serde_json::json!({
+                        "attempt": attempt,
+                        "exit_code": -1,
+                        "output": e,
+                        "fixed": false,
+                        "files_written": []
+                    }));
+                    break;
+                }
+            };
+
+        // Truncate long output so it fits in context
+        const MAX_OUTPUT: usize = 8_000;
+        let output_excerpt = if output.len() > MAX_OUTPUT {
+            format!("[…truncated — showing last 8000 chars]\n{}", &output[output.len() - MAX_OUTPUT..])
+        } else {
+            output.clone()
+        };
+
+        emit(&format!("{output_excerpt}\n"));
+
+        if exit_code == 0 {
+            emit(&format!("  Build passed ✓\n"));
+            attempts.push(serde_json::json!({
+                "attempt": attempt,
+                "exit_code": 0,
+                "output": output,
+                "fixed": true,
+                "files_written": []
+            }));
+            break;
+        }
+
+        emit(&format!("  Exit code {exit_code} — asking AI to fix errors…\n"));
+
+        // ── AI fix loop ────────────────────────────────────────────────────────
+        let (client, api_key) = dispatch::llm_client().await?;
+
+        let system = format!(
+            "You are a senior software engineer fixing build/compile errors.\n\n\
+            TICKET CONTEXT:\n{ticket_text}\n\n\
+            IMPLEMENTATION PLAN:\n{plan_json}\n\n\
+            IMPLEMENTATION SUMMARY:\n{impl_json}\n\n\
+            BUILD COMMAND: {build_command}\n\n\
+            BUILD OUTPUT (exit code {exit_code}):\n{output_excerpt}\n\n\
+            WORKFLOW:\n\
+            1. Read the files mentioned in the error output with read_repo_file.\n\
+            2. Identify the root cause of each error.\n\
+            3. Fix all errors by writing corrected files with write_repo_file.\n\
+               Provide COMPLETE file content — do not truncate.\n\
+            4. After writing all fixes, return your FINAL response.\n\n\
+            FINAL RESPONSE — ONLY this JSON, no markdown fences, no prose outside it:\n\
+            {{\n\
+              \"explanation\": \"<one or two sentences describing what was wrong and what you fixed>\",\n\
+              \"files_written\": [\"<path1>\", \"<path2>\"]\n\
+            }}\n\
+            files_written must list every path you wrote with write_repo_file.\n\
+            If you could not determine a fix, set files_written to [] and explain why."
+        );
+
+        let history = serde_json::json!([
+            { "role": "user", "content": "Please fix the build errors described above." }
+        ]);
+        let history_str = history.to_string();
+
+        // Use the full tool loop so the AI can read files before writing fixes.
+        let tools_def = all_tools_def();
+        use crate::llms::claude;
+        let provider = crate::agents::dispatch::get_ai_provider();
+        let providers_to_try: Vec<String> = if provider == "auto" {
+            crate::agents::dispatch::get_provider_order()
+        } else {
+            vec![provider]
+        };
+
+        let fix_raw = 'provider_loop: {
+            let mut errs: Vec<String> = Vec::new();
+            for p in &providers_to_try {
+                let result = match p.as_str() {
+                    "claude" => {
+                        let auth = crate::storage::credentials::get_credential("claude_auth_method")
+                            .unwrap_or_else(|| "api_key".to_string());
+                        if auth == "oauth" {
+                            let _ = claude::refresh_oauth_if_needed(&client).await;
+                        }
+                        let key = crate::storage::credentials::get_credential("anthropic_api_key")
+                            .unwrap_or_else(|| api_key.clone());
+                        if key.is_empty() {
+                            errs.push("claude: not configured".to_string());
+                            continue;
+                        }
+                        claude::complete_multi_claude_tool_loop(
+                            &app, &client, &key, &claude::get_active_model(),
+                            &system, &history_str, 16000, "build-check-stream",
+                        ).await
+                    }
+                    other => {
+                        claude::complete_multi_text_tool_loop(
+                            &app, &client, &api_key, other,
+                            &system, &history_str, 16000, "build-check-stream",
+                        ).await
+                    }
+                };
+                match result {
+                    Ok(r) => break 'provider_loop Ok(r),
+                    Err(e) => errs.push(format!("{p}: {e}")),
+                }
+            }
+            Err(errs.join("; "))
+        };
+
+        let fix_raw = match fix_raw {
+            Ok(r) => r,
+            Err(e) => {
+                emit(&format!("  AI fix failed: {e}\n"));
+                attempts.push(serde_json::json!({
+                    "attempt": attempt,
+                    "exit_code": exit_code,
+                    "output": output,
+                    "fixed": false,
+                    "files_written": []
+                }));
+                break;
+            }
+        };
+
+        // Parse the AI's JSON response
+        let fix_parsed = {
+            let s = fix_raw.trim();
+            let start = s.find('{').unwrap_or(0);
+            let end = s.rfind('}').map(|i| i + 1).unwrap_or(s.len());
+            serde_json::from_str::<serde_json::Value>(&s[start..end]).unwrap_or_default()
+        };
+
+        let files_written: Vec<String> = fix_parsed["files_written"]
+            .as_array()
+            .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
+            .unwrap_or_default();
+        let explanation = fix_parsed["explanation"].as_str().unwrap_or("(no explanation)").to_string();
+
+        emit(&format!("  Fixed: {explanation}\n"));
+        if !files_written.is_empty() {
+            emit(&format!("  Files updated: {}\n", files_written.join(", ")));
+        }
+
+        attempts.push(serde_json::json!({
+            "attempt": attempt,
+            "exit_code": exit_code,
+            "output": output,
+            "fixed": !files_written.is_empty(),
+            "files_written": files_written
+        }));
+
+        if attempt == MAX_ATTEMPTS {
+            emit(&format!("\n  Reached max attempts ({MAX_ATTEMPTS}) — stopping.\n"));
+        }
+    }
+
+    let passed = attempts.last()
+        .and_then(|a| a["exit_code"].as_i64())
+        .map(|c| c == 0)
+        .unwrap_or(false);
+
+    Ok(serde_json::json!({
+        "build_command": build_command,
+        "build_passed": passed,
+        "attempts": attempts
+    }).to_string())
 }
 
 /// Agent 5 — Test Suggestions: recommend tests to write based on the actual code changes.

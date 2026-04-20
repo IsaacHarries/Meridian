@@ -23,12 +23,12 @@ pub use agents::grooming::{
     assess_ticket_quality, run_grooming_agent, run_grooming_chat_turn, run_grooming_file_probe,
 };
 pub use agents::implementation::{
-    run_implementation_agent, run_implementation_guidance, run_plan_review, run_pr_description_gen,
-    run_retrospective_agent, run_test_suggestions,
+    run_build_check, run_implementation_agent, run_implementation_guidance, run_plan_review,
+    run_pr_description_gen, run_retrospective_agent, run_test_suggestions,
 };
 pub use agents::planning::{
     finalize_implementation_plan, run_checkpoint_action, run_checkpoint_chat_turn,
-    run_impact_analysis, run_triage_turn,
+    run_impact_analysis, run_tool_test, run_tool_test_with_llm, run_triage_turn,
 };
 pub use agents::review::{
     analyze_pr_comments, chat_address_pr, chat_pr_review, review_pr as review_pr_agent,
@@ -76,8 +76,8 @@ pub use llms::local_llm::{get_local_models, test_local_llm_stored, validate_loca
 pub use preferences::{delete_preference, get_preferences, set_preference};
 pub use repo::{
     checkout_pr_address_branch, checkout_pr_review_branch, checkout_worktree_branch,
-    commit_pr_address_changes, get_file_at_base, get_file_history, get_pr_address_diff,
-    get_repo_diff, get_repo_log,
+    commit_pr_address_changes, exec_in_worktree, get_file_at_base, get_file_history,
+    get_pr_address_diff, get_repo_diff, get_repo_log,
     glob_repo_files, grep_repo_files, push_pr_address_branch, read_pr_address_file, read_repo_file,
     run_in_terminal, sync_worktree, validate_pr_address_worktree, validate_pr_review_worktree,
     validate_worktree, write_pr_address_file, write_repo_file,

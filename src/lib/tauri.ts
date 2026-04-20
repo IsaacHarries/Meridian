@@ -1243,11 +1243,71 @@ export async function runCheckpointAction(
   });
 }
 
+export async function runToolTest(
+  toolName: string,
+  inputJson: string,
+): Promise<string> {
+  return invoke<string>("run_tool_test", { toolName, inputJson });
+}
+
+export interface LlmToolTestResult {
+  ok: boolean;
+  provider: string;
+  tool_name: string;
+  llm_response?: string;
+  error?: string;
+}
+
+export async function runToolTestWithLlm(
+  provider: string,
+  toolName: string,
+  inputJson: string,
+): Promise<LlmToolTestResult> {
+  const raw = await invoke<string>("run_tool_test_with_llm", { provider, toolName, inputJson });
+  return JSON.parse(raw) as LlmToolTestResult;
+}
+
 export async function writeRepoFile(
   path: string,
   content: string,
 ): Promise<void> {
   return invoke("write_repo_file", { path, content });
+}
+
+export interface BuildAttempt {
+  attempt: number;
+  exit_code: number;
+  output: string;
+  fixed: boolean;
+  files_written: string[];
+}
+
+export interface BuildCheckResult {
+  build_command: string;
+  build_passed: boolean;
+  attempts: BuildAttempt[];
+}
+
+export async function runBuildCheck(
+  ticketText: string,
+  planJson: string,
+  implJson: string,
+): Promise<string> {
+  return invoke<string>("run_build_check", {
+    ticketText,
+    planJson,
+    implJson,
+  });
+}
+
+export async function execInWorktree(
+  command: string,
+  timeoutSecs?: number,
+): Promise<[number, string]> {
+  return invoke<[number, string]>("exec_in_worktree", {
+    command,
+    timeoutSecs,
+  });
 }
 
 export async function updateJiraIssue(

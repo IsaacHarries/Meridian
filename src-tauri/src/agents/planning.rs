@@ -177,3 +177,99 @@ pub async fn finalize_implementation_plan(
     let user = format!("Triage conversation:\n{conversation_json}");
     dispatch::dispatch_streaming(&app, &client, &api_key, &system, &user, 2000, "plan-stream").await
 }
+
+/// Dev sandbox — invoke a single agent tool by name and return the raw result.
+#[tauri::command]
+pub async fn run_tool_test(tool_name: String, input_json: String) -> Result<String, String> {
+    let input: serde_json::Value = serde_json::from_str(&input_json)
+        .map_err(|e| format!("Invalid input JSON: {e}"))?;
+    Ok(crate::agents::tools::execute_tool(&tool_name, &input).await)
+}
+
+/// Run a tool through the real LLM tool-call loop for a specific provider.
+/// Returns JSON: { tool_called: bool, tool_result: string, llm_response: string }
+#[tauri::command]
+pub async fn run_tool_test_with_llm(
+    app: tauri::AppHandle,
+    provider: String,
+    tool_name: String,
+    input_json: String,
+) -> Result<String, String> {
+    use crate::agents::dispatch;
+    use crate::storage::credentials::get_credential;
+
+    // Ask the LLM to call the tool with the supplied parameters.
+    let system = format!(
+        "You are a tool-calling test agent. The user will ask you to call a specific tool \
+         with specific parameter values. You MUST call that tool immediately using the \
+         tool-calling mechanism — do not describe it, do not ask questions, just call it."
+    );
+    let user_msg = format!(
+        "Please call the `{tool_name}` tool with exactly these parameters:\n{input_json}"
+    );
+    let history = serde_json::json!([{ "role": "user", "content": user_msg }]);
+    let history_str = history.to_string();
+
+    let (client, claude_key) = dispatch::llm_client().await?;
+
+    let result = match provider.as_str() {
+        "claude" => {
+            let auth_method =
+                get_credential("claude_auth_method").unwrap_or_else(|| "api_key".to_string());
+            if auth_method == "oauth" {
+                crate::llms::claude::refresh_oauth_if_needed(&client).await?;
+            }
+            let key = get_credential("anthropic_api_key").unwrap_or(claude_key.clone());
+            if key.is_empty() {
+                return Err("Claude: not configured (no API key)".to_string());
+            }
+            crate::llms::claude::complete_multi_claude_tool_loop(
+                &app,
+                &client,
+                &key,
+                &crate::llms::claude::get_active_model(),
+                &system,
+                &history_str,
+                4096,
+                "tool-sandbox-stream",
+            )
+            .await
+        }
+        other => {
+            crate::llms::claude::complete_multi_text_tool_loop(
+                &app,
+                &client,
+                &claude_key,
+                other,
+                &system,
+                &history_str,
+                4096,
+                "tool-sandbox-stream",
+            )
+            .await
+        }
+    };
+
+    match result {
+        Ok(raw) => {
+            // The tool loop returns the final LLM text after tool execution.
+            // Wrap it so the frontend can show structured output.
+            let out = serde_json::json!({
+                "ok": true,
+                "provider": provider,
+                "tool_name": tool_name,
+                "llm_response": raw,
+            });
+            Ok(out.to_string())
+        }
+        Err(e) => {
+            let out = serde_json::json!({
+                "ok": false,
+                "provider": provider,
+                "tool_name": tool_name,
+                "error": e,
+            });
+            Ok(out.to_string())
+        }
+    }
+}

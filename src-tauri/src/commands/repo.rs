@@ -672,6 +672,54 @@ end tell"#
     Ok(())
 }
 
+/// Run an arbitrary shell command in the configured implementation worktree and
+/// capture its combined stdout+stderr. Returns the exit code and output so the
+/// caller can decide how to handle failures.
+/// `timeout_secs` caps execution time (clamped to 300 s).
+#[tauri::command]
+pub async fn exec_in_worktree(
+    command: String,
+    timeout_secs: Option<u64>,
+) -> Result<(i32, String), String> {
+    let root = worktree_path()?;
+    let timeout = std::time::Duration::from_secs(timeout_secs.unwrap_or(120).min(300));
+
+    let child = tokio::process::Command::new("sh")
+        .arg("-c")
+        .arg(&command)
+        .current_dir(&root)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("Failed to spawn command: {e}"))?;
+
+    let result = tokio::time::timeout(timeout, child.wait_with_output())
+        .await
+        .map_err(|_| {
+            format!(
+                "Command timed out after {} seconds",
+                timeout.as_secs()
+            )
+        })?
+        .map_err(|e| format!("Command execution failed: {e}"))?;
+
+    let stdout = String::from_utf8_lossy(&result.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&result.stderr).to_string();
+    let combined = match (stdout.trim().is_empty(), stderr.trim().is_empty()) {
+        (true, true) => "(no output)".to_string(),
+        (true, false) => stderr,
+        (false, true) => stdout,
+        (false, false) => format!("{stdout}\n{stderr}"),
+    };
+    let exit_code = result.status.code().unwrap_or(-1);
+    Ok((exit_code, combined))
+}
+
+/// Internal version callable from other backend modules.
+pub async fn exec_in_worktree_internal(command: &str, timeout_secs: u64) -> Result<(i32, String), String> {
+    exec_in_worktree(command.to_string(), Some(timeout_secs)).await
+}
+
 // ── PR Address worktree ───────────────────────────────────────────────────────
 
 /// Validate the configured PR address worktree path.
