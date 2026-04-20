@@ -1,5 +1,6 @@
 const TOOL_FETCH_URL: &str = "fetch_url";
 const TOOL_READ_REPO_FILE: &str = "read_repo_file";
+const TOOL_WRITE_REPO_FILE: &str = "write_repo_file";
 const TOOL_GREP_REPO: &str = "grep_repo";
 const TOOL_SEARCH_JIRA: &str = "search_jira";
 const TOOL_GET_JIRA_ISSUE: &str = "get_jira_issue";
@@ -36,6 +37,21 @@ pub fn all_tools_def() -> serde_json::Value {
                     "path": { "type": "string", "description": "Relative path from the repo root, e.g. 'src/reports/index.ts'" }
                 },
                 "required": ["path"]
+            }
+        },
+        {
+            "name": TOOL_WRITE_REPO_FILE,
+            "description": "Write or overwrite a file in the configured git worktree. \
+                Use this to create new files or apply changes to existing ones. \
+                Always provide the COMPLETE file content — partial content will overwrite the whole file. \
+                Read the current file first with read_repo_file if you need to preserve existing content.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "path":    { "type": "string", "description": "Repo-relative path, e.g. 'src/utils/helper.ts'" },
+                    "content": { "type": "string", "description": "Complete new file content" }
+                },
+                "required": ["path", "content"]
             }
         },
         {
@@ -171,6 +187,8 @@ pub const TOOL_SYSTEM_SUFFIX: &str = "\n\n\
         <fetch_url url=\"https://example.com\"/>\n\n\
     read_repo_file   — read a source file from the codebase:\n\
         <read_repo_file path=\"src/reports/index.ts\"/>\n\n\
+    write_repo_file  — write or overwrite a file (provide complete content):\n\
+        <write_repo_file path=\"src/utils/helper.ts\" content=\"// full file content here\"/>\n\n\
     grep_repo        — search codebase by regex (optional path filter):\n\
         <grep_repo pattern=\"upsertReportPage\" path=\"src/reports\"/>\n\n\
     search_jira      — search JIRA by keyword or JQL:\n\
@@ -216,6 +234,18 @@ pub async fn execute_tool(name: &str, input: &serde_json::Value) -> String {
             match crate::commands::repo::read_repo_file(path.to_string()).await {
                 Ok(c) => format!("=== {path} ===\n{c}"),
                 Err(e) => format!("[read_repo_file failed for '{path}': {e}]"),
+            }
+        }
+
+        TOOL_WRITE_REPO_FILE => {
+            let path = input["path"].as_str().unwrap_or("");
+            let content = input["content"].as_str().unwrap_or("");
+            if path.is_empty() {
+                return "[write_repo_file: missing path]".to_string();
+            }
+            match crate::commands::repo::write_repo_file(path.to_string(), content.to_string()).await {
+                Ok(_) => format!("[write_repo_file: wrote {} bytes to '{path}']", content.len()),
+                Err(e) => format!("[write_repo_file failed for '{path}': {e}]"),
             }
         }
 
@@ -512,6 +542,7 @@ pub fn extract_text_tool_call(text: &str) -> Option<TextToolCall> {
     let tools = [
         TOOL_FETCH_URL,
         TOOL_READ_REPO_FILE,
+        TOOL_WRITE_REPO_FILE,
         TOOL_GREP_REPO,
         TOOL_SEARCH_JIRA,
         TOOL_GET_JIRA_ISSUE,
@@ -538,6 +569,11 @@ pub fn extract_text_tool_call(text: &str) -> Option<TextToolCall> {
                     TOOL_READ_REPO_FILE => {
                         let path = attr(tag_str, "path").unwrap_or("");
                         serde_json::json!({ "path": path })
+                    }
+                    TOOL_WRITE_REPO_FILE => {
+                        let path = attr(tag_str, "path").unwrap_or("");
+                        let content = attr(tag_str, "content").unwrap_or("");
+                        serde_json::json!({ "path": path, "content": content })
                     }
                     TOOL_GREP_REPO => {
                         let pattern = attr(tag_str, "pattern").unwrap_or("");
@@ -607,6 +643,7 @@ pub fn tool_progress_label(name: &str, input: &serde_json::Value) -> String {
     match name {
         TOOL_FETCH_URL => format!("Fetching {}…", input["url"].as_str().unwrap_or("URL")),
         TOOL_READ_REPO_FILE => format!("Reading {}…", input["path"].as_str().unwrap_or("file")),
+        TOOL_WRITE_REPO_FILE => format!("Writing {}…", input["path"].as_str().unwrap_or("file")),
         TOOL_GREP_REPO => format!(
             "Searching for '{}'…",
             input["pattern"].as_str().unwrap_or("pattern")

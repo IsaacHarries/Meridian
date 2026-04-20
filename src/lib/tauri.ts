@@ -1210,6 +1210,46 @@ export async function runCheckpointChatTurn(
   });
 }
 
+export interface CheckpointActionResult {
+  message: string;
+  /** Implementation stage: paths the agent wrote via write_repo_file tool. */
+  files_written?: string[];
+  /** Exact deviation strings (from implementation.deviations) that are now resolved. */
+  deviations_resolved?: string[];
+  /** Paths from implementation.skipped that have now been written. */
+  skipped_resolved?: string[];
+  /** For non-implementation stages: the complete updated stage output JSON, or null. */
+  updated_output?: unknown;
+}
+
+export async function runCheckpointAction(
+  stage: string,
+  contextText: string,
+  historyJson: string,
+): Promise<string> {
+  if (isMockClaudeMode()) {
+    return JSON.stringify({
+      message: "I've reviewed the output. No changes were necessary — everything looks correct.",
+      file_writes: [],
+      deviations_resolved: [],
+      skipped_resolved: [],
+      updated_output: null,
+    });
+  }
+  return invokeWithLlmCheck<string>("run_checkpoint_action", {
+    stage,
+    contextText,
+    historyJson,
+  });
+}
+
+export async function writeRepoFile(
+  path: string,
+  content: string,
+): Promise<void> {
+  return invoke("write_repo_file", { path, content });
+}
+
 export async function updateJiraIssue(
   issueKey: string,
   summary: string | null,
@@ -1393,6 +1433,11 @@ export async function getRepoDiff(): Promise<string> {
   return invoke<string>("get_repo_diff");
 }
 
+/** Read a file's content at the merge-base with origin/<base>. Empty string for new files. */
+export async function getFileAtBase(path: string): Promise<string> {
+  return invoke<string>("get_file_at_base", { path });
+}
+
 /** Get recent commits in the worktree. */
 export async function getRepoLog(maxCommits: number): Promise<string> {
   return invoke<string>("get_repo_log", { maxCommits });
@@ -1532,15 +1577,32 @@ export async function deleteAgentSkill(skillType: SkillType): Promise<void> {
 }
 
 export function parseAgentJson<T>(raw: string): T | null {
+  // 1. Direct parse
+  try { return JSON.parse(raw.trim()) as T; } catch { /* fall through */ }
+
+  // 2. Strip a single ```json ... ``` fence
   try {
-    const cleaned = raw
-      .replace(/^```(?:json)?\n?/m, "")
-      .replace(/\n?```$/m, "")
-      .trim();
-    return JSON.parse(cleaned) as T;
-  } catch {
-    return null;
+    const fenced = raw.replace(/^```(?:json)?\n?/m, "").replace(/\n?```$/m, "").trim();
+    return JSON.parse(fenced) as T;
+  } catch { /* fall through */ }
+
+  // 3. Extract the outermost {...} or [...] block from prose-wrapped responses
+  const firstBrace = raw.indexOf("{");
+  const firstBracket = raw.indexOf("[");
+  const start =
+    firstBrace === -1 ? firstBracket
+    : firstBracket === -1 ? firstBrace
+    : Math.min(firstBrace, firstBracket);
+  if (start !== -1) {
+    const opener = raw[start];
+    const closer = opener === "{" ? "}" : "]";
+    const end = raw.lastIndexOf(closer);
+    if (end > start) {
+      try { return JSON.parse(raw.slice(start, end + 1)) as T; } catch { /* fall through */ }
+    }
   }
+
+  return null;
 }
 
 // ── Store cache (file-backed persistence) ─────────────────────────────────────

@@ -75,6 +75,7 @@ pub async fn try_provider_single(
                     system,
                     user,
                     max_tokens,
+                    |_, _| {},
                 )
                 .await;
             }
@@ -88,6 +89,7 @@ pub async fn try_provider_single(
                     system,
                     user,
                     max_tokens,
+                    |_, _| {},
                 )
                 .await
             }

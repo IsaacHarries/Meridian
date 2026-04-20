@@ -67,6 +67,7 @@ use commands::{
     get_prs_for_review,
     // JIRA diagnostic / field discovery
     get_raw_issue_fields,
+    get_file_at_base,
     get_repo_diff,
     get_repo_log,
     get_sprint_issues,
@@ -94,6 +95,7 @@ use commands::{
     resolve_pr_task,
     review_pr_agent as review_pr,
     run_checkpoint_chat_turn,
+    run_checkpoint_action,
     run_grooming_agent,
     run_grooming_chat_turn,
     // Agent pipeline
@@ -203,6 +205,7 @@ pub fn run() {
             run_impact_analysis,
             run_triage_turn,
             run_checkpoint_chat_turn,
+            run_checkpoint_action,
             finalize_implementation_plan,
             run_implementation_guidance,
             run_implementation_agent,
@@ -288,6 +291,7 @@ pub fn run() {
             grep_repo_files,
             read_repo_file,
             write_repo_file,
+            get_file_at_base,
             get_repo_diff,
             get_repo_log,
             get_file_history,

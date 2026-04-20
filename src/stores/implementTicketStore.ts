@@ -32,7 +32,9 @@ import {
   runGroomingAgent,
   runImpactAnalysis,
   runTriageTurn,
-  runCheckpointChatTurn,
+  runCheckpointChatTurn as _runCheckpointChatTurnLegacy,
+  runCheckpointAction,
+  type CheckpointActionResult,
   runGroomingChatTurn,
   finalizeImplementationPlan,
   runImplementationGuidance,
@@ -1278,17 +1280,97 @@ export const useImplementTicketStore = create<ImplementTicketState>()(
       set({ checkpointChats: { ...checkpointChats, [stage]: newHistory } });
 
       try {
-        const response = await runCheckpointChatTurn(
+        const raw = await runCheckpointAction(
+          stage,
           context,
           JSON.stringify(newHistory),
         );
+
+        const parsed = parseAgentJson<CheckpointActionResult>(raw);
+        const message = parsed?.message ?? raw;
+
+        // ── Files were written directly by write_repo_file tool calls ────────
+        const filesWritten: string[] = parsed?.files_written ?? [];
+
+        // ── Update implementation state if files were changed ────────────────
+        if (
+          stage === "implementation" &&
+          (filesWritten.length ||
+            parsed?.deviations_resolved?.length ||
+            parsed?.skipped_resolved?.length)
+        ) {
+          const devsResolved = new Set(parsed?.deviations_resolved ?? []);
+          const skippedResolved = new Set(parsed?.skipped_resolved ?? []);
+          set((st) => {
+            if (!st.implementation) return {};
+            const writtenSet = new Set(filesWritten);
+            const updatedFiles = st.implementation.files_changed.map((f) =>
+              writtenSet.has(f.path)
+                ? { ...f, action: "modified" as const, summary: "Updated via checkpoint chat" }
+                : f,
+            );
+            const newPaths = filesWritten.filter(
+              (p) => !st.implementation!.files_changed.some((f) => f.path === p),
+            );
+            return {
+              implementation: {
+                ...st.implementation,
+                files_changed: [
+                  ...updatedFiles,
+                  ...newPaths.map((p) => ({
+                    path: p,
+                    action: "modified" as const,
+                    summary: "Created via checkpoint chat",
+                  })),
+                ],
+                deviations: st.implementation.deviations.filter(
+                  (d) => !devsResolved.has(d),
+                ),
+                skipped: st.implementation.skipped.filter(
+                  (p) => !skippedResolved.has(p),
+                ),
+              },
+            };
+          });
+        }
+
+        // ── Apply updated_output for non-implementation stages ───────────────
+        if (parsed?.updated_output && stage !== "implementation") {
+          switch (stage) {
+            case "plan":
+              set({ plan: parsed.updated_output as ImplementationPlan });
+              break;
+            case "tests":
+              set({ tests: parsed.updated_output as TestOutput });
+              break;
+            case "review":
+              set({ review: parsed.updated_output as PlanReviewOutput });
+              break;
+            case "pr":
+              set({ prDescription: parsed.updated_output as PrDescriptionOutput });
+              break;
+            case "retro":
+              set({ retrospective: parsed.updated_output as RetrospectiveOutput });
+              break;
+          }
+        }
+
+        // ── Build display message with applied-changes callout ───────────────
+        let displayMessage = message;
+        if (filesWritten.length) {
+          displayMessage += `\n\n**Files updated:** ${filesWritten.map((p) => `\`${p}\``).join(", ")}`;
+        }
+        if (parsed?.updated_output && stage !== "implementation") {
+          displayMessage += "\n\n**Stage output updated.**";
+        }
+
         set((st) => ({
           checkpointStreamText: "",
           checkpointChats: {
             ...st.checkpointChats,
             [stage]: [
               ...(st.checkpointChats[stage] ?? newHistory),
-              { role: "assistant", content: response },
+              { role: "assistant", content: displayMessage },
             ],
           },
         }));
@@ -1527,10 +1609,30 @@ import { loadCache, saveCache } from "@/lib/storeCache";
 function serializableState(s: ImplementTicketState) {
   return {
     ...s,
+    // Stream texts are only valid while a Tauri command is actively running — clear them so a
+    // restored session never shows stale mid-run output from a previous app launch.
     groomingProgress: "",
     groomingStreamText: "",
+    impactStreamText: "",
+    triageStreamText: "",
+    planStreamText: "",
+    implementationStreamText: "",
+    testsStreamText: "",
+    reviewStreamText: "",
+    prStreamText: "",
+    retroStreamText: "",
+    checkpointStreamText: "",
     proceeding: false,
   };
+}
+
+// Set by hydrateImplementStore when a stage was interrupted by an app close.
+// Consumed (once) by ImplementTicketScreen to auto-rerun that stage.
+let _pendingResume: Stage | null = null;
+export function consumePendingResume(): Stage | null {
+  const s = _pendingResume;
+  _pendingResume = null;
+  return s;
 }
 
 /**
@@ -1553,6 +1655,26 @@ export async function hydrateImplementStore(): Promise<void> {
             (cached.sessions ?? {}) as Record<string, PipelineSession>,
           ),
         );
+
+  // Detect zombie mid-run stages — the Tauri command that was running when the app closed
+  // is gone, but the store thinks it's still in progress. Record which stage needs to be
+  // resumed so the screen can auto-rerun it when the user navigates back.
+  const stage = cached.currentStage as Stage;
+  if (stage && stage !== "select" && stage !== "complete") {
+    const outputMissing =
+      (stage === "grooming" && !cached.grooming) ||
+      (stage === "impact" && !cached.impact) ||
+      (stage === "plan" && !cached.plan) ||
+      (stage === "implementation" && !cached.implementation) ||
+      (stage === "tests" && !cached.tests) ||
+      (stage === "review" && !cached.review) ||
+      (stage === "pr" && !cached.prDescription) ||
+      (stage === "retro" && !cached.retrospective);
+    if (outputMissing && cached.pendingApproval !== stage) {
+      _pendingResume = stage;
+    }
+  }
+
   useImplementTicketStore.setState({
     ...cached,
     completedStages,

@@ -436,6 +436,23 @@ pub async fn get_repo_diff() -> Result<String, String> {
     Ok(diff)
 }
 
+/// Read a file's content at the base branch (merge-base with origin/<base>).
+/// Returns an empty string if the file did not exist at that point (new file).
+#[tauri::command]
+pub async fn get_file_at_base(path: String) -> Result<String, String> {
+    let root = worktree_path()?;
+    let branch = base_branch();
+    let remote_ref = format!("origin/{branch}");
+    let merge_base = git(&root, &["merge-base", "HEAD", &remote_ref])
+        .map(|s| s.trim().to_string())
+        .unwrap_or(remote_ref);
+    // git show <ref>:<path> — returns error if file is new, which we treat as empty
+    match git(&root, &["show", &format!("{merge_base}:{path}")]) {
+        Ok(content) => Ok(content),
+        Err(_) => Ok(String::new()), // new file — no original content
+    }
+}
+
 /// Run `git log` on the worktree against the base branch.
 /// Returns the last N commits as a plain-text log.
 #[tauri::command]

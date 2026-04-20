@@ -1,5 +1,4 @@
 use super::dispatch;
-use crate::llms::claude;
 
 /// Agent 4 — Implementation Guidance: step-by-step guide for executing the plan.
 #[tauri::command]
@@ -144,11 +143,12 @@ pub async fn run_implementation_agent(
         );
 
         emit(&format!("  Generating new content…\n"));
+        eprintln!("[meridian] implementation: calling dispatch for {path}");
 
-        let raw = match claude::complete(
+        let raw = match dispatch::dispatch(
+            &app,
             &client,
             &api_key,
-            &claude::get_active_model(),
             system,
             &user,
             8000,
@@ -157,12 +157,14 @@ pub async fn run_implementation_agent(
         {
             Ok(r) => r,
             Err(e) => {
-                emit(&format!("  ERROR: Claude call failed for {path}: {e}\n"));
-                deviations.push(format!("Claude call failed for {path}: {e}"));
+                eprintln!("[meridian] implementation: dispatch error for {path}: {e}");
+                emit(&format!("  ERROR: LLM call failed for {path}: {e}\n"));
+                deviations.push(format!("LLM call failed for {path}: {e}"));
                 skipped.push(path.clone());
                 continue;
             }
         };
+        eprintln!("[meridian] implementation: dispatch returned {} bytes for {path}", raw.len());
 
         let parsed: serde_json::Value = match serde_json::from_str(&raw) {
             Ok(v) => v,

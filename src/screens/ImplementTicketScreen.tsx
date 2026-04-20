@@ -1,4 +1,5 @@
 import { useEffect, useState, useRef, useCallback, useMemo } from "react";
+import { DiffEditor, type DiffOnMount } from "@monaco-editor/react";
 import { listen } from "@tauri-apps/api/event";
 import { cn } from "@/lib/utils";
 import { PipelineProgress } from "@/components/PipelineProgress";
@@ -30,6 +31,8 @@ import {
   ExternalLink,
   Bug,
   RefreshCw,
+  PanelLeftClose,
+  PanelLeftOpen,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -55,10 +58,14 @@ import {
   getMySprintIssues,
   searchJiraIssues,
   openUrl,
+  readRepoFile,
+  writeRepoFile,
+  getFileAtBase,
 } from "@/lib/tauri";
 import {
   useImplementTicketStore,
   snapshotSession,
+  consumePendingResume,
   type Stage,
   type GroomingBlocker,
 } from "@/stores/implementTicketStore";
@@ -1063,7 +1070,7 @@ function PlanPanel({ data }: { data: ImplementationPlan }) {
   );
 }
 
-function ImplementationPanel({ data }: { data: ImplementationOutput }) {
+function ImplementationStatusContent({ data }: { data: ImplementationOutput }) {
   return (
     <div className="space-y-3">
       <p className="text-sm leading-relaxed">{data.summary}</p>
@@ -1119,6 +1126,164 @@ function ImplementationPanel({ data }: { data: ImplementationOutput }) {
         />
       )}
     </div>
+  );
+}
+
+interface FileDiffState {
+  original: string;
+  modified: string;
+  loading: boolean;
+  saving: boolean;
+  saved: boolean;
+}
+
+function ImplementationDiffContent({ data }: { data: ImplementationOutput }) {
+  const [selectedFile, setSelectedFile] = useState<string | null>(
+    data.files_changed.length > 0 ? data.files_changed[0].path : null,
+  );
+  const [fileStates, setFileStates] = useState<Record<string, FileDiffState>>({});
+  const editorRef = useRef<Parameters<DiffOnMount>[0] | null>(null);
+
+  useEffect(() => {
+    if (!selectedFile) return;
+    if (fileStates[selectedFile]) return;
+    setFileStates((prev) => ({
+      ...prev,
+      [selectedFile]: { original: "", modified: "", loading: true, saving: false, saved: false },
+    }));
+    Promise.all([
+      getFileAtBase(selectedFile).catch(() => ""),
+      readRepoFile(selectedFile).catch(() => ""),
+    ]).then(([original, modified]) => {
+      setFileStates((prev) => ({
+        ...prev,
+        [selectedFile]: { original, modified, loading: false, saving: false, saved: false },
+      }));
+    });
+  }, [selectedFile]);
+
+  const handleSave = useCallback(async () => {
+    if (!selectedFile) return;
+    const editor = editorRef.current;
+    if (!editor) return;
+    const modifiedModel = editor.getModifiedEditor().getModel();
+    if (!modifiedModel) return;
+    const content = modifiedModel.getValue();
+    setFileStates((prev) => ({
+      ...prev,
+      [selectedFile]: { ...prev[selectedFile], saving: true, saved: false },
+    }));
+    try {
+      await writeRepoFile(selectedFile, content);
+      setFileStates((prev) => ({
+        ...prev,
+        [selectedFile]: { ...prev[selectedFile], modified: content, saving: false, saved: true },
+      }));
+      setTimeout(() => {
+        setFileStates((prev) => ({
+          ...prev,
+          [selectedFile]: { ...prev[selectedFile], saved: false },
+        }));
+      }, 2000);
+    } catch {
+      setFileStates((prev) => ({
+        ...prev,
+        [selectedFile]: { ...prev[selectedFile], saving: false },
+      }));
+    }
+  }, [selectedFile]);
+
+  const currentState = selectedFile ? fileStates[selectedFile] : null;
+
+  return (
+    <div className="flex flex-col gap-2 h-full">
+      <div className="flex flex-wrap gap-1">
+        {data.files_changed.map((f) => (
+          <button
+            key={f.path}
+            onClick={() => setSelectedFile(f.path)}
+            className={cn(
+              "text-xs font-mono px-2 py-1 rounded border truncate max-w-[240px]",
+              selectedFile === f.path
+                ? "bg-primary text-primary-foreground border-primary"
+                : "bg-muted/40 text-muted-foreground border-transparent hover:border-border",
+            )}
+            title={f.path}
+          >
+            {f.path.split("/").pop()}
+          </button>
+        ))}
+      </div>
+      {selectedFile && (
+        <div className="flex items-center justify-between text-xs text-muted-foreground">
+          <code className="truncate">{selectedFile}</code>
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-6 text-xs px-2 ml-2 shrink-0"
+            onClick={handleSave}
+            disabled={!currentState || currentState.loading || currentState.saving}
+          >
+            {currentState?.saving ? (
+              <Loader2 className="h-3 w-3 animate-spin mr-1" />
+            ) : currentState?.saved ? (
+              <Check className="h-3 w-3 mr-1 text-green-500" />
+            ) : null}
+            {currentState?.saved ? "Saved" : "Save"}
+          </Button>
+        </div>
+      )}
+      <div className="flex-1 min-h-0 rounded border overflow-hidden">
+        {!selectedFile ? (
+          <div className="flex items-center justify-center h-32 text-sm text-muted-foreground">
+            No files changed
+          </div>
+        ) : currentState?.loading ? (
+          <div className="flex items-center justify-center h-32 gap-2 text-sm text-muted-foreground">
+            <Loader2 className="h-4 w-4 animate-spin" /> Loading diff…
+          </div>
+        ) : (
+          <DiffEditor
+            height="100%"
+            original={currentState?.original ?? ""}
+            modified={currentState?.modified ?? ""}
+            language={getLanguageForPath(selectedFile)}
+            theme="vs-dark"
+            options={{
+              readOnly: false,
+              renderSideBySide: true,
+              minimap: { enabled: false },
+              scrollBeyondLastLine: false,
+              fontSize: 12,
+            }}
+            onMount={(editor) => {
+              editorRef.current = editor;
+            }}
+          />
+        )}
+      </div>
+    </div>
+  );
+}
+
+function getLanguageForPath(path: string): string {
+  const ext = path.split(".").pop()?.toLowerCase() ?? "";
+  const map: Record<string, string> = {
+    ts: "typescript", tsx: "typescript",
+    js: "javascript", jsx: "javascript",
+    rs: "rust", py: "python", go: "go",
+    json: "json", toml: "toml", yaml: "yaml", yml: "yaml",
+    md: "markdown", css: "css", html: "html",
+    sh: "shell", bash: "shell",
+  };
+  return map[ext] ?? "plaintext";
+}
+
+function ImplementationPanel({ data, tab }: { data: ImplementationOutput; tab: "status" | "diff" }) {
+  return tab === "status" ? (
+    <ImplementationStatusContent data={data} />
+  ) : (
+    <ImplementationDiffContent data={data} />
   );
 }
 
@@ -1447,6 +1612,7 @@ interface PipelineChatPanelProps {
   chatInput: string;
   onChatInputChange: (v: string) => void;
   onSend: () => void;
+  onCancel: () => void;
   onFinalizePlan: () => void;
   sending: boolean;
   finalizing: boolean;
@@ -1479,6 +1645,7 @@ function PipelineChatPanel({
   chatInput,
   onChatInputChange,
   onSend,
+  onCancel,
   onFinalizePlan,
   sending,
   finalizing,
@@ -1490,6 +1657,18 @@ function PipelineChatPanel({
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [groomingChat, triageHistory, checkpointChats, sending]);
+
+  useEffect(() => {
+    if (!sending) return;
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape" || (e.key === "c" && e.ctrlKey)) {
+        e.preventDefault();
+        onCancel();
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [sending, onCancel]);
 
   // Build unified message thread with stage dividers
   const sections: Array<{ stage: Stage; messages: TriageMessage[] }> = [];
@@ -1679,9 +1858,19 @@ function PipelineChatPanel({
             <Send className="h-4 w-4" />
           </Button>
         </div>
-        {inputActive && (
+        {sending ? (
+          <div className="flex items-center justify-between">
+            <p className="text-xs text-muted-foreground">AI is thinking…</p>
+            <button
+              onClick={onCancel}
+              className="text-xs text-muted-foreground hover:text-foreground flex items-center gap-1"
+            >
+              <span className="font-mono bg-muted px-1 rounded">Esc</span> cancel
+            </button>
+          </div>
+        ) : inputActive ? (
           <p className="text-xs text-muted-foreground">⌘↵ to send</p>
-        )}
+        ) : null}
       </div>
     </div>
   );
@@ -1954,6 +2143,16 @@ export function ImplementTicketScreen({
   } = useImplementTicketStore();
 
   const store = useImplementTicketStore.getState;
+
+  // Auto-resume a stage that was interrupted when the app was closed last session.
+  // consumePendingResume() returns the stage once and clears it, so this only fires once.
+  useEffect(() => {
+    const interrupted = consumePendingResume();
+    if (interrupted) {
+      store().retryStage(interrupted);
+    }
+  }, []);
+
   // Set of issue keys with cached (or active) pipeline sessions
   const sessionKeys = useMemo(
     () =>
@@ -1974,6 +2173,8 @@ export function ImplementTicketScreen({
   const [splitPct, setSplitPct] = useState(62);
   const splitContainerRef = useRef<HTMLDivElement>(null);
   const [toolRequests, setToolRequests] = useState<ToolRequest[]>([]);
+  const [implementationTab, setImplementationTab] = useState<"status" | "diff">("status");
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
 
   // ── Resizable split pane (percentage-based) ───────────────────────────────────
   const onDividerMouseDown = useCallback((e: React.MouseEvent) => {
@@ -2209,11 +2410,19 @@ export function ImplementTicketScreen({
     return () => clearTimeout(t);
   }, []);
 
+  const cancelledRef = useRef(false);
+
+  function cancelChat() {
+    cancelledRef.current = true;
+    setChatSending(false);
+  }
+
   // ── Unified chat send — routes to store based on current pipeline stage ───────
   async function sendChatMessage() {
     const msg = chatInput.trim();
     if (!msg) return;
     setChatInput("");
+    cancelledRef.current = false;
     setChatSending(true);
     try {
       const enriched = await enrichMessageWithUrls(msg);
@@ -2221,7 +2430,7 @@ export function ImplementTicketScreen({
     } catch {
       /* handled in store */
     } finally {
-      setChatSending(false);
+      if (!cancelledRef.current) setChatSending(false);
     }
   }
 
@@ -2394,7 +2603,7 @@ export function ImplementTicketScreen({
       }
       return (
         <>
-          <ImplementationPanel data={implementation} />
+          <ImplementationPanel data={implementation} tab={implementationTab} />
           {renderCheckpoint(stage)}
         </>
       );
@@ -2598,15 +2807,17 @@ export function ImplementTicketScreen({
             </div>
           ) : (
             <div className="flex min-h-0 flex-1 overflow-hidden">
-              <PipelineSidebar
-                currentStage={currentStage}
-                completedStages={completedStages}
-                activeStage={viewingStage}
-                pendingApproval={pendingApproval}
-                onClickStage={(s) =>
-                  store()._set({ viewingStage: s as Exclude<Stage, "select"> })
-                }
-              />
+              {!sidebarCollapsed && (
+                <PipelineSidebar
+                  currentStage={currentStage}
+                  completedStages={completedStages}
+                  activeStage={viewingStage}
+                  pendingApproval={pendingApproval}
+                  onClickStage={(s) =>
+                    store()._set({ viewingStage: s as Exclude<Stage, "select"> })
+                  }
+                />
+              )}
 
               {/* ── Split container: stage content | divider | chat panel ── */}
               <div
@@ -2620,7 +2831,18 @@ export function ImplementTicketScreen({
                 >
                   <div className="shrink-0 px-5 pt-5">
                     <div className="mb-2 flex items-center justify-between">
-                      <div>
+                      <div className="flex items-center gap-3">
+                        <button
+                          onClick={() => setSidebarCollapsed((c) => !c)}
+                          className="text-muted-foreground hover:text-foreground transition-colors"
+                          title={sidebarCollapsed ? "Show pipeline sidebar" : "Hide pipeline sidebar"}
+                        >
+                          {sidebarCollapsed ? (
+                            <PanelLeftOpen className="h-4 w-4" />
+                          ) : (
+                            <PanelLeftClose className="h-4 w-4" />
+                          )}
+                        </button>
                         <h2 className="text-base font-semibold">
                           {viewingStage === "triage" &&
                           !completedStages.has("plan")
@@ -2632,9 +2854,27 @@ export function ImplementTicketScreen({
                                   viewingStage as keyof typeof STAGE_LABELS
                                 ]}
                         </h2>
+                        {viewingStage === "implementation" && implementation && (
+                          <div className="flex gap-0.5">
+                            {(["status", "diff"] as const).map((t) => (
+                              <button
+                                key={t}
+                                onClick={() => setImplementationTab(t)}
+                                className={cn(
+                                  "text-xs px-2.5 py-0.5 rounded font-medium capitalize",
+                                  implementationTab === t
+                                    ? "bg-primary text-primary-foreground"
+                                    : "text-muted-foreground hover:text-foreground hover:bg-muted/60",
+                                )}
+                              >
+                                {t === "status" ? "Status" : "Diff"}
+                              </button>
+                            ))}
+                          </div>
+                        )}
                         {currentStage === "complete" &&
                           viewingStage === "retro" && (
-                            <p className="mt-0.5 flex items-center gap-1 text-xs font-medium text-green-600">
+                            <p className="flex items-center gap-1 text-xs font-medium text-green-600">
                               <CheckCircle2 className="h-3 w-3" /> Pipeline
                               complete
                             </p>
@@ -2693,6 +2933,7 @@ export function ImplementTicketScreen({
                     chatInput={chatInput}
                     onChatInputChange={setChatInput}
                     onSend={sendChatMessage}
+                    onCancel={cancelChat}
                     onFinalizePlan={handleFinalizePlan}
                     sending={chatSending}
                     finalizing={planFinalizing}

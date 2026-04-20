@@ -65,34 +65,87 @@ pub async fn run_triage_turn(
 }
 
 /// Checkpoint chat turn: general Q&A at any post-triage pipeline stage.
-/// Used when the user wants to ask questions or request clarifications after
-/// seeing stage output (impact, plan, implementation, tests, review, pr, retro).
+/// Actionable checkpoint chat — replaces the old conversational-only turn.
+///
+/// Runs in a tool loop so the agent can read files for context, then returns structured JSON:
+///
+/// Implementation stage:
+///   { "message": "...", "file_writes": [{"path":"...","content":"..."}],
+///     "deviations_resolved": ["..."], "skipped_resolved": ["..."] }
+///
+/// All other stages:
+///   { "message": "...", "updated_output": <full updated stage JSON or null> }
+///
+/// The frontend parses the response, applies any file writes and state patches.
+#[tauri::command]
+pub async fn run_checkpoint_action(
+    app: tauri::AppHandle,
+    stage: String,
+    context_text: String,
+    history_json: String,
+) -> Result<String, String> {
+    let (client, api_key) = dispatch::llm_client().await?;
+
+    let is_impl = stage == "implementation";
+
+    let system = if is_impl {
+        format!(
+            "You are a senior software engineer implementing code changes in a git worktree.\n\n\
+            {context_text}\n\n\
+            The developer is asking you to write or fix one or more files.\n\n\
+            WORKFLOW:\n\
+            1. Use read_repo_file to read every file you intend to change (understand what's there).\n\
+            2. Use write_repo_file to write each file with its COMPLETE new content. Do NOT \
+               truncate or omit anything — partial content overwrites the whole file.\n\
+            3. You MUST use write_repo_file for every file. Never describe code in your message \
+               or return it as text — that will NOT update the filesystem.\n\
+            4. After writing all files, return your FINAL response.\n\n\
+            Your FINAL response (after all tool calls) MUST be ONLY this JSON — no markdown \
+            fences, no prose outside it:\n\
+            {{\n\
+              \"message\": \"<one sentence describing what was written — NO code>\",\n\
+              \"files_written\": [\"<path1>\", \"<path2>\"],\n\
+              \"deviations_resolved\": [\"<exact deviation string this fix addresses>\"],\n\
+              \"skipped_resolved\": [\"<path from the skipped list that you have now written>\"]\n\
+            }}\n\
+            The files_written list must contain every path you wrote with write_repo_file.\n\
+            Use empty arrays for fields where nothing applies."
+        )
+    } else {
+        format!(
+            "You are a senior software engineer reviewing and updating pipeline output.\n\n\
+            {context_text}\n\n\
+            The developer may ask you to correct, clarify, or update the stage output shown above.\n\
+            Use read_repo_file or grep_repo if you need extra code context to answer accurately.\n\n\
+            Your FINAL response (after any tool calls) MUST be exactly this JSON with no markdown \
+            fences or extra text outside it:\n\
+            {{\n\
+              \"message\": \"<what you changed or answered>\",\n\
+              \"updated_output\": <the complete updated stage output JSON object, or null if nothing changed>\n\
+            }}"
+        )
+    };
+
+    dispatch::dispatch_multi_streaming_with_tools(
+        &app,
+        &client,
+        &api_key,
+        &system,
+        &history_json,
+        if is_impl { 16000 } else { 4000 },
+        "checkpoint-chat-stream",
+    )
+    .await
+}
+
+/// Kept for backward-compatibility — callers should prefer run_checkpoint_action.
 #[tauri::command]
 pub async fn run_checkpoint_chat_turn(
     app: tauri::AppHandle,
     context_text: String,
     history_json: String,
 ) -> Result<String, String> {
-    let (client, api_key) = dispatch::llm_client().await?;
-    let system = format!(
-        "You are a senior software engineer helping a developer understand and act on pipeline \
-        output. You have full context on the ticket, pipeline history, and the current stage output below.\n\n\
-        {context_text}\n\n\
-        Answer the developer's questions clearly and concisely. Reference specific details from \
-        the stage output when relevant. If the developer asks you to change something, explain \
-        what they need to do or what the implications are. \
-        Respond in plain text. Do NOT produce JSON."
-    );
-    dispatch::dispatch_multi_streaming(
-        &app,
-        &client,
-        &api_key,
-        &system,
-        &history_json,
-        800,
-        "checkpoint-chat-stream",
-    )
-    .await
+    run_checkpoint_action(app, "other".to_string(), context_text, history_json).await
 }
 
 /// Agent 3b — Finalize plan: extract a structured implementation plan from the triage conversation.

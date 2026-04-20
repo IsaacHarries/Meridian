@@ -495,14 +495,19 @@ pub fn get_active_model() -> String {
         .unwrap_or_else(|| DEFAULT_MODEL.to_string())
 }
 
-pub async fn complete(
+pub async fn complete<F>(
     client: &Client,
     api_key: &str,
     model: &str,
     system: &str,
     user: &str,
     max_tokens: u32,
-) -> Result<String, String> {
+    on_retry: F,
+) -> Result<String, String>
+where
+    F: Fn(u32, u64),
+{
+    eprintln!("[meridian] complete: starting request (model={model}, max_tokens={max_tokens}, user_len={})", user.len());
     let body = build_messages_body(
         api_key,
         model,
@@ -518,6 +523,7 @@ pub async fn complete(
     let mut attempt = 0u32;
 
     let resp = loop {
+        eprintln!("[meridian] complete: send attempt {}", attempt + 1);
         let req = client
             .post("https://api.anthropic.com/v1/messages")
             .header("anthropic-version", "2023-06-01")
@@ -535,6 +541,7 @@ pub async fn complete(
         };
 
         let resp = req.json(&body).send().await.map_err(|e| {
+            eprintln!("[meridian] complete: request error: {e}");
             if e.is_connect() || e.is_timeout() {
                 "Could not reach api.anthropic.com. Check your internet connection.".to_string()
             } else {
@@ -542,10 +549,13 @@ pub async fn complete(
             }
         })?;
 
+        eprintln!("[meridian] complete: status={}", resp.status());
         if resp.status().as_u16() == 429 && attempt < MAX_RETRIES {
             let wait_ms = retry_after_ms(resp.headers(), delay_ms);
-            delay_ms = (delay_ms * 2).min(30_000);
+            eprintln!("[meridian] complete: rate limited, waiting {wait_ms}ms");
             attempt += 1;
+            on_retry(attempt, wait_ms);
+            delay_ms = (delay_ms * 2).min(30_000);
             tokio::time::sleep(tokio::time::Duration::from_millis(wait_ms)).await;
             continue;
         }
@@ -553,21 +563,25 @@ pub async fn complete(
         if !resp.status().is_success() {
             let status = resp.status();
             let body = resp.text().await.unwrap_or_default();
+            eprintln!("[meridian] complete: error body: {body}");
             return Err(format!("Claude API error {status}: {body}"));
         }
 
         break resp;
     };
 
+    eprintln!("[meridian] complete: reading response body");
     let json: serde_json::Value = resp
         .json()
         .await
         .map_err(|e| format!("Failed to parse Claude response: {e}"))?;
 
-    json["content"][0]["text"]
+    let result = json["content"][0]["text"]
         .as_str()
         .map(str::to_string)
-        .ok_or_else(|| "Unexpected response shape from Claude API.".to_string())
+        .ok_or_else(|| "Unexpected response shape from Claude API.".to_string());
+    eprintln!("[meridian] complete: done (ok={})", result.is_ok());
+    result
 }
 
 pub async fn complete_claude_streaming(
