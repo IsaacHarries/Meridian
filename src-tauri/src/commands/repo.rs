@@ -351,6 +351,53 @@ pub fn delete_repo_file_internal(path: &str) -> Result<(), String> {
     std::fs::remove_file(&full).map_err(|e| format!("Could not delete '{}': {e}", path))
 }
 
+/// Move (rename) a file within the main implementation worktree.
+pub fn move_repo_file_internal(from: &str, to: &str) -> Result<(), String> {
+    let root = worktree_path()?;
+    let full_from = sandboxed(&root, from)?;
+    // Destination may not exist yet so we can't canonicalise it; validate manually.
+    let to_clean = to.trim_start_matches('/').trim_start_matches("./");
+    let full_to = root.join(to_clean);
+    if let Some(parent) = full_to.parent() {
+        if parent != root.as_path() {
+            // Create intermediate directories if needed
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("Could not create destination directory: {e}"))?;
+            let canon_parent = parent
+                .canonicalize()
+                .map_err(|e| format!("Destination directory invalid: {e}"))?;
+            let canon_root = root
+                .canonicalize()
+                .map_err(|_| "Could not canonicalise worktree root".to_string())?;
+            if !canon_parent.starts_with(&canon_root) {
+                return Err(format!("Destination '{to}' would escape the worktree root."));
+            }
+        }
+    }
+    std::fs::rename(&full_from, &full_to)
+        .map_err(|e| format!("Could not move '{}' to '{}': {e}", from, to))
+}
+
+/// Run `git status --short` plus `git diff --stat` in the worktree.
+pub async fn git_status_internal() -> Result<String, String> {
+    let root = worktree_path()?;
+    let status = git(&root, &["status", "--short"]).unwrap_or_default();
+    let stat = git(&root, &["diff", "--stat", "HEAD"]).unwrap_or_default();
+    if status.trim().is_empty() && stat.trim().is_empty() {
+        return Ok("Working tree is clean — no uncommitted changes.".to_string());
+    }
+    let mut out = String::new();
+    if !status.trim().is_empty() {
+        out.push_str("=== git status ===\n");
+        out.push_str(&status);
+    }
+    if !stat.trim().is_empty() {
+        out.push_str("\n=== git diff --stat HEAD ===\n");
+        out.push_str(&stat);
+    }
+    Ok(out.trim().to_string())
+}
+
 #[tauri::command]
 pub async fn read_repo_file(path: String) -> Result<String, String> {
     let root = worktree_path()?;

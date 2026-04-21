@@ -4,6 +4,7 @@ import type {
   ImplementationPlan,
   GuidanceOutput,
   TestOutput,
+  TestFileWritten,
   PlanReviewOutput,
   PrDescriptionOutput,
   RetrospectiveOutput,
@@ -115,23 +116,19 @@ const guidance: GuidanceOutput = {
 };
 
 const tests: TestOutput = {
-  test_strategy: "Unit test limiter math; integration test full stack with test Redis or mock.",
-  unit_tests: [
+  summary: "Written unit tests for rate limiter window logic and an integration test for the 429 response path.",
+  files_written: [
     {
-      description: "Limiter window reset",
-      target: "rate_limit::inner",
-      cases: ["first request allowed", "over limit returns Err", "window rolls"],
+      path: "src/middleware/rate_limit_test.rs",
+      description: "Unit tests for window reset, over-limit rejection, and Redis failure fallback",
     },
-  ],
-  integration_tests: [
     {
-      description: "API returns 429",
-      setup: "Spin app with test Redis",
-      cases: ["burst exceeds limit", "Retry-After header present"],
+      path: "tests/integration/rate_limit_api_test.rs",
+      description: "Integration test: burst exceeds limit returns 429 with Retry-After header",
     },
-  ],
-  edge_cases_to_test: ["Redis connection failure path", "Concurrent requests at boundary"],
-  coverage_notes: "Mock test output — expand for your codebase.",
+  ] as TestFileWritten[],
+  edge_cases_covered: ["Redis connection failure falls open", "Concurrent requests at window boundary"],
+  coverage_notes: "Per-route configuration tests not written — requires test harness wiring not yet present.",
 };
 
 const planReview: PlanReviewOutput = {

@@ -42,7 +42,7 @@ import {
   runImplementationAgent,
   runBuildCheck,
   type BuildCheckResult,
-  runTestSuggestions,
+  runTestAgent,
   runPlanReview,
   getRepoDiff,
   runPrDescriptionGen,
@@ -1099,14 +1099,17 @@ export const useImplementTicketStore = create<ImplementTicketState>()(
         } catch {
           /* no worktree — proceed without diff */
         }
-        const raw = await runTestSuggestions(
+        const raw = await runTestAgent(
           ticketText,
           JSON.stringify(plan),
           JSON.stringify(implementation),
           diff,
         );
         const data = parseAgentJson<TestOutput>(raw);
-        if (!data) throw new Error("Could not parse test output");
+        if (!data) {
+          console.error("[Meridian] runTestsStage: raw response failed to parse:", raw);
+          throw new Error("Could not parse test output");
+        }
         set({ tests: data });
         get().markComplete("tests");
         set({ pendingApproval: "tests" });
@@ -1706,8 +1709,14 @@ export async function hydrateImplementStore(): Promise<void> {
     }
   }
 
+  // Discard tests data in the old plan format (pre-tool-loop) — it used `test_strategy`
+  // instead of `files_written` and would crash TestsPanel on render.
+  const tests =
+    cached.tests && "files_written" in cached.tests ? cached.tests : null;
+
   useImplementTicketStore.setState({
     ...cached,
+    tests,
     completedStages,
     sessions,
     // Fresh ID on hydration — no backend process from a prior app run is still alive.

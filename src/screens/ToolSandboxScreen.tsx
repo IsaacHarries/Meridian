@@ -124,6 +124,77 @@ const TOOLS: ToolDef[] = [
     ],
     defaultInput: { name: "serde" },
   },
+  {
+    name: "exec_in_worktree",
+    description: "Run a shell command in the repo root and return combined stdout+stderr. Used for building, type-checking, running tests, etc.",
+    params: [
+      { name: "command", type: "string", required: true, description: "Shell command to run, e.g. pnpm build" },
+      { name: "timeout_secs", type: "integer", required: false, description: "Timeout in seconds (max 300, default 120)" },
+    ],
+    defaultInput: { command: "pnpm build", timeout_secs: 120 },
+  },
+  {
+    name: "glob_repo",
+    description: "Find files in the repo by glob pattern. Returns matching paths relative to the repo root.",
+    params: [
+      { name: "pattern", type: "string", required: true, description: "Glob pattern, e.g. src/**/*.tsx or **/*.test.ts" },
+    ],
+    defaultInput: { pattern: "src/**/*.tsx" },
+  },
+  {
+    name: "git_status",
+    description: "Show current git working tree status — which files have been added, modified, or deleted.",
+    params: [],
+    defaultInput: {},
+  },
+  {
+    name: "delete_repo_file",
+    description: "Delete a file from the repo worktree.",
+    params: [
+      { name: "path", type: "string", required: true, description: "Relative path from repo root" },
+    ],
+    defaultInput: { path: "sandbox-test.txt" },
+  },
+  {
+    name: "move_repo_file",
+    description: "Move or rename a file within the repo worktree.",
+    params: [
+      { name: "from", type: "string", required: true, description: "Current relative path" },
+      { name: "to", type: "string", required: true, description: "New relative path" },
+    ],
+    defaultInput: { from: "src/old.ts", to: "src/new.ts" },
+  },
+  {
+    name: "get_repo_diff",
+    description: "Get the full unified diff of all changes since branching from the base branch.",
+    params: [],
+    defaultInput: {},
+  },
+  {
+    name: "web_search",
+    description: "Search the web via DuckDuckGo and return top results with title, URL, and snippet.",
+    params: [
+      { name: "query", type: "string", required: true, description: "Search query, e.g. TypeScript cannot find module error" },
+    ],
+    defaultInput: { query: "TypeScript cannot find module error" },
+  },
+  {
+    name: "get_file_at_base",
+    description: "Read a file as it existed at the base branch before any implementation changes.",
+    params: [
+      { name: "path", type: "string", required: true, description: "Relative path from repo root" },
+    ],
+    defaultInput: { path: "src/index.ts" },
+  },
+  {
+    name: "get_package_info",
+    description: "Fetch README, version, peer deps, and exports for a specific npm or Rust crate package.",
+    params: [
+      { name: "package", type: "string", required: true, description: "Package name, e.g. zustand or serde" },
+      { name: "ecosystem", type: "string", required: true, description: "'npm' or 'cargo'" },
+    ],
+    defaultInput: { package: "zustand", ecosystem: "npm" },
+  },
 ];
 
 // ── Provider definitions ──────────────────────────────────────────────────────

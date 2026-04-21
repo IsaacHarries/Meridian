@@ -10,6 +10,15 @@ const TOOL_GIT_LOG: &str = "git_log";
 const TOOL_SEARCH_NPM: &str = "search_npm";
 const TOOL_SEARCH_CRATES: &str = "search_crates";
 pub const TOOL_REQUEST_TOOL: &str = "request_tool";
+pub const TOOL_EXEC_IN_WORKTREE: &str = "exec_in_worktree";
+pub const TOOL_GLOB_REPO: &str = "glob_repo";
+pub const TOOL_GIT_STATUS: &str = "git_status";
+pub const TOOL_DELETE_REPO_FILE: &str = "delete_repo_file";
+pub const TOOL_MOVE_REPO_FILE: &str = "move_repo_file";
+pub const TOOL_GET_REPO_DIFF: &str = "get_repo_diff";
+pub const TOOL_WEB_SEARCH: &str = "web_search";
+pub const TOOL_GET_FILE_AT_BASE: &str = "get_file_at_base";
+pub const TOOL_GET_PACKAGE_INFO: &str = "get_package_info";
 
 pub fn all_tools_def() -> serde_json::Value {
     serde_json::json!([
@@ -158,6 +167,116 @@ pub fn all_tools_def() -> serde_json::Value {
             }
         },
         {
+            "name": TOOL_GLOB_REPO,
+            "description": "Find files in the repo by glob pattern. Returns matching paths relative to the repo root. \
+                Use this to discover what files exist — e.g. all TypeScript files, all test files, all files in a directory.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "pattern": { "type": "string", "description": "Glob pattern, e.g. 'src/**/*.tsx', '**/*.test.ts', 'src/components/*'" }
+                },
+                "required": ["pattern"]
+            }
+        },
+        {
+            "name": TOOL_GIT_STATUS,
+            "description": "Show the current git working tree status: which files have been added, modified, or deleted \
+                since the last commit. Also shows a diff --stat summary of what changed.",
+            "input_schema": {
+                "type": "object",
+                "properties": {}
+            }
+        },
+        {
+            "name": TOOL_DELETE_REPO_FILE,
+            "description": "Delete a file from the repo worktree. Use when removing a file is part of the implementation \
+                (e.g. removing an obsolete component, cleaning up a renamed file).",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "Relative path from repo root, e.g. src/old/Component.tsx" }
+                },
+                "required": ["path"]
+            }
+        },
+        {
+            "name": TOOL_MOVE_REPO_FILE,
+            "description": "Move or rename a file within the repo worktree. Intermediate directories are created automatically. \
+                Use for refactoring that involves moving or renaming files.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "from": { "type": "string", "description": "Current relative path, e.g. src/utils/old.ts" },
+                    "to":   { "type": "string", "description": "New relative path, e.g. src/utils/new.ts" }
+                },
+                "required": ["from", "to"]
+            }
+        },
+        {
+            "name": TOOL_GET_REPO_DIFF,
+            "description": "Get the full unified diff of all changes made since branching from the base branch. \
+                Use this to review everything that has been changed in the current implementation session.",
+            "input_schema": {
+                "type": "object",
+                "properties": {}
+            }
+        },
+        {
+            "name": TOOL_WEB_SEARCH,
+            "description": "Search the web via DuckDuckGo and return the top results (title, URL, snippet). \
+                Use to look up error messages, find library documentation, research an unfamiliar API, \
+                or find solutions to build/runtime errors.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "query": { "type": "string", "description": "Search query, e.g. 'TypeScript cannot find module error', 'React useEffect cleanup pattern'" }
+                },
+                "required": ["query"]
+            }
+        },
+        {
+            "name": TOOL_GET_FILE_AT_BASE,
+            "description": "Read a file's content as it existed at the base branch before any implementation changes were made. \
+                Use this to see the original version of a file you have modified, compare before/after, \
+                or restore a file you accidentally overwrote.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "Relative path from repo root, e.g. src/utils/helper.ts" }
+                },
+                "required": ["path"]
+            }
+        },
+        {
+            "name": TOOL_GET_PACKAGE_INFO,
+            "description": "Fetch detailed information about a specific npm or Rust crate package: description, \
+                latest version, README, peer/dev dependencies, exports, and repository link. \
+                Use this to understand a library's API before writing code that uses it.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "package":   { "type": "string", "description": "Package name, e.g. 'zustand' or 'serde'" },
+                    "ecosystem": { "type": "string", "description": "'npm' for JavaScript/TypeScript packages, 'cargo' for Rust crates" }
+                },
+                "required": ["package", "ecosystem"]
+            }
+        },
+        {
+            "name": TOOL_EXEC_IN_WORKTREE,
+            "description": "Run a shell command in the project's git worktree and return its combined stdout+stderr output. \
+                Use for building the project, running the type-checker, running tests, checking linting, \
+                or any other shell task needed to verify or fix the code. \
+                Timeout: 5 minutes. The command runs with `sh -c` in the repo root.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "command": { "type": "string", "description": "Shell command to run, e.g. 'pnpm build' or 'cargo check'" },
+                    "timeout_secs": { "type": "integer", "description": "Optional timeout in seconds (max 300, default 120)" }
+                },
+                "required": ["command"]
+            }
+        },
+        {
             "name": TOOL_REQUEST_TOOL,
             "description": "Request that the developer add a new tool to Meridian. \
                 Use this when you genuinely need a capability that none of the existing tools \
@@ -191,6 +310,9 @@ pub const TOOL_SYSTEM_SUFFIX: &str = "\n\n\
         <write_repo_file path=\"src/utils/helper.ts\">\n\
         // complete file content here — can contain any characters\n\
         </write_repo_file>\n\n\
+    glob_repo        — find files by glob pattern:\n\
+        <glob_repo pattern=\"src/**/*.tsx\"/>\n\
+        <glob_repo pattern=\"**/*.test.ts\"/>\n\n\
     grep_repo        — search codebase by regex (optional path filter):\n\
         <grep_repo pattern=\"upsertReportPage\" path=\"src/reports\"/>\n\n\
     search_jira      — search JIRA by keyword or JQL:\n\
@@ -207,6 +329,24 @@ pub const TOOL_SYSTEM_SUFFIX: &str = "\n\n\
         <search_npm package=\"zustand\"/>\n\n\
     search_crates    — search crates.io for a Rust crate:\n\
         <search_crates name=\"serde\"/>\n\n\
+    git_status       — show which files have changed in the working tree:\n\
+        <git_status/>\n\n\
+    get_repo_diff    — get the full unified diff of all changes since branching:\n\
+        <get_repo_diff/>\n\n\
+    delete_repo_file — delete a file from the repo:\n\
+        <delete_repo_file path=\"src/old/Component.tsx\"/>\n\n\
+    move_repo_file   — move or rename a file:\n\
+        <move_repo_file from=\"src/utils/old.ts\" to=\"src/utils/new.ts\"/>\n\n\
+    web_search       — search the web (DuckDuckGo) and return top results:\n\
+        <web_search query=\"TypeScript cannot find module error\"/>\n\n\
+    get_file_at_base — read a file as it was before any implementation changes:\n\
+        <get_file_at_base path=\"src/utils/helper.ts\"/>\n\n\
+    get_package_info — fetch README, version, deps, and exports for a specific package:\n\
+        <get_package_info package=\"zustand\" ecosystem=\"npm\"/>\n\
+        <get_package_info package=\"serde\" ecosystem=\"cargo\"/>\n\n\
+    exec_in_worktree — run a shell command in the repo root and return stdout+stderr (timeout 5 min):\n\
+        <exec_in_worktree command=\"pnpm build\"/>\n\
+        <exec_in_worktree command=\"cargo check\" timeout_secs=\"60\"/>\n\n\
     request_tool     — ask the developer to add a new Meridian tool:\n\
         <request_tool name=\"get_build_logs\" description=\"Fetch CI build logs for a branch\" why_needed=\"I need to check why the build is failing but have no way to read CI output\" example_call=\"get_build_logs(branch='task/FJP-1234', last_n=50)\"/>\n\n\
     Rules:\n\
@@ -405,6 +545,115 @@ pub async fn execute_tool(name: &str, input: &serde_json::Value) -> String {
             search_crates_io(&name).await
         }
 
+        TOOL_GLOB_REPO => {
+            let pattern = input["pattern"].as_str().unwrap_or("**/*");
+            match crate::commands::repo::glob_repo_files(pattern.to_string()).await {
+                Ok(files) if files.is_empty() => {
+                    format!("[glob_repo: no files matched '{pattern}']")
+                }
+                Ok(files) => {
+                    format!("[glob_repo: {} file(s) matched '{pattern}']\n{}", files.len(), files.join("\n"))
+                }
+                Err(e) => format!("[glob_repo failed: {e}]"),
+            }
+        }
+
+        TOOL_GIT_STATUS => {
+            match crate::commands::repo::git_status_internal().await {
+                Ok(s) => s,
+                Err(e) => format!("[git_status failed: {e}]"),
+            }
+        }
+
+        TOOL_DELETE_REPO_FILE => {
+            let path = input["path"].as_str().unwrap_or("");
+            if path.is_empty() {
+                return "[delete_repo_file: missing path]".to_string();
+            }
+            match crate::commands::repo::delete_repo_file_internal(path) {
+                Ok(_) => format!("[delete_repo_file: deleted '{path}']"),
+                Err(e) => format!("[delete_repo_file failed: {e}]"),
+            }
+        }
+
+        TOOL_MOVE_REPO_FILE => {
+            let from = input["from"].as_str().unwrap_or("");
+            let to = input["to"].as_str().unwrap_or("");
+            if from.is_empty() || to.is_empty() {
+                return "[move_repo_file: 'from' and 'to' are required]".to_string();
+            }
+            match crate::commands::repo::move_repo_file_internal(from, to) {
+                Ok(_) => format!("[move_repo_file: moved '{from}' → '{to}']"),
+                Err(e) => format!("[move_repo_file failed: {e}]"),
+            }
+        }
+
+        TOOL_GET_REPO_DIFF => {
+            match crate::commands::repo::get_repo_diff().await {
+                Ok(diff) if diff.trim().is_empty() => {
+                    "[get_repo_diff: no changes vs base branch]".to_string()
+                }
+                Ok(diff) => diff,
+                Err(e) => format!("[get_repo_diff failed: {e}]"),
+            }
+        }
+
+        TOOL_WEB_SEARCH => {
+            let query = input["query"].as_str().unwrap_or("");
+            if query.is_empty() {
+                return "[web_search: missing query]".to_string();
+            }
+            match crate::commands::fetch_url::web_search(query).await {
+                Ok(results) => results,
+                Err(e) => format!("[web_search failed: {e}]"),
+            }
+        }
+
+        TOOL_GET_FILE_AT_BASE => {
+            let path = input["path"].as_str().unwrap_or("");
+            if path.is_empty() {
+                return "[get_file_at_base: missing path]".to_string();
+            }
+            match crate::commands::repo::get_file_at_base(path.to_string()).await {
+                Ok(content) if content.is_empty() => {
+                    format!("[get_file_at_base: '{path}' did not exist at the base branch — it is a new file]")
+                }
+                Ok(content) => format!("// {path} at base branch:\n{content}"),
+                Err(e) => format!("[get_file_at_base failed: {e}]"),
+            }
+        }
+
+        TOOL_GET_PACKAGE_INFO => {
+            let package = input["package"].as_str().unwrap_or("").trim().to_string();
+            let ecosystem = input["ecosystem"].as_str().unwrap_or("").trim().to_lowercase();
+            if package.is_empty() {
+                return "[get_package_info: missing package name]".to_string();
+            }
+            match ecosystem.as_str() {
+                "npm" => get_npm_package_info(&package).await,
+                "cargo" => get_cargo_package_info(&package).await,
+                other => format!("[get_package_info: unknown ecosystem '{other}' — use 'npm' or 'cargo']"),
+            }
+        }
+
+        TOOL_EXEC_IN_WORKTREE => {
+            let command = input["command"].as_str().unwrap_or("");
+            if command.is_empty() {
+                return "[exec_in_worktree: missing command]".to_string();
+            }
+            let timeout = input["timeout_secs"].as_u64().unwrap_or(120).min(300);
+            match crate::commands::repo::exec_in_worktree_internal(command, timeout).await {
+                Ok((code, output)) => {
+                    if output.is_empty() {
+                        format!("[exec_in_worktree: exit code {code} — (no output)]")
+                    } else {
+                        format!("[exec_in_worktree: exit code {code}]\n{output}")
+                    }
+                }
+                Err(e) => format!("[exec_in_worktree failed: {e}]"),
+            }
+        }
+
         TOOL_REQUEST_TOOL => {
             let name = input["name"].as_str().unwrap_or("(unnamed)");
             let description = input["description"].as_str().unwrap_or("");
@@ -510,6 +759,148 @@ async fn search_crates_io(name: &str) -> String {
     }
 }
 
+async fn get_npm_package_info(package: &str) -> String {
+    let client = match crate::http::make_corporate_client(std::time::Duration::from_secs(15)) {
+        Ok(c) => c,
+        Err(e) => return format!("[get_package_info: http client error: {e}]"),
+    };
+    let url = format!("https://registry.npmjs.org/{}", urlencoding_simple(package));
+    let json: serde_json::Value = match client.get(&url).send().await {
+        Ok(resp) if resp.status().is_success() => match resp.json().await {
+            Ok(j) => j,
+            Err(e) => return format!("[get_package_info: parse error: {e}]"),
+        },
+        Ok(resp) => return format!("[get_package_info: npm registry returned HTTP {}]", resp.status()),
+        Err(e) => return format!("[get_package_info: request failed: {e}]"),
+    };
+
+    let latest = json["dist-tags"]["latest"].as_str().unwrap_or("unknown");
+    let description = json["description"].as_str().unwrap_or("(no description)");
+    let homepage = json["homepage"].as_str().unwrap_or("");
+    let repo = json["repository"]["url"].as_str().unwrap_or("");
+
+    let ver = &json["versions"][latest];
+    let peer_deps = ver["peerDependencies"]
+        .as_object()
+        .map(|m| {
+            m.iter()
+                .map(|(k, v)| format!("  {k}: {}", v.as_str().unwrap_or("*")))
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+        .unwrap_or_default();
+    let dev_deps = ver["devDependencies"]
+        .as_object()
+        .map(|m| {
+            m.iter()
+                .map(|(k, v)| format!("  {k}: {}", v.as_str().unwrap_or("*")))
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+        .unwrap_or_default();
+    let exports = ver["exports"]
+        .as_object()
+        .map(|m| {
+            m.keys()
+                .take(10)
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(", ")
+        })
+        .unwrap_or_default();
+    let types = ver["types"].as_str()
+        .or_else(|| ver["typings"].as_str())
+        .unwrap_or("");
+
+    // README — stored at top level in the registry response, cap at 6 KB
+    let readme_raw = json["readme"].as_str().unwrap_or("");
+    const MAX_README: usize = 6_000;
+    let readme = if readme_raw.len() > MAX_README {
+        format!("{}\n\n[… README truncated at 6 KB]", &readme_raw[..MAX_README])
+    } else {
+        readme_raw.to_string()
+    };
+
+    let mut out = format!("**{package}** v{latest}\n{description}\n");
+    if !homepage.is_empty() { out.push_str(&format!("Homepage: {homepage}\n")); }
+    if !repo.is_empty() { out.push_str(&format!("Repo: {repo}\n")); }
+    if !types.is_empty() { out.push_str(&format!("Types: {types}\n")); }
+    if !exports.is_empty() { out.push_str(&format!("Exports: {exports}\n")); }
+    if !peer_deps.is_empty() { out.push_str(&format!("\nPeer dependencies:\n{peer_deps}\n")); }
+    if !dev_deps.is_empty() { out.push_str(&format!("\nDev dependencies (first 10):\n")); }
+    if !readme.is_empty() { out.push_str(&format!("\n--- README ---\n{readme}\n")); }
+    out
+}
+
+async fn get_cargo_package_info(name: &str) -> String {
+    let client = match crate::http::make_corporate_client(std::time::Duration::from_secs(15)) {
+        Ok(c) => c,
+        Err(e) => return format!("[get_package_info: http client error: {e}]"),
+    };
+    let ua = "Meridian/1.0 (https://github.com/meridian-app)";
+
+    // Fetch crate metadata
+    let meta_url = format!("https://crates.io/api/v1/crates/{}", urlencoding_simple(name));
+    let json: serde_json::Value = match client.get(&meta_url).header("User-Agent", ua).send().await {
+        Ok(resp) if resp.status().is_success() => match resp.json().await {
+            Ok(j) => j,
+            Err(e) => return format!("[get_package_info: parse error: {e}]"),
+        },
+        Ok(resp) => return format!("[get_package_info: crates.io returned HTTP {}]", resp.status()),
+        Err(e) => return format!("[get_package_info: request failed: {e}]"),
+    };
+
+    let krate = &json["crate"];
+    let version = krate["newest_version"].as_str().unwrap_or("unknown");
+    let description = krate["description"].as_str().unwrap_or("(no description)");
+    let docs = krate["documentation"].as_str().unwrap_or("");
+    let repo = krate["repository"].as_str().unwrap_or("");
+    let downloads = krate["downloads"].as_u64().unwrap_or(0);
+
+    // Fetch latest version's dependencies
+    let deps_url = format!("https://crates.io/api/v1/crates/{name}/{version}/dependencies");
+    let deps_text = match client.get(&deps_url).header("User-Agent", ua).send().await {
+        Ok(resp) if resp.status().is_success() => {
+            if let Ok(j) = resp.json::<serde_json::Value>().await {
+                let deps = j["dependencies"].as_array().cloned().unwrap_or_default();
+                let normal: Vec<String> = deps.iter()
+                    .filter(|d| d["kind"].as_str() == Some("normal"))
+                    .take(15)
+                    .map(|d| format!("  {} = \"{}\"",
+                        d["crate_id"].as_str().unwrap_or("?"),
+                        d["req"].as_str().unwrap_or("*")))
+                    .collect();
+                normal.join("\n")
+            } else { String::new() }
+        }
+        _ => String::new(),
+    };
+
+    // Fetch README (crates.io serves it at /readme endpoint)
+    let readme_url = format!("https://crates.io/api/v1/crates/{name}/{version}/readme");
+    let readme = match client.get(&readme_url).header("User-Agent", ua).send().await {
+        Ok(resp) if resp.status().is_success() => {
+            let html = resp.text().await.unwrap_or_default();
+            let plain = crate::commands::fetch_url::strip_html_public(&html);
+            const MAX_README: usize = 6_000;
+            if plain.len() > MAX_README {
+                format!("{}\n\n[… README truncated at 6 KB]", &plain[..MAX_README])
+            } else {
+                plain
+            }
+        }
+        _ => String::new(),
+    };
+
+    let mut out = format!("**{name}** v{version}\n{description}\n");
+    out.push_str(&format!("Downloads: {downloads}\n"));
+    if !docs.is_empty() { out.push_str(&format!("Docs: {docs}\n")); }
+    if !repo.is_empty() { out.push_str(&format!("Repo: {repo}\n")); }
+    if !deps_text.is_empty() { out.push_str(&format!("\nDependencies:\n{deps_text}\n")); }
+    if !readme.is_empty() { out.push_str(&format!("\n--- README ---\n{readme}\n")); }
+    out
+}
+
 fn urlencoding_simple(s: &str) -> String {
     s.chars()
         .map(|c| match c {
@@ -584,6 +975,15 @@ pub fn extract_text_tool_call(text: &str) -> Option<TextToolCall> {
         TOOL_GIT_LOG,
         TOOL_SEARCH_NPM,
         TOOL_SEARCH_CRATES,
+        TOOL_GLOB_REPO,
+        TOOL_GIT_STATUS,
+        TOOL_DELETE_REPO_FILE,
+        TOOL_MOVE_REPO_FILE,
+        TOOL_GET_REPO_DIFF,
+        TOOL_WEB_SEARCH,
+        TOOL_GET_FILE_AT_BASE,
+        TOOL_GET_PACKAGE_INFO,
+        TOOL_EXEC_IN_WORKTREE,
         TOOL_REQUEST_TOOL,
     ];
 
@@ -636,6 +1036,41 @@ pub fn extract_text_tool_call(text: &str) -> Option<TextToolCall> {
                     TOOL_SEARCH_CRATES => {
                         let name = attr(tag_str, "name").unwrap_or("");
                         serde_json::json!({ "name": name })
+                    }
+                    TOOL_GLOB_REPO => {
+                        let pattern = attr(tag_str, "pattern").unwrap_or("**/*");
+                        serde_json::json!({ "pattern": pattern })
+                    }
+                    TOOL_GIT_STATUS | TOOL_GET_REPO_DIFF => {
+                        serde_json::json!({})
+                    }
+                    TOOL_DELETE_REPO_FILE => {
+                        let path = attr(tag_str, "path").unwrap_or("");
+                        serde_json::json!({ "path": path })
+                    }
+                    TOOL_MOVE_REPO_FILE => {
+                        let from = attr(tag_str, "from").unwrap_or("");
+                        let to = attr(tag_str, "to").unwrap_or("");
+                        serde_json::json!({ "from": from, "to": to })
+                    }
+                    TOOL_WEB_SEARCH => {
+                        let query = attr(tag_str, "query").unwrap_or("");
+                        serde_json::json!({ "query": query })
+                    }
+                    TOOL_GET_FILE_AT_BASE => {
+                        let path = attr(tag_str, "path").unwrap_or("");
+                        serde_json::json!({ "path": path })
+                    }
+                    TOOL_GET_PACKAGE_INFO => {
+                        let package = attr(tag_str, "package").unwrap_or("");
+                        let ecosystem = attr(tag_str, "ecosystem").unwrap_or("npm");
+                        serde_json::json!({ "package": package, "ecosystem": ecosystem })
+                    }
+                    TOOL_EXEC_IN_WORKTREE => {
+                        let command = attr(tag_str, "command").unwrap_or("");
+                        let timeout: Option<u64> = attr(tag_str, "timeout_secs")
+                            .and_then(|s| s.parse().ok());
+                        serde_json::json!({ "command": command, "timeout_secs": timeout })
                     }
                     TOOL_REQUEST_TOOL => {
                         let name = attr(tag_str, "name").unwrap_or("");

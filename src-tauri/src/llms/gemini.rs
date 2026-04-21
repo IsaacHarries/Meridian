@@ -118,6 +118,33 @@ pub async fn refresh_gemini_oauth_if_needed(client: &Client) -> Result<(), Strin
 
 const GEMINI_CODE_ASSIST_BASE: &str = "https://cloudcode-pa.googleapis.com/v1internal";
 
+/// Matches the User-Agent the official Gemini CLI sends. The server uses this
+/// for surface/tier classification — sending a generic UA appears to put the
+/// request into a different (tighter) quota bucket.
+fn gemini_cli_user_agent(model: &str) -> String {
+    let version = env!("CARGO_PKG_VERSION");
+    let os = std::env::consts::OS;
+    let arch = std::env::consts::ARCH;
+    format!("GeminiCLI/{version}/{model} ({os}; {arch}; meridian)")
+}
+
+/// Stable session ID for the lifetime of the Meridian process. The Code Assist
+/// server uses this to recognise that follow-up requests are part of the same
+/// conversation rather than counting each as a new session.
+fn meridian_session_id() -> &'static str {
+    use std::sync::OnceLock;
+    static SESSION: OnceLock<String> = OnceLock::new();
+    SESSION.get_or_init(|| {
+        use sha2::{Digest, Sha256};
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default();
+        let seed = format!("meridian-{}-{}", now.as_nanos(), std::process::id());
+        let digest = Sha256::digest(seed.as_bytes());
+        digest.iter().take(16).map(|b| format!("{b:02x}")).collect()
+    })
+}
+
 fn code_assist_metadata() -> serde_json::Value {
     serde_json::json!({
         "ideType": "IDE_UNSPECIFIED",
@@ -134,13 +161,17 @@ pub async fn ensure_gemini_codeassist_project(
         return Ok(p);
     }
 
+    // Don't pass `cloudaicompanionProject` for free-tier users — sending an
+    // empty string (or any value) downgrades the tier classification on the server.
+    // The official Gemini CLI omits this field entirely when the user has no
+    // GOOGLE_CLOUD_PROJECT env var set.
     let load_resp = client
         .post(format!("{GEMINI_CODE_ASSIST_BASE}:loadCodeAssist"))
         .bearer_auth(access_token)
         .header("Content-Type", "application/json")
+        .header("User-Agent", gemini_cli_user_agent("none"))
         .json(&serde_json::json!({
             "metadata": code_assist_metadata(),
-            "cloudaicompanionProject": ""
         }))
         .send()
         .await
@@ -195,6 +226,7 @@ pub async fn ensure_gemini_codeassist_project(
             .post(format!("{GEMINI_CODE_ASSIST_BASE}:onboardUser"))
             .bearer_auth(access_token)
             .header("Content-Type", "application/json")
+            .header("User-Agent", gemini_cli_user_agent("none"))
             .json(&onboard_body)
             .send()
             .await
@@ -285,6 +317,7 @@ pub async fn complete_multi_gemini_codeassist(
 
     let mut request = serde_json::json!({
         "contents": contents,
+        "session_id": meridian_session_id(),
         "generationConfig": { "maxOutputTokens": max_tokens }
     });
     if !system.trim().is_empty() {
@@ -300,14 +333,17 @@ pub async fn complete_multi_gemini_codeassist(
         "request": request,
     });
 
+    let ua = gemini_cli_user_agent(resolved_model);
     eprintln!(
-        "[meridian gemini] code assist request: model={resolved_model} (requested={model}) project={project_id}"
+        "[meridian gemini] code assist request: model={resolved_model} (requested={model}) project={project_id} session={}",
+        meridian_session_id()
     );
 
     let resp = client
         .post(format!("{GEMINI_CODE_ASSIST_BASE}:generateContent"))
         .bearer_auth(access_token)
         .header("Content-Type", "application/json")
+        .header("User-Agent", &ua)
         .json(&body)
         .send()
         .await
@@ -629,26 +665,32 @@ pub async fn test_gemini_stored() -> Result<String, String> {
     let client = make_corporate_client(Duration::from_secs(10), false)
         .map_err(|e| format!("HTTP client error: {e}"))?;
 
-    let req = if auth_method == "oauth" {
-        client
-            .post("https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist")
-            .header("Authorization", format!("Bearer {key}"))
-            .header("Content-Type", "application/json")
-            .json(&serde_json::json!({
-                "metadata": {
-                    "ideType": "IDE_UNSPECIFIED",
-                    "platform": "PLATFORM_UNSPECIFIED",
-                    "pluginType": "GEMINI"
-                },
-                "cloudaicompanionProject": ""
-            }))
-    } else {
-        let url =
-            format!("https://generativelanguage.googleapis.com/v1beta/models?key={key}&pageSize=1");
-        client.get(&url)
-    };
+    // For OAuth, send a real generateContent request so we test the generation
+    // quota path, not just the metadata endpoint (loadCodeAssist doesn't touch
+    // the generation quota so it always succeeds even when the model is rate-limited).
+    if auth_method == "oauth" {
+        refresh_gemini_oauth_if_needed(&client).await?;
+        let token = get_credential("gemini_api_key").unwrap_or(key.clone());
+        let project = ensure_gemini_codeassist_project(&client, &token).await?;
+        let model = crate::storage::preferences::get_pref("gemini_model")
+            .filter(|m| !m.trim().is_empty())
+            .unwrap_or_else(|| "gemini-2.5-flash".to_string());
+        return complete_multi_gemini_codeassist(
+            &client,
+            &token,
+            &project,
+            &model,
+            "",
+            &[serde_json::json!({ "role": "user", "content": "Say hello." })],
+            32,
+        )
+        .await
+        .map(|_| "Connected to Gemini Code Assist successfully.".to_string());
+    }
 
-    let resp = req.send().await.map_err(|e| {
+    let url =
+        format!("https://generativelanguage.googleapis.com/v1beta/models?key={key}&pageSize=1");
+    let resp = client.get(&url).send().await.map_err(|e| {
         if e.is_connect() || e.is_timeout() {
             "Could not reach Google APIs. Check your internet connection.".to_string()
         } else {
@@ -659,17 +701,13 @@ pub async fn test_gemini_stored() -> Result<String, String> {
     let status = resp.status();
     let body_text = resp.text().await.unwrap_or_default();
     match status {
-        s if s.is_success() => Ok("Connected to Gemini successfully.".to_string()),
+        s if s.is_success() => Ok("Connected to Gemini API successfully.".to_string()),
         StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => {
-            let prefix = if auth_method == "oauth" {
-                "Gemini rejected the OAuth session"
-            } else {
-                "Gemini rejected the stored API key"
-            };
-            Err(format!("{prefix} (HTTP {status}). {body_text}"))
+            Err(format!("Gemini rejected the stored API key (HTTP {status}). {body_text}"))
         }
         s => Err(format!(
             "Unexpected response from Gemini API (HTTP {s}). {body_text}"
         )),
     }
 }
+

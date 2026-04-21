@@ -349,6 +349,65 @@ async fn discover_build_command(
     Ok(command)
 }
 
+/// Detect the package manager and install dependencies if the dep directory is missing.
+/// Covers Node (npm/pnpm/yarn), Python (pip), and Go (go mod download).
+async fn run_setup_if_needed(
+    emit: &impl Fn(&str),
+) {
+    use crate::commands::repo::{exec_in_worktree_internal, read_repo_file_internal};
+    use std::path::Path;
+
+    let worktree = crate::storage::preferences::get_pref("repo_worktree_path")
+        .unwrap_or_default();
+
+    // ── Node.js ────────────────────────────────────────────────────────────────
+    if read_repo_file_internal("package.json").is_ok() {
+        let node_modules = Path::new(&worktree).join("node_modules");
+        if !node_modules.exists() {
+            // Detect package manager: prefer pnpm-lock.yaml > yarn.lock > package-lock.json
+            let install_cmd = if Path::new(&worktree).join("pnpm-lock.yaml").exists() {
+                "pnpm install"
+            } else if Path::new(&worktree).join("yarn.lock").exists() {
+                "yarn install --frozen-lockfile"
+            } else {
+                "npm ci"
+            };
+            emit(&format!(
+                "node_modules not found — running dependency install: {install_cmd}\n"
+            ));
+            match exec_in_worktree_internal(install_cmd, 300).await {
+                Ok((code, out)) => {
+                    emit(&out);
+                    if code != 0 {
+                        emit(&format!("  Install exited with code {code} — continuing anyway.\n"));
+                    } else {
+                        emit("  Dependencies installed ✓\n");
+                    }
+                }
+                Err(e) => emit(&format!("  Install failed: {e}\n")),
+            }
+        }
+    }
+
+    // ── Python ────────────────────────────────────────────────────────────────
+    if read_repo_file_internal("pyproject.toml").is_ok() || read_repo_file_internal("requirements.txt").is_ok() {
+        let venv = Path::new(&worktree).join(".venv");
+        if !venv.exists() {
+            emit("No .venv found — running: pip install -e .\n");
+            let _ = exec_in_worktree_internal("pip install -e . --quiet 2>&1 || pip install -r requirements.txt --quiet 2>&1", 300).await;
+        }
+    }
+
+    // ── Go ────────────────────────────────────────────────────────────────────
+    if read_repo_file_internal("go.mod").is_ok() {
+        let vendor = Path::new(&worktree).join("vendor");
+        if !vendor.exists() {
+            emit("Running: go mod download\n");
+            let _ = exec_in_worktree_internal("go mod download 2>&1", 120).await;
+        }
+    }
+}
+
 /// Agent 4c — Build Check: auto-discover the build command then run it, fix errors, retry.
 #[tauri::command]
 pub async fn run_build_check(
@@ -383,6 +442,9 @@ pub async fn run_build_check(
             .to_string());
         }
     };
+
+    // ── Install dependencies if missing ───────────────────────────────────────
+    run_setup_if_needed(&emit).await;
 
     const MAX_ATTEMPTS: u32 = 5;
     let mut attempts: Vec<serde_json::Value> = Vec::new();
@@ -567,9 +629,9 @@ pub async fn run_build_check(
     }).to_string())
 }
 
-/// Agent 5 — Test Suggestions: recommend tests to write based on the actual code changes.
+/// Agent 5 — Test Writer: write actual test files for the code changes using a tool loop.
 #[tauri::command]
-pub async fn run_test_suggestions(
+pub async fn run_test_agent(
     app: tauri::AppHandle,
     ticket_text: String,
     plan_json: String,
@@ -577,33 +639,46 @@ pub async fn run_test_suggestions(
     diff: String,
 ) -> Result<String, String> {
     let (client, api_key) = dispatch::llm_client().await?;
-    let system = "You are a test generation advisor. You will receive the ticket, implementation plan, \
-        implementation summary, and the actual git diff of what was written. \
-        Generate tests based on the real code changes, not just the intended plan. \
-        Think independently — challenge the implementation's assumptions and verify against acceptance criteria. \
-        Return ONLY valid JSON (no markdown fences):\n\
+
+    let system = "You are a test engineer. Your job is to write real test files for the code \
+        changes described in the diff.\n\
+        \n\
+        APPROACH:\n\
+        1. Use glob_repo and read_repo_file to find existing test files — understand the project's \
+           test framework, file naming conventions, assertion style, and test structure.\n\
+        2. Read the key implementation files from the diff to understand what needs testing.\n\
+        3. Write test files using write_repo_file — follow the project's exact test patterns \
+           and naming conventions.\n\
+        4. Focus on unit tests for logic; add integration tests where the setup is feasible.\n\
+        5. Test that acceptance criteria are met — do NOT write tests that merely verify what \
+           the implementation wrote. Challenge the implementation's assumptions.\n\
+        \n\
+        When you have finished writing all test files, output ONLY valid JSON (no markdown fences):\n\
         {\n\
-          \"test_strategy\": \"<overall testing approach>\",\n\
-          \"unit_tests\": [\n\
-            {\"description\": \"<what to test>\", \"target\": \"<function/module>\",\n\
-             \"cases\": [\"<test case description>\", ...]}\n\
+          \"summary\": \"<one sentence describing what was tested>\",\n\
+          \"files_written\": [\n\
+            {\"path\": \"<relative path from repo root>\", \"description\": \"<what this file covers>\"}\n\
           ],\n\
-          \"integration_tests\": [\n\
-            {\"description\": \"<what to test>\", \"setup\": \"<test setup notes>\",\n\
-             \"cases\": [\"<test case description>\", ...]}\n\
-          ],\n\
-          \"edge_cases_to_test\": [\"<edge case>\", ...],\n\
-          \"coverage_notes\": \"<anything deliberately not covered and why>\"\n\
+          \"edge_cases_covered\": [\"<edge case>\", ...],\n\
+          \"coverage_notes\": \"<what was deliberately not tested and why>\"\n\
         }";
+
     let diff_section = if diff.is_empty() {
-        "(no diff available — worktree may not be configured)".to_string()
+        "(no diff available — worktree may not be configured; note this in coverage_notes)".to_string()
     } else {
         diff
     };
-    let user = format!(
-        "Ticket:\n{ticket_text}\n\nImplementation plan:\n{plan_json}\n\nImplementation result:\n{impl_json}\n\nCode diff:\n{diff_section}"
+
+    let user_msg = serde_json::json!(
+        format!("Ticket:\n{ticket_text}\n\nImplementation plan:\n{plan_json}\n\nImplementation result:\n{impl_json}\n\nCode diff:\n{diff_section}")
     );
-    dispatch::dispatch_streaming(&app, &client, &api_key, system, &user, 1500, "tests-stream").await
+    let history_json = serde_json::json!([{ "role": "user", "content": user_msg }]).to_string();
+
+    dispatch::dispatch_multi_streaming_with_tools(
+        &app, &client, &api_key,
+        system, &history_json,
+        8000, "tests-stream",
+    ).await
 }
 
 /// Agent 8 — Retrospective: capture learnings from the implementation session.

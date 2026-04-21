@@ -1043,23 +1043,15 @@ export interface GuidanceOutput {
   definition_of_done: string[];
 }
 
-export interface TestCase {
+export interface TestFileWritten {
+  path: string;
   description: string;
-  target: string;
-  cases: string[];
-}
-
-export interface IntegrationTest {
-  description: string;
-  setup: string;
-  cases: string[];
 }
 
 export interface TestOutput {
-  test_strategy: string;
-  unit_tests: TestCase[];
-  integration_tests: IntegrationTest[];
-  edge_cases_to_test: string[];
+  summary: string;
+  files_written: TestFileWritten[];
+  edge_cases_covered: string[];
   coverage_notes: string;
 }
 
@@ -1371,7 +1363,7 @@ export async function runImplementationGuidance(
   });
 }
 
-export async function runTestSuggestions(
+export async function runTestAgent(
   ticketText: string,
   planJson: string,
   implJson: string,
@@ -1381,7 +1373,7 @@ export async function runTestSuggestions(
     const { MOCK_TESTS_JSON } = await import("./mockClaudeResponses");
     return MOCK_TESTS_JSON;
   }
-  return invokeWithLlmCheck<string>("run_test_suggestions", {
+  return invokeWithLlmCheck<string>("run_test_agent", {
     ticketText,
     planJson,
     implJson,

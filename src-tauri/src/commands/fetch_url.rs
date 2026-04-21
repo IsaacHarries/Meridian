@@ -1,4 +1,5 @@
 use crate::http::make_corporate_client;
+use regex_lite::Regex;
 use std::time::Duration;
 
 /// Fetch the text content of a URL and return it as plain text.
@@ -76,6 +77,11 @@ pub async fn fetch_url_content(url: String) -> Result<String, String> {
     };
 
     Ok(trimmed)
+}
+
+/// Public wrapper so other modules can reuse the HTML stripper.
+pub fn strip_html_public(html: &str) -> String {
+    strip_html(html)
 }
 
 /// Very lightweight HTML-to-text stripper.
@@ -186,3 +192,73 @@ fn strip_html(html: &str) -> String {
 
     result.trim().to_string()
 }
+
+/// Search the web via DuckDuckGo and return the top results as plain text.
+/// Returns up to 8 results with title, URL, and snippet.
+pub async fn web_search(query: &str) -> Result<String, String> {
+    if query.trim().is_empty() {
+        return Err("Search query cannot be empty.".to_string());
+    }
+
+    let client = make_corporate_client(Duration::from_secs(15))
+        .map_err(|e| format!("HTTP client error: {e}"))?;
+
+    let resp = client
+        .get("https://html.duckduckgo.com/html/")
+        .query(&[("q", query)])
+        .header("User-Agent", "Mozilla/5.0 (X11; Linux x86_64; rv:120.0) Gecko/20100101 Firefox/120.0")
+        .header("Accept", "text/html,application/xhtml+xml,*/*")
+        .header("Accept-Language", "en-US,en;q=0.9")
+        .send()
+        .await
+        .map_err(|e| format!("Search request failed: {e}"))?;
+
+    if !resp.status().is_success() {
+        return Err(format!("DuckDuckGo returned HTTP {}", resp.status()));
+    }
+
+    let html = resp
+        .text()
+        .await
+        .map_err(|e| format!("Failed to read search response: {e}"))?;
+
+    // Extract results from DuckDuckGo's HTML structure.
+    // Each result block is wrapped in <div class="result ..."> and contains:
+    //   <a class="result__a" href="...">title</a>
+    //   <a class="result__snippet">snippet</a>
+    let title_re = Regex::new(r#"class="result__a"[^>]*href="([^"]*)"[^>]*>(.*?)</a>"#).unwrap();
+    let snippet_re = Regex::new(r#"class="result__snippet"[^>]*>(.*?)</a>"#).unwrap();
+
+    let titles: Vec<(String, String)> = title_re
+        .captures_iter(&html)
+        .map(|c| {
+            let url = c.get(1).map(|m| m.as_str()).unwrap_or("").to_string();
+            let title = strip_html(&format!("<x>{}</x>", c.get(2).map(|m| m.as_str()).unwrap_or("")));
+            (url, title)
+        })
+        .collect();
+
+    let snippets: Vec<String> = snippet_re
+        .captures_iter(&html)
+        .map(|c| strip_html(&format!("<x>{}</x>", c.get(1).map(|m| m.as_str()).unwrap_or(""))))
+        .collect();
+
+    if titles.is_empty() {
+        // Fallback: return stripped HTML capped at 6 KB
+        let plain = strip_html(&html);
+        let cap = plain.len().min(6_000);
+        return Ok(format!(
+            "Web search results for \"{query}\":\n\n{}",
+            &plain[..cap]
+        ));
+    }
+
+    let mut out = format!("Web search results for \"{}\":\n\n", query);
+    for (i, (url, title)) in titles.iter().enumerate().take(8) {
+        let snippet = snippets.get(i).cloned().unwrap_or_default();
+        out.push_str(&format!("{}. {}\n   {}\n   {}\n\n", i + 1, title.trim(), url, snippet.trim()));
+    }
+
+    Ok(out.trim_end().to_string())
+}
+

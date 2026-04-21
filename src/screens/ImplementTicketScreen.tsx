@@ -48,6 +48,7 @@ import {
   type ImplementationPlan,
   type ImplementationOutput,
   type TestOutput,
+  type TestFileWritten,
   type PlanReviewOutput,
   type PrDescriptionOutput,
   type RetrospectiveOutput,
@@ -1365,72 +1366,32 @@ function ImplementationPanel({
 }
 
 function TestsPanel({ data }: { data: TestOutput }) {
+  const filesWritten = data.files_written ?? [];
+  const edgeCases = data.edge_cases_covered ?? [];
   return (
     <div className="space-y-3">
-      <p className="text-sm leading-relaxed">{data.test_strategy}</p>
-      {data.unit_tests.length > 0 && (
+      <p className="text-sm leading-relaxed">{data.summary}</p>
+      {filesWritten.length > 0 && (
         <div className="border rounded-md overflow-hidden">
           <div className="px-3 py-2 bg-muted/30 text-sm font-medium flex items-center gap-2">
-            <TestTube className="h-4 w-4 text-muted-foreground" /> Unit Tests (
-            {data.unit_tests.length})
+            <TestTube className="h-4 w-4 text-muted-foreground" /> Test Files
+            Written ({filesWritten.length})
           </div>
           <div className="divide-y">
-            {data.unit_tests.map((t, i) => (
+            {filesWritten.map((f: TestFileWritten, i: number) => (
               <div key={i} className="px-3 py-2">
-                <p className="text-sm font-medium">{t.description}</p>
-                <p className="text-xs text-muted-foreground mb-1">
-                  Target: <code>{t.target}</code>
+                <p className="text-xs font-mono text-foreground mb-0.5">
+                  {f.path}
                 </p>
-                <ul className="space-y-0.5">
-                  {t.cases.map((c, j) => (
-                    <li
-                      key={j}
-                      className="text-sm text-muted-foreground flex gap-2"
-                    >
-                      <span>·</span>
-                      {c}
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-      {data.integration_tests.length > 0 && (
-        <div className="border rounded-md overflow-hidden">
-          <div className="px-3 py-2 bg-muted/30 text-sm font-medium flex items-center gap-2">
-            <TestTube className="h-4 w-4 text-blue-500" /> Integration Tests (
-            {data.integration_tests.length})
-          </div>
-          <div className="divide-y">
-            {data.integration_tests.map((t, i) => (
-              <div key={i} className="px-3 py-2">
-                <p className="text-sm font-medium">{t.description}</p>
-                {t.setup && (
-                  <p className="text-xs text-muted-foreground mb-1">
-                    Setup: {t.setup}
-                  </p>
-                )}
-                <ul className="space-y-0.5">
-                  {t.cases.map((c, j) => (
-                    <li
-                      key={j}
-                      className="text-sm text-muted-foreground flex gap-2"
-                    >
-                      <span>·</span>
-                      {c}
-                    </li>
-                  ))}
-                </ul>
+                <p className="text-sm text-muted-foreground">{f.description}</p>
               </div>
             ))}
           </div>
         </div>
       )}
       <CollapsibleList
-        title="Edge Cases to Test"
-        items={data.edge_cases_to_test}
+        title="Edge Cases Covered"
+        items={edgeCases}
       />
       {data.coverage_notes && (
         <p className="text-sm text-muted-foreground italic">
@@ -2707,7 +2668,7 @@ export function ImplementTicketScreen({
       if (!tests)
         return (
           <StreamingLoader
-            label="Generating test suggestions…"
+            label="Writing tests…"
             streamText={testsStreamText}
           />
         );

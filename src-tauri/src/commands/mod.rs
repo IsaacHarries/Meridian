@@ -24,7 +24,7 @@ pub use agents::grooming::{
 };
 pub use agents::implementation::{
     run_build_check, run_implementation_agent, run_implementation_guidance, run_plan_review,
-    run_pr_description_gen, run_retrospective_agent, run_test_suggestions,
+    run_pr_description_gen, run_retrospective_agent, run_test_agent,
 };
 pub use agents::planning::{
     finalize_implementation_plan, run_checkpoint_action, run_checkpoint_chat_turn,
