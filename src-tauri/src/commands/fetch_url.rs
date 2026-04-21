@@ -200,7 +200,7 @@ pub async fn web_search(query: &str) -> Result<String, String> {
         return Err("Search query cannot be empty.".to_string());
     }
 
-    let client = make_corporate_client(Duration::from_secs(15))
+    let client = make_corporate_client(Duration::from_secs(15), false)
         .map_err(|e| format!("HTTP client error: {e}"))?;
 
     let resp = client

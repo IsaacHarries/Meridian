@@ -760,7 +760,7 @@ async fn search_crates_io(name: &str) -> String {
 }
 
 async fn get_npm_package_info(package: &str) -> String {
-    let client = match crate::http::make_corporate_client(std::time::Duration::from_secs(15)) {
+    let client = match crate::http::make_corporate_client(std::time::Duration::from_secs(15), false) {
         Ok(c) => c,
         Err(e) => return format!("[get_package_info: http client error: {e}]"),
     };
@@ -833,7 +833,7 @@ async fn get_npm_package_info(package: &str) -> String {
 }
 
 async fn get_cargo_package_info(name: &str) -> String {
-    let client = match crate::http::make_corporate_client(std::time::Duration::from_secs(15)) {
+    let client = match crate::http::make_corporate_client(std::time::Duration::from_secs(15), false) {
         Ok(c) => c,
         Err(e) => return format!("[get_package_info: http client error: {e}]"),
     };
