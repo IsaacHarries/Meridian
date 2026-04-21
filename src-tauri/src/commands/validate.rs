@@ -7,7 +7,7 @@ use crate::llms::gemini;
 use crate::storage::credentials::{get_credential, store_credential};
 
 fn make_client() -> Result<Client, String> {
-    make_corporate_client(Duration::from_secs(10))
+    make_corporate_client(Duration::from_secs(10), false)
 }
 
 /// Validate an Anthropic API key. Saves the key immediately, then tests
@@ -39,7 +39,7 @@ pub async fn ping_anthropic() -> Result<String, String> {
     }
 
     let auth_method = get_credential("claude_auth_method").unwrap_or_else(|| "api_key".to_string());
-    let client = make_corporate_client(Duration::from_secs(30))?;
+    let client = make_corporate_client(Duration::from_secs(30), false)?;
 
     if auth_method == "oauth" {
         refresh_oauth_if_needed(&client).await?;
@@ -121,7 +121,7 @@ pub async fn ping_gemini() -> Result<String, String> {
         .filter(|m| !m.trim().is_empty())
         .ok_or("No Gemini model selected. Please select a model in Settings first.")?;
 
-    let client = make_corporate_client(Duration::from_secs(30))?;
+    let client = make_corporate_client(Duration::from_secs(30), false)?;
 
     let reply = gemini::complete_gemini_for_ping(&client, &key, &model).await?;
     Ok(format!(
@@ -1208,7 +1208,7 @@ pub async fn ping_copilot() -> Result<String, String> {
         .filter(|m| !m.trim().is_empty())
         .ok_or("No Copilot model selected. Please select a model in Settings first.")?;
 
-    let client = make_corporate_client(Duration::from_secs(30))?;
+    let client = make_corporate_client(Duration::from_secs(30), false)?;
     copilot::refresh_copilot_token_if_needed(&client).await?;
     let token = get_credential("copilot_api_key").unwrap_or_default();
 

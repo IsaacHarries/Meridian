@@ -507,7 +507,7 @@ pub async fn get_copilot_models() -> Result<Vec<(String, String)>, String> {
         .filter(|t| !t.trim().is_empty())
         .ok_or("Copilot credentials are not configured.")?;
 
-    if let Ok(client) = make_corporate_client(Duration::from_secs(10)) {
+    if let Ok(client) = make_corporate_client(Duration::from_secs(10), false) {
         // Silently refresh first so the list reflects the current subscription.
         let _ = refresh_copilot_token_if_needed(&client).await;
         let fresh = get_credential("copilot_api_key").unwrap_or(token);
@@ -576,7 +576,7 @@ pub async fn validate_copilot(api_key: String) -> Result<String, String> {
         return Err("GitHub OAuth token cannot be empty.".to_string());
     }
 
-    let client = make_corporate_client(Duration::from_secs(10))
+    let client = make_corporate_client(Duration::from_secs(10), false)
         .map_err(|e| format!("HTTP client error: {e}"))?;
 
     let (copilot_token, expires_at) =
@@ -603,7 +603,7 @@ pub async fn test_copilot_stored() -> Result<String, String> {
         .filter(|t| !t.trim().is_empty())
         .ok_or("Copilot credentials are not configured.")?;
 
-    let client = make_corporate_client(Duration::from_secs(10))
+    let client = make_corporate_client(Duration::from_secs(10), false)
         .map_err(|e| format!("HTTP client error: {e}"))?;
 
     refresh_copilot_token_if_needed(&client).await?;

@@ -18,7 +18,7 @@ pub async fn fetch_url_content(url: String) -> Result<String, String> {
         return Err("URL must start with http:// or https://".to_string());
     }
 
-    let client = make_corporate_client(Duration::from_secs(20))
+    let client = make_corporate_client(Duration::from_secs(20), false)
         .map_err(|e| format!("HTTP client error: {e}"))?;
 
     let resp = client
@@ -186,4 +186,3 @@ fn strip_html(html: &str) -> String {
 
     result.trim().to_string()
 }
-

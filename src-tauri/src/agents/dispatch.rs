@@ -47,7 +47,7 @@ pub fn is_quota_error(err: &str) -> bool {
 
 pub async fn llm_client() -> Result<(Client, String), String> {
     use crate::http::make_corporate_client;
-    let client = make_corporate_client(Duration::from_secs(60))?;
+    let client = make_corporate_client(Duration::from_secs(60), false)?;
     let api_key = get_credential("anthropic_api_key").unwrap_or_default();
     Ok((client, api_key))
 }

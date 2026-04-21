@@ -93,7 +93,11 @@ impl BitbucketClient {
         username: String,
         access_token: String,
     ) -> Result<Self, String> {
-        let client = make_corporate_client(Duration::from_secs(15))?;
+        // Read the SSL verify preference (default: false)
+        let disable_ssl_verify = crate::storage::preferences::get_pref("bitbucket_disable_ssl_verify")
+            .map(|v| v == "true")
+            .unwrap_or(false);
+        let client = crate::http::make_corporate_client(Duration::from_secs(15), disable_ssl_verify)?;
         Ok(Self {
             client,
             workspace,

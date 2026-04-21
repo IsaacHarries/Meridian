@@ -108,6 +108,7 @@ import {
   INITIAL as IMPLEMENT_INITIAL,
 } from "@/stores/implementTicketStore";
 import { usePrReviewStore, PR_REVIEW_STORE_KEY } from "@/stores/prReviewStore";
+import { Switch } from "@/components/ui/switch";
 
 // ── Theme section ─────────────────────────────────────────────────────────────
 
@@ -1410,16 +1411,6 @@ function GeminiSection({
                   )}
                 </Button>
               )}
-              {isConfigured && (
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="text-muted-foreground gap-1"
-                  onClick={handleReset}
-                >
-                  <RotateCcw className="h-3 w-3" /> Reset
-                </Button>
-              )}
             </div>
           </div>
         )}
@@ -1979,7 +1970,7 @@ function CopilotSection({
         <SectionMessage {...status} />
 
         {/* Model picker — visible when Copilot is configured */}
-        {isConfigured && (
+        {isConfigured && models.length > 0 && (
           <div className="space-y-1.5 pt-2 border-t">
             <label className="text-xs font-medium text-muted-foreground">
               Copilot Model
@@ -2609,6 +2600,7 @@ function BitbucketSection({
     message: "",
   });
   const [testResult, setTestResult] = useState<TestResult>("untested");
+  const [disableSslVerify, setDisableSslVerify] = useState(false);
 
   async function startEditing() {
     try {
@@ -2626,6 +2618,13 @@ function BitbucketSection({
     setStatus({ state: "idle", message: "" });
     setEditing(true);
   }
+
+  // Load preference on mount
+  useEffect(() => {
+    getPreferences().then((prefs) => {
+      setDisableSslVerify(prefs["bitbucket_disable_ssl_verify"] === "true");
+    });
+  }, []);
 
   async function handleSave() {
     if (!workspace.trim() || !email.trim() || !accessToken.trim()) return;
@@ -2711,6 +2710,12 @@ function BitbucketSection({
   const [savingBb, setSavingBb] = useState(false);
   const [testingBb, setTestingBb] = useState(false);
 
+  // Save preference when toggled
+  async function handleSslVerifyToggle(checked: boolean) {
+    setDisableSslVerify(checked);
+    await setPreference("bitbucket_disable_ssl_verify", checked ? "true" : "false");
+  }
+
   return (
     <Card>
       <CardHeader className="pb-3">
@@ -2728,6 +2733,7 @@ function BitbucketSection({
         </div>
       </CardHeader>
       <CardContent className="space-y-3">
+        {/* Credentials/test/reset buttons */}
         {!editing ? (
           <div className="flex gap-2">
             <Button variant="outline" size="sm" onClick={startEditing}>
@@ -2834,6 +2840,15 @@ function BitbucketSection({
             </div>
           </div>
         )}
+
+        {/* SSL Verification toggle is always visible */}
+        <div className="flex items-center gap-2 pt-2">
+          <Switch id="s-bb-disable-ssl-verify" checked={disableSslVerify} onCheckedChange={handleSslVerifyToggle} />
+          <label htmlFor="s-bb-disable-ssl-verify" className="text-xs select-none">
+            Disable SSL Verification (insecure)
+          </label>
+        </div>
+
         <SectionMessage {...status} />
       </CardContent>
     </Card>

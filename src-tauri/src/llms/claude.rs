@@ -477,7 +477,7 @@ pub const AVAILABLE_MODELS: &[(&str, &str)] = &[
 #[tauri::command]
 pub async fn get_claude_models() -> Vec<(String, String)> {
     if let Some(api_key) = get_credential("anthropic_api_key") {
-        if let Ok(client) = make_corporate_client(Duration::from_secs(8)) {
+        if let Ok(client) = make_corporate_client(Duration::from_secs(8), false) {
             if let Ok(models) = fetch_models_live(&client, &api_key).await {
                 return models;
             }

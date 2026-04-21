@@ -531,7 +531,7 @@ pub async fn get_gemini_models() -> Result<Vec<(String, String)>, String> {
     // Touch the token refresher on OAuth so the rest of the app doesn't hit
     // an expired session right after the user opens Settings.
     if auth_method == "oauth" {
-        if let Ok(client) = make_corporate_client(Duration::from_secs(8)) {
+        if let Ok(client) = make_corporate_client(Duration::from_secs(8), false) {
             let _ = refresh_gemini_oauth_if_needed(&client).await;
         }
     }
@@ -590,7 +590,7 @@ pub async fn validate_gemini(api_key: String) -> Result<String, String> {
         return Err("API key cannot be empty.".to_string());
     }
 
-    let client = make_corporate_client(Duration::from_secs(10))
+    let client = make_corporate_client(Duration::from_secs(10), false)
         .map_err(|e| format!("HTTP client error: {e}"))?;
 
     let url =
@@ -626,7 +626,7 @@ pub async fn test_gemini_stored() -> Result<String, String> {
         .filter(|k| !k.trim().is_empty())
         .ok_or("Gemini credentials are not configured.")?;
 
-    let client = make_corporate_client(Duration::from_secs(10))
+    let client = make_corporate_client(Duration::from_secs(10), false)
         .map_err(|e| format!("HTTP client error: {e}"))?;
 
     let req = if auth_method == "oauth" {

@@ -106,12 +106,11 @@ pub struct JiraClient {
 
 impl JiraClient {
     pub fn new(base_url: String, email: String, api_token: String) -> Result<Self, String> {
-        let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(15))
-            .redirect(reqwest::redirect::Policy::none())
-            .use_native_tls()
-            .build()
-            .map_err(|e| format!("HTTP client error: {e}"))?;
+        // Read the generic SSL verify preference (default: false)
+        let disable_ssl_verify = crate::storage::preferences::get_pref("disable_ssl_verify")
+            .map(|v| v == "true")
+            .unwrap_or(false);
+        let client = crate::http::make_corporate_client(Duration::from_secs(15), disable_ssl_verify)?;
         Ok(Self {
             client,
             base_url,

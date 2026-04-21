@@ -427,7 +427,7 @@ pub async fn execute_tool(name: &str, input: &serde_json::Value) -> String {
 }
 
 async fn search_npm_registry(package: &str) -> String {
-    let client = match crate::http::make_corporate_client(std::time::Duration::from_secs(10)) {
+    let client = match crate::http::make_corporate_client(std::time::Duration::from_secs(10), false) {
         Ok(c) => c,
         Err(e) => return format!("[search_npm: http client error: {e}]"),
     };
@@ -467,7 +467,7 @@ async fn search_npm_registry(package: &str) -> String {
 }
 
 async fn search_crates_io(name: &str) -> String {
-    let client = match crate::http::make_corporate_client(std::time::Duration::from_secs(10)) {
+    let client = match crate::http::make_corporate_client(std::time::Duration::from_secs(10), false) {
         Ok(c) => c,
         Err(e) => return format!("[search_crates: http client error: {e}]"),
     };
