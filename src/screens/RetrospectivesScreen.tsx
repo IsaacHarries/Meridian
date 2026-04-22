@@ -21,10 +21,13 @@ import {
   type JiraSprint,
   type JiraIssue,
   type BitbucketPr,
+  type SprintReportCache,
   getCompletedSprints,
   getSprintIssuesById,
   getMergedPrs,
   generateSprintRetrospective,
+  saveSprintReport,
+  loadSprintReport,
 } from "@/lib/tauri";
 
 interface RetrospectivesScreenProps {
@@ -37,7 +40,14 @@ function totalPoints(issues: JiraIssue[]): number {
   return issues.reduce((s, i) => s + (i.storyPoints ?? 0), 0);
 }
 
-function isDone(issue: JiraIssue): boolean {
+// Changelog-based: use completedInSprint when available (set by the backend by
+// replaying the issue's status history to the sprint's completeDate). Falls back
+// to current status only when no changelog data was fetched (e.g. active sprints).
+function isDone(issue: JiraIssue, _sprintEndDate?: string | null): boolean {
+  if (issue.completedInSprint !== null && issue.completedInSprint !== undefined) {
+    return issue.completedInSprint;
+  }
+  // Fallback for active sprints or issues fetched without a completeDate.
   return issue.statusCategory === "Done";
 }
 
@@ -86,7 +96,7 @@ interface SprintData {
 
 function VelocityCard({ sprint, issues }: { sprint: JiraSprint; issues: JiraIssue[] }) {
   const committed = totalPoints(issues);
-  const completed = totalPoints(issues.filter(isDone));
+  const completed = totalPoints(issues.filter((i) => isDone(i, sprint.endDate)));
   const pct = committed > 0 ? Math.round((completed / committed) * 100) : 0;
 
   return (
@@ -149,10 +159,10 @@ function VelocityCard({ sprint, issues }: { sprint: JiraSprint; issues: JiraIssu
 
 // ── Ticket completion card ────────────────────────────────────────────────────
 
-function TicketCompletionCard({ issues }: { issues: JiraIssue[] }) {
+function TicketCompletionCard({ sprint, issues }: { sprint: JiraSprint; issues: JiraIssue[] }) {
   const [showCarryOver, setShowCarryOver] = useState(false);
-  const done = issues.filter(isDone);
-  const carryOver = issues.filter((i) => !isDone(i));
+  const done = issues.filter((i) => isDone(i, sprint.endDate));
+  const carryOver = issues.filter((i) => !isDone(i, sprint.endDate));
   const pct = issues.length > 0 ? Math.round((done.length / issues.length) * 100) : 0;
 
   return (
@@ -310,7 +320,7 @@ function PrActivityCard({
 
 // ── Team breakdown card ───────────────────────────────────────────────────────
 
-function TeamBreakdownCard({ issues }: { issues: JiraIssue[] }) {
+function TeamBreakdownCard({ sprint, issues }: { sprint: JiraSprint; issues: JiraIssue[] }) {
   const devMap = new Map<string, JiraIssue[]>();
   for (const issue of issues) {
     const name = issue.assignee?.displayName ?? "Unassigned";
@@ -321,9 +331,9 @@ function TeamBreakdownCard({ issues }: { issues: JiraIssue[] }) {
   const devs = Array.from(devMap.entries())
     .map(([name, devIssues]) => ({
       name,
-      donePts: totalPoints(devIssues.filter(isDone)),
+      donePts: totalPoints(devIssues.filter((i) => isDone(i, sprint.endDate))),
       assignedPts: totalPoints(devIssues),
-      doneCount: devIssues.filter(isDone).length,
+      doneCount: devIssues.filter((i) => isDone(i, sprint.endDate)).length,
       totalCount: devIssues.length,
     }))
     .sort((a, b) => b.donePts - a.donePts);
@@ -371,12 +381,10 @@ function buildSprintContext(
   issues: JiraIssue[],
   prs: BitbucketPr[]
 ): string {
-  const done = issues.filter((i) => i.statusCategory === "done" || i.statusCategory === "Done");
+  const done = issues.filter((i) => isDone(i, sprint.endDate));
   const committed = issues.reduce((s, i) => s + (i.storyPoints ?? 0), 0);
   const completed = done.reduce((s, i) => s + (i.storyPoints ?? 0), 0);
-  const carryOver = issues.filter(
-    (i) => i.statusCategory !== "done" && i.statusCategory !== "Done"
-  );
+  const carryOver = issues.filter((i) => !isDone(i, sprint.endDate));
   const sprintPrsLocal = prs.filter((pr) => {
     const start = sprint.startDate ?? "";
     const end = sprint.endDate ?? "9999";
@@ -403,7 +411,7 @@ function buildSprintContext(
     const entry = devMap.get(name)!;
     entry.total++;
     entry.pts += issue.storyPoints ?? 0;
-    if (issue.statusCategory === "done" || issue.statusCategory === "Done") entry.done++;
+    if (isDone(issue, sprint.endDate)) entry.done++;
   }
 
   const lines: string[] = [
@@ -646,6 +654,7 @@ export function RetrospectivesScreen({ onBack }: RetrospectivesScreenProps) {
   // Fetch data for selected sprint
   const loadSprint = useCallback(
     async (sprintId: number, sprint: JiraSprint) => {
+      // 1. In-memory cache (fastest — no I/O)
       if (cache.current.has(sprintId)) {
         setCachedData(cache.current.get(sprintId)!);
         setSprintError(null);
@@ -655,13 +664,25 @@ export function RetrospectivesScreen({ onBack }: RetrospectivesScreenProps) {
       setSprintError(null);
       setCachedData(null);
       try {
+        // 2. Disk cache — avoids re-fetching on app restart
+        const disk = await loadSprintReport(sprintId);
+        if (disk) {
+          const data: SprintData = { issues: disk.issues, prs: disk.prs };
+          cache.current.set(sprintId, data);
+          setCachedData(data);
+          return;
+        }
+        // 3. Fetch from JIRA / Bitbucket
         const [issues, prs] = await Promise.all([
-          getSprintIssuesById(sprintId),
+          getSprintIssuesById(sprintId, sprint.completeDate),
           getMergedPrs(sprint.startDate ?? undefined).catch(() => [] as BitbucketPr[]),
         ]);
         const data: SprintData = { issues, prs };
         cache.current.set(sprintId, data);
         setCachedData(data);
+        // Persist to disk in the background — don't block the UI
+        const report: SprintReportCache = { issues, prs, cachedAt: new Date().toISOString() };
+        saveSprintReport(sprintId, report).catch(() => {});
       } catch (e) {
         setSprintError(String(e));
       } finally {
@@ -687,11 +708,19 @@ export function RetrospectivesScreen({ onBack }: RetrospectivesScreenProps) {
       setLoadingTrend(true);
       for (const sprint of toLoad) {
         try {
+          // Check disk cache before hitting the API
+          const disk = await loadSprintReport(sprint.id);
+          if (disk) {
+            cache.current.set(sprint.id, { issues: disk.issues, prs: disk.prs });
+            continue;
+          }
           const [issues, prs] = await Promise.all([
-            getSprintIssuesById(sprint.id),
+            getSprintIssuesById(sprint.id, sprint.completeDate),
             getMergedPrs(sprint.startDate ?? undefined).catch(() => [] as BitbucketPr[]),
           ]);
           cache.current.set(sprint.id, { issues, prs });
+          const report: SprintReportCache = { issues, prs, cachedAt: new Date().toISOString() };
+          saveSprintReport(sprint.id, report).catch(() => {});
         } catch {
           // Skip sprints that fail to load
         }
@@ -706,7 +735,7 @@ export function RetrospectivesScreen({ onBack }: RetrospectivesScreenProps) {
       .map((sprint) => {
         const { issues } = cache.current.get(sprint.id)!;
         const committed = totalPoints(issues);
-        const completed = totalPoints(issues.filter(isDone));
+        const completed = totalPoints(issues.filter((i) => isDone(i, sprint.endDate)));
         const pct = committed > 0 ? Math.round((completed / committed) * 100) : 0;
         return { sprint, committed, completed, pct };
       });
@@ -807,9 +836,9 @@ export function RetrospectivesScreen({ onBack }: RetrospectivesScreenProps) {
             {/* Metrics grid */}
             <div className="grid gap-4 sm:grid-cols-2">
               <VelocityCard sprint={selectedSprint} issues={cachedData.issues} />
-              <TicketCompletionCard issues={cachedData.issues} />
+              <TicketCompletionCard sprint={selectedSprint} issues={cachedData.issues} />
               <PrActivityCard sprint={selectedSprint} allPrs={cachedData.prs} />
-              <TeamBreakdownCard issues={cachedData.issues} />
+              <TeamBreakdownCard sprint={selectedSprint} issues={cachedData.issues} />
             </div>
 
             <AiSummaryPanel

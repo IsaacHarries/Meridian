@@ -50,6 +50,7 @@ export const ACTIVE_SPRINT: JiraSprint = {
   state: "active",
   startDate: "2026-03-31T09:00:00.000Z",
   endDate: "2026-04-14T17:00:00.000Z",
+  completeDate: null,
   goal: "Deliver user settings overhaul, fix search pagination, and land the file upload validation hardening.",
 };
 
@@ -87,6 +88,8 @@ const makeIssue = (
   epicSummary,
   created: "2026-03-28T10:00:00.000Z",
   updated: "2026-04-09T15:30:00.000Z",
+  resolutionDate: null,
+  completedInSprint: null,
   acceptanceCriteria: null,
   stepsToReproduce: null,
   observedBehavior: null,
@@ -159,6 +162,8 @@ export const DEMO_ISSUE_1: JiraIssue = {
   epicSummary: null,
   created: "2026-04-14T09:00:00.000Z",
   updated: "2026-04-14T09:00:00.000Z",
+  resolutionDate: null,
+  completedInSprint: null,
   acceptanceCriteria:
     "- Running `ts-node src/cli.ts <file>` prints the TOC to stdout\n" +
     "- Each entry is an indented markdown list item with anchor link\n" +
@@ -269,6 +274,8 @@ export const DEMO_ISSUE_2: JiraIssue = {
   epicSummary: null,
   created: "2026-04-14T09:00:00.000Z",
   updated: "2026-04-14T09:00:00.000Z",
+  resolutionDate: null,
+  completedInSprint: null,
   acceptanceCriteria:
     "- POST /tasks creates a task with UUID, timestamps, and defaults\n" +
     "- GET /tasks supports filtering by status, priority, tag + pagination\n" +
@@ -491,6 +498,7 @@ export const COMPLETED_SPRINTS: JiraSprint[] = [
     state: "closed",
     startDate: "2026-03-17T09:00:00.000Z",
     endDate: "2026-03-30T17:00:00.000Z",
+    completeDate: "2026-03-31T10:15:00.000Z",
     goal: "Complete auth hardening track and improve test coverage across billing.",
   },
   {
@@ -499,6 +507,7 @@ export const COMPLETED_SPRINTS: JiraSprint[] = [
     state: "closed",
     startDate: "2026-03-03T09:00:00.000Z",
     endDate: "2026-03-16T17:00:00.000Z",
+    completeDate: "2026-03-17T09:30:00.000Z",
     goal: "Ship rewritten search service with relevance scoring.",
   },
   {
@@ -507,6 +516,7 @@ export const COMPLETED_SPRINTS: JiraSprint[] = [
     state: "closed",
     startDate: "2026-02-17T09:00:00.000Z",
     endDate: "2026-03-02T17:00:00.000Z",
+    completeDate: "2026-03-03T08:45:00.000Z",
     goal: "Cut p95 API latency by 30%. Database query optimisation.",
   },
   {
@@ -515,6 +525,7 @@ export const COMPLETED_SPRINTS: JiraSprint[] = [
     state: "closed",
     startDate: "2026-02-03T09:00:00.000Z",
     endDate: "2026-02-16T17:00:00.000Z",
+    completeDate: "2026-02-17T09:00:00.000Z",
     goal: "New user onboarding flow with guided setup wizard.",
   },
   {
@@ -523,6 +534,7 @@ export const COMPLETED_SPRINTS: JiraSprint[] = [
     state: "closed",
     startDate: "2026-01-20T09:00:00.000Z",
     endDate: "2026-02-02T17:00:00.000Z",
+    completeDate: "2026-02-03T08:30:00.000Z",
     goal: "Launch public API v2 with versioning and deprecation headers.",
   },
 ];

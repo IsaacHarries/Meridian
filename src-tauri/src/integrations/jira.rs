@@ -14,6 +14,8 @@ pub struct JiraSprint {
     pub state: String,
     pub start_date: Option<String>,
     pub end_date: Option<String>,
+    /// Set only on closed sprints — the timestamp when the sprint was completed.
+    pub complete_date: Option<String>,
     pub goal: Option<String>,
 }
 
@@ -78,6 +80,9 @@ pub struct JiraIssue {
     pub epic_summary: Option<String>,
     pub created: String,
     pub updated: String,
+    /// ISO-8601 timestamp when the issue was resolved (transitioned to Done).
+    /// None if unresolved or if the field was not fetched.
+    pub resolution_date: Option<String>,
     /// Acceptance criteria — extracted from a custom field if configured via
     /// the `jira_field_acceptance_criteria` setting, otherwise None.
     pub acceptance_criteria: Option<String>,
@@ -93,6 +98,9 @@ pub struct JiraIssue {
     /// e.g. { "acceptance_criteria": "customfield_10034", "steps_to_reproduce": "customfield_10070" }
     /// Empty map if the field was not discovered. Only populated by get_issue (full detail fetch).
     pub discovered_field_ids: std::collections::HashMap<String, String>,
+    /// True if the issue was in a Done-category status at the sprint's completeDate.
+    /// None when no sprint close date was available (e.g. active sprint or non-sprint fetch).
+    pub completed_in_sprint: Option<bool>,
 }
 
 // ── HTTP client ───────────────────────────────────────────────────────────────
@@ -325,15 +333,16 @@ impl JiraClient {
     pub async fn get_sprint_issues(
         &self,
         sprint_id: i64,
+        complete_date: Option<&str>,
         custom_fields: &CustomFieldConfig,
     ) -> Result<Vec<JiraIssue>, String> {
         let fields = issue_fields_with_custom(custom_fields);
         let url = self.url(&format!(
-            "/rest/agile/1.0/sprint/{sprint_id}/issue?maxResults=100&fields={fields}"
+            "/rest/agile/1.0/sprint/{sprint_id}/issue?maxResults=100&expand=changelog&fields={fields}"
         ));
         let body = self.get_json(&url).await?;
         let issues = body["issues"].as_array().cloned().unwrap_or_default();
-        Ok(issues.iter().map(|i| parse_issue(i, &self.base_url, custom_fields)).collect())
+        Ok(issues.iter().map(|i| parse_issue(i, &self.base_url, custom_fields, complete_date)).collect())
     }
 
     pub async fn get_issue(
@@ -378,7 +387,7 @@ impl JiraClient {
             extra: custom_fields.extra.clone(),
         };
 
-        Ok(parse_issue(&body, &self.base_url, &auto_cfg))
+        Ok(parse_issue(&body, &self.base_url, &auto_cfg, None))
     }
 
     /// Fetch a raw field map for a single issue with human-readable names.
@@ -500,7 +509,7 @@ impl JiraClient {
         let body = resp.json::<serde_json::Value>().await
             .map_err(|e| format!("Failed to parse JIRA search response: {e}"))?;
         let issues = body["issues"].as_array().cloned().unwrap_or_default();
-        Ok(issues.iter().map(|i| parse_issue(i, &self.base_url, custom_fields)).collect())
+        Ok(issues.iter().map(|i| parse_issue(i, &self.base_url, custom_fields, None)).collect())
     }
 }
 
@@ -541,7 +550,7 @@ impl CustomFieldConfig {
 
 fn issue_fields_with_custom(cfg: &CustomFieldConfig) -> String {
     let mut base = "summary,status,assignee,reporter,issuetype,priority,\
-        customfield_10016,customfield_10028,labels,description,parent,created,updated"
+        customfield_10016,customfield_10028,labels,description,parent,created,updated,resolutiondate"
         .to_string();
     for id in cfg.all_field_ids() {
         base.push(',');
@@ -557,6 +566,7 @@ fn parse_sprint(v: &Value) -> JiraSprint {
         state: v["state"].as_str().unwrap_or("").to_string(),
         start_date: v["startDate"].as_str().map(str::to_string),
         end_date: v["endDate"].as_str().map(str::to_string),
+        complete_date: v["completeDate"].as_str().map(str::to_string),
         goal: v["goal"]
             .as_str()
             .filter(|s| !s.is_empty())
@@ -564,7 +574,7 @@ fn parse_sprint(v: &Value) -> JiraSprint {
     }
 }
 
-fn parse_issue(v: &Value, base_url: &str, cfg: &CustomFieldConfig) -> JiraIssue {
+fn parse_issue(v: &Value, base_url: &str, cfg: &CustomFieldConfig, sprint_complete_date: Option<&str>) -> JiraIssue {
     let key = v["key"].as_str().unwrap_or("").to_string();
     let fields = &v["fields"];
 
@@ -660,6 +670,58 @@ fn parse_issue(v: &Value, base_url: &str, cfg: &CustomFieldConfig) -> JiraIssue 
         }
     }
 
+    // Determine whether this issue was in a Done-category status at sprint close.
+    // Walk the changelog backwards: any status change that occurred AFTER the sprint's
+    // completeDate is "undone" to reconstruct the status at the close snapshot.
+    let completed_in_sprint = sprint_complete_date.map(|close_ts| {
+        // Collect all status-change history items, newest first.
+        let mut status_changes: Vec<(String, String, String)> = v["changelog"]["histories"]
+            .as_array()
+            .unwrap_or(&vec![])
+            .iter()
+            .filter_map(|h| {
+                let created = h["created"].as_str()?.to_string();
+                h["items"].as_array()?.iter().find_map(|item| {
+                    if item["field"].as_str() == Some("status") {
+                        Some((
+                            created.clone(),
+                            item["fromString"].as_str().unwrap_or("").to_string(),
+                            item["toString"].as_str().unwrap_or("").to_string(),
+                        ))
+                    } else {
+                        None
+                    }
+                })
+            })
+            .collect();
+
+        // Sort newest-first so we can peel off post-close changes.
+        status_changes.sort_by(|a, b| b.0.cmp(&a.0));
+
+        // Start from the current status name and rewind any changes made after close.
+        let mut effective_status = status.clone();
+        for (changed_at, from_status, to_status) in &status_changes {
+            if changed_at.as_str() > close_ts {
+                // This change happened after the sprint closed — undo it.
+                if effective_status == *to_status {
+                    effective_status = from_status.clone();
+                }
+            }
+        }
+
+        // Determine Done category. If the effective status matches the current status,
+        // we can use the known category. Otherwise, match against common Done status names.
+        if effective_status == status {
+            status_category == "Done"
+        } else {
+            let s = effective_status.to_lowercase();
+            matches!(s.as_str(),
+                "done" | "closed" | "resolved" | "complete" | "completed" |
+                "won't fix" | "wont fix" | "cannot reproduce" | "duplicate" | "fixed"
+            )
+        }
+    });
+
     JiraIssue {
         id: v["id"].as_str().unwrap_or("").to_string(),
         url: format!("{base_url}/browse/{key}"),
@@ -679,6 +741,7 @@ fn parse_issue(v: &Value, base_url: &str, cfg: &CustomFieldConfig) -> JiraIssue 
         epic_summary,
         created: fields["created"].as_str().unwrap_or("").to_string(),
         updated: fields["updated"].as_str().unwrap_or("").to_string(),
+        resolution_date: fields["resolutiondate"].as_str().map(str::to_string),
         acceptance_criteria,
         steps_to_reproduce,
         observed_behavior,
@@ -692,6 +755,7 @@ fn parse_issue(v: &Value, base_url: &str, cfg: &CustomFieldConfig) -> JiraIssue 
             if let Some(id) = &cfg.expected_behavior   { m.insert("expected_behavior".into(), id.clone()); }
             m
         },
+        completed_in_sprint,
     }
 }
 
@@ -1115,12 +1179,39 @@ impl JiraClient {
                 });
                 fields_payload.insert(key.clone(), adf);
             } else {
-                // Custom fields (customfield_XXXXX) for acceptance criteria, steps to
-                // reproduce, observed/expected behavior etc. are string-type fields —
-                // JIRA returns them as plain strings, so we must write them as plain
-                // strings. Sending ADF to a string field causes JIRA to silently
-                // accept the request (204) but not persist the value correctly.
-                fields_payload.insert(key.clone(), serde_json::Value::String(text));
+                // Custom rich-text fields (e.g. acceptance criteria, steps to reproduce)
+                // require ADF in JIRA v3. Wrap multi-paragraph text in ADF doc nodes.
+                let paragraphs: Vec<serde_json::Value> = text
+                    .split("\n\n")
+                    .filter(|p| !p.trim().is_empty())
+                    .map(|para| {
+                        let lines: Vec<&str> = para.lines().collect();
+                        let mut inline_nodes: Vec<serde_json::Value> = vec![];
+                        for (i, line) in lines.iter().enumerate() {
+                            inline_nodes.push(serde_json::json!({
+                                "type": "text",
+                                "text": line.trim()
+                            }));
+                            if i < lines.len() - 1 {
+                                inline_nodes.push(serde_json::json!({ "type": "hardBreak" }));
+                            }
+                        }
+                        serde_json::json!({
+                            "type": "paragraph",
+                            "content": inline_nodes
+                        })
+                    })
+                    .collect();
+                let adf = serde_json::json!({
+                    "version": 1,
+                    "type": "doc",
+                    "content": if paragraphs.is_empty() {
+                        vec![serde_json::json!({ "type": "paragraph", "content": [] })]
+                    } else {
+                        paragraphs
+                    }
+                });
+                fields_payload.insert(key.clone(), adf);
             }
         }
 

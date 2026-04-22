@@ -526,6 +526,7 @@ export interface JiraSprint {
   state: string;
   startDate: string | null;
   endDate: string | null;
+  completeDate: string | null;
   goal: string | null;
 }
 
@@ -559,6 +560,8 @@ export interface JiraIssue {
   epicSummary: string | null;
   created: string;
   updated: string;
+  resolutionDate: string | null;
+  completedInSprint: boolean | null;
   /** Auto-detected from custom field display name — no configuration required. */
   acceptanceCriteria: string | null;
   stepsToReproduce: string | null;
@@ -634,12 +637,13 @@ export async function getSprintIssues(sprintId: number): Promise<JiraIssue[]> {
 
 export async function getSprintIssuesById(
   sprintId: number,
+  completeDate?: string | null,
 ): Promise<JiraIssue[]> {
   if (isMockMode()) {
     const { SPRINT_ISSUES_BY_ID } = await import("./mockData");
     return SPRINT_ISSUES_BY_ID[sprintId] ?? [];
   }
-  return invoke<JiraIssue[]>("get_sprint_issues_by_id", { sprintId });
+  return invoke<JiraIssue[]>("get_sprint_issues_by_id", { sprintId, completeDate: completeDate ?? null });
 }
 
 export async function getIssue(issueKey: string): Promise<JiraIssue> {
@@ -660,6 +664,48 @@ export async function getCompletedSprints(
     return COMPLETED_SPRINTS.slice(0, limit);
   }
   return invoke<JiraSprint[]>("get_completed_sprints", { limit });
+}
+
+// ── Sprint report disk cache ───────────────────────────────────────────────────
+
+export interface SprintReportCache {
+  issues: JiraIssue[];
+  prs: BitbucketPr[];
+  cachedAt: string;
+}
+
+export async function saveSprintReport(
+  sprintId: number,
+  data: SprintReportCache,
+): Promise<void> {
+  if (isMockMode()) return;
+  return invoke<void>("save_sprint_report", {
+    sprintId,
+    dataJson: JSON.stringify(data),
+  });
+}
+
+export async function loadSprintReport(
+  sprintId: number,
+): Promise<SprintReportCache | null> {
+  if (isMockMode()) return null;
+  const raw = await invoke<string | null>("load_sprint_report", { sprintId });
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw) as SprintReportCache;
+  } catch {
+    return null;
+  }
+}
+
+export async function listCachedSprintIds(): Promise<number[]> {
+  if (isMockMode()) return [];
+  return invoke<number[]>("list_cached_sprint_ids");
+}
+
+export async function getSprintReportsDir(): Promise<string> {
+  if (isMockMode()) return "(mock mode)";
+  return invoke<string>("get_sprint_reports_dir");
 }
 
 export async function getFutureSprints(limit: number): Promise<JiraSprint[]> {

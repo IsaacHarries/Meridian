@@ -9,6 +9,7 @@ pub mod knowledge;
 pub mod preferences;
 pub mod repo;
 pub mod skills;
+pub mod sprint_reports;
 pub mod store_cache;
 pub mod validate;
 
@@ -83,6 +84,9 @@ pub use repo::{
     validate_worktree, write_pr_address_file, write_repo_file,
 };
 pub use skills::{delete_agent_skill, load_agent_skills, save_agent_skill};
+pub use sprint_reports::{
+    get_sprint_reports_dir, list_cached_sprint_ids, load_sprint_report, save_sprint_report,
+};
 pub use store_cache::{
     clear_all_store_caches, delete_store_cache, get_store_cache_info, load_store_cache,
     save_store_cache,

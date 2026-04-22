@@ -63,6 +63,7 @@ const MOCK_SPRINT: JiraSprint = {
   state: "active",
   startDate: null,
   endDate: null,
+  completeDate: null,
   goal: null,
 };
 

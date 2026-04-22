@@ -47,7 +47,7 @@ pub async fn get_all_active_sprint_issues() -> Result<Vec<(JiraSprint, Vec<JiraI
     let sprints = client.get_all_active_sprints(board_id).await?;
     let mut result = Vec::new();
     for sprint in sprints {
-        let issues = client.get_sprint_issues(sprint.id, &cfg).await?;
+        let issues = client.get_sprint_issues(sprint.id, None, &cfg).await?;
         result.push((sprint, issues));
     }
     Ok(result)
@@ -58,7 +58,7 @@ pub async fn get_all_active_sprint_issues() -> Result<Vec<(JiraSprint, Vec<JiraI
 pub async fn get_sprint_issues(sprint_id: i64) -> Result<Vec<JiraIssue>, String> {
     let (client, _) = jira_client()?;
     let cfg = CustomFieldConfig::default();
-    client.get_sprint_issues(sprint_id, &cfg).await
+    client.get_sprint_issues(sprint_id, None, &cfg).await
 }
 
 /// All issues in the active sprint.
@@ -67,7 +67,7 @@ pub async fn get_active_sprint_issues() -> Result<Vec<JiraIssue>, String> {
     let (client, board_id) = jira_client()?;
     let cfg = CustomFieldConfig::default();
     match client.get_active_sprint(board_id).await? {
-        Some(sprint) => client.get_sprint_issues(sprint.id, &cfg).await,
+        Some(sprint) => client.get_sprint_issues(sprint.id, None, &cfg).await,
         None => Ok(vec![]),
     }
 }
@@ -98,10 +98,10 @@ pub async fn get_completed_sprints(limit: u32) -> Result<Vec<JiraSprint>, String
 
 /// Issues in a completed sprint by sprint ID.
 #[tauri::command]
-pub async fn get_sprint_issues_by_id(sprint_id: i64) -> Result<Vec<JiraIssue>, String> {
+pub async fn get_sprint_issues_by_id(sprint_id: i64, complete_date: Option<String>) -> Result<Vec<JiraIssue>, String> {
     let (client, _) = jira_client()?;
     let cfg = CustomFieldConfig::default();
-    client.get_sprint_issues(sprint_id, &cfg).await
+    client.get_sprint_issues(sprint_id, complete_date.as_deref(), &cfg).await
 }
 
 /// Future (not-yet-started) sprints for the configured board, soonest first.

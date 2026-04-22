@@ -72,6 +72,7 @@ use commands::{
     get_repo_log,
     get_sprint_issues,
     get_sprint_issues_by_id,
+    get_sprint_reports_dir,
     get_store_cache_info,
     glob_repo_files,
     grep_repo_files,
@@ -80,6 +81,9 @@ use commands::{
     load_agent_skills,
     // Knowledge base
     load_knowledge_entries,
+    // Sprint reports (disk cache)
+    list_cached_sprint_ids,
+    load_sprint_report,
     load_store_cache,
     ping_anthropic,
     ping_copilot,
@@ -116,6 +120,7 @@ use commands::{
     save_agent_skill,
     save_credential,
     save_knowledge_entry,
+    save_sprint_report,
     // Store cache (file-backed persistence for Zustand stores)
     save_store_cache,
     search_jira_issues,
@@ -292,6 +297,11 @@ pub fn run() {
             delete_store_cache,
             get_store_cache_info,
             clear_all_store_caches,
+            // Sprint reports (persistent disk cache)
+            save_sprint_report,
+            load_sprint_report,
+            list_cached_sprint_ids,
+            get_sprint_reports_dir,
             // Repo / worktree
             validate_worktree,
             sync_worktree,

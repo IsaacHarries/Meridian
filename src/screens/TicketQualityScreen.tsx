@@ -646,7 +646,14 @@ export function TicketQualityScreen({ credStatus, onBack }: TicketQualityScreenP
       const historyJson = JSON.stringify([...session.chat, userMsg]);
       const raw = await runGroomingChatTurn(contextText, historyJson);
       const response = parseAgentJson<GroomingChatResponse>(raw);
-      if (!response) throw new Error("Could not parse chat response.");
+      if (!response) {
+        // Model returned prose instead of JSON — show it directly as the assistant reply
+        setSession((prev) => {
+          if (!prev || prev.issue.key !== issueKey) return prev;
+          return { ...prev, chat: [...prev.chat, { role: "assistant", content: raw.trim() }], thinking: false };
+        });
+        return;
+      }
       setSession((prev) => {
         // Discard if the user switched tickets while this request was in-flight
         if (!prev || prev.issue.key !== issueKey) return prev;

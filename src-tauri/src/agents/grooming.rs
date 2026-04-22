@@ -156,7 +156,9 @@ pub async fn run_grooming_chat_turn(
         - Ask follow-up clarifying questions if you still need information\n\
         - When the engineer answers a question, incorporate it into your suggestions immediately\n\
         - Lead toward a complete, well-groomed ticket\n\n\
-        Return ONLY valid JSON (no markdown fences) with this schema:\n\
+        CRITICAL: You MUST always respond with ONLY a valid JSON object — no markdown fences, no prose outside the JSON, \
+        no matter how conversational the engineer's message is. Every single response must be valid JSON.\n\n\
+        Required schema:\n\
         {{\n\
           \"message\": \"<your conversational reply to the engineer — plain prose, no JSON>\",\n\
           \"updated_edits\": [\n\
@@ -174,7 +176,8 @@ pub async fn run_grooming_chat_turn(
         Rules:\n\
         - updated_edits may be empty if no changes are needed this turn\n\
         - To remove a suggestion, omit its id from updated_edits (the frontend will not delete it — include it with a note in reasoning if it should be withdrawn)\n\
-        - Keep the message focused and concise"
+        - Keep the message focused and concise\n\
+        - Even if the engineer says only 'yes', 'ok', or 'thanks', you must still return the full JSON object"
     );
     dispatch::dispatch_multi_streaming_with_tools(
         &app,

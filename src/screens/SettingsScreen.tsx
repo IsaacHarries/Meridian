@@ -29,6 +29,10 @@ import {
   ChevronRight,
   FlaskRound,
   Trash2,
+  Link2,
+  Palette,
+  HardDrive,
+  Bot,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { HeaderSettingsButton } from "@/components/HeaderSettingsButton";
@@ -109,6 +113,7 @@ import {
 } from "@/stores/implementTicketStore";
 import { usePrReviewStore, PR_REVIEW_STORE_KEY } from "@/stores/prReviewStore";
 import { Switch } from "@/components/ui/switch";
+import { getSprintReportsDir } from "@/lib/tauri";
 
 // ── Theme section ─────────────────────────────────────────────────────────────
 
@@ -3465,6 +3470,74 @@ function CacheSection() {
   );
 }
 
+// ── Sprint reports directory section ─────────────────────────────────────────
+
+function SprintReportsSection() {
+  const [dir, setDir] = useState("");
+  const [resolvedDir, setResolvedDir] = useState("");
+  const [status, setStatus] = useState<SectionStatus>({ state: "idle", message: "" });
+
+  useEffect(() => {
+    getPreferences().then((prefs) => setDir(prefs["sprint_reports_dir"] ?? ""));
+    getSprintReportsDir().then(setResolvedDir).catch(() => {});
+  }, []);
+
+  async function save() {
+    setStatus({ state: "loading", message: "" });
+    try {
+      await setPreference("sprint_reports_dir", dir.trim());
+      const resolved = await getSprintReportsDir();
+      setResolvedDir(resolved);
+      setStatus({ state: "success", message: "Saved" });
+    } catch (e) {
+      setStatus({ state: "error", message: String(e) });
+    }
+  }
+
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <CardTitle className="text-base">Sprint Reports Directory</CardTitle>
+        <CardDescription>
+          Where sprint retrospective data is cached on disk. Leave blank to use the default location.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <div className="space-y-1.5">
+          <Label htmlFor="sprint-reports-dir">Directory path</Label>
+          <div className="flex gap-2">
+            <Input
+              id="sprint-reports-dir"
+              value={dir}
+              onChange={(e) => setDir(e.target.value)}
+              placeholder="Leave blank for default"
+              className="font-mono text-sm"
+            />
+            <Button onClick={save} disabled={status.state === "loading"} size="sm">
+              {status.state === "loading" ? <Loader2 className="h-4 w-4 animate-spin" /> : "Save"}
+            </Button>
+          </div>
+        </div>
+        {resolvedDir && (
+          <p className="text-xs text-muted-foreground font-mono break-all">
+            Active: {resolvedDir}
+          </p>
+        )}
+        {status.state === "success" && (
+          <p className="text-xs text-emerald-600 flex items-center gap-1">
+            <CheckCircle className="h-3 w-3" /> {status.message}
+          </p>
+        )}
+        {status.state === "error" && (
+          <p className="text-xs text-destructive flex items-center gap-1">
+            <AlertCircle className="h-3 w-3" /> {status.message}
+          </p>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
 // ── Mock mode section ─────────────────────────────────────────────────────────
 
 function MockModeSection({ onToggle }: { onToggle: () => void }) {
@@ -3716,14 +3789,17 @@ function DataTestSection({ fullyConfigured }: { fullyConfigured: boolean }) {
 
 export function SettingsScreen({ onClose, onNavigate }: SettingsScreenProps) {
   const [credStatus, setCredStatus] = useState<CredentialStatus | null>(null);
+  const [activeCategory, setActiveCategory] = useState("ai");
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const sectionRefs = useRef<Record<string, HTMLElement | null>>({});
+  // Suppress scroll-spy briefly after a click-to-scroll so the click target wins
+  const suppressSpyUntil = useRef(0);
 
   async function refresh() {
     const s = await getCredentialStatus();
     setCredStatus(s);
   }
 
-  // Re-evaluate credential status after mock mode toggle so the UI reflects
-  // the (now overridden) status immediately.
   function handleMockToggle() {
     refresh();
   }
@@ -3738,163 +3814,185 @@ export function SettingsScreen({ onClose, onNavigate }: SettingsScreenProps) {
       bitbucketComplete(credStatus)
     : false;
 
+  type NavItem = { id: string; label: string; icon: React.ElementType };
+  const navItems: NavItem[] = [
+    { id: "ai",           label: "AI",           icon: Sparkles     },
+    { id: "integrations", label: "Integrations", icon: Link2        },
+    { id: "appearance",   label: "Appearance",   icon: Palette      },
+    { id: "storage",      label: "Storage",      icon: HardDrive    },
+    { id: "development",  label: "Development",  icon: FlaskConical },
+    ...(onNavigate ? [{ id: "agents", label: "Agents", icon: Bot } as NavItem] : []),
+  ];
+
+  // Scroll-spy: update active nav item as user scrolls
+  useEffect(() => {
+    const container = scrollRef.current;
+    if (!container) return;
+
+    function onScroll() {
+      if (Date.now() < suppressSpyUntil.current) return;
+      const containerRect = container!.getBoundingClientRect();
+      const threshold = containerRect.top + 80; // 80px from top of scroll area
+      let current = navItems[0].id;
+      for (const { id } of navItems) {
+        const el = sectionRefs.current[id];
+        if (!el) continue;
+        if (el.getBoundingClientRect().top <= threshold) current = id;
+      }
+      setActiveCategory(current);
+    }
+
+    container.addEventListener("scroll", onScroll, { passive: true });
+    return () => container.removeEventListener("scroll", onScroll);
+  // navItems is derived from props/state that don't change after mount
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  function scrollToSection(id: string) {
+    const el = sectionRefs.current[id];
+    if (!el || !scrollRef.current) return;
+    setActiveCategory(id);
+    suppressSpyUntil.current = Date.now() + 800;
+    el.scrollIntoView({ behavior: "smooth" });
+  }
+
+  function sectionRef(id: string) {
+    return (el: HTMLElement | null) => { sectionRefs.current[id] = el; };
+  }
+
   return (
-    <div className="min-h-screen">
+    <div className="h-screen flex flex-col">
       <header className={APP_HEADER_BAR}>
         <div className={APP_HEADER_ROW_PANEL}>
           <h1 className={cn(APP_HEADER_TITLE, "shrink-0")}>Settings</h1>
           <div className="min-w-0 flex-1" aria-hidden />
           <div className="flex shrink-0 items-center gap-1">
             <HeaderSettingsButton />
-            <Button
-              variant="ghost"
-              size="icon"
-              onClick={onClose}
-              aria-label="Close settings"
-            >
+            <Button variant="ghost" size="icon" onClick={onClose} aria-label="Close settings">
               <X className="h-4 w-4" />
             </Button>
           </div>
         </div>
       </header>
 
-      <main className="max-w-2xl mx-auto px-6 py-8 space-y-8 bg-background/60 rounded-xl">
-        {credStatus ? (
-          <>
-            <section className="space-y-3">
-              <h2 className="text-sm font-medium text-muted-foreground uppercase tracking-wider">
-                Credentials
-              </h2>
-              <AnthropicSection
-                isConfigured={anthropicComplete(credStatus)}
-                onSaved={refresh}
-              />
-              <GeminiSection
-                isConfigured={credStatus.geminiApiKey}
-                onSaved={refresh}
-              />
-              <CopilotSection
-                isConfigured={credStatus.copilotApiKey}
-                onSaved={refresh}
-              />
-              <LocalLlmSection
-                isConfigured={credStatus.localLlmUrl}
-                onSaved={refresh}
-              />
-              <AiProviderSection />
-              <JiraSection
-                isConfigured={jiraCredentialsSet(credStatus)}
-                onSaved={refresh}
-              />
-              <BitbucketSection
-                isConfigured={bitbucketCredentialsSet(credStatus)}
-                onSaved={refresh}
-              />
-            </section>
+      <div className="flex flex-1 min-h-0">
+        {/* Sidebar */}
+        <nav className="w-44 shrink-0 border-r flex flex-col gap-0.5 p-3 overflow-y-auto">
+          {navItems.map(({ id, label, icon: Icon }) => (
+            <button
+              key={id}
+              onClick={() => scrollToSection(id)}
+              className={cn(
+                "flex items-center gap-2.5 px-3 py-2 rounded-md text-sm transition-colors text-left w-full",
+                activeCategory === id
+                  ? "bg-background text-foreground shadow-sm font-medium"
+                  : "text-muted-foreground hover:text-foreground hover:bg-background/60",
+              )}
+            >
+              <Icon className="h-4 w-4 shrink-0" />
+              {label}
+            </button>
+          ))}
+        </nav>
 
-            <section className="space-y-3">
-              <h2 className="text-sm font-medium text-muted-foreground uppercase tracking-wider">
-                Configuration
-              </h2>
-              <ConfigSection
-                jiraBoardId={credStatus.jiraBoardId}
-                bitbucketRepoSlug={credStatus.bitbucketRepoSlug}
-                onSaved={refresh}
-              />
-            </section>
+        {/* Scrollable content */}
+        <main ref={scrollRef} className="flex-1 overflow-y-auto">
+          {!credStatus ? (
+            <div className="flex items-center justify-center py-20">
+              <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+            </div>
+          ) : (
+            <div className="max-w-3xl mx-auto px-10 py-8 space-y-8">
 
-            <section className="space-y-3">
-              <h2 className="text-sm font-medium text-muted-foreground uppercase tracking-wider">
-                Session Cache
-              </h2>
-              <CacheSection />
-            </section>
-
-            <section className="space-y-3">
-              <h2 className="text-sm font-medium text-muted-foreground uppercase tracking-wider">
-                Appearance
-              </h2>
-              <ThemeSection />
-            </section>
-
-            <section className="space-y-3">
-              <h2 className="text-sm font-medium text-muted-foreground uppercase tracking-wider">
-                Development
-              </h2>
-              <MockModeSection onToggle={handleMockToggle} />
-              <MockClaudeModeSection onToggle={handleMockToggle} />
-            </section>
-
-            <section className="space-y-3">
-              <h2 className="text-sm font-medium text-muted-foreground uppercase tracking-wider">
-                Verify
-              </h2>
-              <DataTestSection fullyConfigured={fullyConfigured} />
-            </section>
-
-            {onNavigate && (
-              <section className="space-y-3">
-                <h2 className="text-sm font-medium text-muted-foreground uppercase tracking-wider">
-                  AI Agents
-                </h2>
-                <Card
-                  className="cursor-pointer hover:bg-muted/40 transition-colors"
-                  onClick={() => onNavigate("agent-skills")}
-                >
-                  <CardContent className="flex items-center gap-4 py-4">
-                    <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-primary/10">
-                      <Sparkles className="h-4 w-4 text-primary" />
-                    </div>
-                    <div className="flex-1">
-                      <p className="text-sm font-medium">Agent Skills</p>
-                      <p className="text-xs text-muted-foreground">
-                        Configure domain knowledge injected into AI agents —
-                        grooming conventions, codebase patterns, implementation
-                        standards, review criteria
-                      </p>
-                    </div>
-                    <ChevronRight className="h-4 w-4 text-muted-foreground" />
-                  </CardContent>
-                </Card>
-                <Card
-                  className="cursor-pointer hover:bg-muted/40 transition-colors"
-                  onClick={() => onNavigate("tool-sandbox")}
-                >
-                  <CardContent className="flex items-center gap-4 py-4">
-                    <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-violet-500/10">
-                      <FlaskConical className="h-4 w-4 text-violet-500" />
-                    </div>
-                    <div className="flex-1">
-                      <p className="text-sm font-medium">Tool Sandbox</p>
-                      <p className="text-xs text-muted-foreground">
-                        Invoke any agent tool directly — read/write repo files,
-                        search JIRA, grep the codebase, fetch URLs — and inspect
-                        the raw output to verify each tool works
-                      </p>
-                    </div>
-                    <ChevronRight className="h-4 w-4 text-muted-foreground" />
-                  </CardContent>
-                </Card>
+              <section ref={sectionRef("ai")} className="space-y-4 pt-2">
+                <h2 className="text-xl font-semibold text-foreground">AI</h2>
+                <AnthropicSection isConfigured={anthropicComplete(credStatus)} onSaved={refresh} />
+                <GeminiSection isConfigured={credStatus.geminiApiKey} onSaved={refresh} />
+                <CopilotSection isConfigured={credStatus.copilotApiKey} onSaved={refresh} />
+                <LocalLlmSection isConfigured={credStatus.localLlmUrl} onSaved={refresh} />
+                <AiProviderSection />
+                <p className="text-xs text-muted-foreground pt-1">
+                  All credentials are stored in your macOS Keychain and never leave your machine.
+                  They are used exclusively in the Tauri backend layer and never exposed to the UI.
+                </p>
               </section>
-            )}
-          </>
-        ) : (
-          <div className="flex items-center justify-center py-12">
-            <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
-          </div>
-        )}
 
-        <div className="text-xs text-muted-foreground space-y-1 border-t pt-6">
-          <p>
-            All credentials are stored in your macOS Keychain and never leave
-            your machine.
-          </p>
-          <p>
-            They are used exclusively in the Tauri backend layer and never
-            exposed to the UI.
-          </p>
-        </div>
-      </main>
+              <section ref={sectionRef("integrations")} className="space-y-4 border-t pt-8">
+                <h2 className="text-xl font-semibold text-foreground">Integrations</h2>
+                <JiraSection isConfigured={jiraCredentialsSet(credStatus)} onSaved={refresh} />
+                <BitbucketSection isConfigured={bitbucketCredentialsSet(credStatus)} onSaved={refresh} />
+                <ConfigSection
+                  jiraBoardId={credStatus.jiraBoardId}
+                  bitbucketRepoSlug={credStatus.bitbucketRepoSlug}
+                  onSaved={refresh}
+                />
+                <DataTestSection fullyConfigured={fullyConfigured} />
+              </section>
+
+              <section ref={sectionRef("appearance")} className="space-y-4 border-t pt-8">
+                <h2 className="text-xl font-semibold text-foreground">Appearance</h2>
+                <ThemeSection />
+              </section>
+
+              <section ref={sectionRef("storage")} className="space-y-4 border-t pt-8">
+                <h2 className="text-xl font-semibold text-foreground">Storage</h2>
+                <SprintReportsSection />
+                <CacheSection />
+              </section>
+
+              <section ref={sectionRef("development")} className="space-y-4 border-t pt-8">
+                <h2 className="text-xl font-semibold text-foreground">Development</h2>
+                <MockModeSection onToggle={handleMockToggle} />
+                <MockClaudeModeSection onToggle={handleMockToggle} />
+              </section>
+
+              {onNavigate && (
+                <section ref={sectionRef("agents")} className="space-y-4 border-t pt-8">
+                  <h2 className="text-xl font-semibold text-foreground">Agents</h2>
+                  <Card
+                    className="cursor-pointer hover:bg-muted/40 transition-colors"
+                    onClick={() => onNavigate("agent-skills")}
+                  >
+                    <CardContent className="flex items-center gap-4 py-4">
+                      <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-primary/10">
+                        <Sparkles className="h-4 w-4 text-primary" />
+                      </div>
+                      <div className="flex-1">
+                        <p className="text-sm font-medium">Agent Skills</p>
+                        <p className="text-xs text-muted-foreground">
+                          Configure domain knowledge injected into AI agents — grooming conventions,
+                          codebase patterns, implementation standards, review criteria
+                        </p>
+                      </div>
+                      <ChevronRight className="h-4 w-4 text-muted-foreground" />
+                    </CardContent>
+                  </Card>
+                  <Card
+                    className="cursor-pointer hover:bg-muted/40 transition-colors"
+                    onClick={() => onNavigate("tool-sandbox")}
+                  >
+                    <CardContent className="flex items-center gap-4 py-4">
+                      <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-violet-500/10">
+                        <FlaskConical className="h-4 w-4 text-violet-500" />
+                      </div>
+                      <div className="flex-1">
+                        <p className="text-sm font-medium">Tool Sandbox</p>
+                        <p className="text-xs text-muted-foreground">
+                          Invoke any agent tool directly — read/write repo files, search JIRA, grep the
+                          codebase, fetch URLs — and inspect the raw output to verify each tool works
+                        </p>
+                      </div>
+                      <ChevronRight className="h-4 w-4 text-muted-foreground" />
+                    </CardContent>
+                  </Card>
+                </section>
+              )}
+
+            </div>
+          )}
+        </main>
+      </div>
     </div>
   );
 }
+
