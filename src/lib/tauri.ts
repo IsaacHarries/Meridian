@@ -1636,6 +1636,65 @@ export async function pushPrAddressBranch(): Promise<void> {
   return invoke<void>("push_pr_address_branch");
 }
 
+// ── Implementation pipeline — branch / commit / push / squash ─────────────────
+
+/**
+ * Create a feature branch in the implementation worktree for a JIRA ticket.
+ * Name: `feature/<issueKey>-<slug-of-summary>`. Branch is checked out off
+ * `origin/<base_branch>`. If the branch already exists it is checked out.
+ */
+export async function createFeatureBranch(
+  issueKey: string,
+  summary: string,
+): Promise<WorktreeInfo> {
+  return invoke<WorktreeInfo>("create_feature_branch", { issueKey, summary });
+}
+
+/**
+ * Stage and commit all current changes in the implementation worktree.
+ * Returns the new HEAD short sha, or `null` if there was nothing to commit.
+ */
+export async function commitWorktreeChanges(
+  message: string,
+): Promise<string | null> {
+  return invoke<string | null>("commit_worktree_changes", { message });
+}
+
+/**
+ * Squash all commits on the current feature branch since the merge-base with
+ * the base branch into a single commit with the given message.
+ */
+export async function squashWorktreeCommits(message: string): Promise<string> {
+  return invoke<string>("squash_worktree_commits", { message });
+}
+
+/**
+ * Push the current feature branch of the implementation worktree to origin
+ * with `--set-upstream`. Returns the branch name that was pushed.
+ */
+export async function pushWorktreeBranch(): Promise<string> {
+  return invoke<string>("push_worktree_branch");
+}
+
+/**
+ * Create a pull request on Bitbucket. Bitbucket Cloud has no draft API, so
+ * Meridian mimics it by creating the PR with no reviewers — nobody gets
+ * notified until reviewers are added from the Bitbucket UI.
+ */
+export async function createPullRequest(
+  title: string,
+  description: string,
+  sourceBranch: string,
+  destinationBranch: string,
+): Promise<BitbucketPr> {
+  return invoke<BitbucketPr>("create_pull_request", {
+    title,
+    description,
+    sourceBranch,
+    destinationBranch,
+  });
+}
+
 // ── Address PR Comments — Claude commands ─────────────────────────────────────
 
 /**
@@ -1672,6 +1731,31 @@ export async function saveAgentSkill(
 
 export async function deleteAgentSkill(skillType: SkillType): Promise<void> {
   return invoke("delete_agent_skill", { skillType });
+}
+
+// ── PR description template ───────────────────────────────────────────────────
+
+/** Mode controlling how strictly the PR Description agent follows the template. */
+export type PrTemplateMode = "guide" | "strict";
+
+/** Read the PR description template markdown. Returns "" if not yet set. */
+export async function loadPrTemplate(): Promise<string> {
+  return invoke<string>("load_pr_template");
+}
+
+/** Save the PR description template markdown. Empty content clears it. */
+export async function savePrTemplate(content: string): Promise<void> {
+  return invoke<void>("save_pr_template", { content });
+}
+
+/** Absolute path to the template file on disk (for display in Settings). */
+export async function getPrTemplatePath(): Promise<string> {
+  return invoke<string>("get_pr_template_path");
+}
+
+/** Open the containing folder in the OS file manager. */
+export async function revealPrTemplateDir(): Promise<void> {
+  return invoke<void>("reveal_pr_template_dir");
 }
 
 export function parseAgentJson<T>(raw: string): T | null {

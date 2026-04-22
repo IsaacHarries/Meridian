@@ -253,6 +253,70 @@ impl BitbucketClient {
         Err(format!("Bitbucket returned {status} for DELETE {url}{hint}\nBody: {body}"))
     }
 
+    /// Create a new pull request. Bitbucket Cloud does not support draft PRs
+    /// at the API level, so this mimics "draft" by creating the PR with no
+    /// reviewers — nobody gets notified. Add reviewers from the Bitbucket UI
+    /// when you're ready for the PR to be reviewed.
+    ///
+    /// Bitbucket API: POST /2.0/repositories/{workspace}/{slug}/pullrequests
+    pub async fn create_pull_request(
+        &self,
+        title: &str,
+        description: &str,
+        source_branch: &str,
+        destination_branch: &str,
+    ) -> Result<BitbucketPr, String> {
+        let url = self.repo_url("/pullrequests");
+
+        let body = serde_json::json!({
+            "title": title,
+            "description": description,
+            "source": { "branch": { "name": source_branch } },
+            "destination": { "branch": { "name": destination_branch } },
+            "close_source_branch": true,
+            "reviewers": [],
+        });
+
+        let resp = self
+            .client
+            .post(&url)
+            .basic_auth(&self.username, Some(&self.access_token))
+            .header("content-type", "application/json")
+            .body(body.to_string())
+            .send()
+            .await
+            .map_err(|e| format!("Request failed: {e}"))?;
+
+        let status = resp.status();
+        if !status.is_success() {
+            let text = resp.text().await.unwrap_or_default();
+            let hint = match status {
+                StatusCode::UNAUTHORIZED => {
+                    " — check your username and App Password in Settings."
+                }
+                StatusCode::FORBIDDEN => {
+                    " — your App Password needs 'Pull requests: Write' permission."
+                }
+                StatusCode::NOT_FOUND => {
+                    " — workspace/repo not found, or the source branch hasn't been pushed to origin."
+                }
+                StatusCode::BAD_REQUEST => {
+                    " — Bitbucket rejected the request. A PR for this branch may already exist, or the source branch may not exist on origin."
+                }
+                _ => "",
+            };
+            return Err(format!(
+                "Bitbucket returned {status} creating pull request{hint}\nBody: {text}"
+            ));
+        }
+
+        let json: Value = resp
+            .json()
+            .await
+            .map_err(|e| format!("Failed to parse PR response: {e}"))?;
+        Ok(parse_pr(&json))
+    }
+
     /// Approve a PR on behalf of the authenticated user.
     /// Bitbucket API: POST /2.0/repositories/{workspace}/{slug}/pullrequests/{id}/approve
     pub async fn approve_pr(&self, pr_id: i64) -> Result<(), String> {

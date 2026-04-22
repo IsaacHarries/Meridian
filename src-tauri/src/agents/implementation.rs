@@ -760,6 +760,12 @@ pub async fn run_plan_review(
 }
 
 /// Agent 7 — PR Description: generate a complete pull request description.
+///
+/// Honours a user-supplied Markdown template read from disk
+/// (`<app_data_dir>/templates/pr_description.md`). The `pr_template_mode`
+/// preference (`guide` | `strict`, default `guide`) controls whether the
+/// agent must follow the template verbatim or may adapt when the ticket
+/// doesn't map cleanly onto the template sections.
 #[tauri::command]
 pub async fn run_pr_description_gen(
     app: tauri::AppHandle,
@@ -769,7 +775,8 @@ pub async fn run_pr_description_gen(
     review_json: String,
 ) -> Result<String, String> {
     let (client, api_key) = dispatch::llm_client().await?;
-    let system = "You are a PR description writer. Produce a thorough, professional PR description \
+
+    let base_system = "You are a PR description writer. Produce a thorough, professional PR description \
         based on what was ACTUALLY implemented (see implementation result and review notes), \
         not just what was planned. If there were deviations from the plan, mention them. \
         Return ONLY valid JSON (no markdown fences):\n\
@@ -778,8 +785,34 @@ pub async fn run_pr_description_gen(
           \"description\": \"<full markdown PR description including: what changed, why, how implemented, \
             testing approach, linked JIRA ticket, deviations from plan if any, anything reviewers should pay attention to>\"\n\
         }";
+
+    let template = crate::commands::pr_template::read_pr_template(&app);
+    let system = if let Some(tmpl) = template {
+        let strict = crate::storage::preferences::get_pref("pr_template_mode")
+            .as_deref()
+            == Some("strict");
+        let mode_instruction = if strict {
+            "The `description` field MUST follow this Markdown template exactly — keep the same \
+             headings in the same order, do not add or remove sections. Fill each section with \
+             content relevant to this PR; if a section genuinely has no content for this PR, \
+             write \"N/A\" under it rather than omitting the heading."
+        } else {
+            "Use the following Markdown template as a guide for the `description` field — \
+             follow the structure and headings where they fit, but you may adapt or omit sections \
+             when the PR doesn't warrant them (e.g. a one-line fix doesn't need every section)."
+        };
+        format!(
+            "{base_system}\n\n\
+             === PR DESCRIPTION TEMPLATE ===\n\
+             {mode_instruction}\n\n\
+             {tmpl}"
+        )
+    } else {
+        base_system.to_string()
+    };
+
     let user = format!(
         "Ticket:\n{ticket_text}\n\nImplementation plan:\n{plan_json}\n\nImplementation result:\n{impl_json}\n\nReview notes:\n{review_json}"
     );
-    dispatch::dispatch_streaming(&app, &client, &api_key, system, &user, 2000, "pr-stream").await
+    dispatch::dispatch_streaming(&app, &client, &api_key, &system, &user, 2000, "pr-stream").await
 }

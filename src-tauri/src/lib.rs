@@ -19,7 +19,10 @@ use commands::{
     checkout_worktree_branch,
     clear_all_store_caches,
     commit_pr_address_changes,
+    commit_worktree_changes,
+    create_feature_branch,
     create_pr_task,
+    create_pull_request,
     credential_status,
     debug_jira_endpoints,
     delete_agent_skill,
@@ -62,6 +65,7 @@ use commands::{
     get_pr_comments,
     get_pr_diff,
     get_pr_tasks,
+    get_pr_template_path,
     // Preferences (plain JSON, survives cache clears)
     get_preferences,
     get_prs_for_review,
@@ -79,6 +83,10 @@ use commands::{
     import_claude_code_token,
     // Agent skills
     load_agent_skills,
+    // PR description template
+    load_pr_template,
+    save_pr_template,
+    reveal_pr_template_dir,
     // Knowledge base
     load_knowledge_entries,
     // Sprint reports (disk cache)
@@ -90,6 +98,8 @@ use commands::{
     ping_gemini,
     post_pr_comment,
     push_pr_address_branch,
+    push_worktree_branch,
+    squash_worktree_commits,
 
     read_pr_address_file,
     read_repo_file,
@@ -279,6 +289,7 @@ pub fn run() {
             unrequest_changes_pr,
             post_pr_comment,
             create_pr_task,
+            create_pull_request,
             resolve_pr_task,
             delete_pr_comment,
             update_pr_comment,
@@ -291,6 +302,11 @@ pub fn run() {
             load_agent_skills,
             save_agent_skill,
             delete_agent_skill,
+            // PR description template
+            load_pr_template,
+            save_pr_template,
+            get_pr_template_path,
+            reveal_pr_template_dir,
             // Store cache
             save_store_cache,
             load_store_cache,
@@ -324,6 +340,11 @@ pub fn run() {
             get_pr_address_diff,
             commit_pr_address_changes,
             push_pr_address_branch,
+            // Implementation pipeline branch / commit / push
+            create_feature_branch,
+            commit_worktree_changes,
+            squash_worktree_commits,
+            push_worktree_branch,
             // URL fetch
             fetch_url_content,
         ])

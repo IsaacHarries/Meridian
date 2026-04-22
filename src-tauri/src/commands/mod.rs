@@ -7,6 +7,7 @@ pub mod fetch_url;
 pub mod jira;
 pub mod knowledge;
 pub mod preferences;
+pub mod pr_template;
 pub mod repo;
 pub mod skills;
 pub mod sprint_reports;
@@ -35,9 +36,10 @@ pub use agents::review::{
     analyze_pr_comments, chat_address_pr, chat_pr_review, review_pr as review_pr_agent,
 };
 pub use bitbucket::{
-    approve_pr, create_pr_task, delete_pr_comment, get_merged_prs, get_my_open_prs, get_open_prs,
-    get_pr, get_pr_comments, get_pr_diff, get_pr_tasks, get_prs_for_review, post_pr_comment,
-    request_changes_pr, resolve_pr_task, unapprove_pr, unrequest_changes_pr, update_pr_comment,
+    approve_pr, create_pr_task, create_pull_request, delete_pr_comment, get_merged_prs,
+    get_my_open_prs, get_open_prs, get_pr, get_pr_comments, get_pr_diff, get_pr_tasks,
+    get_prs_for_review, post_pr_comment, request_changes_pr, resolve_pr_task, unapprove_pr,
+    unrequest_changes_pr, update_pr_comment,
 };
 pub use credentials::{
     credential_status, delete_credential, get_non_secret_config, save_credential,
@@ -75,13 +77,17 @@ pub use llms::gemini::{
 };
 pub use llms::local_llm::{get_local_models, test_local_llm_stored, validate_local_llm};
 pub use preferences::{delete_preference, get_preferences, set_preference};
+pub use pr_template::{
+    get_pr_template_path, load_pr_template, reveal_pr_template_dir, save_pr_template,
+};
 pub use repo::{
     checkout_pr_address_branch, checkout_pr_review_branch, checkout_worktree_branch,
-    commit_pr_address_changes, exec_in_worktree, get_file_at_base, get_file_history,
-    get_pr_address_diff, get_repo_diff, get_repo_log,
-    glob_repo_files, grep_repo_files, push_pr_address_branch, read_pr_address_file, read_repo_file,
-    run_in_terminal, sync_worktree, validate_pr_address_worktree, validate_pr_review_worktree,
-    validate_worktree, write_pr_address_file, write_repo_file,
+    commit_pr_address_changes, commit_worktree_changes, create_feature_branch, exec_in_worktree,
+    get_file_at_base, get_file_history, get_pr_address_diff, get_repo_diff, get_repo_log,
+    glob_repo_files, grep_repo_files, push_pr_address_branch, push_worktree_branch,
+    read_pr_address_file, read_repo_file, run_in_terminal, squash_worktree_commits, sync_worktree,
+    validate_pr_address_worktree, validate_pr_review_worktree, validate_worktree,
+    write_pr_address_file, write_repo_file,
 };
 pub use skills::{delete_agent_skill, load_agent_skills, save_agent_skill};
 pub use sprint_reports::{

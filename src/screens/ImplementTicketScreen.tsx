@@ -51,11 +51,13 @@ import {
   type TestFileWritten,
   type PlanReviewOutput,
   type PrDescriptionOutput,
+  type BitbucketPr,
   type RetrospectiveOutput,
   type TriageMessage,
   type RetroKbEntry,
   aiProviderComplete,
   jiraComplete,
+  isMockMode,
   getMySprintIssues,
   searchJiraIssues,
   openUrl,
@@ -1445,7 +1447,42 @@ function ReviewPanel({ data }: { data: PlanReviewOutput }) {
   );
 }
 
-function PrPanel({ data }: { data: PrDescriptionOutput }) {
+interface PrPanelProps {
+  data: PrDescriptionOutput;
+  createdPr: BitbucketPr | null;
+  submitStatus: "idle" | "squashing" | "pushing" | "creating" | "error";
+  submitError: string | null;
+  onSubmit: () => void;
+}
+
+function PrPanel({
+  data,
+  createdPr,
+  submitStatus,
+  submitError,
+  onSubmit,
+}: PrPanelProps) {
+  const mock = isMockMode();
+  const submitting =
+    submitStatus === "squashing" ||
+    submitStatus === "pushing" ||
+    submitStatus === "creating";
+  const submitLabel: Record<PrPanelProps["submitStatus"], string> = mock
+    ? {
+        idle: "Skip PR creation (mock mode)",
+        squashing: "Working…",
+        pushing: "Working…",
+        creating: "Working…",
+        error: "Retry",
+      }
+    : {
+        idle: "Create Draft PR on Bitbucket",
+        squashing: "Squashing commits…",
+        pushing: "Pushing branch…",
+        creating: "Creating PR on Bitbucket…",
+        error: "Retry: Create Draft PR",
+      };
+
   return (
     <div className="space-y-3">
       <div className="flex items-center justify-between gap-3">
@@ -1468,6 +1505,68 @@ function PrPanel({ data }: { data: PrDescriptionOutput }) {
           {data.description}
         </pre>
       </div>
+
+      {/* Submission area — squash + push + draft PR creation on Bitbucket. */}
+      {createdPr ? (
+        createdPr.url ? (
+          <div className="border rounded-md p-3 bg-emerald-500/5 border-emerald-500/30 space-y-2">
+            <div className="flex items-center gap-2 text-sm font-medium text-emerald-700 dark:text-emerald-400">
+              <CheckCircle2 className="h-4 w-4" />
+              Draft PR created on Bitbucket
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Created with no reviewers so nobody is notified. Add reviewers
+              from the Bitbucket UI when you're ready for real review.
+            </p>
+            <Button
+              variant="outline"
+              size="sm"
+              className="gap-2"
+              onClick={() => createdPr.url && openUrl(createdPr.url)}
+            >
+              <ExternalLink className="h-3.5 w-3.5" />
+              Open PR #{createdPr.id}
+            </Button>
+          </div>
+        ) : (
+          <div className="border rounded-md p-3 bg-muted/30 space-y-1.5">
+            <div className="flex items-center gap-2 text-sm font-medium">
+              <CheckCircle2 className="h-4 w-4 text-muted-foreground" />
+              PR creation skipped (mock mode)
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Nothing was pushed to origin and no PR was opened on Bitbucket.
+              You can proceed to the retrospective.
+            </p>
+          </div>
+        )
+      ) : (
+        <div className="border rounded-md p-3 space-y-2">
+          <p className="text-xs text-muted-foreground">
+            {mock
+              ? "Mock mode is on — clicking below will mark the PR stage complete without pushing anything to origin or opening a PR on Bitbucket."
+              : "Submitting will squash your implementation + tests commits into one, push the feature branch to origin, and open a PR on Bitbucket with no reviewers attached — use the Bitbucket UI to add reviewers when you're ready."}
+          </p>
+          {submitStatus === "error" && submitError && (
+            <div className="text-xs text-red-600 dark:text-red-400 bg-red-500/10 border border-red-500/30 rounded p-2">
+              {submitError}
+            </div>
+          )}
+          <Button
+            onClick={onSubmit}
+            disabled={submitting}
+            className="gap-2"
+            size="sm"
+          >
+            {submitting ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <GitPullRequest className="h-4 w-4" />
+            )}
+            {submitLabel[submitStatus]}
+          </Button>
+        </div>
+      )}
     </div>
   );
 }
@@ -1588,6 +1687,7 @@ interface StageApprovalRowProps {
   proceeding: boolean;
   hasBlockingIssues?: boolean;
   onRetry?: () => void;
+  disabledReason?: string;
 }
 
 function StageApprovalRow({
@@ -1596,14 +1696,21 @@ function StageApprovalRow({
   proceeding,
   hasBlockingIssues,
   onRetry,
+  disabledReason,
 }: StageApprovalRowProps) {
   const nextLabel = NEXT_STAGE_LABEL[stage] ?? "Proceed";
+  const disabled = proceeding || !!disabledReason;
   return (
     <div className="mt-5 border-t pt-4 flex items-center justify-between gap-3">
       {hasBlockingIssues && (
         <p className="text-xs text-amber-600 dark:text-amber-400 flex items-center gap-1.5">
           <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
           Blocking issues present — proceeding not recommended
+        </p>
+      )}
+      {disabledReason && (
+        <p className="text-xs text-muted-foreground flex items-center gap-1.5">
+          {disabledReason}
         </p>
       )}
       {onRetry && (
@@ -1620,7 +1727,7 @@ function StageApprovalRow({
       )}
       <Button
         onClick={onProceed}
-        disabled={proceeding}
+        disabled={disabled}
         variant={hasBlockingIssues ? "outline" : "default"}
         className="gap-2 ml-auto"
       >
@@ -2156,6 +2263,9 @@ export function ImplementTicketScreen({
     tests,
     review,
     prDescription,
+    createdPr,
+    prSubmitStatus,
+    prSubmitError,
     retrospective,
     kbSaved,
     groomingBlockers,
@@ -2515,6 +2625,11 @@ export function ImplementTicketScreen({
           (review?.findings.some((f) => f.severity === "blocking") ?? false)
         }
         onRetry={() => store().retryStage(stage)}
+        disabledReason={
+          stage === "pr" && !createdPr
+            ? "Create the draft PR on Bitbucket before moving on."
+            : undefined
+        }
       />
     );
   }
@@ -2704,7 +2819,13 @@ export function ImplementTicketScreen({
         );
       return (
         <>
-          <PrPanel data={prDescription} />
+          <PrPanel
+            data={prDescription}
+            createdPr={createdPr}
+            submitStatus={prSubmitStatus}
+            submitError={prSubmitError}
+            onSubmit={() => store().submitDraftPr()}
+          />
           {renderCheckpoint(stage)}
         </>
       );

@@ -25,6 +25,13 @@ import {
   type RetroKbEntry,
   type WorktreeInfo,
   type SkillType,
+  type BitbucketPr,
+  isMockMode,
+  createFeatureBranch,
+  commitWorktreeChanges,
+  squashWorktreeCommits,
+  pushWorktreeBranch,
+  createPullRequest,
   getIssue,
   loadAgentSkills,
   syncWorktree,
@@ -263,6 +270,10 @@ export type PipelineSession = Pick<
   | "review"
   | "prDescription"
   | "retrospective"
+  | "featureBranch"
+  | "createdPr"
+  | "prSubmitStatus"
+  | "prSubmitError"
   | "groomingBlockers"
   | "groomingEdits"
   | "clarifyingQuestions"
@@ -306,6 +317,15 @@ interface ImplementTicketState {
   review: PlanReviewOutput | null;
   prDescription: PrDescriptionOutput | null;
   retrospective: RetrospectiveOutput | null;
+
+  // ── PR submission (Bitbucket) ────────────────────────────────────────────────
+  /** Feature branch created off the base branch at Implementation start. */
+  featureBranch: string | null;
+  /** The Bitbucket PR once created — UI surfaces the URL from this. */
+  createdPr: BitbucketPr | null;
+  /** Progress of the PR submission flow (squash → push → create). */
+  prSubmitStatus: "idle" | "squashing" | "pushing" | "creating" | "error";
+  prSubmitError: string | null;
 
   // ── Grooming sub-state ───────────────────────────────────────────────────────
   groomingBlockers: GroomingBlocker[];
@@ -359,6 +379,8 @@ interface ImplementTicketState {
   // ── Actions ──────────────────────────────────────────────────────────────────
   /** Directly write state — used by event listeners outside React tree */
   _set: (partial: Partial<ImplementTicketState>) => void;
+  /** Reload `skills` from disk — called before each stage so live edits apply. */
+  _reloadSkills: () => Promise<void>;
 
   resetSession: () => void;
   startPipeline: (issue: JiraIssue) => Promise<void>;
@@ -371,6 +393,8 @@ interface ImplementTicketState {
   runReviewStage: () => Promise<void>;
   runPrStage: () => Promise<void>;
   runRetroStage: () => Promise<void>;
+  /** Squash feature branch commits, push, and create a PR on Bitbucket (no reviewers). */
+  submitDraftPr: () => Promise<void>;
   proceedFromStage: (stage: Stage) => Promise<void>;
   sendCheckpointMessage: (stage: Stage, input: string) => Promise<void>;
   sendGroomingChatMessage: (input: string) => Promise<void>;
@@ -392,6 +416,7 @@ interface ImplementTicketState {
 export const INITIAL: Omit<
   ImplementTicketState,
   | "_set"
+  | "_reloadSkills"
   | "resetSession"
   | "startPipeline"
   | "runImpactStage"
@@ -403,6 +428,7 @@ export const INITIAL: Omit<
   | "runReviewStage"
   | "runPrStage"
   | "runRetroStage"
+  | "submitDraftPr"
   | "proceedFromStage"
   | "sendCheckpointMessage"
   | "sendGroomingChatMessage"
@@ -436,6 +462,10 @@ export const INITIAL: Omit<
   review: null,
   prDescription: null,
   retrospective: null,
+  featureBranch: null,
+  createdPr: null,
+  prSubmitStatus: "idle",
+  prSubmitError: null,
   groomingBlockers: [],
   groomingEdits: [],
   clarifyingQuestions: [],
@@ -489,6 +519,10 @@ export function snapshotSession(s: ImplementTicketState): PipelineSession {
     tests: s.tests,
     review: s.review,
     prDescription: s.prDescription,
+    featureBranch: s.featureBranch,
+    createdPr: s.createdPr,
+    prSubmitStatus: s.prSubmitStatus,
+    prSubmitError: s.prSubmitError,
     retrospective: s.retrospective,
     groomingBlockers: s.groomingBlockers,
     groomingEdits: s.groomingEdits,
@@ -521,6 +555,22 @@ export const useImplementTicketStore = create<ImplementTicketState>()(
 
     resetSession: () => set((s) => ({ ...INITIAL, sessions: s.sessions })),
 
+    /**
+     * Reload agent skills from disk and write to state. Called at the start of
+     * every stage so edits made in Agent Skills while a pipeline is paused
+     * take effect on the next agent run. Disk cost is negligible (one small
+     * JSON file read per stage) and failures are non-fatal — if the skills
+     * file can't be read, we keep whatever was loaded previously.
+     */
+    _reloadSkills: async () => {
+      try {
+        const skills = await loadAgentSkills();
+        set({ skills });
+      } catch {
+        /* keep existing skills */
+      }
+    },
+
     markComplete: (stage) =>
       set((s) => ({ completedStages: new Set([...s.completedStages, stage]) })),
 
@@ -547,11 +597,14 @@ export const useImplementTicketStore = create<ImplementTicketState>()(
       const outputResets: Partial<ImplementTicketState> = {};
       switch (stage) {
         case "grooming":
+          // Keep `groomingChat` so the user's prior Q&A with the grooming
+          // agent survives a retry — otherwise a single bad agent response
+          // throws away context the user had already typed out. Everything
+          // else is tied to a single analysis run and must reset.
           Object.assign(outputResets, {
             grooming: null,
             groomingEdits: [],
             clarifyingQuestions: [],
-            groomingChat: [],
             groomingBlockers: [],
             groomingProgress: "",
             groomingStreamText: "",
@@ -731,6 +784,7 @@ export const useImplementTicketStore = create<ImplementTicketState>()(
     runGroomingStage: async () => {
       console.log("[Meridian] runGroomingStage: starting");
       set({ currentStage: "grooming", viewingStage: "grooming" });
+      await get()._reloadSkills();
       const { ticketText, worktreeInfo, skills } = get();
 
       const repoContext = worktreeInfo
@@ -888,6 +942,7 @@ export const useImplementTicketStore = create<ImplementTicketState>()(
         impactStreamText: "",
       });
       try {
+        await get()._reloadSkills();
         const { ticketText, grooming, skills, groomingChat } = get();
         const groomingWithQa =
           groomingChat.length > 0
@@ -923,6 +978,7 @@ export const useImplementTicketStore = create<ImplementTicketState>()(
         viewingStage: "triage",
         triageStreamText: "",
       });
+      await get()._reloadSkills();
       const { ticketText, grooming, impact, skills, groomingChat } = get();
       const contextText = compilePipelineContext(
         ticketText,
@@ -952,6 +1008,7 @@ export const useImplementTicketStore = create<ImplementTicketState>()(
     },
 
     sendTriageMessage: async (input) => {
+      await get()._reloadSkills();
       const {
         triageHistory,
         ticketText,
@@ -991,6 +1048,7 @@ export const useImplementTicketStore = create<ImplementTicketState>()(
     finalizePlan: async () => {
       set({ currentStage: "plan" });
       try {
+        await get()._reloadSkills();
         const {
           ticketText,
           grooming,
@@ -1049,7 +1107,24 @@ export const useImplementTicketStore = create<ImplementTicketState>()(
         buildCheckStreamText: "",
       });
       try {
-        const { ticketText, plan, guidance } = get();
+        await get()._reloadSkills();
+        const { ticketText, plan, guidance, selectedIssue, featureBranch } = get();
+
+        // Create a feature branch in the worktree before the agent writes any
+        // files. Branch name embeds the JIRA key so Bitbucket auto-links to the
+        // ticket. Skips if a branch is already recorded for this session.
+        if (selectedIssue && !featureBranch) {
+          try {
+            const info = await createFeatureBranch(
+              selectedIssue.key,
+              selectedIssue.summary ?? "",
+            );
+            set({ featureBranch: info.branch, worktreeInfo: info });
+          } catch (e) {
+            console.warn("[Meridian] createFeatureBranch failed:", e);
+          }
+        }
+
         const raw = await runImplementationAgent(
           ticketText,
           JSON.stringify(plan),
@@ -1092,6 +1167,7 @@ export const useImplementTicketStore = create<ImplementTicketState>()(
         testsStreamText: "",
       });
       try {
+        await get()._reloadSkills();
         const { ticketText, plan, implementation } = get();
         let diff = "";
         try {
@@ -1126,6 +1202,7 @@ export const useImplementTicketStore = create<ImplementTicketState>()(
         reviewStreamText: "",
       });
       try {
+        await get()._reloadSkills();
         const { ticketText, plan, implementation, tests, skills } = get();
         let diff = "";
         try {
@@ -1157,6 +1234,7 @@ export const useImplementTicketStore = create<ImplementTicketState>()(
     runPrStage: async () => {
       set({ currentStage: "pr", viewingStage: "pr", prStreamText: "" });
       try {
+        await get()._reloadSkills();
         const { ticketText, plan, implementation, review } = get();
         const raw = await runPrDescriptionGen(
           ticketText,
@@ -1174,6 +1252,107 @@ export const useImplementTicketStore = create<ImplementTicketState>()(
       }
     },
 
+    // ── Submit draft PR (squash → push → create on Bitbucket) ─────────────────
+    submitDraftPr: async () => {
+      const { selectedIssue, prDescription, featureBranch, createdPr } = get();
+      if (createdPr) return; // idempotent
+      if (!selectedIssue || !prDescription) {
+        set({
+          prSubmitStatus: "error",
+          prSubmitError: "PR description is not ready yet.",
+        });
+        return;
+      }
+
+      // Mock-mode short-circuit: skip squash / push / createPullRequest so we
+      // never touch a real git remote or Bitbucket when the user is driving
+      // the pipeline with mock JIRA tickets. Stamp a synthetic BitbucketPr so
+      // the UI flow can still advance to Retrospective.
+      if (isMockMode()) {
+        const now = new Date().toISOString();
+        const mockPr: BitbucketPr = {
+          id: 0,
+          title: prDescription.title,
+          description: prDescription.description,
+          state: "OPEN",
+          author: { displayName: "Mock", nickname: "mock", accountId: null },
+          reviewers: [],
+          sourceBranch: featureBranch ?? `feature/${selectedIssue.key}`,
+          destinationBranch: "develop",
+          createdOn: now,
+          updatedOn: now,
+          commentCount: 0,
+          taskCount: 0,
+          url: "",
+          jiraIssueKey: selectedIssue.key,
+          changesRequested: false,
+          draft: true,
+        };
+        set({ createdPr: mockPr, prSubmitStatus: "idle", prSubmitError: null });
+        return;
+      }
+
+      if (!featureBranch) {
+        set({
+          prSubmitStatus: "error",
+          prSubmitError:
+            "No feature branch was recorded for this session — re-run Implementation to create one.",
+        });
+        return;
+      }
+
+      const baseBranch =
+        (await getNonSecretConfig().catch(() => ({} as Record<string, string>)))[
+          "repo_base_branch"
+        ] || "develop";
+
+      // Commit message: use the PR title as subject; the description as body.
+      // Keeping the JIRA key first means Bitbucket's JIRA integration picks it
+      // up from the commit too, not just the branch name.
+      const subject = prDescription.title.startsWith(selectedIssue.key)
+        ? prDescription.title
+        : `${selectedIssue.key}: ${prDescription.title}`;
+      const squashMessage = `${subject}\n\n${prDescription.description}`;
+
+      set({ prSubmitStatus: "squashing", prSubmitError: null });
+      try {
+        await squashWorktreeCommits(squashMessage);
+      } catch (e) {
+        set({
+          prSubmitStatus: "error",
+          prSubmitError: `Squash failed: ${String(e)}`,
+        });
+        return;
+      }
+
+      set({ prSubmitStatus: "pushing" });
+      try {
+        await pushWorktreeBranch();
+      } catch (e) {
+        set({
+          prSubmitStatus: "error",
+          prSubmitError: `Push failed: ${String(e)}`,
+        });
+        return;
+      }
+
+      set({ prSubmitStatus: "creating" });
+      try {
+        const pr = await createPullRequest(
+          prDescription.title,
+          prDescription.description,
+          featureBranch,
+          baseBranch,
+        );
+        set({ createdPr: pr, prSubmitStatus: "idle" });
+      } catch (e) {
+        set({
+          prSubmitStatus: "error",
+          prSubmitError: `Create PR failed: ${String(e)}`,
+        });
+      }
+    },
+
     // ── Retrospective ──────────────────────────────────────────────────────────
     runRetroStage: async () => {
       set({
@@ -1182,6 +1361,7 @@ export const useImplementTicketStore = create<ImplementTicketState>()(
         retroStreamText: "",
       });
       try {
+        await get()._reloadSkills();
         const { ticketText, plan, implementation, review } = get();
         const raw = await runRetrospectiveAgent(
           ticketText,
@@ -1213,12 +1393,34 @@ export const useImplementTicketStore = create<ImplementTicketState>()(
           case "plan":
             await get().runImplementationStage();
             break;
-          case "implementation":
+          case "implementation": {
+            // Commit whatever the implementation agent wrote so the feature
+            // branch accumulates real history (later squashed at PR stage).
+            const { selectedIssue } = get();
+            if (selectedIssue) {
+              const msg = `${selectedIssue.key}: implementation`;
+              try {
+                await commitWorktreeChanges(msg);
+              } catch (e) {
+                console.warn("[Meridian] commit after implementation failed:", e);
+              }
+            }
             await get().runTestsStage();
             break;
-          case "tests":
+          }
+          case "tests": {
+            const { selectedIssue } = get();
+            if (selectedIssue) {
+              const msg = `${selectedIssue.key}: tests`;
+              try {
+                await commitWorktreeChanges(msg);
+              } catch (e) {
+                console.warn("[Meridian] commit after tests failed:", e);
+              }
+            }
             await get().runReviewStage();
             break;
+          }
           case "review":
             await get().runPrStage();
             break;
@@ -1236,6 +1438,7 @@ export const useImplementTicketStore = create<ImplementTicketState>()(
 
     // ── Checkpoint chat ────────────────────────────────────────────────────────
     sendCheckpointMessage: async (stage, input) => {
+      await get()._reloadSkills();
       const {
         checkpointChats,
         ticketText,

@@ -93,6 +93,22 @@ pub async fn get_pr_tasks(pr_id: i64) -> Result<Vec<BitbucketTask>, String> {
     client.get_pr_tasks(pr_id).await
 }
 
+/// Create a new pull request on Bitbucket. Bitbucket Cloud has no real draft
+/// state, so this mimics it by creating the PR with no reviewers — nobody is
+/// notified. Add reviewers from the Bitbucket UI when ready.
+#[tauri::command]
+pub async fn create_pull_request(
+    title: String,
+    description: String,
+    source_branch: String,
+    destination_branch: String,
+) -> Result<BitbucketPr, String> {
+    let client = bitbucket_client()?;
+    client
+        .create_pull_request(&title, &description, &source_branch, &destination_branch)
+        .await
+}
+
 /// Approve a PR as the authenticated user.
 /// Requires App Password with 'Pull requests: Write' scope.
 #[tauri::command]
