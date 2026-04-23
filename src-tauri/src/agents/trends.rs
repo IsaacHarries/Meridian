@@ -1,5 +1,5 @@
 use super::dispatch;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
 // ── Input schema ──────────────────────────────────────────────────────────────
@@ -49,26 +49,48 @@ pub struct TrendPrInput {
 
 // ── Stats ─────────────────────────────────────────────────────────────────────
 
-struct SprintStats<'a> {
-    name: &'a str,
-    committed_points: f64,
-    completed_points: f64,
-    velocity_pct: f64,
-    total_issues: usize,
-    completed_issues: usize,
-    completion_rate_pct: f64,
-    carryover_count: usize,
-    carryover_pct: f64,
-    bug_count: usize,
-    story_count: usize,
-    task_count: usize,
-    blocker_count: usize,
-    bug_story_ratio: Option<f64>,
-    prs_total: usize,
-    prs_merged: usize,
-    avg_cycle_hours: Option<f64>,
-    avg_comments_per_pr: Option<f64>,
-    unique_pr_authors: usize,
+/// Per-sprint computed statistics. Returned to the frontend so saved analyses
+/// can re-render charts without recomputing client-side.
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct SprintStats {
+    pub name: String,
+    pub committed_points: f64,
+    pub completed_points: f64,
+    pub velocity_pct: f64,
+    pub total_issues: usize,
+    pub completed_issues: usize,
+    pub completion_rate_pct: f64,
+    pub carryover_count: usize,
+    pub carryover_pct: f64,
+    pub bug_count: usize,
+    pub story_count: usize,
+    pub task_count: usize,
+    pub other_issue_count: usize,
+    pub blocker_count: usize,
+    pub bug_story_ratio: Option<f64>,
+    pub prs_total: usize,
+    pub prs_merged: usize,
+    pub avg_cycle_hours: Option<f64>,
+    pub avg_comments_per_pr: Option<f64>,
+    pub unique_pr_authors: usize,
+    /// Completed points per assignee this sprint (for per-assignee charts).
+    pub assignee_completed_points: Vec<AssigneePoints>,
+    pub assignee_assigned_points: Vec<AssigneePoints>,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct AssigneePoints {
+    pub name: String,
+    pub points: f64,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TrendAnalysisResult {
+    pub markdown: String,
+    pub stats: Vec<SprintStats>,
 }
 
 fn is_done(i: &TrendIssueInput) -> bool {
@@ -94,7 +116,7 @@ fn is_blocker_priority(p: Option<&str>) -> bool {
     }
 }
 
-fn compute_stats(s: &TrendSprintInput) -> SprintStats<'_> {
+fn compute_stats(s: &TrendSprintInput) -> SprintStats {
     let total_issues = s.issues.len();
     let completed_count = s.issues.iter().filter(|i| is_done(i)).count();
     let carryover_count = total_issues - completed_count;
@@ -126,6 +148,7 @@ fn compute_stats(s: &TrendSprintInput) -> SprintStats<'_> {
     let bug_count = s.issues.iter().filter(|i| is_bug(&i.issue_type)).count();
     let story_count = s.issues.iter().filter(|i| is_story(&i.issue_type)).count();
     let task_count = s.issues.iter().filter(|i| is_task(&i.issue_type)).count();
+    let other_issue_count = total_issues - bug_count - story_count - task_count;
     let blocker_count = s
         .issues
         .iter()
@@ -168,8 +191,31 @@ fn compute_stats(s: &TrendSprintInput) -> SprintStats<'_> {
     }
     let unique_pr_authors = authors.len();
 
+    // Per-assignee aggregation for workload chart.
+    let mut assigned_map: std::collections::HashMap<String, f64> = Default::default();
+    let mut completed_map: std::collections::HashMap<String, f64> = Default::default();
+    for issue in &s.issues {
+        let name = issue
+            .assignee
+            .clone()
+            .unwrap_or_else(|| "Unassigned".to_string());
+        let pts = issue.story_points.unwrap_or(0.0);
+        *assigned_map.entry(name.clone()).or_insert(0.0) += pts;
+        if is_done(issue) {
+            *completed_map.entry(name).or_insert(0.0) += pts;
+        }
+    }
+    let assignee_assigned_points: Vec<AssigneePoints> = assigned_map
+        .into_iter()
+        .map(|(name, points)| AssigneePoints { name, points })
+        .collect();
+    let assignee_completed_points: Vec<AssigneePoints> = completed_map
+        .into_iter()
+        .map(|(name, points)| AssigneePoints { name, points })
+        .collect();
+
     SprintStats {
-        name: &s.name,
+        name: s.name.clone(),
         committed_points,
         completed_points,
         velocity_pct,
@@ -181,6 +227,7 @@ fn compute_stats(s: &TrendSprintInput) -> SprintStats<'_> {
         bug_count,
         story_count,
         task_count,
+        other_issue_count,
         blocker_count,
         bug_story_ratio,
         prs_total,
@@ -188,6 +235,8 @@ fn compute_stats(s: &TrendSprintInput) -> SprintStats<'_> {
         avg_cycle_hours,
         avg_comments_per_pr,
         unique_pr_authors,
+        assignee_assigned_points,
+        assignee_completed_points,
     }
 }
 
@@ -318,7 +367,7 @@ fn format_raw_block(sprints: &[TrendSprintInput]) -> String {
 pub async fn generate_multi_sprint_trends(
     app: tauri::AppHandle,
     sprints: Vec<TrendSprintInput>,
-) -> Result<String, String> {
+) -> Result<TrendAnalysisResult, String> {
     if sprints.len() < 2 {
         return Err("At least 2 sprints are required for trend analysis.".into());
     }
@@ -381,5 +430,6 @@ pub async fn generate_multi_sprint_trends(
         2–3 sentences the scrum master can read verbatim to open the retrospective."
     );
 
-    dispatch::dispatch(&app, &client, &api_key, system, &user, 4096).await
+    let markdown = dispatch::dispatch(&app, &client, &api_key, system, &user, 4096).await?;
+    Ok(TrendAnalysisResult { markdown, stats })
 }

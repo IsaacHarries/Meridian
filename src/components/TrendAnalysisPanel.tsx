@@ -1,8 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
+import { toast } from "sonner";
 import {
   AlertTriangle,
   Check,
   CheckSquare,
+  ChevronDown,
+  ChevronRight,
   Copy,
   Loader2,
   Sparkles,
@@ -12,6 +15,8 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { MarkdownBlock } from "@/components/MarkdownBlock";
+import { TrendCharts } from "@/components/TrendCharts";
 import {
   type JiraSprint,
   type JiraIssue,
@@ -120,65 +125,6 @@ function makeAnalysisId(): string {
   );
 }
 
-// ── Markdown renderer (same minimal styling as AiSummaryPanel) ────────────────
-
-function renderMarkdown(text: string) {
-  const lines = text.split("\n");
-  return (
-    <div className="prose prose-sm dark:prose-invert max-w-none text-sm leading-relaxed space-y-2">
-      {lines.map((line, i) => {
-        if (line.startsWith("## ")) {
-          return (
-            <h3 key={i} className="font-semibold text-foreground mt-4 mb-1">
-              {line.slice(3)}
-            </h3>
-          );
-        }
-        if (line.startsWith("### ")) {
-          return (
-            <h4 key={i} className="font-semibold text-foreground mt-3 mb-1 text-sm">
-              {line.slice(4)}
-            </h4>
-          );
-        }
-        if (line.startsWith("**") && line.endsWith("**")) {
-          return (
-            <p key={i} className="font-semibold text-foreground">
-              {line.slice(2, -2)}
-            </p>
-          );
-        }
-        if (line.startsWith("- ") || line.startsWith("* ")) {
-          return (
-            <p
-              key={i}
-              className="text-muted-foreground pl-3 before:content-['•'] before:mr-2 before:text-muted-foreground"
-            >
-              {line.slice(2)}
-            </p>
-          );
-        }
-        if (line.startsWith("|")) {
-          return (
-            <pre
-              key={i}
-              className="text-xs font-mono text-muted-foreground whitespace-pre overflow-x-auto my-0"
-            >
-              {line}
-            </pre>
-          );
-        }
-        if (line.trim() === "") return <div key={i} className="h-1" />;
-        return (
-          <p key={i} className="text-muted-foreground">
-            {line}
-          </p>
-        );
-      })}
-    </div>
-  );
-}
-
 // ── Types & props ─────────────────────────────────────────────────────────────
 
 type Phase =
@@ -206,6 +152,13 @@ export function TrendAnalysisPanel({ sprints }: Props) {
   const [history, setHistory] = useState<TrendAnalysisRecord[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [resultCollapsed, setResultCollapsed] = useState(false);
+
+  // Auto-expand when a different result is opened (or a new one completes).
+  const currentRecordId = phase.kind === "result" ? phase.record.id : null;
+  useEffect(() => {
+    if (currentRecordId !== null) setResultCollapsed(false);
+  }, [currentRecordId]);
 
   useEffect(() => {
     setHistoryLoading(true);
@@ -309,7 +262,7 @@ export function TrendAnalysisPanel({ sprints }: Props) {
         return ad.localeCompare(bd);
       });
       const inputs = buildTrendInputs(loaded);
-      const markdown = await generateMultiSprintTrends(inputs);
+      const { markdown, stats } = await generateMultiSprintTrends(inputs);
 
       const record: TrendAnalysisRecord = {
         id: makeAnalysisId(),
@@ -321,9 +274,14 @@ export function TrendAnalysisPanel({ sprints }: Props) {
           endDate: sprint.endDate,
         })),
         markdown,
+        stats,
       };
 
-      await saveTrendAnalysis(record).catch(() => {});
+      try {
+        await saveTrendAnalysis(record);
+      } catch (e) {
+        toast.error("Couldn't save analysis to disk", { description: String(e) });
+      }
       setHistory((prev) => [record, ...prev]);
       setPhase({ kind: "result", record, fromHistory: false });
     } catch (e) {
@@ -498,17 +456,29 @@ export function TrendAnalysisPanel({ sprints }: Props) {
         )}
 
         {phase.kind === "result" && (
-          <div className="space-y-3">
+          <div className="space-y-4">
             <div className="flex items-start justify-between gap-2 border-b pb-2">
-              <div className="min-w-0">
-                <p className="text-xs text-muted-foreground">
-                  Analysed {phase.record.sprints.length} sprints ·{" "}
-                  {formatSavedAt(phase.record.createdAt)}
-                </p>
-                <p className="text-xs text-muted-foreground truncate">
-                  {phase.record.sprints.map((s) => s.name).join(", ")}
-                </p>
-              </div>
+              <button
+                type="button"
+                onClick={() => setResultCollapsed((v) => !v)}
+                className="flex items-start gap-2 min-w-0 text-left hover:opacity-80 transition-opacity"
+                title={resultCollapsed ? "Expand analysis" : "Collapse analysis"}
+              >
+                {resultCollapsed ? (
+                  <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground mt-0.5" />
+                ) : (
+                  <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground mt-0.5" />
+                )}
+                <div className="min-w-0">
+                  <p className="text-xs text-muted-foreground">
+                    Analysed {phase.record.sprints.length} sprints ·{" "}
+                    {formatSavedAt(phase.record.createdAt)}
+                  </p>
+                  <p className="text-xs text-muted-foreground truncate">
+                    {phase.record.sprints.map((s) => s.name).join(", ")}
+                  </p>
+                </div>
+              </button>
               <div className="flex gap-2 shrink-0">
                 <Button
                   variant="ghost"
@@ -524,7 +494,14 @@ export function TrendAnalysisPanel({ sprints }: Props) {
                 </Button>
               </div>
             </div>
-            {renderMarkdown(phase.record.markdown)}
+            {!resultCollapsed && (
+              <>
+                {phase.record.stats && phase.record.stats.length > 0 && (
+                  <TrendCharts stats={phase.record.stats} />
+                )}
+                <MarkdownBlock text={phase.record.markdown} />
+              </>
+            )}
           </div>
         )}
 

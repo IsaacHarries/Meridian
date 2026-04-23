@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback, useRef } from "react";
 import { JiraTicketLink } from "@/components/JiraTicketLink";
+import { MarkdownBlock } from "@/components/MarkdownBlock";
 import { TrendAnalysisPanel } from "@/components/TrendAnalysisPanel";
 import {
   ArrowLeft,
@@ -526,23 +527,7 @@ function AiSummaryPanel({
             {error}
           </div>
         )}
-        {state === "done" && (
-          <div className="prose prose-sm dark:prose-invert max-w-none text-sm leading-relaxed space-y-2">
-            {summary.split("\n").map((line, i) => {
-              if (line.startsWith("## ")) {
-                return <h3 key={i} className="font-semibold text-foreground mt-4 mb-1">{line.slice(3)}</h3>;
-              }
-              if (line.startsWith("**") && line.endsWith("**")) {
-                return <p key={i} className="font-semibold text-foreground">{line.slice(2, -2)}</p>;
-              }
-              if (line.startsWith("- ") || line.startsWith("* ")) {
-                return <p key={i} className="text-muted-foreground pl-3 before:content-['•'] before:mr-2 before:text-muted-foreground">{line.slice(2)}</p>;
-              }
-              if (line.trim() === "") return <div key={i} className="h-1" />;
-              return <p key={i} className="text-muted-foreground">{line}</p>;
-            })}
-          </div>
-        )}
+        {state === "done" && <MarkdownBlock text={summary} />}
       </CardContent>
     </Card>
   );

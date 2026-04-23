@@ -750,6 +750,52 @@ const BB_ALICE = makeBbUser("Alice Park", "alice.park");
 const BB_BOB = makeBbUser("Bob Reyes", "bob.reyes");
 const BB_CAROL = makeBbUser("Carol Nguyen", "carol.nguyen");
 
+/**
+ * Compact builder for a merged/declined PR tied to a completed sprint. Keeps
+ * per-PR mock entries readable by letting us specify only what varies — the
+ * cycle (updatedOn = createdOn + cycleHours) and other ceremony are derived.
+ */
+function makeSprintPr(args: {
+  id: number;
+  title: string;
+  author: BitbucketUser;
+  reviewer: BitbucketUser;
+  createdOn: string;
+  cycleHours: number;
+  commentCount: number;
+  jiraIssueKey: string;
+  state?: "MERGED" | "DECLINED";
+}): BitbucketPr {
+  const state = args.state ?? "MERGED";
+  const created = new Date(args.createdOn);
+  const updated = new Date(created.getTime() + args.cycleHours * 3_600_000);
+  const branchSlug = args.jiraIssueKey.toLowerCase();
+  return {
+    id: args.id,
+    title: `${args.jiraIssueKey}: ${args.title}`,
+    description: args.title + ".",
+    state,
+    author: args.author,
+    reviewers: [
+      {
+        user: args.reviewer,
+        approved: state === "MERGED",
+        state: state === "MERGED" ? "approved" : "unapproved",
+      },
+    ],
+    sourceBranch: `feature/${branchSlug}`,
+    destinationBranch: "main",
+    createdOn: created.toISOString(),
+    updatedOn: updated.toISOString(),
+    commentCount: args.commentCount,
+    taskCount: 0,
+    url: `https://bitbucket.org/example/repo/pull-requests/${args.id}`,
+    jiraIssueKey: args.jiraIssueKey,
+    changesRequested: false,
+    draft: false,
+  };
+}
+
 // ── Pull requests ─────────────────────────────────────────────────────────────
 
 export const OPEN_PRS: BitbucketPr[] = [
@@ -847,6 +893,51 @@ Validates uploaded files on both frontend (before upload) and backend (before pr
 ];
 
 export const MERGED_PRS: BitbucketPr[] = [
+  // ── Sprint 18 (Jan 20 – Feb 2) — API v2 ───────────────────────────────────
+  makeSprintPr({ id: 200, title: "Route versioning middleware", author: BB_ALICE, reviewer: BB_ME, createdOn: "2026-01-20T10:00:00.000Z", cycleHours: 96, commentCount: 9, jiraIssueKey: "PROJ-280" }),
+  makeSprintPr({ id: 201, title: "Deprecation headers on v1 routes", author: BB_BOB, reviewer: BB_ALICE, createdOn: "2026-01-21T14:00:00.000Z", cycleHours: 48, commentCount: 4, jiraIssueKey: "PROJ-281" }),
+  makeSprintPr({ id: 202, title: "Add /v2/users endpoints", author: BB_CAROL, reviewer: BB_ME, createdOn: "2026-01-22T09:00:00.000Z", cycleHours: 120, commentCount: 7, jiraIssueKey: "PROJ-282" }),
+  makeSprintPr({ id: 203, title: "API key migration tooling", author: BB_ME, reviewer: BB_ALICE, createdOn: "2026-01-23T11:00:00.000Z", cycleHours: 72, commentCount: 6, jiraIssueKey: "PROJ-283" }),
+  makeSprintPr({ id: 204, title: "v2 OpenAPI spec generator", author: BB_ALICE, reviewer: BB_BOB, createdOn: "2026-01-24T10:00:00.000Z", cycleHours: 144, commentCount: 12, jiraIssueKey: "PROJ-284" }),
+  makeSprintPr({ id: 205, title: "Rate-limit config per API version", author: BB_BOB, reviewer: BB_CAROL, createdOn: "2026-01-28T13:00:00.000Z", cycleHours: 24, commentCount: 3, jiraIssueKey: "PROJ-285" }),
+  makeSprintPr({ id: 206, title: "Docs site updates for v2", author: BB_CAROL, reviewer: BB_ME, createdOn: "2026-01-29T15:00:00.000Z", cycleHours: 48, commentCount: 2, jiraIssueKey: "PROJ-286" }),
+  makeSprintPr({ id: 207, title: "Rewrite custom serializer (abandoned)", author: BB_ALICE, reviewer: BB_ME, createdOn: "2026-01-30T10:00:00.000Z", cycleHours: 24, commentCount: 5, jiraIssueKey: "PROJ-287", state: "DECLINED" }),
+
+  // ── Sprint 19 (Feb 3 – Feb 16) — Onboarding ───────────────────────────────
+  makeSprintPr({ id: 210, title: "Welcome wizard component", author: BB_ALICE, reviewer: BB_CAROL, createdOn: "2026-02-03T10:00:00.000Z", cycleHours: 72, commentCount: 5, jiraIssueKey: "PROJ-290" }),
+  makeSprintPr({ id: 211, title: "Sample data seeding on signup", author: BB_BOB, reviewer: BB_ME, createdOn: "2026-02-04T12:00:00.000Z", cycleHours: 24, commentCount: 2, jiraIssueKey: "PROJ-291" }),
+  makeSprintPr({ id: 212, title: "Tooltip system for guided tour", author: BB_CAROL, reviewer: BB_ALICE, createdOn: "2026-02-05T09:00:00.000Z", cycleHours: 96, commentCount: 8, jiraIssueKey: "PROJ-292" }),
+  makeSprintPr({ id: 213, title: "Onboarding completion tracking", author: BB_ME, reviewer: BB_BOB, createdOn: "2026-02-09T11:00:00.000Z", cycleHours: 48, commentCount: 3, jiraIssueKey: "PROJ-293" }),
+  makeSprintPr({ id: 214, title: "Skip-tour option", author: BB_ALICE, reviewer: BB_ME, createdOn: "2026-02-10T14:00:00.000Z", cycleHours: 8, commentCount: 1, jiraIssueKey: "PROJ-294" }),
+  makeSprintPr({ id: 215, title: "Fix wizard step state bug", author: BB_BOB, reviewer: BB_CAROL, createdOn: "2026-02-12T10:00:00.000Z", cycleHours: 12, commentCount: 2, jiraIssueKey: "PROJ-295" }),
+
+  // ── Sprint 20 (Feb 17 – Mar 2) — Performance ──────────────────────────────
+  makeSprintPr({ id: 220, title: "Optimize user list query", author: BB_CAROL, reviewer: BB_ME, createdOn: "2026-02-17T09:00:00.000Z", cycleHours: 24, commentCount: 2, jiraIssueKey: "PROJ-300" }),
+  makeSprintPr({ id: 221, title: "Add index on events.created_at", author: BB_BOB, reviewer: BB_ALICE, createdOn: "2026-02-18T13:00:00.000Z", cycleHours: 4, commentCount: 1, jiraIssueKey: "PROJ-301" }),
+  makeSprintPr({ id: 222, title: "Cache user permissions", author: BB_ALICE, reviewer: BB_BOB, createdOn: "2026-02-19T10:00:00.000Z", cycleHours: 72, commentCount: 7, jiraIssueKey: "PROJ-302" }),
+  makeSprintPr({ id: 223, title: "Reduce N+1 in billing", author: BB_ME, reviewer: BB_CAROL, createdOn: "2026-02-20T11:00:00.000Z", cycleHours: 48, commentCount: 5, jiraIssueKey: "PROJ-303" }),
+  makeSprintPr({ id: 224, title: "Connection pool tuning", author: BB_BOB, reviewer: BB_ME, createdOn: "2026-02-23T14:00:00.000Z", cycleHours: 24, commentCount: 3, jiraIssueKey: "PROJ-304" }),
+  makeSprintPr({ id: 225, title: "Batch DB writes in webhook handler", author: BB_ALICE, reviewer: BB_BOB, createdOn: "2026-02-24T10:00:00.000Z", cycleHours: 48, commentCount: 4, jiraIssueKey: "PROJ-305" }),
+  makeSprintPr({ id: 226, title: "Remove sync logging in hot path", author: BB_CAROL, reviewer: BB_ALICE, createdOn: "2026-02-25T15:00:00.000Z", cycleHours: 6, commentCount: 1, jiraIssueKey: "PROJ-306" }),
+  makeSprintPr({ id: 227, title: "Aggressive caching attempt (rolled back)", author: BB_ME, reviewer: BB_ALICE, createdOn: "2026-02-26T10:00:00.000Z", cycleHours: 24, commentCount: 6, jiraIssueKey: "PROJ-307", state: "DECLINED" }),
+
+  // ── Sprint 21 (Mar 3 – Mar 16) — Search Overhaul ──────────────────────────
+  makeSprintPr({ id: 230, title: "Elasticsearch client upgrade", author: BB_BOB, reviewer: BB_ME, createdOn: "2026-03-03T10:00:00.000Z", cycleHours: 96, commentCount: 6, jiraIssueKey: "PROJ-310" }),
+  makeSprintPr({ id: 231, title: "Relevance scoring algorithm", author: BB_ALICE, reviewer: BB_CAROL, createdOn: "2026-03-04T11:00:00.000Z", cycleHours: 120, commentCount: 10, jiraIssueKey: "PROJ-311" }),
+  makeSprintPr({ id: 232, title: "Search result highlighting", author: BB_CAROL, reviewer: BB_ME, createdOn: "2026-03-05T09:00:00.000Z", cycleHours: 48, commentCount: 2, jiraIssueKey: "PROJ-312" }),
+  makeSprintPr({ id: 233, title: "Remove old search shim", author: BB_ME, reviewer: BB_ALICE, createdOn: "2026-03-09T13:00:00.000Z", cycleHours: 6, commentCount: 0, jiraIssueKey: "PROJ-313" }),
+  makeSprintPr({ id: 234, title: "Fix edge case in query parser", author: BB_CAROL, reviewer: BB_BOB, createdOn: "2026-03-10T10:00:00.000Z", cycleHours: 24, commentCount: 4, jiraIssueKey: "PROJ-314" }),
+  makeSprintPr({ id: 235, title: "Old search cache cleanup (abandoned)", author: BB_ALICE, reviewer: BB_ME, createdOn: "2026-03-11T14:00:00.000Z", cycleHours: 36, commentCount: 3, jiraIssueKey: "PROJ-315", state: "DECLINED" }),
+
+  // ── Sprint 22 (Mar 17 – Mar 30) — Auth & Stability ────────────────────────
+  makeSprintPr({ id: 240, title: "OAuth refresh token rotation", author: BB_ALICE, reviewer: BB_ME, createdOn: "2026-03-17T10:00:00.000Z", cycleHours: 120, commentCount: 8, jiraIssueKey: "PROJ-320" }),
+  makeSprintPr({ id: 241, title: "Session timeout enforcement", author: BB_BOB, reviewer: BB_CAROL, createdOn: "2026-03-18T13:00:00.000Z", cycleHours: 48, commentCount: 3, jiraIssueKey: "PROJ-321" }),
+  makeSprintPr({ id: 242, title: "Password reset email template", author: BB_CAROL, reviewer: BB_ALICE, createdOn: "2026-03-19T11:00:00.000Z", cycleHours: 24, commentCount: 1, jiraIssueKey: "PROJ-322" }),
+  makeSprintPr({ id: 243, title: "Rate-limit auth endpoints", author: BB_ALICE, reviewer: BB_BOB, createdOn: "2026-03-20T10:00:00.000Z", cycleHours: 72, commentCount: 5, jiraIssueKey: "PROJ-323" }),
+  makeSprintPr({ id: 244, title: "Fix race condition in login", author: BB_ME, reviewer: BB_ALICE, createdOn: "2026-03-23T09:00:00.000Z", cycleHours: 18, commentCount: 2, jiraIssueKey: "PROJ-324" }),
+  makeSprintPr({ id: 245, title: "MFA enrollment flow refactor", author: BB_BOB, reviewer: BB_ME, createdOn: "2026-03-24T10:00:00.000Z", cycleHours: 144, commentCount: 12, jiraIssueKey: "PROJ-325" }),
+
+  // ── Active sprint (unchanged) ─────────────────────────────────────────────
   {
     id: 84,
     title: "PROJ-141: Migrate auth middleware to JWT RS256",
