@@ -1,6 +1,5 @@
 use serde::{Deserialize, Serialize};
 use std::fs;
-use tauri::Manager;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -18,12 +17,7 @@ pub struct KnowledgeEntry {
 }
 
 pub fn data_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
-    let dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("Cannot resolve app data dir: {e}"))?;
-    fs::create_dir_all(&dir).map_err(|e| format!("Cannot create data dir: {e}"))?;
-    Ok(dir.join("knowledge.json"))
+    Ok(crate::storage::preferences::resolve_data_dir(app)?.join("knowledge.json"))
 }
 
 pub fn read_entries(app: &tauri::AppHandle) -> Result<Vec<KnowledgeEntry>, String> {

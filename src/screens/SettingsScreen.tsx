@@ -108,6 +108,7 @@ import {
   validateWorktree,
   validatePrReviewWorktree,
   validatePrAddressWorktree,
+  validateGroomingWorktree,
 } from "@/lib/tauri";
 import {
   useImplementTicketStore,
@@ -117,12 +118,17 @@ import {
 import { usePrReviewStore, PR_REVIEW_STORE_KEY } from "@/stores/prReviewStore";
 import { Switch } from "@/components/ui/switch";
 import {
-  getSprintReportsDir,
+  getDataDir,
   loadPrTemplate,
   savePrTemplate,
   getPrTemplatePath,
   revealPrTemplateDir,
   type PrTemplateMode,
+  loadGroomingTemplate,
+  saveGroomingTemplate,
+  getGroomingTemplatePath,
+  revealGroomingTemplatesDir,
+  type GroomingTemplateKind,
 } from "@/lib/tauri";
 
 // ── Theme section ─────────────────────────────────────────────────────────────
@@ -2887,6 +2893,7 @@ function ConfigSection({
   const [baseBranch, setBaseBranch] = useState("develop");
   const [prReviewWorktreePath, setPrReviewWorktreePath] = useState("");
   const [prAddressWorktreePath, setPrAddressWorktreePath] = useState("");
+  const [groomingWorktreePath, setGroomingWorktreePath] = useState("");
   const [prTerminal, setPrTerminal] = useState("iTerm2");
   const [buildVerifyEnabled, setBuildVerifyEnabled] = useState(false);
   const [editing, setEditing] = useState(!jiraBoardId || !bitbucketRepoSlug);
@@ -2904,6 +2911,8 @@ function ConfigSection({
   });
   const [prAddressWorktreeStatus, setPrAddressWorktreeStatus] =
     useState<SectionStatus>({ state: "idle", message: "" });
+  const [groomingWorktreeStatus, setGroomingWorktreeStatus] =
+    useState<SectionStatus>({ state: "idle", message: "" });
 
   async function startEditing() {
     try {
@@ -2914,6 +2923,7 @@ function ConfigSection({
       setBaseBranch(prefs["repo_base_branch"] || "develop");
       setPrReviewWorktreePath(prefs["pr_review_worktree_path"] ?? "");
       setPrAddressWorktreePath(prefs["pr_address_worktree_path"] ?? "");
+      setGroomingWorktreePath(prefs["grooming_worktree_path"] ?? "");
       setPrTerminal(prefs["pr_review_terminal"] || "iTerm2");
       setBuildVerifyEnabled(prefs["build_verify_enabled"] === "true");
     } catch {
@@ -2942,6 +2952,9 @@ function ConfigSection({
           );
           setPrAddressWorktreePath(
             (prev) => prev || (prefs["pr_address_worktree_path"] ?? ""),
+          );
+          setGroomingWorktreePath(
+            (prev) => prev || (prefs["grooming_worktree_path"] ?? ""),
           );
           setPrTerminal((prev) =>
             prev !== "iTerm2" ? prev : prefs["pr_review_terminal"] || "iTerm2",
@@ -2987,6 +3000,11 @@ function ConfigSection({
         );
       } else {
         await setPreference("pr_address_worktree_path", "");
+      }
+      if (groomingWorktreePath.trim()) {
+        await setPreference("grooming_worktree_path", groomingWorktreePath.trim());
+      } else {
+        await setPreference("grooming_worktree_path", "");
       }
       await setPreference("pr_review_terminal", prTerminal.trim() || "iTerm2");
       await setPreference("build_verify_enabled", buildVerifyEnabled ? "true" : "false");
@@ -3052,6 +3070,23 @@ function ConfigSection({
     } catch (err) {
       await setPreference("pr_address_worktree_path", prev).catch(() => {});
       setPrAddressWorktreeStatus({ state: "error", message: String(err) });
+    }
+  }
+
+  async function handleValidateGroomingWorktree() {
+    if (!groomingWorktreePath.trim()) return;
+    setGroomingWorktreeStatus({ state: "loading", message: "Validating…" });
+    const prev = (await getPreferences())["grooming_worktree_path"] ?? "";
+    await setPreference("grooming_worktree_path", groomingWorktreePath.trim());
+    try {
+      const info = await validateGroomingWorktree();
+      setGroomingWorktreeStatus({
+        state: "success",
+        message: `✓ Valid git repo — branch: ${info.branch}, HEAD: ${info.headCommit}`,
+      });
+    } catch (err) {
+      await setPreference("grooming_worktree_path", prev).catch(() => {});
+      setGroomingWorktreeStatus({ state: "error", message: String(err) });
     }
   }
 
@@ -3237,6 +3272,42 @@ function ConfigSection({
                       className={`text-xs ${prAddressWorktreeStatus.state === "success" ? "text-green-600" : "text-destructive"}`}
                     >
                       {prAddressWorktreeStatus.message}
+                    </span>
+                  )}
+                </div>
+              )}
+            </div>
+            <div className="border-t pt-3 mt-1 space-y-3">
+              <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                Grooming Context Worktree
+              </p>
+              <CredentialField
+                id="cfg-grooming-worktree-path"
+                label="Grooming Worktree Path"
+                placeholder="/Users/you/REPOS/MyRepo-grooming"
+                value={groomingWorktreePath}
+                onChange={setGroomingWorktreePath}
+                disabled={status.state === "loading"}
+                helperText={`Optional dedicated worktree that stays on ${baseBranch || "develop"} and is used for reading codebase context during Grooming and Ticket Quality checks. Meridian runs "git pull" here before each analysis to ensure it reads up-to-date code. If not set, falls back to the Implementation worktree. Set up with: git worktree add ../MyRepo-grooming ${baseBranch || "develop"}`}
+              />
+              {groomingWorktreePath.trim() && (
+                <div className="flex items-center gap-2">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={handleValidateGroomingWorktree}
+                    disabled={groomingWorktreeStatus.state === "loading"}
+                  >
+                    {groomingWorktreeStatus.state === "loading" ? (
+                      <Loader2 className="h-3 w-3 animate-spin mr-1" />
+                    ) : null}
+                    Test grooming worktree
+                  </Button>
+                  {groomingWorktreeStatus.state !== "idle" && (
+                    <span
+                      className={`text-xs ${groomingWorktreeStatus.state === "success" ? "text-green-600" : "text-destructive"}`}
+                    >
+                      {groomingWorktreeStatus.message}
                     </span>
                   )}
                 </div>
@@ -3480,23 +3551,23 @@ function CacheSection() {
   );
 }
 
-// ── Sprint reports directory section ─────────────────────────────────────────
+// ── Data directory section ────────────────────────────────────────────────────
 
-function SprintReportsSection() {
+function DataDirectorySection() {
   const [dir, setDir] = useState("");
   const [resolvedDir, setResolvedDir] = useState("");
   const [status, setStatus] = useState<SectionStatus>({ state: "idle", message: "" });
 
   useEffect(() => {
-    getPreferences().then((prefs) => setDir(prefs["sprint_reports_dir"] ?? ""));
-    getSprintReportsDir().then(setResolvedDir).catch(() => {});
+    getPreferences().then((prefs) => setDir(prefs["data_dir"] ?? ""));
+    getDataDir().then(setResolvedDir).catch(() => {});
   }, []);
 
   async function save() {
     setStatus({ state: "loading", message: "" });
     try {
-      await setPreference("sprint_reports_dir", dir.trim());
-      const resolved = await getSprintReportsDir();
+      await setPreference("data_dir", dir.trim());
+      const resolved = await getDataDir();
       setResolvedDir(resolved);
       setStatus({ state: "success", message: "Saved" });
     } catch (e) {
@@ -3507,17 +3578,18 @@ function SprintReportsSection() {
   return (
     <Card>
       <CardHeader className="pb-3">
-        <CardTitle className="text-base">Sprint Reports Directory</CardTitle>
+        <CardTitle className="text-base">Data Directory</CardTitle>
         <CardDescription>
-          Where sprint retrospective data is cached on disk. Leave blank to use the default location.
+          Root folder for all files generated by Meridian — sprint reports, templates, skills, and
+          knowledge base. Leave blank to use the default app data location.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-3">
         <div className="space-y-1.5">
-          <Label htmlFor="sprint-reports-dir">Directory path</Label>
+          <Label htmlFor="data-dir">Directory path</Label>
           <div className="flex gap-2">
             <Input
-              id="sprint-reports-dir"
+              id="data-dir"
               value={dir}
               onChange={(e) => setDir(e.target.value)}
               placeholder="Leave blank for default"
@@ -3697,6 +3769,158 @@ function PrTemplateSection() {
             <AlertCircle className="h-3 w-3" /> {status.message}
           </p>
         )}
+      </CardContent>
+    </Card>
+  );
+}
+
+// ── Grooming format templates section ────────────────────────────────────────
+
+const AC_PLACEHOLDER = `- <first acceptance criterion, written as a bullet>
+- <second acceptance criterion>
+- <third acceptance criterion>
+`;
+
+const STR_PLACEHOLDER = `1. <first step to reproduce, on its own line>
+2. <second step>
+3. <third step>
+`;
+
+function GroomingTemplateEditor({
+  kind,
+  label,
+  description,
+  placeholder,
+}: {
+  kind: GroomingTemplateKind;
+  label: string;
+  description: string;
+  placeholder: string;
+}) {
+  const [content, setContent] = useState("");
+  const [baseline, setBaseline] = useState("");
+  const [path, setPath] = useState("");
+  const [status, setStatus] = useState<SectionStatus>({
+    state: "idle",
+    message: "",
+  });
+
+  useEffect(() => {
+    loadGroomingTemplate(kind)
+      .then((c) => {
+        setContent(c);
+        setBaseline(c);
+      })
+      .catch(() => {});
+    getGroomingTemplatePath(kind).then(setPath).catch(() => {});
+  }, [kind]);
+
+  const dirty = content !== baseline;
+
+  async function save() {
+    setStatus({ state: "loading", message: "" });
+    try {
+      await saveGroomingTemplate(kind, content);
+      setBaseline(content);
+      setStatus({ state: "success", message: "Saved" });
+    } catch (e) {
+      setStatus({ state: "error", message: String(e) });
+    }
+  }
+
+  return (
+    <div className="space-y-2">
+      <div>
+        <Label htmlFor={`grooming-template-${kind}`} className="text-sm font-medium">
+          {label}
+        </Label>
+        <p className="text-xs text-muted-foreground">{description}</p>
+      </div>
+      <Textarea
+        id={`grooming-template-${kind}`}
+        value={content}
+        onChange={(e) => setContent(e.target.value)}
+        placeholder={placeholder}
+        className="min-h-[160px] font-mono text-sm resize-y leading-relaxed"
+      />
+      <div className="flex items-center justify-between gap-3">
+        {path && (
+          <p className="text-xs text-muted-foreground font-mono break-all">
+            File: {path}
+          </p>
+        )}
+        <Button
+          onClick={save}
+          disabled={!dirty || status.state === "loading"}
+          size="sm"
+          className="gap-2 ml-auto"
+        >
+          {status.state === "loading" ? (
+            <Loader2 className="h-4 w-4 animate-spin" />
+          ) : null}
+          Save
+        </Button>
+      </div>
+      {status.state === "success" && (
+        <p className="text-xs text-emerald-600 flex items-center gap-1">
+          <CheckCircle className="h-3 w-3" /> {status.message}
+        </p>
+      )}
+      {status.state === "error" && (
+        <p className="text-xs text-destructive flex items-center gap-1">
+          <AlertCircle className="h-3 w-3" /> {status.message}
+        </p>
+      )}
+    </div>
+  );
+}
+
+function GroomingTemplatesSection() {
+  async function openFolder() {
+    try {
+      await revealGroomingTemplatesDir();
+    } catch {
+      /* silent — same folder as PR template, surfaced there too */
+    }
+  }
+
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <CardTitle className="text-base flex items-center gap-2">
+          <FileText className="h-4 w-4 text-muted-foreground" />
+          Grooming Format Templates
+        </CardTitle>
+        <CardDescription>
+          Formatting rules the Grooming agent follows when drafting ticket
+          fields. Leave a template blank to let the agent choose its own
+          format for that field.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-6">
+        <GroomingTemplateEditor
+          kind="acceptance_criteria"
+          label="Acceptance Criteria"
+          description="Applied when the agent drafts or rewrites the acceptance_criteria field on Story/Task tickets."
+          placeholder={AC_PLACEHOLDER}
+        />
+        <GroomingTemplateEditor
+          kind="steps_to_reproduce"
+          label="Steps to Reproduce"
+          description="Applied when the agent drafts or rewrites the steps_to_reproduce field on Bug tickets."
+          placeholder={STR_PLACEHOLDER}
+        />
+        <div className="pt-1">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={openFolder}
+            className="gap-2"
+          >
+            <FolderOpen className="h-3.5 w-3.5" />
+            Open folder
+          </Button>
+        </div>
       </CardContent>
     </Card>
   );
@@ -3984,6 +4208,7 @@ export function SettingsScreen({ onClose, onNavigate }: SettingsScreenProps) {
     { id: "integrations", label: "Integrations", icon: Link2        },
     { id: "appearance",   label: "Appearance",   icon: Palette      },
     { id: "storage",      label: "Storage",      icon: HardDrive    },
+    { id: "templates",    label: "Templates",    icon: FileText     },
     { id: "development",  label: "Development",  icon: FlaskConical },
     ...(onNavigate ? [{ id: "agents", label: "Agents", icon: Bot } as NavItem] : []),
   ];
@@ -4100,9 +4325,14 @@ export function SettingsScreen({ onClose, onNavigate }: SettingsScreenProps) {
 
               <section ref={sectionRef("storage")} className="space-y-4 border-t pt-8">
                 <h2 className="text-xl font-semibold text-foreground">Storage</h2>
-                <SprintReportsSection />
-                <PrTemplateSection />
+                <DataDirectorySection />
                 <CacheSection />
+              </section>
+
+              <section ref={sectionRef("templates")} className="space-y-4 border-t pt-8">
+                <h2 className="text-xl font-semibold text-foreground">Templates</h2>
+                <PrTemplateSection />
+                <GroomingTemplatesSection />
               </section>
 
               <section ref={sectionRef("development")} className="space-y-4 border-t pt-8">

@@ -13,6 +13,9 @@ import {
   RefreshCw,
   Calendar,
   AlertTriangle,
+  ArrowUpDown,
+  ArrowUp,
+  ArrowDown,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { WorkflowPanelHeader, APP_HEADER_TITLE } from "@/components/appHeaderLayout";
@@ -37,9 +40,10 @@ import {
   runGroomingAgent,
   runGroomingFileProbe,
   runGroomingChatTurn,
-  grepRepoFiles,
-  readRepoFile,
-  validateWorktree,
+  grepGroomingFiles,
+  readGroomingFile,
+  syncGroomingWorktree,
+  validateGroomingWorktree,
   updateJiraFields,
   parseAgentJson,
   openUrl,
@@ -129,7 +133,18 @@ function getCurrentFieldValue(field: SuggestedEditField, issue: JiraIssue): stri
 }
 
 function suggestedEditsToDraftChanges(edits: GroomingOutput["suggested_edits"], issue: JiraIssue): DraftChange[] {
-  return edits.map((e) => ({
+  // Merge duplicate fields into a single edit (agent occasionally emits multiple AC sections).
+  const merged = new Map<string, GroomingOutput["suggested_edits"][number]>();
+  for (const e of edits) {
+    const existing = merged.get(e.field);
+    if (existing) {
+      existing.suggested = `${existing.suggested.trimEnd()}\n${e.suggested.trimStart()}`;
+      existing.reasoning = `${existing.reasoning} ${e.reasoning}`;
+    } else {
+      merged.set(e.field, { ...e });
+    }
+  }
+  return Array.from(merged.values()).map((e) => ({
     id: e.id, field: e.field, section: e.section,
     // Agent sometimes returns current: null even when the field has a value.
     // Fall back to the actual field value from the fetched issue.
@@ -297,8 +312,8 @@ function ChatPanel({ messages, thinking, probeStatus, onSend }: { messages: Groo
 
 // ── Draft field row ───────────────────────────────────────────────────────────
 
-function DraftFieldRow({ draft, issue, onApprove, onDecline, onEditSuggested }: {
-  draft: DraftChange; issue: JiraIssue;
+function DraftFieldRow({ draft, issue, highlighted, onApprove, onDecline, onEditSuggested }: {
+  draft: DraftChange; issue: JiraIssue; highlighted?: boolean;
   onApprove: (id: string) => void; onDecline: (id: string) => void;
   onEditSuggested: (id: string, value: string) => void;
 }) {
@@ -312,8 +327,14 @@ function DraftFieldRow({ draft, issue, onApprove, onDecline, onEditSuggested }: 
       ? <Badge variant="outline" className="text-xs text-muted-foreground">Declined</Badge>
       : <Badge variant="secondary" className="text-xs">Pending</Badge>;
 
+  const borderClass = highlighted
+    ? "border-primary/70 bg-primary/5 dark:bg-primary/10"
+    : draft.status === "approved"
+    ? "border-green-200 dark:border-green-900 bg-green-50/30 dark:bg-green-950/20"
+    : "";
+
   return (
-    <div className={`border rounded-lg p-3 space-y-2 ${draft.status === "approved" ? "border-green-200 dark:border-green-900 bg-green-50/30 dark:bg-green-950/20" : draft.status === "declined" ? "opacity-60" : ""}`}>
+    <div className={`border rounded-lg p-3 space-y-2 transition-colors duration-700 ${borderClass} ${draft.status === "declined" ? "opacity-60" : ""}`}>
       <div className="flex items-center justify-between gap-2">
         <span className="text-sm font-medium">{draft.section}</span>
         {statusBadge}
@@ -363,8 +384,8 @@ function DraftFieldRow({ draft, issue, onApprove, onDecline, onEditSuggested }: 
 
 // ── Draft changes panel ───────────────────────────────────────────────────────
 
-function DraftChangesPanel({ drafts, issue, applying, onApprove, onDecline, onEditSuggested, onApply }: {
-  drafts: DraftChange[]; issue: JiraIssue; applying: boolean;
+function DraftChangesPanel({ drafts, issue, applying, highlightedIds, onApprove, onDecline, onEditSuggested, onApply }: {
+  drafts: DraftChange[]; issue: JiraIssue; applying: boolean; highlightedIds: Set<string>;
   onApprove: (id: string) => void; onDecline: (id: string) => void;
   onEditSuggested: (id: string, value: string) => void; onApply: () => void;
 }) {
@@ -389,7 +410,7 @@ function DraftChangesPanel({ drafts, issue, applying, onApprove, onDecline, onEd
         {drafts.length === 0
           ? <p className="text-sm text-muted-foreground italic text-center py-4">No changes proposed yet</p>
           : drafts.map((draft) => (
-              <DraftFieldRow key={draft.id} draft={draft} issue={issue} onApprove={onApprove} onDecline={onDecline} onEditSuggested={onEditSuggested} />
+              <DraftFieldRow key={draft.id} draft={draft} issue={issue} highlighted={highlightedIds.has(draft.id)} onApprove={onApprove} onDecline={onDecline} onEditSuggested={onEditSuggested} />
             ))}
       </CardContent>
     </Card>
@@ -397,6 +418,60 @@ function DraftChangesPanel({ drafts, issue, applying, onApprove, onDecline, onEd
 }
 
 // ── Ticket selector ───────────────────────────────────────────────────────────
+
+const PRIORITY_ORDER: Record<string, number> = {
+  highest: 0, critical: 0,
+  high: 1,
+  medium: 2,
+  low: 3,
+  lowest: 4, trivial: 4,
+};
+
+function priorityRank(p: string | null): number {
+  return p != null ? (PRIORITY_ORDER[p.toLowerCase()] ?? 2) : 2;
+}
+
+function priorityColor(p: string | null): string {
+  switch (p?.toLowerCase()) {
+    case "highest": case "critical": return "text-red-600 dark:text-red-400";
+    case "high":    return "text-orange-500 dark:text-orange-400";
+    case "medium":  return "text-yellow-500 dark:text-yellow-400";
+    case "low":     return "text-blue-500 dark:text-blue-400";
+    case "lowest":  case "trivial": return "text-muted-foreground";
+    default:        return "text-muted-foreground";
+  }
+}
+
+function issueKeyNumber(key: string): number {
+  const m = key.match(/(\d+)$/);
+  return m ? parseInt(m[1], 10) : 0;
+}
+
+type SortField = "priority" | "key";
+type SortDir   = "asc" | "desc";
+
+function sortIssues(issues: JiraIssue[], field: SortField, dir: SortDir): JiraIssue[] {
+  return [...issues].sort((a, b) => {
+    const cmp = field === "priority"
+      ? priorityRank(a.priority) - priorityRank(b.priority)
+      : issueKeyNumber(a.key) - issueKeyNumber(b.key);
+    return dir === "asc" ? cmp : -cmp;
+  });
+}
+
+function SortButton({ label, field, current, dir, onClick }: {
+  label: string; field: SortField; current: SortField; dir: SortDir;
+  onClick: (f: SortField) => void;
+}) {
+  const active = current === field;
+  const Icon = active ? (dir === "asc" ? ArrowUp : ArrowDown) : ArrowUpDown;
+  return (
+    <button onClick={() => onClick(field)}
+      className={`flex items-center gap-1 text-xs px-2 py-1 rounded border transition-colors ${active ? "border-primary text-primary bg-primary/5" : "border-input text-muted-foreground hover:text-foreground hover:bg-muted/50"}`}>
+      <Icon className="h-3 w-3" />{label}
+    </button>
+  );
+}
 
 function TicketSelector({ sprints, selectedSprintId, onSelectSprint, sprintIssues, loadingIssues, selected, onSelect }: {
   sprints: JiraSprint[]; selectedSprintId: number | null;
@@ -407,7 +482,14 @@ function TicketSelector({ sprints, selectedSprintId, onSelectSprint, sprintIssue
   const [search, setSearch] = useState("");
   const [searchResults, setSearchResults] = useState<JiraIssue[]>([]);
   const [searching, setSearching] = useState(false);
+  const [sortField, setSortField] = useState<SortField>("priority");
+  const [sortDir, setSortDir] = useState<SortDir>("asc");
   const q = search.trim();
+
+  function handleSortClick(field: SortField) {
+    if (sortField === field) setSortDir((d) => d === "asc" ? "desc" : "asc");
+    else { setSortField(field); setSortDir("asc"); }
+  }
 
   useEffect(() => {
     if (!q) { setSearchResults([]); return; }
@@ -422,7 +504,8 @@ function TicketSelector({ sprints, selectedSprintId, onSelectSprint, sprintIssue
     return () => clearTimeout(timer);
   }, [q]);
 
-  const displayList = q ? searchResults : sprintIssues;
+  const rawList = q ? searchResults : sprintIssues;
+  const displayList = sortIssues(rawList, sortField, sortDir);
   const showLoading = q ? searching : loadingIssues;
 
   return (
@@ -439,6 +522,11 @@ function TicketSelector({ sprints, selectedSprintId, onSelectSprint, sprintIssue
       <div className="relative shrink-0">
         <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground pointer-events-none" />
         <Input placeholder="Search tickets or enter key (e.g. PROJ-123)…" value={search} onChange={(e) => setSearch(e.target.value)} className="pl-9" />
+      </div>
+      <div className="shrink-0 flex items-center gap-1.5">
+        <span className="text-xs text-muted-foreground">Sort:</span>
+        <SortButton label="Priority" field="priority" current={sortField} dir={sortDir} onClick={handleSortClick} />
+        <SortButton label="Key" field="key" current={sortField} dir={sortDir} onClick={handleSortClick} />
       </div>
       <div className="flex-1 min-h-0 space-y-1 overflow-y-auto pr-1">
         {showLoading && (
@@ -461,6 +549,10 @@ function TicketSelector({ sprints, selectedSprintId, onSelectSprint, sprintIssue
               </div>
               <p className="text-sm mt-0.5 leading-snug line-clamp-2">{issue.summary}</p>
               <div className="flex items-center gap-2 mt-1">
+                {issue.priority && (
+                  <span className={`text-xs font-medium ${priorityColor(issue.priority)}`}>{issue.priority}</span>
+                )}
+                {issue.priority && <span className="text-xs text-muted-foreground">·</span>}
                 <span className="text-xs text-muted-foreground">{issue.status}</span>
                 <span className="text-xs text-muted-foreground">·</span>
                 <span className="text-xs text-muted-foreground">{statusAge(issue)}</span>
@@ -485,6 +577,8 @@ export function TicketQualityScreen({ credStatus, onBack }: TicketQualityScreenP
   const [loadingIssues, setLoadingIssues] = useState(true);
   const [session, setSession] = useState<GroomSession | null>(null);
   const [initError, setInitError] = useState<string | null>(null);
+  const [recentlyUpdated, setRecentlyUpdated] = useState<Set<string>>(new Set());
+  const recentlyUpdatedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // ── Resizable pane widths ─────────────────────────────────────────────────
   const [leftWidth, setLeftWidth] = useState(340);
@@ -574,11 +668,12 @@ export function TicketQualityScreen({ credStatus, onBack }: TicketQualityScreenP
     try {
       const ticketText = compileTicketText(freshIssue);
 
-      // Probe the worktree for relevant files if one is configured
+      // Pull latest on the grooming worktree, then probe for relevant files
       let fileContentsBlock = "";
       let worktreeContext = "";
       try {
-        const worktreeInfo = await validateWorktree();
+        await syncGroomingWorktree();
+        const worktreeInfo = await validateGroomingWorktree();
         worktreeContext = `\n\n=== CODEBASE CONTEXT ===\nWorktree: ${worktreeInfo.path}\nBranch: ${worktreeInfo.branch}`;
         const ticketWithContext = ticketText + worktreeContext;
 
@@ -592,7 +687,7 @@ export function TicketQualityScreen({ credStatus, onBack }: TicketQualityScreenP
           for (const filePath of (probe.files ?? []).slice(0, 12)) {
             try {
               setSession((prev) => prev?.issue.key === sessionKey ? { ...prev, probeStatus: `Reading ${filePath}…` } : prev);
-              const content = await readRepoFile(filePath);
+              const content = await readGroomingFile(filePath);
               const chunk = `--- ${filePath} ---\n${content}\n`;
               if (totalSize + chunk.length > MAX_TOTAL) break;
               parts.push(chunk);
@@ -602,7 +697,7 @@ export function TicketQualityScreen({ credStatus, onBack }: TicketQualityScreenP
           for (const pattern of (probe.grep_patterns ?? []).slice(0, 6)) {
             try {
               setSession((prev) => prev?.issue.key === sessionKey ? { ...prev, probeStatus: `Searching for "${pattern}"…` } : prev);
-              const lines = await grepRepoFiles(pattern);
+              const lines = await grepGroomingFiles(pattern);
               if (lines.length === 0) continue;
               const chunk = `--- grep: ${pattern} ---\n${lines.join("\n")}\n`;
               if (totalSize + chunk.length > MAX_TOTAL) break;
@@ -658,6 +753,7 @@ export function TicketQualityScreen({ credStatus, onBack }: TicketQualityScreenP
         // Discard if the user switched tickets while this request was in-flight
         if (!prev || prev.issue.key !== issueKey) return prev;
         let drafts = [...prev.drafts];
+        const touchedIds: string[] = [];
         for (const updated of response.updated_edits) {
           const idx = drafts.findIndex((d) => d.id === updated.id);
           if (idx >= 0) {
@@ -671,6 +767,12 @@ export function TicketQualityScreen({ credStatus, onBack }: TicketQualityScreenP
               userEdited: false, reasoning: updated.reasoning, status: "pending",
             });
           }
+          touchedIds.push(updated.id);
+        }
+        if (touchedIds.length > 0) {
+          setRecentlyUpdated(new Set(touchedIds));
+          if (recentlyUpdatedTimerRef.current) clearTimeout(recentlyUpdatedTimerRef.current);
+          recentlyUpdatedTimerRef.current = setTimeout(() => setRecentlyUpdated(new Set()), 2500);
         }
         return { ...prev, drafts, chat: [...prev.chat, { role: "assistant", content: response.message }], thinking: false };
       });
@@ -805,6 +907,7 @@ export function TicketQualityScreen({ credStatus, onBack }: TicketQualityScreenP
               <div className="mx-2">
                 <DraftChangesPanel
                   drafts={session.drafts} issue={session.issue} applying={session.applying}
+                  highlightedIds={recentlyUpdated}
                   onApprove={approveDraft} onDecline={declineDraft} onEditSuggested={editSuggested}
                   onApply={applyChanges}
                 />

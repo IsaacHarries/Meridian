@@ -65,3 +65,31 @@ pub fn get_pref(key: &str) -> Option<String> {
         .filter(|v| !v.trim().is_empty())
         .cloned()
 }
+
+// ── Data directory ────────────────────────────────────────────────────────────
+
+/// Returns the user-configured data directory, or the app data dir as fallback.
+/// All user-generated files (sprint reports, templates, skills, knowledge base)
+/// are stored relative to this root.
+pub fn resolve_data_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    if let Some(custom) = get_pref("data_dir") {
+        let p = PathBuf::from(custom.trim());
+        if !p.as_os_str().is_empty() {
+            fs::create_dir_all(&p)
+                .map_err(|e| format!("Cannot create data dir '{}': {e}", p.display()))?;
+            return Ok(p);
+        }
+    }
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("Cannot resolve app data dir: {e}"))?;
+    fs::create_dir_all(&dir).map_err(|e| format!("Cannot create app data dir: {e}"))?;
+    Ok(dir)
+}
+
+/// Tauri command: return the resolved data directory path for display in Settings.
+#[tauri::command]
+pub fn get_data_dir(app: tauri::AppHandle) -> Result<String, String> {
+    Ok(resolve_data_dir(&app)?.to_string_lossy().into_owned())
+}

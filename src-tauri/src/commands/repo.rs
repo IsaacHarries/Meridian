@@ -45,6 +45,22 @@ fn pr_review_worktree_path() -> Result<PathBuf, String> {
     Ok(path)
 }
 
+/// Returns the grooming-specific worktree path if configured, otherwise falls
+/// back to the main implementation worktree path.
+fn grooming_worktree_path() -> Result<PathBuf, String> {
+    let raw = get_config("grooming_worktree_path")
+        .or_else(|| get_config("repo_worktree_path"))
+        .ok_or("No worktree path configured. Set one in Settings → Configuration.")?;
+    let path = PathBuf::from(raw.trim());
+    if !path.exists() {
+        return Err(format!(
+            "Worktree path '{}' does not exist. Check Settings → Configuration.",
+            path.display()
+        ));
+    }
+    Ok(path)
+}
+
 /// Returns the PR address–specific worktree path if configured, falling back to
 /// the PR review path, and then the main implementation worktree.
 fn pr_address_worktree_path() -> Result<PathBuf, String> {
@@ -182,23 +198,15 @@ pub async fn sync_worktree() -> Result<WorktreeInfo, String> {
 
 // ── File access (read-only, sandboxed) ───────────────────────────────────────
 
-/// Search files by glob pattern. Returns relative paths from the worktree root.
-/// Pattern is relative to the root (e.g. "src/**/*.ts").
-/// Hard-capped at 500 results to avoid flooding the context window.
-#[tauri::command]
-pub async fn glob_repo_files(pattern: String) -> Result<Vec<String>, String> {
-    let root = worktree_path()?;
-
-    // Use `git ls-files` with fnmatch-style patterns — respects .gitignore automatically.
-    // Fall back to a plain find for patterns that don't match gitignore-aware ls-files.
+fn glob_files_in(root: &Path, pattern: &str) -> Result<Vec<String>, String> {
     let output = git(
-        &root,
+        root,
         &[
             "ls-files",
             "--cached",
             "--others",
             "--exclude-standard",
-            &pattern,
+            pattern,
         ],
     )
     .unwrap_or_default();
@@ -210,11 +218,9 @@ pub async fn glob_repo_files(pattern: String) -> Result<Vec<String>, String> {
         .map(str::to_string)
         .collect();
 
-    // git ls-files doesn't always do recursive glob; if we got nothing, try find
     if results.is_empty() {
-        // Strip leading src/ or similar for the glob portion
         let out = Command::new("find")
-            .arg(&root)
+            .arg(root)
             .arg("-type")
             .arg("f")
             .arg("-not")
@@ -223,12 +229,12 @@ pub async fn glob_repo_files(pattern: String) -> Result<Vec<String>, String> {
             .output()
             .map_err(|e| format!("find error: {e}"))?;
         let all = String::from_utf8_lossy(&out.stdout);
-        let pat = glob::Pattern::new(&pattern).map_err(|e| format!("Invalid glob pattern: {e}"))?;
+        let pat = glob::Pattern::new(pattern).map_err(|e| format!("Invalid glob pattern: {e}"))?;
         results = all
             .lines()
             .filter_map(|line| {
                 let p = Path::new(line);
-                let rel = p.strip_prefix(&root).ok()?;
+                let rel = p.strip_prefix(root).ok()?;
                 let rel_str = rel.to_string_lossy();
                 if pat.matches(&rel_str) {
                     Some(rel_str.to_string())
@@ -243,33 +249,23 @@ pub async fn glob_repo_files(pattern: String) -> Result<Vec<String>, String> {
     Ok(results)
 }
 
-/// Search file contents with a regex pattern using `git grep`.
-/// `path` is an optional subdirectory to restrict the search to.
-/// Returns at most 200 matches as "path:line:content" strings.
-#[tauri::command]
-pub async fn grep_repo_files(pattern: String, path: Option<String>) -> Result<Vec<String>, String> {
-    let root = worktree_path()?;
-
+fn grep_files_in(root: &Path, pattern: &str, path: Option<&str>) -> Result<Vec<String>, String> {
     let mut args = vec![
         "grep",
-        "-n",             // line numbers
-        "--heading",      // group by file
-        "-F",             // fixed strings (no regex)
-        "--max-count=50", // max 50 matches per file
-        &pattern,
+        "-n",
+        "--heading",
+        "-F",
+        "--max-count=50",
+        pattern,
     ];
-    let path_owned;
-    if let Some(ref p) = path {
-        path_owned = p.clone();
+    if let Some(p) = path {
         args.push("--");
-        args.push(&path_owned);
+        args.push(p);
     }
 
-    // git grep exits 0 = matches found, 1 = no matches, 2 = error.
-    // Run via Command directly so we can distinguish exit codes.
     let out = Command::new("git")
         .arg("-C")
-        .arg(&root)
+        .arg(root)
         .args(&args)
         .output()
         .map_err(|e| format!("git grep error: {e}"))?;
@@ -277,26 +273,48 @@ pub async fn grep_repo_files(pattern: String, path: Option<String>) -> Result<Ve
     let code = out.status.code().unwrap_or(-1);
     match code {
         0 => {
-            // Matches found — collect output lines
             let stdout = String::from_utf8_lossy(&out.stdout);
-            let lines: Vec<String> = stdout.lines().take(200).map(str::to_string).collect();
-            Ok(lines)
+            Ok(stdout.lines().take(200).map(str::to_string).collect())
         }
-        1 => {
-            // No matches — not an error
-            Ok(vec![])
-        }
+        1 => Ok(vec![]),
         _ => {
-            // Real error (e.g. invalid regex, bad path)
             let stderr = String::from_utf8_lossy(&out.stderr);
             Err(format!("git grep failed (exit {code}): {}", stderr.trim()))
         }
     }
 }
 
-/// Read a single file from the worktree.
-/// `path` is relative to the worktree root (e.g. "src/reports/index.ts").
-/// Hard-capped at 500 KB to prevent enormous files from flooding the context window.
+fn read_file_in(root: &Path, path: &str) -> Result<String, String> {
+    let full = sandboxed(root, path)?;
+    let content =
+        std::fs::read_to_string(&full).map_err(|e| format!("Could not read '{}': {e}", path))?;
+    const MAX_BYTES: usize = 512 * 1024;
+    if content.len() > MAX_BYTES {
+        let truncated = &content[..MAX_BYTES];
+        return Ok(format!(
+            "{truncated}\n\n[… file truncated at 500 KB — {} bytes omitted …]",
+            content.len() - MAX_BYTES
+        ));
+    }
+    Ok(content)
+}
+
+/// Search files by glob pattern. Returns relative paths from the worktree root.
+/// Pattern is relative to the root (e.g. "src/**/*.ts").
+/// Hard-capped at 500 results to avoid flooding the context window.
+#[tauri::command]
+pub async fn glob_repo_files(pattern: String) -> Result<Vec<String>, String> {
+    glob_files_in(&worktree_path()?, &pattern)
+}
+
+/// Search file contents with a regex pattern using `git grep`.
+/// `path` is an optional subdirectory to restrict the search to.
+/// Returns at most 200 matches as "path:line:content" strings.
+#[tauri::command]
+pub async fn grep_repo_files(pattern: String, path: Option<String>) -> Result<Vec<String>, String> {
+    grep_files_in(&worktree_path()?, &pattern, path.as_deref())
+}
+
 /// Non-command helper used by the implementation agent in claude.rs.
 /// Reads a file from the main implementation worktree without size-capping.
 pub fn read_repo_file_internal(path: &str) -> Result<String, String> {
@@ -400,23 +418,82 @@ pub async fn git_status_internal() -> Result<String, String> {
 
 #[tauri::command]
 pub async fn read_repo_file(path: String) -> Result<String, String> {
-    let root = worktree_path()?;
-    let full = sandboxed(&root, &path)?;
+    read_file_in(&worktree_path()?, &path)
+}
 
-    let content =
-        std::fs::read_to_string(&full).map_err(|e| format!("Could not read '{}': {e}", path))?;
+// ── Grooming worktree (read-only, always on base branch) ─────────────────────
 
-    // Cap at ~500 KB
-    const MAX_BYTES: usize = 512 * 1024;
-    if content.len() > MAX_BYTES {
-        let truncated = &content[..MAX_BYTES];
-        return Ok(format!(
-            "{truncated}\n\n[… file truncated at 500 KB — {} bytes omitted …]",
-            content.len() - MAX_BYTES
-        ));
+/// Validate the configured grooming worktree path. Falls back to the main worktree.
+#[tauri::command]
+pub async fn validate_grooming_worktree() -> Result<WorktreeInfo, String> {
+    let path = grooming_worktree_path()?;
+    git(&path, &["rev-parse", "--git-dir"])?;
+    let branch = git(&path, &["rev-parse", "--abbrev-ref", "HEAD"])
+        .map(|s| s.trim().to_string())
+        .unwrap_or_else(|_| "unknown".to_string());
+    let head_commit = git(&path, &["rev-parse", "--short", "HEAD"])
+        .map(|s| s.trim().to_string())
+        .unwrap_or_else(|_| "unknown".to_string());
+    let head_message = git(&path, &["log", "-1", "--format=%s"])
+        .map(|s| s.trim().to_string())
+        .unwrap_or_else(|_| String::new());
+    Ok(WorktreeInfo {
+        path: path.to_string_lossy().to_string(),
+        branch,
+        head_commit,
+        head_message,
+    })
+}
+
+/// Pull latest changes in the grooming worktree from origin/<base_branch>.
+/// Ensures grooming always reads from an up-to-date develop snapshot.
+#[tauri::command]
+pub async fn sync_grooming_worktree() -> Result<WorktreeInfo, String> {
+    let path = grooming_worktree_path()?;
+    let branch = base_branch();
+
+    let remotes = git(&path, &["remote"]).unwrap_or_default();
+    let has_origin = remotes.lines().any(|r| r.trim() == "origin");
+
+    if has_origin {
+        git(&path, &["pull", "origin", &branch])
+            .map_err(|e| format!("git pull origin {branch} failed: {e}"))?;
     }
 
-    Ok(content)
+    let head_commit = git(&path, &["rev-parse", "--short", "HEAD"])
+        .map(|s| s.trim().to_string())
+        .unwrap_or_else(|_| "unknown".to_string());
+    let head_message = git(&path, &["log", "-1", "--format=%s"])
+        .map(|s| s.trim().to_string())
+        .unwrap_or_else(|_| String::new());
+
+    Ok(WorktreeInfo {
+        path: path.to_string_lossy().to_string(),
+        branch,
+        head_commit,
+        head_message,
+    })
+}
+
+/// Glob files in the grooming worktree (falls back to main worktree).
+#[tauri::command]
+pub async fn glob_grooming_files(pattern: String) -> Result<Vec<String>, String> {
+    glob_files_in(&grooming_worktree_path()?, &pattern)
+}
+
+/// Grep files in the grooming worktree (falls back to main worktree).
+#[tauri::command]
+pub async fn grep_grooming_files(
+    pattern: String,
+    path: Option<String>,
+) -> Result<Vec<String>, String> {
+    grep_files_in(&grooming_worktree_path()?, &pattern, path.as_deref())
+}
+
+/// Read a file from the grooming worktree (falls back to main worktree).
+#[tauri::command]
+pub async fn read_grooming_file(path: String) -> Result<String, String> {
+    read_file_in(&grooming_worktree_path()?, &path)
 }
 
 /// Write a file in the implementation worktree, sandboxed to the worktree root.
@@ -684,23 +761,37 @@ pub async fn run_in_terminal(command: String) -> Result<(), String> {
     let terminal = terminal.trim().to_string();
 
     let script = if terminal.to_lowercase() == "iterm2" || terminal == "iTerm2" {
-        // iTerm2 has its own richer AppleScript dictionary.
+        // iTerm2: open a new tab in the existing window, or a new window if none is open.
         format!(
             r#"tell application "iTerm2"
     activate
-    set newWindow to (create window with default profile)
-    tell current session of newWindow
-        write text "cd {path_str} && {command}"
-    end tell
+    if (count of windows) > 0 then
+        tell current window
+            create tab with default profile
+            tell current session of current window
+                write text "cd {path_str} && {command}"
+            end tell
+        end tell
+    else
+        set newWindow to (create window with default profile)
+        tell current session of newWindow
+            write text "cd {path_str} && {command}"
+        end tell
+    end if
 end tell"#
         )
     } else {
-        // macOS Terminal.app and any other terminal that follows the standard
-        // "do script" AppleScript convention.
+        // Terminal.app: open a new tab in the front window, or a new window if none is open.
         format!(
             r#"tell application "{terminal}"
     activate
-    do script "cd {path_str} && {command}"
+    if (count of windows) > 0 then
+        tell front window
+            do script "cd {path_str} && {command}" in front window
+        end tell
+    else
+        do script "cd {path_str} && {command}"
+    end if
 end tell"#
         )
     };

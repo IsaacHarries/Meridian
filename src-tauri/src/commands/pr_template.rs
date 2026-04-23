@@ -1,17 +1,10 @@
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
-use tauri::Manager;
+use crate::storage::preferences::resolve_data_dir;
 
-/// The PR description template lives at `<app_data_dir>/templates/pr_description.md`.
-/// This is a sibling of the `sprint_reports/` directory, not inside it, because
-/// the template is an input for the agent rather than a generated artifact.
 fn template_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
-    let base = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("Cannot resolve app data dir: {e}"))?;
-    let dir = base.join("templates");
+    let dir = resolve_data_dir(app)?.join("templates");
     fs::create_dir_all(&dir)
         .map_err(|e| format!("Cannot create templates dir '{}': {e}", dir.display()))?;
     Ok(dir)

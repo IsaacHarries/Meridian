@@ -1,5 +1,36 @@
 use super::dispatch;
+use crate::commands::grooming_templates::read_grooming_template;
 use tauri::Emitter;
+
+/// Build a "=== FORMAT TEMPLATES ===" block for the grooming agent's system
+/// prompt, listing whichever of the acceptance-criteria / steps-to-reproduce
+/// templates the user has configured. Returns an empty string if neither is
+/// set, so the block is simply absent from the prompt.
+fn format_templates_block(app: &tauri::AppHandle) -> String {
+    let ac = read_grooming_template(app, "acceptance_criteria");
+    let str_ = read_grooming_template(app, "steps_to_reproduce");
+    if ac.is_none() && str_.is_none() {
+        return String::new();
+    }
+    let mut out = String::from(
+        "\n\n=== FORMAT TEMPLATES ===\n\
+         When you draft text for the `suggested` field of an edit, follow the \
+         format shown below for the matching `field`. Match the structure, \
+         bullet style, numbering, and line breaks exactly — the user relies on \
+         a consistent format across tickets.\n",
+    );
+    if let Some(ac) = ac {
+        out.push_str("\n--- Format for field `acceptance_criteria` ---\n");
+        out.push_str(ac.trim_end());
+        out.push('\n');
+    }
+    if let Some(str_) = str_ {
+        out.push_str("\n--- Format for field `steps_to_reproduce` ---\n");
+        out.push_str(str_.trim_end());
+        out.push('\n');
+    }
+    out
+}
 
 /// Agent 1a — Grooming File Probe: ask Claude which files to read before full grooming.
 /// Returns JSON: { "files": ["path/to/file", ...], "grep_patterns": ["pattern", ...] }
@@ -71,7 +102,7 @@ pub async fn run_grooming_agent(
         format!("\n\n=== RELEVANT FILE CONTENTS (read from codebase) ===\n{file_contents}")
     };
 
-    let system = "You are a grooming agent helping a senior engineer understand and refine a JIRA ticket. \
+    let base_system = "You are a grooming agent helping a senior engineer understand and refine a JIRA ticket. \
         You have been given the ticket details and relevant source code from the codebase. \
         Your job is twofold:\n\
         1. Analyse the ticket and produce a structured grooming summary\n\
@@ -110,16 +141,30 @@ pub async fn run_grooming_agent(
         Important:\n\
         - Only raise a clarifying_question when you genuinely cannot determine the answer from the code or ticket\n\
         - Prefer drafting a concrete suggestion (even if tentative) over asking a question\n\
+        - If the ticket title (summary) is vague, too generic, or does not clearly convey the scope \
+          or intent of the work, suggest a concrete improved title using field `summary` — be specific \
+          and concise (under 80 characters). Only suggest a title change if it genuinely adds clarity; \
+          do not change titles that are already specific\n\
         - If the ticket is a Bug and has no Steps to Reproduce / Observed / Expected Behavior, always suggest them\n\
         - If the ticket is a Story/Task and has no Acceptance Criteria, always suggest them\n\
-        - Keep each suggested text concise and actionable";
+        - Keep each suggested text concise and actionable\n\
+        - Only include ONE suggested_edit per field value — if you have multiple improvements for \
+          the same field (e.g. multiple acceptance criteria points), consolidate them into a single \
+          edit with all content merged. Never produce two suggested_edits with the same `field`.";
+
+    let templates_block = format_templates_block(&app);
+    let system = if templates_block.is_empty() {
+        base_system.to_string()
+    } else {
+        format!("{base_system}{templates_block}")
+    };
 
     let user = format!("Groom this ticket:\n\n{ticket_text}{file_block}");
     let result = dispatch::dispatch_streaming(
         &app,
         &client,
         &api_key,
-        system,
+        &system,
         &user,
         3000,
         "grooming-stream",
@@ -146,6 +191,7 @@ pub async fn run_grooming_chat_turn(
     history_json: String,
 ) -> Result<String, String> {
     let (client, api_key) = dispatch::llm_client().await?;
+    let templates_block = format_templates_block(&app);
     let system = format!(
         "You are a grooming agent leading a structured review of a JIRA ticket with a senior engineer. \
         The ticket details, relevant code context, and current state of suggested edits are below.\n\n\
@@ -177,7 +223,7 @@ pub async fn run_grooming_chat_turn(
         - updated_edits may be empty if no changes are needed this turn\n\
         - To remove a suggestion, omit its id from updated_edits (the frontend will not delete it — include it with a note in reasoning if it should be withdrawn)\n\
         - Keep the message focused and concise\n\
-        - Even if the engineer says only 'yes', 'ok', or 'thanks', you must still return the full JSON object"
+        - Even if the engineer says only 'yes', 'ok', or 'thanks', you must still return the full JSON object{templates_block}"
     );
     dispatch::dispatch_multi_streaming_with_tools(
         &app,

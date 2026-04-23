@@ -42,16 +42,51 @@ const DAN: JiraUser = {
   emailAddress: "dan@example.com",
 };
 
+// Sprint 24 — Platform Reliability team (separate from sprint 23 team)
+const EVE: JiraUser = {
+  accountId: "user-6",
+  displayName: "Eve Lambert",
+  emailAddress: "eve@example.com",
+};
+
+const FRANK: JiraUser = {
+  accountId: "user-7",
+  displayName: "Frank Torres",
+  emailAddress: "frank@example.com",
+};
+
+const GRACE: JiraUser = {
+  accountId: "user-8",
+  displayName: "Grace Kim",
+  emailAddress: "grace@example.com",
+};
+
+const HENRY: JiraUser = {
+  accountId: "user-9",
+  displayName: "Henry Walsh",
+  emailAddress: "henry@example.com",
+};
+
 // ── Active sprint ─────────────────────────────────────────────────────────────
 
 export const ACTIVE_SPRINT: JiraSprint = {
   id: 23,
   name: "Sprint 23 — Q2 Feature Push",
   state: "active",
-  startDate: "2026-03-31T09:00:00.000Z",
-  endDate: "2026-04-14T17:00:00.000Z",
+  startDate: "2020-01-01T09:00:00.000Z",
+  endDate: "2040-01-01T17:00:00.000Z",
   completeDate: null,
   goal: "Deliver user settings overhaul, fix search pagination, and land the file upload validation hardening.",
+};
+
+export const ACTIVE_SPRINT_2: JiraSprint = {
+  id: 24,
+  name: "Sprint 24 — Platform Reliability",
+  state: "active",
+  startDate: "2020-01-01T09:00:00.000Z",
+  endDate: "2040-01-01T17:00:00.000Z",
+  completeDate: null,
+  goal: "Improve observability, reduce p99 latency, and address top error-budget burn alerts.",
 };
 
 // ── Issues ────────────────────────────────────────────────────────────────────
@@ -302,7 +337,7 @@ export const MY_SPRINT_ISSUES: JiraIssue[] = [
     "PROJ-142",
     "Add dark mode and accent colour support to user settings",
     "In Progress",
-    "indeterminate",
+    "In Progress",
     ME,
     5,
     "Story",
@@ -326,8 +361,8 @@ Apply via CSS variables on the root element. Use localStorage for persistence.`,
   makeIssue(
     "PROJ-145",
     "Fix pagination bug: search results skip page 2 under high load",
-    "To Do",
-    "new",
+    "Done",
+    "Done",
     ME,
     3,
     "Bug",
@@ -350,7 +385,7 @@ h2. Acceptance Criteria
     "PROJ-148",
     "Implement file upload size and MIME type validation",
     "In Review",
-    "indeterminate",
+    "In Progress",
     ME,
     2,
     "Story",
@@ -379,7 +414,7 @@ const ALL_SPRINT_ISSUES: JiraIssue[] = [
     "PROJ-141",
     "Migrate authentication middleware to JWT RS256",
     "Done",
-    "done",
+    "Done",
     ALICE,
     8,
     "Story",
@@ -393,7 +428,7 @@ const ALL_SPRINT_ISSUES: JiraIssue[] = [
     "PROJ-143",
     "Add rate limiting to public API endpoints",
     "In Review",
-    "indeterminate",
+    "In Progress",
     ALICE,
     5,
     "Story",
@@ -407,7 +442,7 @@ const ALL_SPRINT_ISSUES: JiraIssue[] = [
     "PROJ-144",
     "Refactor database connection pool configuration",
     "Done",
-    "done",
+    "Done",
     BOB,
     3,
     "Task",
@@ -421,7 +456,7 @@ const ALL_SPRINT_ISSUES: JiraIssue[] = [
     "PROJ-146",
     "Write integration tests for the billing webhook handler",
     "In Progress",
-    "indeterminate",
+    "In Progress",
     BOB,
     5,
     "Story",
@@ -434,8 +469,8 @@ const ALL_SPRINT_ISSUES: JiraIssue[] = [
   makeIssue(
     "PROJ-147",
     "Dashboard: add weekly active user chart",
-    "To Do",
-    "new",
+    "In Progress",
+    "In Progress",
     CAROL,
     3,
     "Story",
@@ -449,7 +484,7 @@ const ALL_SPRINT_ISSUES: JiraIssue[] = [
     "PROJ-149",
     "BLOCKED: Upgrade third-party OAuth provider SDK",
     "In Progress",
-    "indeterminate",
+    "In Progress",
     CAROL,
     5,
     "Story",
@@ -462,8 +497,8 @@ const ALL_SPRINT_ISSUES: JiraIssue[] = [
   makeIssue(
     "PROJ-150",
     "Set up staging environment smoke tests in CI",
-    "To Do",
-    "new",
+    "In Review",
+    "In Progress",
     DAN,
     3,
     "Task",
@@ -477,7 +512,7 @@ const ALL_SPRINT_ISSUES: JiraIssue[] = [
     "PROJ-151",
     "Improve error messages for form validation failures",
     "Done",
-    "done",
+    "Done",
     DAN,
     2,
     "Story",
@@ -551,7 +586,7 @@ const makeSprintIssues = (
       `PROJ-${100 + sprintId * 10 + i}`,
       `Sprint ${sprintId} task ${i + 1}`,
       isDone ? "Done" : statuses[i % statuses.length],
-      isDone ? "done" : "indeterminate",
+      isDone ? "Done" : "In Progress",
       [ME, ALICE, BOB, CAROL, DAN][i % 5],
       [2, 3, 5, 8, 3, 2, 5][i % 7],
       "Story",
@@ -561,8 +596,140 @@ const makeSprintIssues = (
   });
 };
 
+const SPRINT_24_ISSUES: JiraIssue[] = [
+  makeIssue(
+    "PROJ-201",
+    "Set up distributed tracing with OpenTelemetry across all services",
+    "Done",
+    "Done",
+    EVE,
+    8,
+    "Story",
+    "High",
+    `Instrument all backend services with OpenTelemetry SDK. Export traces to our Jaeger instance. Ensure trace context propagates across service boundaries via HTTP headers.`,
+    ["observability", "platform"],
+    "PROJ-190",
+    "Observability Track"
+  ),
+  makeIssue(
+    "PROJ-202",
+    "Expose Prometheus metrics endpoint on API gateway",
+    "Done",
+    "Done",
+    FRANK,
+    5,
+    "Story",
+    "High",
+    `Add a /metrics endpoint to the API gateway exposing request rate, error rate, and latency histograms per route. Scrape interval: 15s.`,
+    ["observability", "platform"],
+    "PROJ-190",
+    "Observability Track"
+  ),
+  makeIssue(
+    "PROJ-203",
+    "Fix N+1 query in user profile endpoint",
+    "Done",
+    "Done",
+    GRACE,
+    3,
+    "Bug",
+    "High",
+    `GET /users/:id currently fires one SQL query per role association. Replace with a single JOIN. p99 for this endpoint is 420ms; target is under 80ms.`,
+    ["performance", "database"],
+    null,
+    null
+  ),
+  makeIssue(
+    "PROJ-204",
+    "Standardise structured logging format across all services",
+    "In Review",
+    "In Progress",
+    HENRY,
+    5,
+    "Task",
+    "Medium",
+    `All services should emit JSON logs with consistent fields: timestamp, level, service, trace_id, span_id, message. Replace ad-hoc string logs. Update log shipper config to parse new format.`,
+    ["observability", "platform"],
+    "PROJ-190",
+    "Observability Track"
+  ),
+  makeIssue(
+    "PROJ-205",
+    "Wire p99 latency SLO breach alerts into PagerDuty",
+    "In Review",
+    "In Progress",
+    EVE,
+    3,
+    "Task",
+    "High",
+    `Create Prometheus alerting rules for p99 > 200ms sustained over 5 minutes. Route to the on-call PagerDuty service. Include runbook link in alert annotations.`,
+    ["observability", "alerting"],
+    "PROJ-190",
+    "Observability Track"
+  ),
+  makeIssue(
+    "PROJ-206",
+    "Cache user session lookups in Redis to cut DB load",
+    "In Progress",
+    "In Progress",
+    FRANK,
+    5,
+    "Story",
+    "Medium",
+    `Session validation currently hits Postgres on every request. Cache session tokens in Redis with a 15-minute TTL. Invalidate on logout and password change.`,
+    ["performance", "caching"],
+    null,
+    null
+  ),
+  makeIssue(
+    "PROJ-207",
+    "Reduce connection pool contention in reporting service",
+    "In Progress",
+    "In Progress",
+    GRACE,
+    5,
+    "Bug",
+    "High",
+    `The reporting service exhausts its Postgres pool under moderate load, causing 503s for other consumers. Investigate query duration and pool sizing. Add connection wait-time metrics.`,
+    ["performance", "database"],
+    null,
+    null
+  ),
+  makeIssue(
+    "PROJ-208",
+    "Define and document SLOs for all public API endpoints",
+    "To Do",
+    "new",
+    HENRY,
+    3,
+    "Task",
+    "Medium",
+    `Write SLO targets (availability, p99 latency, error rate) for each public endpoint. Publish to the internal runbook. Align with on-call team before finalising.`,
+    ["observability", "documentation"],
+    "PROJ-190",
+    "Observability Track"
+  ),
+  makeIssue(
+    "PROJ-209",
+    "Audit and retire unused background jobs",
+    "To Do",
+    "new",
+    EVE,
+    2,
+    "Task",
+    "Low",
+    `Several Sidekiq jobs appear to have zero enqueue rate over the past 90 days. Confirm they are safe to remove, delete the worker classes, and remove the schedules from config.`,
+    ["cleanup", "platform"],
+    null,
+    null
+  ),
+];
+
+const SPRINT_23_ISSUES: JiraIssue[] = ALL_SPRINT_ISSUES;
+
 export const SPRINT_ISSUES_BY_ID: Record<number, JiraIssue[]> = {
-  23: ALL_SPRINT_ISSUES,
+  23: SPRINT_23_ISSUES,
+  24: SPRINT_24_ISSUES,
   22: makeSprintIssues(22, 9, 11),
   21: makeSprintIssues(21, 8, 10),
   20: makeSprintIssues(20, 10, 12),

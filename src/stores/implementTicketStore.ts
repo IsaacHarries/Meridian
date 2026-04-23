@@ -35,6 +35,7 @@ import {
   getIssue,
   loadAgentSkills,
   syncWorktree,
+  syncGroomingWorktree,
   getNonSecretConfig,
   runGroomingFileProbe,
   runGroomingAgent,
@@ -57,8 +58,8 @@ import {
   updateJiraIssue,
   saveKnowledgeEntry,
   parseAgentJson,
-  readRepoFile,
-  grepRepoFiles,
+  readGroomingFile,
+  grepGroomingFiles,
 } from "@/lib/tauri";
 
 export type { SkillType };
@@ -765,12 +766,16 @@ export const useImplementTicketStore = create<ImplementTicketState>()(
       }
       set({ skills });
 
-      // Sync worktree
+      // Sync worktrees
       try {
         const config = await getNonSecretConfig();
         if (config["repo_worktree_path"]) {
           const info = await syncWorktree();
           set({ worktreeInfo: info });
+        }
+        // Pull latest on the grooming worktree so file reads are from develop
+        if (config["grooming_worktree_path"] || config["repo_worktree_path"]) {
+          await syncGroomingWorktree();
         }
       } catch (e) {
         console.warn("[Meridian] Worktree sync failed:", e);
@@ -823,7 +828,7 @@ export const useImplementTicketStore = create<ImplementTicketState>()(
                     filePath,
                   );
                   set({ groomingProgress: `Reading ${filePath}…` });
-                  const content = await readRepoFile(filePath);
+                  const content = await readGroomingFile(filePath);
                   const chunk = `--- ${filePath} ---\n${content}\n`;
                   if (totalSize + chunk.length > MAX_TOTAL) {
                     console.log(
@@ -852,7 +857,7 @@ export const useImplementTicketStore = create<ImplementTicketState>()(
                   set({
                     groomingProgress: `Searching codebase for "${pattern}"…`,
                   });
-                  const lines = await grepRepoFiles(pattern);
+                  const lines = await grepGroomingFiles(pattern);
                   if (lines.length === 0) continue;
                   const chunk = `--- grep: ${pattern} ---\n${lines.join("\n")}\n`;
                   if (totalSize + chunk.length > MAX_TOTAL) {

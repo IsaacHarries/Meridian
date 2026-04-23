@@ -1,32 +1,12 @@
-use crate::storage::preferences::get_pref;
+use crate::storage::preferences::resolve_data_dir;
 use std::fs;
 use std::path::PathBuf;
-use tauri::Manager;
 
-/// Returns the sprint reports directory — user-configured or defaults to
-/// `app_data_dir/sprint_reports/`.
 fn reports_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
-    let dir = if let Some(custom) = get_pref("sprint_reports_dir") {
-        let p = PathBuf::from(custom.trim());
-        if p.as_os_str().is_empty() {
-            default_dir(app)?
-        } else {
-            p
-        }
-    } else {
-        default_dir(app)?
-    };
+    let dir = resolve_data_dir(app)?.join("sprint_reports");
     fs::create_dir_all(&dir)
         .map_err(|e| format!("Cannot create sprint reports dir '{}': {e}", dir.display()))?;
     Ok(dir)
-}
-
-fn default_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
-    let base = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("Cannot resolve app data dir: {e}"))?;
-    Ok(base.join("sprint_reports"))
 }
 
 /// Persist a sprint report to disk. `data_json` is the serialised SprintData

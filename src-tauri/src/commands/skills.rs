@@ -1,17 +1,12 @@
 use std::collections::HashMap;
 use std::fs;
-use tauri::Manager;
+use crate::storage::preferences::resolve_data_dir;
 
 /// Valid skill type keys.
 const SKILL_TYPES: &[&str] = &["grooming", "patterns", "implementation", "review"];
 
 fn skills_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
-    let dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("Cannot resolve app data dir: {e}"))?;
-    fs::create_dir_all(&dir).map_err(|e| format!("Cannot create data dir: {e}"))?;
-    Ok(dir.join("skills.json"))
+    Ok(resolve_data_dir(app)?.join("skills.json"))
 }
 
 fn read_skills(app: &tauri::AppHandle) -> Result<HashMap<String, String>, String> {

@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback, useRef } from "react";
 import { JiraTicketLink } from "@/components/JiraTicketLink";
+import { TrendAnalysisPanel } from "@/components/TrendAnalysisPanel";
 import {
   ArrowLeft,
   RefreshCw,
@@ -516,7 +517,7 @@ function AiSummaryPanel({
         {state === "loading" && (
           <div className="flex items-center gap-2 text-sm text-muted-foreground py-4 justify-center">
             <Loader2 className="h-4 w-4 animate-spin" />
-            Claude is analysing the sprint…
+            The AI is analysing the sprint…
           </div>
         )}
         {state === "error" && (
@@ -851,7 +852,7 @@ export function RetrospectivesScreen({ onBack }: RetrospectivesScreenProps) {
 
         {/* Trend analysis */}
         {sprints.length > 1 && (
-          <div className="border-t pt-6 space-y-3">
+          <div className="border-t pt-6 space-y-4">
             <div className="flex items-center justify-between">
               <h2 className="text-sm font-medium text-muted-foreground uppercase tracking-wider">
                 Trend Analysis
@@ -874,6 +875,8 @@ export function RetrospectivesScreen({ onBack }: RetrospectivesScreenProps) {
                 Load at least 2 sprints to see trend data.
               </p>
             )}
+
+            <TrendAnalysisPanel sprints={sprints} />
           </div>
         )}
       </main>

@@ -602,9 +602,12 @@ export async function getAllActiveSprintIssues(): Promise<
   Array<[JiraSprint, JiraIssue[]]>
 > {
   if (isMockMode()) {
-    const { ACTIVE_SPRINT, SPRINT_ISSUES_BY_ID } = await import("./mockData");
+    const { ACTIVE_SPRINT, ACTIVE_SPRINT_2, SPRINT_ISSUES_BY_ID } = await import("./mockData");
     if (!ACTIVE_SPRINT) return [];
-    return [[ACTIVE_SPRINT, SPRINT_ISSUES_BY_ID[23] ?? []]];
+    return [
+      [ACTIVE_SPRINT, SPRINT_ISSUES_BY_ID[23] ?? []],
+      [ACTIVE_SPRINT_2, SPRINT_ISSUES_BY_ID[24] ?? []],
+    ];
   }
   return invoke<Array<[JiraSprint, JiraIssue[]]>>(
     "get_all_active_sprint_issues",
@@ -706,6 +709,109 @@ export async function listCachedSprintIds(): Promise<number[]> {
 export async function getSprintReportsDir(): Promise<string> {
   if (isMockMode()) return "(mock mode)";
   return invoke<string>("get_sprint_reports_dir");
+}
+
+// ── Trend analyses (multi-sprint AI) ──────────────────────────────────────────
+
+/** One sprint summary that the trend analysis covered — enough to rehydrate labels in the UI. */
+export interface TrendAnalysisSprintRef {
+  id: number;
+  name: string;
+  startDate: string | null;
+  endDate: string | null;
+}
+
+export interface TrendAnalysisRecord {
+  id: string;
+  createdAt: string;
+  sprints: TrendAnalysisSprintRef[];
+  markdown: string;
+}
+
+/** Trimmed-down shape sent to the Rust trend agent (one entry per sprint). */
+export interface TrendSprintInput {
+  name: string;
+  startDate: string | null;
+  endDate: string | null;
+  goal: string | null;
+  issues: TrendIssueInput[];
+  /** PRs already filtered to this sprint's window by the caller. */
+  prs: TrendPrInput[];
+}
+
+export interface TrendIssueInput {
+  key: string;
+  summary: string;
+  status: string;
+  statusCategory: string;
+  issueType: string;
+  priority: string | null;
+  storyPoints: number | null;
+  assignee: string | null;
+  completedInSprint: boolean | null;
+  labels: string[];
+}
+
+export interface TrendPrInput {
+  id: number;
+  title: string;
+  state: string;
+  author: string | null;
+  createdOn: string;
+  updatedOn: string;
+  /** Hours between createdOn and updatedOn, pre-computed client-side. */
+  cycleHours: number | null;
+  commentCount: number;
+}
+
+export async function generateMultiSprintTrends(
+  sprints: TrendSprintInput[],
+): Promise<string> {
+  if (isMockClaudeMode()) {
+    const { MOCK_SPRINT_RETRO_MARKDOWN } = await import("./mockClaudeResponses");
+    return MOCK_SPRINT_RETRO_MARKDOWN;
+  }
+  return invokeWithLlmCheck<string>("generate_multi_sprint_trends", {
+    sprints,
+  });
+}
+
+export async function saveTrendAnalysis(
+  record: TrendAnalysisRecord,
+): Promise<void> {
+  if (isMockMode()) return;
+  return invoke<void>("save_trend_analysis", {
+    id: record.id,
+    dataJson: JSON.stringify(record),
+  });
+}
+
+export async function loadTrendAnalysis(
+  id: string,
+): Promise<TrendAnalysisRecord | null> {
+  if (isMockMode()) return null;
+  const raw = await invoke<string | null>("load_trend_analysis", { id });
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw) as TrendAnalysisRecord;
+  } catch {
+    return null;
+  }
+}
+
+export async function listTrendAnalyses(): Promise<string[]> {
+  if (isMockMode()) return [];
+  return invoke<string[]>("list_trend_analyses");
+}
+
+export async function deleteTrendAnalysis(id: string): Promise<void> {
+  if (isMockMode()) return;
+  return invoke<void>("delete_trend_analysis", { id });
+}
+
+export async function getDataDir(): Promise<string> {
+  if (isMockMode()) return "(mock mode)";
+  return invoke<string>("get_data_dir");
 }
 
 export async function getFutureSprints(limit: number): Promise<JiraSprint[]> {
@@ -1526,6 +1632,34 @@ export async function readRepoFile(path: string): Promise<string> {
   return invoke<string>("read_repo_file", { path });
 }
 
+/** Validate the grooming worktree (falls back to main worktree). */
+export async function validateGroomingWorktree(): Promise<WorktreeInfo> {
+  return invoke<WorktreeInfo>("validate_grooming_worktree");
+}
+
+/** Pull latest from origin/<base_branch> in the grooming worktree. */
+export async function syncGroomingWorktree(): Promise<WorktreeInfo> {
+  return invoke<WorktreeInfo>("sync_grooming_worktree");
+}
+
+/** Glob files in the grooming worktree (falls back to main worktree). */
+export async function globGroomingFiles(pattern: string): Promise<string[]> {
+  return invoke<string[]>("glob_grooming_files", { pattern });
+}
+
+/** Grep files in the grooming worktree (falls back to main worktree). */
+export async function grepGroomingFiles(
+  pattern: string,
+  path?: string,
+): Promise<string[]> {
+  return invoke<string[]>("grep_grooming_files", { pattern, path: path ?? null });
+}
+
+/** Read a file from the grooming worktree (falls back to main worktree). */
+export async function readGroomingFile(path: string): Promise<string> {
+  return invoke<string>("read_grooming_file", { path });
+}
+
 /** Get the git diff of the worktree against the configured base branch. */
 export async function getRepoDiff(): Promise<string> {
   return invoke<string>("get_repo_diff");
@@ -1756,6 +1890,38 @@ export async function getPrTemplatePath(): Promise<string> {
 /** Open the containing folder in the OS file manager. */
 export async function revealPrTemplateDir(): Promise<void> {
   return invoke<void>("reveal_pr_template_dir");
+}
+
+// ── Grooming format templates ────────────────────────────────────────────────
+
+/** Named grooming format templates. Stored as Markdown files alongside the PR template. */
+export type GroomingTemplateKind = "acceptance_criteria" | "steps_to_reproduce";
+
+/** Read a grooming format template. Returns "" if not yet set. */
+export async function loadGroomingTemplate(
+  kind: GroomingTemplateKind,
+): Promise<string> {
+  return invoke<string>("load_grooming_template", { kind });
+}
+
+/** Save a grooming format template. Empty content clears it. */
+export async function saveGroomingTemplate(
+  kind: GroomingTemplateKind,
+  content: string,
+): Promise<void> {
+  return invoke<void>("save_grooming_template", { kind, content });
+}
+
+/** Absolute path to a grooming template file on disk (for display in Settings). */
+export async function getGroomingTemplatePath(
+  kind: GroomingTemplateKind,
+): Promise<string> {
+  return invoke<string>("get_grooming_template_path", { kind });
+}
+
+/** Open the templates folder in the OS file manager. */
+export async function revealGroomingTemplatesDir(): Promise<void> {
+  return invoke<void>("reveal_grooming_templates_dir");
 }
 
 export function parseAgentJson<T>(raw: string): T | null {

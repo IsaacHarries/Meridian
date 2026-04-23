@@ -572,7 +572,7 @@ function SprintOverview({
         <div className="flex items-start justify-between gap-4">
           <div>
             <CardTitle className="text-base">
-              {sprint?.name ?? "No active sprint"}
+              {sprint?.name ?? "All Active Sprints"}
             </CardTitle>
             {sprint && (
               <p className="text-xs text-muted-foreground mt-0.5">
@@ -1048,7 +1048,7 @@ function TeamPerformanceCard({
 
 export function SprintDashboardScreen({ onBack }: SprintDashboardScreenProps) {
   const [allData, setAllData] = useState<AllSprintsData | null>(null);
-  const [selectedSprintIndex, setSelectedSprintIndex] = useState(0);
+  const [selectedSprintIndex, setSelectedSprintIndex] = useState<number | "all">(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -1100,16 +1100,25 @@ export function SprintDashboardScreen({ onBack }: SprintDashboardScreenProps) {
   }, [load]);
 
   // Derive the currently-selected sprint's data
-  const selected = allData?.sprints[selectedSprintIndex] ?? null;
-  const data: DashboardData | null = selected
-    ? {
-        sprint: selected.sprint,
-        issues: selected.issues,
-        openPrs: allData!.openPrs,
-        mergedPrs: allData!.mergedPrs,
-        prTasks: allData!.prTasks,
-      }
-    : null;
+  const selected = selectedSprintIndex === "all" ? null : (allData?.sprints[selectedSprintIndex] ?? null);
+  const data: DashboardData | null =
+    selectedSprintIndex === "all" && allData
+      ? {
+          sprint: null,
+          issues: allData.sprints.flatMap((s) => s.issues),
+          openPrs: allData.openPrs,
+          mergedPrs: allData.mergedPrs,
+          prTasks: allData.prTasks,
+        }
+      : selected
+      ? {
+          sprint: selected.sprint,
+          issues: selected.issues,
+          openPrs: allData!.openPrs,
+          mergedPrs: allData!.mergedPrs,
+          prTasks: allData!.prTasks,
+        }
+      : null;
 
   const days = data?.sprint ? daysRemaining(data.sprint.endDate) : null;
   const risks = data ? buildRisks(data.issues, data.openPrs, days) : [];
@@ -1172,6 +1181,16 @@ export function SprintDashboardScreen({ onBack }: SprintDashboardScreenProps) {
             {/* Sprint selector tabs — only shown when there are multiple active sprints */}
             {multiSprint && (
               <div className="flex gap-2 flex-wrap">
+                <button
+                  onClick={() => setSelectedSprintIndex("all")}
+                  className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors border ${
+                    selectedSprintIndex === "all"
+                      ? "bg-primary text-primary-foreground border-primary"
+                      : "bg-background text-muted-foreground border-border hover:bg-muted"
+                  }`}
+                >
+                  All Sprints
+                </button>
                 {allData.sprints.map(({ sprint }, idx) => (
                   <button
                     key={sprint.id}
