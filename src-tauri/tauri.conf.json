@@ -33,6 +33,10 @@
     ],
     "resources": {
       "../src-sidecar/dist/bundle.cjs": "bundle.cjs"
+    },
+    "macOS": {
+      "frameworks": [],
+      "minimumSystemVersion": "11.0"
     }
   }
 }

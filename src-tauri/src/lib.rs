@@ -6,6 +6,7 @@ pub mod llms;
 pub mod storage;
 
 use commands::{
+    active_meeting_id,
     add_custom_copilot_model,
     add_custom_gemini_model,
     analyze_pr_comments,
@@ -13,6 +14,7 @@ use commands::{
     assess_ticket_quality,
     cancel_review,
     chat_address_pr,
+    chat_meeting,
     chat_pr_review,
     checkout_pr_address_branch,
     checkout_pr_review_branch,
@@ -28,6 +30,7 @@ use commands::{
     delete_agent_skill,
     delete_credential,
     delete_knowledge_entry,
+    delete_meeting,
     delete_pr_comment,
     delete_preference,
     delete_store_cache,
@@ -55,6 +58,7 @@ use commands::{
     get_issue,
     get_jira_fields,
     get_local_models,
+    get_meetings_dir,
     // Bitbucket data commands
     get_merged_prs,
     get_my_open_prs,
@@ -66,6 +70,7 @@ use commands::{
     get_pr_address_diff,
     get_pr_comments,
     get_pr_diff,
+    get_pr_file_content,
     get_pr_tasks,
     get_pr_template_path,
     // Preferences (plain JSON, survives cache clears)
@@ -101,15 +106,21 @@ use commands::{
     load_knowledge_entries,
     // Sprint reports (disk cache)
     list_cached_sprint_ids,
+    list_meetings,
+    list_microphones,
     list_trend_analyses,
+    list_whisper_models,
+    load_meeting,
     load_sprint_report,
     load_trend_analysis,
     load_store_cache,
+    pause_meeting_recording,
     ping_anthropic,
     ping_copilot,
     ping_gemini,
     post_pr_comment,
     push_pr_address_branch,
+    resume_meeting_recording,
     push_worktree_branch,
     squash_worktree_commits,
 
@@ -119,6 +130,7 @@ use commands::{
     remove_custom_gemini_model,
     request_changes_pr,
     resolve_pr_task,
+    update_pr_task,
     review_pr_agent as review_pr,
     run_checkpoint_chat_turn,
     run_checkpoint_action,
@@ -142,9 +154,11 @@ use commands::{
     save_agent_skill,
     save_credential,
     save_knowledge_entry,
+    save_meeting,
     save_sprint_report,
     save_trend_analysis,
     delete_trend_analysis,
+    download_whisper_model,
     // Store cache (file-backed persistence for Zustand stores)
     save_store_cache,
     search_jira_issues,
@@ -152,6 +166,9 @@ use commands::{
     start_claude_oauth,
     start_copilot_oauth,
     start_gemini_oauth,
+    start_meeting_recording,
+    stop_meeting_recording,
+    summarize_meeting,
     sync_grooming_worktree,
     sync_worktree,
     validate_grooming_worktree,
@@ -298,6 +315,7 @@ pub fn run() {
             get_my_open_prs,
             get_pr,
             get_pr_diff,
+            get_pr_file_content,
             get_pr_comments,
             get_pr_tasks,
             approve_pr,
@@ -308,6 +326,7 @@ pub fn run() {
             create_pr_task,
             create_pull_request,
             resolve_pr_task,
+            update_pr_task,
             delete_pr_comment,
             update_pr_comment,
             // Knowledge base
@@ -380,6 +399,22 @@ pub fn run() {
             push_worktree_branch,
             // URL fetch
             fetch_url_content,
+            // Meetings
+            list_microphones,
+            list_whisper_models,
+            download_whisper_model,
+            start_meeting_recording,
+            pause_meeting_recording,
+            resume_meeting_recording,
+            stop_meeting_recording,
+            active_meeting_id,
+            save_meeting,
+            load_meeting,
+            list_meetings,
+            delete_meeting,
+            get_meetings_dir,
+            summarize_meeting,
+            chat_meeting,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -140,6 +140,13 @@ fn split_review_into_chunks(review_text: &str, chunk_chars: usize) -> Vec<String
 const CHUNK_SYSTEM: &str = "You are a senior engineer reviewing one chunk of a PR diff. \
     Identify REAL issues a human expert would flag — not noise.\n\
     \n\
+    === REVIEW POSTURE ===\n\
+    You are reviewing work from a senior engineer who WANTS critical feedback. \
+    Under-reporting is a failure mode: if a human expert reviewing by hand would comment on \
+    something, you should too. The cost of a nitpick is small; the cost of shipping \
+    non-idiomatic or fragile code that spreads through the codebase is large. Prefer raising a \
+    well-grounded non_blocking finding over suppressing it.\n\
+    \n\
     Return ONLY a valid JSON array of findings — no markdown, no text outside the JSON.\n\
     Each finding: { \"lens\": \"acceptance_criteria\"|\"security\"|\"logic\"|\"quality\"|\"testing\",\n\
       \"severity\": \"blocking\"|\"non_blocking\"|\"nitpick\",\n\
@@ -152,7 +159,9 @@ const CHUNK_SYSTEM: &str = "You are a senior engineer reviewing one chunk of a P
     - blocking: demonstrably wrong — causes bugs, crashes, data loss, or security vulnerabilities.\n\
     - non_blocking: real concern worth fixing, but no immediate breakage.\n\
     - nitpick: style, naming, minor readability.\n\
-    Code that compiles and runs correctly is never blocking on style grounds alone.\n\
+    Compilable code is not blocking on style grounds alone, but genuine anti-patterns and \
+    non-idiomatic code for the language/framework in use SHOULD be surfaced as non_blocking — \
+    don't silently accept code just because it runs.\n\
     \n\
     === LENS RULES ===\n\
     \n\
@@ -166,6 +175,19 @@ const CHUNK_SYSTEM: &str = "You are a senior engineer reviewing one chunk of a P
     - Flag: typos in identifiers/strings/comments; mixed indentation within a file; missing error \
       handling; O(n) scans where direct lookup is available; hard-to-follow structure; new public \
       API without doc comments.\n\
+    - IDIOMATIC CODE: Infer the language and primary framework from file extensions, imports, and \
+      surrounding patterns in the full file contents. Flag code that works but isn't idiomatic for \
+      that stack: manual loops where an iterator/comprehension is standard (Rust iter chains, TS \
+      map/filter/reduce, Python comprehensions); unnecessary allocations/clones/re-renders; \
+      imperative patterns where the ecosystem prefers declarative; inconsistent naming vs. the \
+      surrounding code; non-standard error handling (swallowed errors, .unwrap()/! where Result \
+      propagation is idiomatic, throwing generic Error); framework anti-patterns (React: hooks \
+      inside conditionals, missing deps, missing keys, state mutations; Rust: needless clones, \
+      ignoring Result, blocking calls in async; TS: any/ts-ignore without justification, missing \
+      await on Promise, loose types on exported APIs; Go: ignored errors, missing defer). \
+      Severity: non_blocking by default for idiomatic drift; nitpick only for trivial style; \
+      blocking only when the anti-pattern causes a concrete bug (e.g. React hook-in-condition \
+      that breaks render order).\n\
     - Do NOT flag test framework function choice (test/it/describe/expect etc.) as inconsistency.\n\
     - DUPLICATE/REDUNDANT CODE: only raise this if you can cite the [Lnnn] labels of BOTH \
       occurrences. A variable fetched on one line and filtered/transformed on another is NOT a \
@@ -211,6 +233,13 @@ const CHUNK_SYSTEM: &str = "You are a senior engineer reviewing one chunk of a P
 
 const SYNTHESIS_SYSTEM: &str = "You are a senior engineer synthesising a thorough, balanced \
     pull request review. Produce a final, calibrated review report.\n\
+    \n\
+    === REVIEW POSTURE ===\n\
+    You are reviewing work from a senior engineer who WANTS critical feedback. Under-reporting \
+    is a failure mode: if a human expert reviewing by hand would comment on something, it \
+    belongs in the report. The cost of a nitpick is small; the cost of shipping non-idiomatic \
+    or fragile code that spreads is large. Preserve well-grounded non_blocking findings from \
+    the chunk reviews rather than pruning them for tidiness.\n\
     \n\
     Return ONLY a valid JSON object — no markdown fences, no text outside the JSON.\n\
     Schema:\n\
@@ -278,6 +307,10 @@ const SYNTHESIS_SYSTEM: &str = "You are a senior engineer synthesising a thoroug
     \n\
     QUALITY lens:\n\
     - DROP findings about test framework function choice (test/it/describe/expect etc.).\n\
+    - PRESERVE idiomaticity findings (non-idiomatic loops, framework anti-patterns, \
+      inconsistent error handling, unnecessary allocations/clones, React hook misuse, missing \
+      awaits, etc.) at their chunk-assigned severity. These are legitimate quality signals — \
+      do not downgrade them unless the chunk finding lacks concrete grounding.\n\
     \n\
     SECURITY lens:\n\
     - DROP findings whose file is listed under TEST / SPEC FILES IN THIS DIFF.\n\

@@ -301,6 +301,13 @@ const WORKFLOW_CARDS: {
     description: "AI reviews your PR's tasks and comments and applies fixes in a worktree",
     ready: true,
   },
+  {
+    id: "meetings",
+    emoji: "🎙️",
+    title: "Transcribe Meeting",
+    description: "Transcribe meetings locally with whisper and ask an AI about past conversations",
+    ready: true,
+  },
 ];
 
 

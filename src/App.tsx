@@ -8,6 +8,7 @@ import { useWorkloadAlertStore, POLL_INTERVAL_MS } from "@/stores/workloadAlertS
 import { BackgroundRenderer, getBackgroundId, useBgChangeListener } from "@/lib/backgrounds";
 import { hydrateImplementStore } from "@/stores/implementTicketStore";
 import { hydratePrReviewStore } from "@/stores/prReviewStore";
+import { hydrateMeetingsStore } from "@/stores/meetingsStore";
 import {
   SpaceEffectsOverlay,
   fireShootingStar,
@@ -39,6 +40,7 @@ import { TicketQualityScreen } from "@/screens/TicketQualityScreen";
 import { PrReviewScreen } from "@/screens/PrReviewScreen";
 import { ImplementTicketScreen } from "@/screens/ImplementTicketScreen";
 import { AddressPrCommentsScreen } from "@/screens/AddressPrCommentsScreen";
+import { MeetingsScreen } from "@/screens/MeetingsScreen";
 import { AgentSkillsScreen } from "@/screens/AgentSkillsScreen";
 import { ToolSandboxScreen } from "@/screens/ToolSandboxScreen";
 
@@ -62,6 +64,7 @@ const WORKFLOW_IDS: WorkflowId[] = [
   "ticket-quality",
   "knowledge-base",
   "address-pr-comments",
+  "meetings",
 ];
 
 function isWorkflowId(s: Screen): s is WorkflowId {
@@ -75,7 +78,11 @@ function AppInner() {
 
   useEffect(() => {
     // Hydrate persisted stores from file cache before loading credentials
-    Promise.allSettled([hydrateImplementStore(), hydratePrReviewStore()]);
+    Promise.allSettled([
+      hydrateImplementStore(),
+      hydratePrReviewStore(),
+      hydrateMeetingsStore(),
+    ]);
 
     getCredentialStatus()
       .then((status) => {
@@ -181,6 +188,8 @@ function AppInner() {
         <ImplementTicketScreen credStatus={credStatus} onBack={() => setScreen("landing")} />
       ) : screen === "address-pr-comments" && credStatus ? (
         <AddressPrCommentsScreen credStatus={credStatus} onBack={() => setScreen("landing")} />
+      ) : screen === "meetings" ? (
+        <MeetingsScreen onBack={() => setScreen("landing")} />
       ) : screen === "agent-skills" ? (
         <AgentSkillsScreen onBack={() => setScreen("landing")} />
       ) : screen === "tool-sandbox" ? (

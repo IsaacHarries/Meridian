@@ -11,7 +11,8 @@ export type WorkflowId =
   | "workload-balancer"
   | "ticket-quality"
   | "knowledge-base"
-  | "address-pr-comments";
+  | "address-pr-comments"
+  | "meetings";
 
 const WORKFLOW_META: Record<WorkflowId, { title: string; description: string; step: number }> = {
   "implement-ticket": {
@@ -58,6 +59,11 @@ const WORKFLOW_META: Record<WorkflowId, { title: string; description: string; st
     title: "Address PR Comments",
     description: "AI-assisted workflow to read reviewer comments and apply fixes to your PRs.",
     step: 13,
+  },
+  "meetings": {
+    title: "Transcribe Meeting",
+    description: "Record and transcribe meetings locally with whisper; ask an AI about past conversations.",
+    step: 14,
   },
 };
 

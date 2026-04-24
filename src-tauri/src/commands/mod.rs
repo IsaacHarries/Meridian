@@ -7,6 +7,7 @@ pub mod fetch_url;
 pub mod grooming_templates;
 pub mod jira;
 pub mod knowledge;
+pub mod meetings;
 pub mod preferences;
 pub mod pr_template;
 pub mod repo;
@@ -30,6 +31,7 @@ pub use agents::implementation::{
     run_build_check, run_implementation_agent, run_implementation_guidance, run_plan_review,
     run_pr_description_gen, run_retrospective_agent, run_test_agent,
 };
+pub use agents::meetings::{chat_meeting, summarize_meeting};
 pub use agents::planning::{
     finalize_implementation_plan, run_checkpoint_action, run_checkpoint_chat_turn,
     run_impact_analysis, run_tool_test, run_tool_test_with_llm, run_triage_turn,
@@ -40,9 +42,9 @@ pub use agents::review::{
 pub use agents::trends::generate_multi_sprint_trends;
 pub use bitbucket::{
     approve_pr, create_pr_task, create_pull_request, delete_pr_comment, get_merged_prs,
-    get_my_open_prs, get_open_prs, get_pr, get_pr_comments, get_pr_diff, get_pr_tasks,
+    get_my_open_prs, get_open_prs, get_pr, get_pr_comments, get_pr_diff, get_pr_file_content, get_pr_tasks,
     get_prs_for_review, post_pr_comment, request_changes_pr, resolve_pr_task, unapprove_pr,
-    unrequest_changes_pr, update_pr_comment,
+    unrequest_changes_pr, update_pr_comment, update_pr_task,
 };
 pub use credentials::{
     credential_status, delete_credential, get_non_secret_config, save_credential,
@@ -68,6 +70,11 @@ pub use jira::{
 };
 pub use knowledge::{
     delete_knowledge_entry, export_knowledge_markdown, load_knowledge_entries, save_knowledge_entry,
+};
+pub use meetings::{
+    active_meeting_id, delete_meeting, download_whisper_model, get_meetings_dir, list_meetings,
+    list_microphones, list_whisper_models, load_meeting, pause_meeting_recording,
+    resume_meeting_recording, save_meeting, start_meeting_recording, stop_meeting_recording,
 };
 pub use llms::claude::{cancel_review, get_claude_models};
 pub use llms::copilot::{

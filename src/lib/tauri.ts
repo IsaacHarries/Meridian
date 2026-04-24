@@ -1023,6 +1023,20 @@ export async function getPrDiff(prId: number): Promise<string> {
   return invoke<string>("get_pr_diff", { prId });
 }
 
+/**
+ * Full contents of a file at the PR's source commit — used by the diff viewer
+ * to lazy-load surrounding context around the changed hunks.
+ */
+export async function getPrFileContent(prId: number, path: string): Promise<string> {
+  if (isMockMode()) {
+    // Return a simple stub so the UI can exercise expansion in mock mode.
+    const lines: string[] = [];
+    for (let i = 1; i <= 120; i++) lines.push(`// ${path} line ${i} (mock, PR ${prId})`);
+    return lines.join("\n");
+  }
+  return invoke<string>("get_pr_file_content", { prId, path });
+}
+
 export async function getPrComments(prId: number): Promise<BitbucketComment[]> {
   if (isMockMode()) {
     const { PR_87_COMMENTS } = await import("./mockData");
@@ -1094,6 +1108,15 @@ export async function resolvePrTask(
   return invoke<BitbucketTask>("resolve_pr_task", { prId, taskId, resolved });
 }
 
+/** Update the text of a task on a PR. */
+export async function updatePrTask(
+  prId: number,
+  taskId: number,
+  content: string,
+): Promise<BitbucketTask> {
+  return invoke<BitbucketTask>("update_pr_task", { prId, taskId, content });
+}
+
 export async function deletePrComment(
   prId: number,
   commentId: number,
@@ -1109,7 +1132,7 @@ export async function updatePrComment(
   return invoke<BitbucketComment>("update_pr_comment", {
     prId,
     commentId,
-    content,
+    newContent: content,
   });
 }
 
@@ -2038,4 +2061,149 @@ export async function clearAllStoreCaches(): Promise<void> {
  */
 export async function fetchUrlContent(url: string): Promise<string> {
   return invoke<string>("fetch_url_content", { url });
+}
+
+// ── Meetings types ────────────────────────────────────────────────────────────
+
+export interface MicrophoneInfo {
+  name: string;
+  is_default: boolean;
+  sampleRate: number;
+  channels: number;
+}
+
+export interface WhisperModelStatus {
+  id: string;
+  downloaded: boolean;
+  sizeBytes: number;
+}
+
+export interface MeetingSegment {
+  startSec: number;
+  endSec: number;
+  text: string;
+}
+
+export interface MeetingChatMessage {
+  role: "user" | "assistant";
+  content: string;
+}
+
+export interface MeetingRecord {
+  id: string;
+  title: string;
+  startedAt: string;
+  endedAt: string | null;
+  durationSec: number;
+  micDeviceName: string;
+  model: string;
+  tags: string[];
+  segments: MeetingSegment[];
+  summary: string | null;
+  actionItems: string[];
+  decisions: string[];
+  suggestedTitle: string | null;
+  suggestedTags: string[];
+  chatHistory: MeetingChatMessage[];
+}
+
+export interface StartMeetingRequest {
+  title: string;
+  tags: string[];
+  micName: string | null;
+  modelId: string;
+}
+
+export interface StartMeetingResult {
+  id: string;
+  startedAt: string;
+  micDeviceName: string;
+  sampleRate: number;
+  channels: number;
+}
+
+export interface MeetingSummaryJson {
+  summary: string;
+  actionItems: string[];
+  decisions: string[];
+  suggestedTitle: string | null;
+  suggestedTags: string[];
+}
+
+// ── Meetings commands ─────────────────────────────────────────────────────────
+
+export async function listMicrophones(): Promise<MicrophoneInfo[]> {
+  return invoke<MicrophoneInfo[]>("list_microphones");
+}
+
+export async function listWhisperModels(): Promise<WhisperModelStatus[]> {
+  return invoke<WhisperModelStatus[]>("list_whisper_models");
+}
+
+export async function downloadWhisperModel(modelId: string): Promise<string> {
+  return invoke<string>("download_whisper_model", { modelId });
+}
+
+export async function startMeetingRecording(
+  req: StartMeetingRequest,
+): Promise<StartMeetingResult> {
+  return invoke<StartMeetingResult>("start_meeting_recording", { req });
+}
+
+export async function pauseMeetingRecording(): Promise<void> {
+  return invoke<void>("pause_meeting_recording");
+}
+
+export async function resumeMeetingRecording(): Promise<void> {
+  return invoke<void>("resume_meeting_recording");
+}
+
+export async function stopMeetingRecording(): Promise<MeetingRecord> {
+  return invoke<MeetingRecord>("stop_meeting_recording");
+}
+
+export async function activeMeetingId(): Promise<string | null> {
+  return invoke<string | null>("active_meeting_id");
+}
+
+export async function saveMeeting(record: MeetingRecord): Promise<void> {
+  return invoke<void>("save_meeting", { record });
+}
+
+export async function loadMeeting(id: string): Promise<MeetingRecord> {
+  return invoke<MeetingRecord>("load_meeting", { id });
+}
+
+export async function listMeetings(): Promise<MeetingRecord[]> {
+  return invoke<MeetingRecord[]>("list_meetings");
+}
+
+export async function deleteMeeting(id: string): Promise<void> {
+  return invoke<void>("delete_meeting", { id });
+}
+
+export async function getMeetingsDir(): Promise<string> {
+  return invoke<string>("get_meetings_dir");
+}
+
+export async function summarizeMeeting(
+  transcriptText: string,
+  currentTitle: string,
+  currentTags: string[],
+): Promise<string> {
+  return invokeWithLlmCheck<string>("summarize_meeting", {
+    transcriptText,
+    currentTitle,
+    currentTagsJson: JSON.stringify(currentTags),
+  });
+}
+
+export async function chatMeeting(
+  contextText: string,
+  historyJson: string,
+): Promise<string> {
+  return invokeWithLlmCheck<string>("chat_meeting", {
+    contextText,
+    historyJson,
+  });
 }

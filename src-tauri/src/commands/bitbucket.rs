@@ -72,6 +72,14 @@ pub async fn get_pr_diff(pr_id: i64) -> Result<String, String> {
     client.get_pr_diff(pr_id).await
 }
 
+/// Full contents of a file at the PR's source commit — used by the diff viewer
+/// to lazy-load surrounding context around the changed hunks.
+#[tauri::command]
+pub async fn get_pr_file_content(pr_id: i64, path: String) -> Result<String, String> {
+    let client = bitbucket_client()?;
+    client.get_pr_file_content(pr_id, &path).await
+}
+
 /// Merged PRs, optionally filtered to those updated on or after `since_iso` (sprint start date).
 #[tauri::command]
 pub async fn get_merged_prs(since_iso: Option<String>) -> Result<Vec<BitbucketPr>, String> {
@@ -170,6 +178,17 @@ pub async fn create_pr_task(
 ) -> Result<crate::integrations::bitbucket::BitbucketTask, String> {
     let client = bitbucket_client()?;
     client.create_pr_task(pr_id, comment_id, &content).await
+}
+
+/// Update a task's text content on a PR.
+#[tauri::command]
+pub async fn update_pr_task(
+    pr_id: i64,
+    task_id: i64,
+    content: String,
+) -> Result<crate::integrations::bitbucket::BitbucketTask, String> {
+    let client = bitbucket_client()?;
+    client.update_pr_task(pr_id, task_id, &content).await
 }
 
 /// Resolve or re-open a task on a PR.

@@ -767,8 +767,8 @@ pub async fn run_in_terminal(command: String) -> Result<(), String> {
     activate
     if (count of windows) > 0 then
         tell current window
-            create tab with default profile
-            tell current session of current window
+            set newTab to (create tab with default profile)
+            tell current session of newTab
                 write text "cd {path_str} && {command}"
             end tell
         end tell

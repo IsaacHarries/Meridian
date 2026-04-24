@@ -35,6 +35,7 @@ import {
   postPrComment,
   createPrTask,
   resolvePrTask,
+  updatePrTask,
   deletePrComment,
   updatePrComment,
   cancelReview,
@@ -141,7 +142,7 @@ interface PrReviewState {
   /** Patch the session for a specific PR id */
   _patchSession: (prId: number, patch: Partial<PrSession>) => void;
 
-  loadPrLists: (jiraAvailable: boolean, bitbucketAvailable: boolean) => Promise<void>;
+  loadPrLists: (jiraAvailable: boolean, bitbucketAvailable: boolean, forceSpinner?: boolean) => Promise<void>;
   selectPr: (pr: BitbucketPr, jiraAvailable: boolean) => Promise<void>;
   clearSelection: () => void;
   runReview: () => Promise<void>;
@@ -159,6 +160,8 @@ interface PrReviewState {
   createTask: (commentId: number, content: string) => Promise<BitbucketTask>;
   /** Toggle resolved state of a task. */
   resolveTask: (taskId: number, resolved: boolean) => Promise<void>;
+  /** Update the text content of a task. */
+  updateTask: (taskId: number, content: string) => Promise<void>;
   /** Delete a comment the current user authored. Removes it from local state on success. */
   deleteComment: (commentId: number) => Promise<void>;
   /** Edit the content of a comment the current user authored. */
@@ -199,7 +202,7 @@ export const usePrReviewStore = create<PrReviewState>()(
     _patchSession: patchSession,
 
     // ── Load PR lists ─────────────────────────────────────────────────────────
-    loadPrLists: async (_jiraAvailable, bitbucketAvailable) => {
+    loadPrLists: async (_jiraAvailable, bitbucketAvailable, forceSpinner = false) => {
       // Load config regardless (jiraBaseUrl etc.)
       try {
         const cfg = await getNonSecretConfig();
@@ -211,11 +214,11 @@ export const usePrReviewStore = create<PrReviewState>()(
         return;
       }
 
-      // Only show the loading spinner on the very first load; subsequent refreshes
-      // (e.g. re-opening the panel) happen silently in the background so the
-      // already-cached list stays visible while the fresh data loads.
+      // By default only show the loading spinner on the very first load; subsequent
+      // panel re-mounts refresh silently so the cached list stays visible. Explicit
+      // user-initiated refreshes set forceSpinner so the refresh button can animate.
       const isFirstLoad = !get().prListLoaded;
-      if (isFirstLoad) set({ loadingPrs: true });
+      if (isFirstLoad || forceSpinner) set({ loadingPrs: true });
 
       const [forReview, allOpen] = await Promise.allSettled([getPrsForReview(), getOpenPrs()]);
       set({
@@ -638,6 +641,22 @@ export const usePrReviewStore = create<PrReviewState>()(
       const { selectedPr } = get();
       if (!selectedPr) return;
       const updated = await resolvePrTask(selectedPr.id, taskId, resolved);
+      set((s) => {
+        const sessions = new Map(s.sessions);
+        const cur = sessions.get(selectedPr.id) ?? emptySession();
+        sessions.set(selectedPr.id, {
+          ...cur,
+          tasks: (cur.tasks ?? []).map((t) => t.id === taskId ? updated : t),
+        });
+        return { sessions };
+      });
+    },
+
+    // ── Update a task's text content ──────────────────────────────────────────
+    updateTask: async (taskId, content) => {
+      const { selectedPr } = get();
+      if (!selectedPr) return;
+      const updated = await updatePrTask(selectedPr.id, taskId, content);
       set((s) => {
         const sessions = new Map(s.sessions);
         const cur = sessions.get(selectedPr.id) ?? emptySession();

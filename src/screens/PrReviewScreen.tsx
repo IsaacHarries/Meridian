@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useRef } from "react";
+import { useEffect, useState, useCallback, useRef, useMemo } from "react";
 import { listen } from "@tauri-apps/api/event";
 import {
   ArrowLeft,
@@ -11,6 +11,10 @@ import {
   GitPullRequest,
   ChevronDown,
   ChevronRight,
+  ChevronUp,
+  ChevronsUpDown,
+  Search,
+  X,
   Copy,
   Check,
   RefreshCw,
@@ -54,6 +58,7 @@ import {
   openUrl,
   runInTerminal,
   checkoutPrReviewBranch,
+  getPrFileContent,
 } from "@/lib/tauri";
 import { JiraTicketLink } from "@/components/JiraTicketLink";
 import { usePrReviewStore } from "@/stores/prReviewStore";
@@ -208,14 +213,49 @@ function annotateDiffLines(lines: string[]): AnnotatedLine[] {
   return result;
 }
 
+// ── Search match highlighting ─────────────────────────────────────────────────
+
+interface MatchRange {
+  start: number;
+  end: number;
+  isCurrent: boolean;
+}
+
+function renderWithHighlights(raw: string, matches: MatchRange[]): React.ReactNode {
+  if (matches.length === 0) return raw || " ";
+  const sorted = [...matches].sort((a, b) => a.start - b.start);
+  const parts: React.ReactNode[] = [];
+  let cursor = 0;
+  sorted.forEach((m, i) => {
+    if (m.start > cursor) parts.push(raw.slice(cursor, m.start));
+    parts.push(
+      <span
+        key={i}
+        data-match-current={m.isCurrent ? "true" : undefined}
+        className={
+          m.isCurrent
+            ? "bg-orange-300 dark:bg-orange-600 text-foreground rounded-sm"
+            : "bg-yellow-200 dark:bg-yellow-800/70 text-foreground rounded-sm"
+        }
+      >
+        {raw.slice(m.start, m.end)}
+      </span>,
+    );
+    cursor = m.end;
+  });
+  if (cursor < raw.length) parts.push(raw.slice(cursor));
+  return parts;
+}
+
 function DiffLineRow({
-  line, clickable, onClick, hasComments, isPendingComment,
+  line, clickable, onClick, hasComments, isPendingComment, matches,
 }: {
   line: AnnotatedLine;
   clickable?: boolean;
   onClick?: () => void;
   hasComments?: boolean;
   isPendingComment?: boolean;
+  matches?: MatchRange[];
 }) {
   const [rowHovered, setRowHovered] = useState(false);
   const { raw, oldNum, newNum } = line;
@@ -271,7 +311,7 @@ function DiffLineRow({
         ) : null}
       </span>
       <span className={`select-text cursor-text font-mono text-xs leading-5 pl-2 pr-4 whitespace-pre min-w-0 flex-1 ${textCls}`}>
-        {raw || " "}
+        {matches && matches.length > 0 ? renderWithHighlights(raw, matches) : (raw || " ")}
       </span>
     </div>
   );
@@ -332,7 +372,7 @@ function InlineCommentBox({ onSubmit, onCancel }: { onSubmit: (c: string) => Pro
 // ── Inline comment thread (anchored under a diff line) ─────────────────────────
 
 function InlineCommentThread({
-  comment, replies, tasks, myAccountId, myPostedCommentIds, onReply, onCreateTask, onResolveTask, onDeleteComment, onEditComment,
+  comment, replies, tasks, myAccountId, myPostedCommentIds, onReply, onCreateTask, onResolveTask, onEditTask, onDeleteComment, onEditComment,
 }: {
   comment: BitbucketComment;
   replies: BitbucketComment[];
@@ -342,6 +382,7 @@ function InlineCommentThread({
   onReply: (content: string) => Promise<void>;
   onCreateTask: (content: string) => Promise<BitbucketTask>;
   onResolveTask: (taskId: number, resolved: boolean) => Promise<void>;
+  onEditTask: (taskId: number, content: string) => Promise<void>;
   onDeleteComment: (commentId: number) => Promise<void>;
   onEditComment: (commentId: number, newContent: string) => Promise<void>;
 }) {
@@ -352,6 +393,25 @@ function InlineCommentThread({
   const [editingId, setEditingId] = useState<number | null>(null);
   const [editDraft, setEditDraft] = useState("");
   const [savingEdit, setSavingEdit] = useState(false);
+  const [editingTaskId, setEditingTaskId] = useState<number | null>(null);
+  const [taskEditDraft, setTaskEditDraft] = useState("");
+  const [savingTaskEdit, setSavingTaskEdit] = useState(false);
+
+  function startTaskEdit(taskId: number, currentContent: string) {
+    setEditingTaskId(taskId);
+    setTaskEditDraft(currentContent);
+  }
+
+  async function saveTaskEdit() {
+    if (editingTaskId == null || !taskEditDraft.trim()) return;
+    setSavingTaskEdit(true);
+    try {
+      await onEditTask(editingTaskId, taskEditDraft.trim());
+      setEditingTaskId(null);
+    } finally {
+      setSavingTaskEdit(false);
+    }
+  }
   const isMine = myPostedCommentIds.includes(comment.id) ||
     (!!myAccountId && comment.author.accountId === myAccountId);
 
@@ -416,7 +476,7 @@ function InlineCommentThread({
       {tasks.length > 0 && (
         <div className="px-3 pb-2 pt-1 space-y-1 border-t border-blue-200/40 dark:border-blue-800/30">
           {tasks.map((task) => (
-            <div key={task.id} className="flex items-start gap-2">
+            <div key={task.id} className="flex items-start gap-2 group/task">
               <button
                 onClick={() => toggleTask(task.id, !task.resolved)}
                 disabled={togglingTask === task.id}
@@ -427,9 +487,44 @@ function InlineCommentThread({
                   <Check className="h-2.5 w-2.5 text-green-600 dark:text-green-400" />
                 )}
               </button>
-              <span className={`leading-snug ${task.resolved ? "line-through text-muted-foreground" : "text-foreground"}`}>
-                {task.content}
-              </span>
+              {editingTaskId === task.id ? (
+                <div className="flex-1 space-y-1">
+                  <Textarea
+                    value={taskEditDraft}
+                    onChange={(e) => setTaskEditDraft(e.target.value)}
+                    className="text-xs min-h-[52px] resize-none"
+                    autoFocus
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && taskEditDraft.trim()) {
+                        e.preventDefault();
+                        saveTaskEdit();
+                      } else if (e.key === "Escape") {
+                        e.preventDefault();
+                        setEditingTaskId(null);
+                      }
+                    }}
+                  />
+                  <div className="flex gap-2">
+                    <Button size="sm" className="h-6 text-xs px-2" onClick={saveTaskEdit} disabled={savingTaskEdit || !taskEditDraft.trim()}>
+                      {savingTaskEdit ? <Loader2 className="h-3 w-3 animate-spin" /> : "Save"}
+                    </Button>
+                    <Button size="sm" variant="ghost" className="h-6 text-xs px-2" onClick={() => setEditingTaskId(null)} disabled={savingTaskEdit}>Cancel</Button>
+                  </div>
+                </div>
+              ) : (
+                <>
+                  <span className={`leading-snug flex-1 ${task.resolved ? "line-through text-muted-foreground" : "text-foreground"}`}>
+                    {task.content}
+                  </span>
+                  <button
+                    onClick={() => startTaskEdit(task.id, task.content)}
+                    className="opacity-0 group-hover/task:opacity-100 transition-opacity shrink-0 h-4 w-4 flex items-center justify-center rounded hover:bg-muted/80 text-muted-foreground"
+                    title="Edit task"
+                  >
+                    <Pencil className="h-2.5 w-2.5" />
+                  </button>
+                </>
+              )}
             </div>
           ))}
         </div>
@@ -713,6 +808,74 @@ function QuickTaskBox({ onSubmit, onCancel }: { onSubmit: (c: string) => Promise
   );
 }
 
+// ── Diff search bar ───────────────────────────────────────────────────────────
+
+interface SearchBarProps {
+  value: string;
+  onChange: (v: string) => void;
+  onNext: () => void;
+  onPrev: () => void;
+  onClose: () => void;
+  matchCount: number;
+  currentIdx: number;
+  inputRef: React.Ref<HTMLInputElement>;
+  containerRef?: React.Ref<HTMLDivElement>;
+}
+
+function DiffSearchBar({ value, onChange, onNext, onPrev, onClose, matchCount, currentIdx, inputRef, containerRef }: SearchBarProps) {
+  return (
+    <div
+      ref={containerRef ?? null}
+      className="sticky top-0 z-30 flex items-center gap-1.5 px-2 py-1.5 border-b border-border bg-background/95 backdrop-blur-sm shadow-sm rounded-md"
+    >
+      <Search className="h-3.5 w-3.5 text-muted-foreground shrink-0 ml-1" />
+      <input
+        ref={inputRef}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") {
+            e.preventDefault();
+            if (e.shiftKey) onPrev();
+            else onNext();
+          } else if (e.key === "Escape") {
+            e.preventDefault();
+            onClose();
+          }
+        }}
+        placeholder="Search in diff…"
+        className="flex-1 min-w-0 bg-transparent text-xs outline-none font-mono"
+      />
+      <span className="text-[10px] text-muted-foreground font-mono tabular-nums shrink-0 px-1">
+        {value ? (matchCount === 0 ? "0/0" : `${currentIdx + 1}/${matchCount}`) : ""}
+      </span>
+      <button
+        onClick={onPrev}
+        disabled={matchCount === 0}
+        title="Previous match (Shift+Enter)"
+        className="h-6 w-6 flex items-center justify-center rounded hover:bg-muted disabled:opacity-30 disabled:hover:bg-transparent shrink-0"
+      >
+        <ChevronUp className="h-3.5 w-3.5" />
+      </button>
+      <button
+        onClick={onNext}
+        disabled={matchCount === 0}
+        title="Next match (Enter)"
+        className="h-6 w-6 flex items-center justify-center rounded hover:bg-muted disabled:opacity-30 disabled:hover:bg-transparent shrink-0"
+      >
+        <ChevronDown className="h-3.5 w-3.5" />
+      </button>
+      <button
+        onClick={onClose}
+        title="Close (Esc)"
+        className="h-6 w-6 flex items-center justify-center rounded hover:bg-muted shrink-0"
+      >
+        <X className="h-3.5 w-3.5" />
+      </button>
+    </div>
+  );
+}
+
 // ── Diff viewer ───────────────────────────────────────────────────────────────
 
 interface DiffViewerProps {
@@ -723,31 +886,196 @@ interface DiffViewerProps {
   tasks: BitbucketTask[];
   myAccountId: string;
   myPostedCommentIds: number[];
+  /** Fetch full file content at the PR's source commit (for context expansion). */
+  onFetchFileContent?: (path: string) => Promise<string>;
   onPostInlineComment: (path: string, toLine: number, content: string) => Promise<void>;
   onReply: (parentId: number, content: string) => Promise<void>;
   onCreateTask: (commentId: number, content: string) => Promise<BitbucketTask>;
   onResolveTask: (taskId: number, resolved: boolean) => Promise<void>;
+  onEditTask: (taskId: number, content: string) => Promise<void>;
   onDeleteComment: (commentId: number) => Promise<void>;
   onEditComment: (commentId: number, newContent: string) => Promise<void>;
 }
 
-function DiffViewer({ diff, highlightTarget, scrollContainerRef, comments, tasks, myAccountId, myPostedCommentIds, onPostInlineComment, onReply, onCreateTask, onResolveTask, onDeleteComment, onEditComment }: DiffViewerProps) {
-  const sections = parseDiffSections(diff);
+interface SearchMatch {
+  sectionPath: string;
+  annotatedLineIdx: number;
+  start: number;
+  end: number;
+}
+
+function DiffViewer({ diff, highlightTarget, scrollContainerRef, comments, tasks, myAccountId, myPostedCommentIds, onFetchFileContent, onPostInlineComment, onReply, onCreateTask, onResolveTask, onEditTask, onDeleteComment, onEditComment }: DiffViewerProps) {
+  const sections = useMemo(() => parseDiffSections(diff), [diff]);
+  const annotatedBySection = useMemo(() => {
+    const m = new Map<string, AnnotatedLine[]>();
+    for (const s of sections) m.set(s.path, annotateDiffLines(s.lines));
+    return m;
+  }, [sections]);
   const sectionRefs = useRef<Map<string, HTMLDivElement>>(new Map());
 
+  // ── Per-section expansion state (hoisted so search can auto-expand on match) ─
+  const [expandedByPath, setExpandedByPath] = useState<Map<string, boolean>>(new Map());
+  const isExpanded = useCallback(
+    (path: string) => expandedByPath.get(path) ?? true,
+    [expandedByPath],
+  );
+  const setExpanded = useCallback((path: string, value: boolean) => {
+    setExpandedByPath((prev) => {
+      if ((prev.get(path) ?? true) === value) return prev;
+      const next = new Map(prev);
+      next.set(path, value);
+      return next;
+    });
+  }, []);
+  const toggleExpand = useCallback(
+    (path: string) => setExpanded(path, !isExpanded(path)),
+    [isExpanded, setExpanded],
+  );
+
+  // Reset expansion when we get a new diff (new PR selected)
+  useEffect(() => { setExpandedByPath(new Map()); }, [diff]);
+
+  // Respect highlightTarget: auto-expand the targeted section
+  useEffect(() => {
+    if (highlightTarget?.path) setExpanded(highlightTarget.path, true);
+  }, [highlightTarget, setExpanded]);
+
+  // ── Search state ────────────────────────────────────────────────────────────
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [currentMatchIdx, setCurrentMatchIdx] = useState(0);
+  const searchInputRef = useRef<HTMLInputElement>(null);
+  const searchBarRef = useRef<HTMLDivElement>(null);
+  const [searchBarHeight, setSearchBarHeight] = useState(0);
+
+  // Measure the search bar so we can push sticky section headers below it
+  useEffect(() => {
+    if (!searchOpen) { setSearchBarHeight(0); return; }
+    const el = searchBarRef.current;
+    if (!el) return;
+    setSearchBarHeight(el.offsetHeight);
+  }, [searchOpen]);
+
+  // Reset search on new diff
+  useEffect(() => {
+    setSearchOpen(false);
+    setSearchQuery("");
+    setCurrentMatchIdx(0);
+  }, [diff]);
+
+  const allMatches = useMemo<SearchMatch[]>(() => {
+    const q = searchQuery;
+    if (!q) return [];
+    const lowerQ = q.toLowerCase();
+    const results: SearchMatch[] = [];
+    for (const section of sections) {
+      const annotated = annotatedBySection.get(section.path) ?? [];
+      for (let idx = 0; idx < annotated.length; idx++) {
+        const raw = annotated[idx].raw;
+        const lower = raw.toLowerCase();
+        let pos = 0;
+        while (pos <= lower.length) {
+          const found = lower.indexOf(lowerQ, pos);
+          if (found === -1) break;
+          results.push({ sectionPath: section.path, annotatedLineIdx: idx, start: found, end: found + q.length });
+          pos = found + Math.max(1, q.length);
+        }
+      }
+    }
+    return results;
+  }, [sections, annotatedBySection, searchQuery]);
+
+  // Clamp currentMatchIdx when matches change
+  useEffect(() => {
+    if (allMatches.length === 0) {
+      if (currentMatchIdx !== 0) setCurrentMatchIdx(0);
+    } else if (currentMatchIdx >= allMatches.length) {
+      setCurrentMatchIdx(0);
+    }
+  }, [allMatches.length, currentMatchIdx]);
+
+  const currentMatch = allMatches[currentMatchIdx] ?? null;
+
+  // matchesByLineIdx for each section, with current-match flag
+  const matchesBySection = useMemo(() => {
+    const map = new Map<string, Map<number, MatchRange[]>>();
+    for (let i = 0; i < allMatches.length; i++) {
+      const m = allMatches[i];
+      if (!map.has(m.sectionPath)) map.set(m.sectionPath, new Map());
+      const sec = map.get(m.sectionPath)!;
+      if (!sec.has(m.annotatedLineIdx)) sec.set(m.annotatedLineIdx, []);
+      sec.get(m.annotatedLineIdx)!.push({
+        start: m.start,
+        end: m.end,
+        isCurrent: i === currentMatchIdx,
+      });
+    }
+    return map;
+  }, [allMatches, currentMatchIdx]);
+
+  // Auto-expand the section holding the current match
+  useEffect(() => {
+    if (currentMatch) setExpanded(currentMatch.sectionPath, true);
+  }, [currentMatch, setExpanded]);
+
+  // Scroll current match into view after render
+  useEffect(() => {
+    if (!currentMatch) return;
+    const container = scrollContainerRef.current;
+    if (!container) return;
+    // Wait a tick so the section has a chance to re-render expanded
+    const handle = requestAnimationFrame(() => {
+      const matchEl = container.querySelector<HTMLElement>('[data-match-current="true"]');
+      if (!matchEl) return;
+      const containerRect = container.getBoundingClientRect();
+      const matchRect = matchEl.getBoundingClientRect();
+      // Center-ish: keep the match comfortably in view, account for sticky search bar (~40px) + section header (~32px)
+      const STICKY_OFFSET = 80;
+      const scrollTarget = container.scrollTop + (matchRect.top - containerRect.top) - STICKY_OFFSET;
+      container.scrollTo({ top: scrollTarget, behavior: "smooth" });
+    });
+    return () => cancelAnimationFrame(handle);
+  }, [currentMatch, scrollContainerRef]);
+
+  // Keyboard shortcut: Cmd/Ctrl+F opens search, focuses input, selects text
+  useEffect(() => {
+    function onKeyDown(e: KeyboardEvent) {
+      const isFind = (e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "f" && !e.altKey;
+      if (isFind) {
+        e.preventDefault();
+        setSearchOpen(true);
+        // Defer focus until the input is mounted
+        requestAnimationFrame(() => {
+          searchInputRef.current?.focus();
+          searchInputRef.current?.select();
+        });
+      }
+    }
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, []);
+
+  const goToNext = useCallback(() => {
+    if (allMatches.length === 0) return;
+    setCurrentMatchIdx((i) => (i + 1) % allMatches.length);
+  }, [allMatches.length]);
+  const goToPrev = useCallback(() => {
+    if (allMatches.length === 0) return;
+    setCurrentMatchIdx((i) => (i - 1 + allMatches.length) % allMatches.length);
+  }, [allMatches.length]);
+
+  // Scroll-into-view for highlightTarget (preserved from previous behavior)
   useEffect(() => {
     if (!highlightTarget) return;
     const { path, line } = highlightTarget;
     const el = sectionRefs.current.get(path);
     const container = scrollContainerRef.current;
     if (!el || !container) return;
-    const PADDING = 16; // match the p-4 on the left pane
+    const PADDING = 16;
 
     if (line != null) {
-      // Try to find the specific line row inside this section
       const lineEl = el.querySelector<HTMLElement>(`[data-new-line="${line}"]`);
       if (lineEl) {
-        // Use getBoundingClientRect to find the line's position relative to the scroll container
         const containerRect = container.getBoundingClientRect();
         const lineRect = lineEl.getBoundingClientRect();
         const scrollTarget = container.scrollTop + (lineRect.top - containerRect.top) - PADDING;
@@ -756,12 +1084,11 @@ function DiffViewer({ diff, highlightTarget, scrollContainerRef, comments, tasks
       }
     }
 
-    // Fall back to scrolling to the file section header
     const containerRect = container.getBoundingClientRect();
     const elRect = el.getBoundingClientRect();
     const scrollTarget = container.scrollTop + (elRect.top - containerRect.top) - PADDING;
     container.scrollTo({ top: scrollTarget, behavior: "smooth" });
-  }, [highlightTarget]);
+  }, [highlightTarget, scrollContainerRef]);
 
   if (!diff) {
     return (
@@ -783,11 +1110,26 @@ function DiffViewer({ diff, highlightTarget, scrollContainerRef, comments, tasks
 
   return (
     <div className="space-y-2">
+      {searchOpen && (
+        <DiffSearchBar
+          value={searchQuery}
+          onChange={setSearchQuery}
+          onNext={goToNext}
+          onPrev={goToPrev}
+          onClose={() => setSearchOpen(false)}
+          matchCount={allMatches.length}
+          currentIdx={currentMatchIdx}
+          inputRef={searchInputRef}
+          containerRef={searchBarRef}
+        />
+      )}
       {sections.map((section) => (
         <DiffSectionCard
           key={section.path}
           section={section}
-          highlighted={highlightTarget?.path === section.path}
+          annotated={annotatedBySection.get(section.path) ?? []}
+          expanded={isExpanded(section.path)}
+          onToggleExpand={() => toggleExpand(section.path)}
           sectionRef={(el) => {
             if (el) sectionRefs.current.set(section.path, el);
             else sectionRefs.current.delete(section.path);
@@ -796,10 +1138,14 @@ function DiffViewer({ diff, highlightTarget, scrollContainerRef, comments, tasks
           tasks={tasks}
           myAccountId={myAccountId}
           myPostedCommentIds={myPostedCommentIds}
+          matchesByLineIdx={matchesBySection.get(section.path) ?? new Map()}
+          stickyTopOffset={searchBarHeight}
+          onFetchFileContent={onFetchFileContent}
           onPostInlineComment={onPostInlineComment}
           onReply={onReply}
           onCreateTask={onCreateTask}
           onResolveTask={onResolveTask}
+          onEditTask={onEditTask}
           onDeleteComment={onDeleteComment}
           onEditComment={onEditComment}
         />
@@ -808,37 +1154,221 @@ function DiffViewer({ diff, highlightTarget, scrollContainerRef, comments, tasks
   );
 }
 
+// ── Hunk extraction & context-expansion render items ─────────────────────────
+
+interface Hunk {
+  /** Index of the @@ header line within the annotated array */
+  headerIdx: number;
+  /** Exclusive index where this hunk's content ends (next @@ or end of section) */
+  contentEndIdx: number;
+  /** First new-side line number in this hunk (from the @@ header) */
+  newStart: number | null;
+  /** Last new-side line number covered by this hunk */
+  newEnd: number | null;
+}
+
+function extractHunks(annotated: AnnotatedLine[]): Hunk[] {
+  const hunks: Hunk[] = [];
+  for (let i = 0; i < annotated.length; i++) {
+    if (!annotated[i].raw.startsWith("@@")) continue;
+    let end = i + 1;
+    while (end < annotated.length && !annotated[end].raw.startsWith("@@")) end++;
+    const m = annotated[i].raw.match(/^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/);
+    const newStart = m ? parseInt(m[3], 10) : null;
+    const newCount = m ? (m[4] ? parseInt(m[4], 10) : 1) : null;
+    const newEnd = newStart != null && newCount != null ? newStart + Math.max(0, newCount - 1) : null;
+    hunks.push({ headerIdx: i, contentEndIdx: end, newStart, newEnd });
+    i = end - 1;
+  }
+  return hunks;
+}
+
+type RenderItem =
+  | { kind: "diff"; annotatedIdx: number; line: AnnotatedLine }
+  | { kind: "context"; line: AnnotatedLine }
+  | { kind: "gap"; gapId: string; lineCount: number | null };
+
+function buildRenderItems(
+  annotated: AnnotatedLine[],
+  hunks: Hunk[],
+  fileLines: string[] | null,
+  expandedGaps: Set<string>,
+): RenderItem[] {
+  const items: RenderItem[] = [];
+  const preHunkEnd = hunks[0]?.headerIdx ?? annotated.length;
+
+  // Pre-hunk file header lines (diff --git, index, ---, +++)
+  for (let i = 0; i < preHunkEnd; i++) {
+    items.push({ kind: "diff", annotatedIdx: i, line: annotated[i] });
+  }
+
+  // Gap above the first hunk (if any)
+  if (hunks.length > 0 && hunks[0].newStart != null && hunks[0].newStart > 1) {
+    const gapStart = 1;
+    const gapEnd = hunks[0].newStart - 1;
+    const gapId = "before";
+    if (expandedGaps.has(gapId) && fileLines) {
+      for (let n = gapStart; n <= gapEnd && n - 1 < fileLines.length; n++) {
+        items.push({ kind: "context", line: { raw: " " + fileLines[n - 1], oldNum: null, newNum: n } });
+      }
+    } else {
+      items.push({ kind: "gap", gapId, lineCount: gapEnd - gapStart + 1 });
+    }
+  }
+
+  // Each hunk + the gap after it
+  for (let h = 0; h < hunks.length; h++) {
+    const hunk = hunks[h];
+    for (let i = hunk.headerIdx; i < hunk.contentEndIdx; i++) {
+      items.push({ kind: "diff", annotatedIdx: i, line: annotated[i] });
+    }
+
+    if (h < hunks.length - 1) {
+      const next = hunks[h + 1];
+      const gapStart = (hunk.newEnd ?? 0) + 1;
+      const gapEnd = (next.newStart ?? 0) - 1;
+      const gapSize = gapEnd - gapStart + 1;
+      if (gapSize > 0) {
+        const gapId = `between-${h}`;
+        if (expandedGaps.has(gapId) && fileLines) {
+          for (let n = gapStart; n <= gapEnd && n - 1 < fileLines.length; n++) {
+            items.push({ kind: "context", line: { raw: " " + fileLines[n - 1], oldNum: null, newNum: n } });
+          }
+        } else {
+          items.push({ kind: "gap", gapId, lineCount: gapSize });
+        }
+      }
+    } else {
+      // Trailing gap after the last hunk
+      const gapStart = (hunk.newEnd ?? 0) + 1;
+      const gapId = "after";
+      if (expandedGaps.has(gapId) && fileLines) {
+        for (let n = gapStart; n <= fileLines.length; n++) {
+          items.push({ kind: "context", line: { raw: " " + fileLines[n - 1], oldNum: null, newNum: n } });
+        }
+      } else if (!fileLines || gapStart <= fileLines.length) {
+        items.push({
+          kind: "gap",
+          gapId,
+          lineCount: fileLines ? Math.max(0, fileLines.length - gapStart + 1) : null,
+        });
+      }
+    }
+  }
+
+  return items;
+}
+
+// ── Gap expand row (click to reveal the hidden file context) ─────────────────
+
+function GapExpandRow({
+  lineCount, loading, error, canExpand, onClick,
+}: {
+  lineCount: number | null;
+  loading: boolean;
+  error: string | null;
+  canExpand: boolean;
+  onClick: () => void;
+}) {
+  const countLabel = lineCount == null
+    ? "Show code below"
+    : lineCount === 1
+      ? "Show 1 hidden line"
+      : `Show ${lineCount} hidden lines`;
+
+  return (
+    <button
+      onClick={onClick}
+      disabled={!canExpand || loading}
+      className="w-full flex items-center justify-center gap-2 px-3 py-1 text-[11px] text-muted-foreground bg-muted/30 hover:bg-muted/60 border-t border-b border-border/40 font-mono disabled:opacity-60"
+    >
+      {loading ? (
+        <Loader2 className="h-3 w-3 animate-spin" />
+      ) : (
+        <ChevronsUpDown className="h-3 w-3" />
+      )}
+      <span>{error ? `Failed to load: ${error}` : countLabel}</span>
+    </button>
+  );
+}
+
 // ── Diff section card (with inline comment support) ───────────────────────────
 
 interface DiffSectionCardProps {
   section: DiffSection;
-  highlighted: boolean;
+  annotated: AnnotatedLine[];
+  expanded: boolean;
+  onToggleExpand: () => void;
   sectionRef: (el: HTMLDivElement | null) => void;
   inlineComments: BitbucketComment[];
   tasks: BitbucketTask[];
   myAccountId: string;
   myPostedCommentIds: number[];
+  /** Keyed by annotated-line index within this section */
+  matchesByLineIdx: Map<number, MatchRange[]>;
+  /** Extra offset in px for the sticky header (e.g. to clear a sticky search bar above). */
+  stickyTopOffset: number;
+  /** If provided, enables context expansion by lazy-loading the full file contents. */
+  onFetchFileContent?: (path: string) => Promise<string>;
   onPostInlineComment: (path: string, toLine: number, content: string) => Promise<void>;
   onReply: (parentId: number, content: string) => Promise<void>;
   onCreateTask: (commentId: number, content: string) => Promise<BitbucketTask>;
   onResolveTask: (taskId: number, resolved: boolean) => Promise<void>;
+  onEditTask: (taskId: number, content: string) => Promise<void>;
   onDeleteComment: (commentId: number) => Promise<void>;
   onEditComment: (commentId: number, newContent: string) => Promise<void>;
 }
 
 function DiffSectionCard({
-  section, highlighted, sectionRef,
-  inlineComments, tasks, myAccountId, myPostedCommentIds,
-  onPostInlineComment, onReply, onCreateTask, onResolveTask, onDeleteComment, onEditComment,
+  section, annotated, expanded, onToggleExpand, sectionRef,
+  inlineComments, tasks, myAccountId, myPostedCommentIds, matchesByLineIdx, stickyTopOffset, onFetchFileContent,
+  onPostInlineComment, onReply, onCreateTask, onResolveTask, onEditTask, onDeleteComment, onEditComment,
 }: DiffSectionCardProps) {
-  const [expanded, setExpanded] = useState(true);
   const [pendingLine, setPendingLine] = useState<number | null>(null);
-
-  useEffect(() => { if (highlighted) setExpanded(true); }, [highlighted]);
 
   const addedLines = section.lines.filter((l) => l.startsWith("+") && !l.startsWith("+++")).length;
   const removedLines = section.lines.filter((l) => l.startsWith("-") && !l.startsWith("---")).length;
-  const annotated = annotateDiffLines(section.lines);
+
+  // ── Context expansion state ─────────────────────────────────────────────────
+  const [fileLines, setFileLines] = useState<string[] | null>(null);
+  const [loadingFile, setLoadingFile] = useState(false);
+  const [fileError, setFileError] = useState<string | null>(null);
+  const [expandedGaps, setExpandedGaps] = useState<Set<string>>(new Set());
+
+  const hunks = useMemo(() => extractHunks(annotated), [annotated]);
+  const renderItems = useMemo(
+    () => buildRenderItems(annotated, hunks, fileLines, expandedGaps),
+    [annotated, hunks, fileLines, expandedGaps],
+  );
+
+  const ensureFileLoaded = useCallback(async () => {
+    if (fileLines || loadingFile) return;
+    if (!onFetchFileContent) {
+      setFileError("Context expansion unavailable.");
+      return;
+    }
+    setLoadingFile(true);
+    setFileError(null);
+    try {
+      const content = await onFetchFileContent(section.path);
+      setFileLines(content.split("\n"));
+    } catch (e) {
+      setFileError(String(e));
+    } finally {
+      setLoadingFile(false);
+    }
+  }, [fileLines, loadingFile, onFetchFileContent, section.path]);
+
+  const toggleGap = useCallback(async (gapId: string) => {
+    const isCurrentlyExpanded = expandedGaps.has(gapId);
+    if (!isCurrentlyExpanded) await ensureFileLoaded();
+    setExpandedGaps((prev) => {
+      const next = new Set(prev);
+      if (next.has(gapId)) next.delete(gapId);
+      else next.add(gapId);
+      return next;
+    });
+  }, [expandedGaps, ensureFileLoaded]);
 
   // Group top-level inline comments by new-side line number
   const commentsByLine = new Map<number, BitbucketComment[]>();
@@ -865,15 +1395,20 @@ function DiffSectionCard({
       className="border rounded-md border-border"
     >
       {/* Sticky file header — stays in view while scrolling through the file */}
-      <div className="sticky top-0 z-10 border-b border-border rounded-t-md overflow-hidden backdrop-blur-sm">
+      <div
+        className="sticky z-10 border-b border-border rounded-t-md overflow-hidden backdrop-blur-sm"
+        style={{ top: stickyTopOffset }}
+      >
         <button
           className="w-full flex items-center gap-2 px-3 py-2 bg-muted/80 hover:bg-muted/90 transition-colors text-left focus:outline-none"
-          onClick={() => setExpanded(!expanded)}
+          onClick={onToggleExpand}
         >
           <FileCode className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
           <span
             className="flex-1 text-xs font-mono truncate select-text cursor-text"
             onClick={(e) => e.stopPropagation()}
+            onMouseDown={(e) => e.stopPropagation()}
+            onMouseUp={(e) => e.stopPropagation()}
           >
             {section.path}
           </span>
@@ -888,21 +1423,46 @@ function DiffSectionCard({
         </button>
       </div>
       {expanded && (
-        <div className="overflow-x-auto [--tw-ring-shadow:0_0_#0000] [--tw-ring-offset-shadow:0_0_#0000]">
-          {annotated.map((line, i) => {
+        <div className="overflow-x-auto overflow-y-clip [--tw-ring-shadow:0_0_#0000] [--tw-ring-offset-shadow:0_0_#0000]">
+          {renderItems.map((item, itemIdx) => {
+            if (item.kind === "gap") {
+              const isExpanded = expandedGaps.has(item.gapId);
+              return (
+                <GapExpandRow
+                  key={`gap-${item.gapId}-${itemIdx}`}
+                  lineCount={item.lineCount}
+                  loading={loadingFile && !isExpanded}
+                  error={fileError}
+                  canExpand={!!onFetchFileContent}
+                  onClick={() => toggleGap(item.gapId)}
+                />
+              );
+            }
+
+            if (item.kind === "context") {
+              return (
+                <div key={`ctx-${itemIdx}`} className="bg-blue-50/30 dark:bg-blue-950/10">
+                  <DiffLineRow line={item.line} />
+                </div>
+              );
+            }
+
+            // kind === "diff"
+            const { line, annotatedIdx } = item;
             const lineNum = line.newNum;
             const lineComments = lineNum != null ? (commentsByLine.get(lineNum) ?? []) : [];
             const isClickable = lineNum != null &&
               !line.raw.startsWith("@@") && !line.raw.startsWith("diff ") &&
               !line.raw.startsWith("index ") && !line.raw.startsWith("---") && !line.raw.startsWith("+++");
             return (
-              <div key={i}>
+              <div key={`d-${annotatedIdx}`} data-line-idx={annotatedIdx}>
                 <DiffLineRow
                   line={line}
                   clickable={isClickable}
                   onClick={isClickable && lineNum != null ? () => setPendingLine(pendingLine === lineNum ? null : lineNum) : undefined}
                   hasComments={lineComments.length > 0}
                   isPendingComment={lineNum != null && pendingLine === lineNum}
+                  matches={matchesByLineIdx.get(annotatedIdx)}
                 />
                 {pendingLine === lineNum && lineNum != null && (
                   <InlineCommentBox
@@ -921,6 +1481,7 @@ function DiffSectionCard({
                     onReply={(content) => onReply(c.id, content)}
                     onCreateTask={(content) => onCreateTask(c.id, content)}
                     onResolveTask={onResolveTask}
+                    onEditTask={onEditTask}
                     onDeleteComment={onDeleteComment}
                     onEditComment={onEditComment}
                   />
@@ -1295,6 +1856,7 @@ interface PrSelectorProps {
   allOpenPrs: BitbucketPr[];
   loading: boolean;
   onSelect: (pr: BitbucketPr) => void;
+  onRefresh: () => void;
   jiraBaseUrl: string;
   myAccountId: string;
   /** Set of PR ids that have a cached review result — shows a badge on those rows */
@@ -1303,7 +1865,7 @@ interface PrSelectorProps {
   stalePrIds: Set<number>;
 }
 
-function PrSelector({ prsForReview, allOpenPrs, loading, onSelect, jiraBaseUrl, myAccountId, cachedPrIds, stalePrIds }: PrSelectorProps) {
+function PrSelector({ prsForReview, allOpenPrs, loading, onSelect, onRefresh, jiraBaseUrl, myAccountId, cachedPrIds, stalePrIds }: PrSelectorProps) {
   const [showAll, setShowAll] = useState(false);
   const [hideApproved, setHideApproved] = useState(true);
 
@@ -1404,6 +1966,15 @@ function PrSelector({ prsForReview, allOpenPrs, loading, onSelect, jiraBaseUrl, 
           <Button variant="outline" size="sm" onClick={() => setShowAll(!showAll)}>
             {showAll ? "Show mine only" : "Show all open"}
           </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={onRefresh}
+            disabled={loading}
+            title="Re-fetch the PR list from Bitbucket"
+          >
+            <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />
+          </Button>
         </div>
       </div>
 
@@ -1500,6 +2071,7 @@ export function PrReviewScreen({ credStatus, onBack }: PrReviewScreenProps) {
   const [pullingBranch, setPullingBranch] = useState(false);
   const [pullBranchError, setPullBranchError] = useState("");
   const [pullBranchSuccess, setPullBranchSuccess] = useState(false);
+  const [acExpanded, setAcExpanded] = useState(true);
   const splitContainerRef = useRef<HTMLDivElement>(null);
   const diffPaneRef = useRef<HTMLDivElement>(null);
   const isDragging = useRef(false);
@@ -1824,6 +2396,7 @@ export function PrReviewScreen({ credStatus, onBack }: PrReviewScreenProps) {
               allOpenPrs={allOpenPrs}
               loading={loadingPrs}
               onSelect={(pr) => store().selectPr(pr, jiraAvailable)}
+              onRefresh={() => store().loadPrLists(jiraAvailable, bbAvailable, true)}
               jiraBaseUrl={jiraBaseUrl}
               myAccountId={myAccountId}
               cachedPrIds={new Set(
@@ -1860,6 +2433,7 @@ export function PrReviewScreen({ credStatus, onBack }: PrReviewScreenProps) {
                   tasks={tasks}
                   myAccountId={myAccountId}
                   myPostedCommentIds={myPostedCommentIds}
+                  onFetchFileContent={selectedPr ? (path) => getPrFileContent(selectedPr.id, path) : undefined}
                   onPostInlineComment={async (path, toLine, content) => {
                     await store().postComment(content, path, toLine);
                   }}
@@ -1868,6 +2442,7 @@ export function PrReviewScreen({ credStatus, onBack }: PrReviewScreenProps) {
                   }}
                   onCreateTask={async (commentId, content) => store().createTask(commentId, content)}
                   onResolveTask={async (taskId, resolved) => store().resolveTask(taskId, resolved)}
+                  onEditTask={async (taskId, content) => store().updateTask(taskId, content)}
                   onDeleteComment={async (commentId) => store().deleteComment(commentId)}
                   onEditComment={async (commentId, newContent) => store().editComment(commentId, newContent)}
                 />
@@ -1997,6 +2572,32 @@ export function PrReviewScreen({ credStatus, onBack }: PrReviewScreenProps) {
 
               {/* ── Scrollable body: review findings ── */}
               <div className="flex flex-col flex-1 min-h-0 overflow-y-auto">
+
+                  {/* Linked JIRA acceptance criteria (when present) */}
+                  {linkedIssue?.acceptanceCriteria && linkedIssue.acceptanceCriteria.trim() && (
+                    <div className="border-b">
+                      <button
+                        onClick={() => setAcExpanded((v) => !v)}
+                        className="w-full flex items-center gap-2 px-4 py-2 bg-muted/40 hover:bg-muted/60 transition-colors text-left focus:outline-none"
+                      >
+                        <ClipboardList className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                        <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                          Acceptance Criteria
+                        </span>
+                        <span className="text-[10px] font-mono text-muted-foreground">{linkedIssue.key}</span>
+                        <span className="ml-auto">
+                          {acExpanded
+                            ? <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" />
+                            : <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />}
+                        </span>
+                      </button>
+                      {acExpanded && (
+                        <div className="px-4 py-3 text-xs leading-relaxed text-foreground whitespace-pre-wrap">
+                          {linkedIssue.acceptanceCriteria}
+                        </div>
+                      )}
+                    </div>
+                  )}
 
                   {/* Verdict + summary + Bitbucket submit + error */}
                   {(report || rawError) && !reviewing && (

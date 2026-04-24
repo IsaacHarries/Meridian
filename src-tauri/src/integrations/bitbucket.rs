@@ -473,6 +473,18 @@ impl BitbucketClient {
         self.get_text(&url).await
     }
 
+    /// Full contents of `path` as it exists at the PR's source commit. Used by
+    /// the diff viewer to show context surrounding the changed hunks.
+    pub async fn get_pr_file_content(&self, pr_id: i64, path: &str) -> Result<String, String> {
+        let pr_url = self.repo_url(&format!("/pullrequests/{pr_id}"));
+        let pr_json = self.get_json(&pr_url).await?;
+        let commit_hash = pr_json["source"]["commit"]["hash"]
+            .as_str()
+            .ok_or("Could not determine PR source commit hash")?;
+        let file_url = self.repo_url(&format!("/src/{commit_hash}/{path}"));
+        self.get_text(&file_url).await
+    }
+
     pub async fn get_pr_comments(&self, pr_id: i64) -> Result<Vec<BitbucketComment>, String> {
         let url = self.repo_url(&format!("/pullrequests/{pr_id}/comments?pagelen=100"));
         let body = self.get_json(&url).await?;
@@ -583,6 +595,39 @@ impl BitbucketClient {
         if !status.is_success() {
             let text = resp.text().await.unwrap_or_default();
             return Err(format!("Bitbucket returned {status} creating task\nBody: {text}"));
+        }
+
+        let json: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| format!("Failed to parse task response: {e}"))?;
+        Ok(BitbucketTask {
+            id: json["id"].as_i64().unwrap_or(0),
+            content: json["content"]["raw"].as_str().unwrap_or("").to_string(),
+            resolved: json["state"].as_str().unwrap_or("") == "RESOLVED",
+            comment_id: json["comment"]["id"].as_i64(),
+        })
+    }
+
+    /// Update a task's text content via PUT /tasks/{task_id}.
+    pub async fn update_pr_task(&self, pr_id: i64, task_id: i64, content: &str) -> Result<BitbucketTask, String> {
+        let url = self.repo_url(&format!("/pullrequests/{pr_id}/tasks/{task_id}"));
+        let body = serde_json::json!({ "content": { "raw": content } });
+
+        let resp = self
+            .client
+            .put(&url)
+            .basic_auth(&self.username, Some(&self.access_token))
+            .header("content-type", "application/json")
+            .body(body.to_string())
+            .send()
+            .await
+            .map_err(|e| format!("Request failed: {e}"))?;
+
+        let status = resp.status();
+        if !status.is_success() {
+            let text = resp.text().await.unwrap_or_default();
+            return Err(format!("Bitbucket returned {status} updating task\nBody: {text}"));
         }
 
         let json: serde_json::Value = resp
