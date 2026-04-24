@@ -16,6 +16,7 @@ use commands::{
     chat_address_pr,
     chat_meeting,
     chat_pr_review,
+    chat_sprint_dashboard,
     checkout_pr_address_branch,
     checkout_pr_review_branch,
     checkout_worktree_branch,
@@ -32,6 +33,8 @@ use commands::{
     delete_knowledge_entry,
     delete_meeting,
     delete_pr_comment,
+    diarize_meeting,
+    rename_meeting_speaker,
     delete_preference,
     delete_store_cache,
     export_knowledge_markdown,
@@ -40,7 +43,6 @@ use commands::{
     finalize_implementation_plan,
     generate_multi_sprint_trends,
     generate_sprint_retrospective,
-    generate_standup_briefing,
     generate_workload_suggestions,
     // JIRA data commands
     get_active_sprint,
@@ -214,6 +216,7 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .manage(crate::integrations::sidecar::SidecarState::new())
         .setup(|app| {
             storage::credentials::init_store_path(app.handle());
@@ -224,10 +227,10 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             // Claude
             assess_ticket_quality,
-            generate_standup_briefing,
             generate_sprint_retrospective,
             generate_multi_sprint_trends,
             generate_workload_suggestions,
+            chat_sprint_dashboard,
             review_pr,
             cancel_review,
             chat_pr_review,
@@ -415,6 +418,8 @@ pub fn run() {
             get_meetings_dir,
             summarize_meeting,
             chat_meeting,
+            diarize_meeting,
+            rename_meeting_speaker,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

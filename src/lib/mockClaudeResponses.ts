@@ -289,25 +289,6 @@ We are adding Redis-backed rate limiting on the public API, with configurable th
 
 If that matches your intent, say **finalize** and I will lock an implementation plan (mock mode will inject a canned JSON plan).`;
 
-export const MOCK_STANDUP_MARKDOWN = `## Daily standup (mock)
-
-### Alice
-- **Yesterday:** Merged rate limit spike; paired on Redis config.
-- **Today:** Integration tests for 429 responses.
-- **Blockers:** None.
-
-### Bob
-- **Yesterday:** Reviewed API middleware PR.
-- **Today:** Dashboard burn-down tweaks.
-- **Blockers:** Waiting on design for error copy.
-
-### You
-- **Yesterday:** Groomed backlog for next sprint.
-- **Today:** SM ceremonies + unblock Bob on copy.
-- **Blockers:** None.
-
-_Mock AI mode — no live model call._`;
-
 export const MOCK_SPRINT_RETRO_MARKDOWN = `## Sprint retrospective (mock)
 
 ### Went well

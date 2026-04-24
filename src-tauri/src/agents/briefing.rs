@@ -29,6 +29,43 @@ pub async fn generate_workload_suggestions(
     dispatch::dispatch(&app, &client, &api_key, system, &user, 1024).await
 }
 
+/// Multi-turn Q&A over the current sprint dashboard state. Caller sends a
+/// compact context string (sprint summary, issues, PRs, workloads) and the
+/// running chat history as JSON. Streams reply text to `sprint-chat-stream`.
+#[tauri::command]
+pub async fn chat_sprint_dashboard(
+    app: tauri::AppHandle,
+    context_text: String,
+    history_json: String,
+) -> Result<String, String> {
+    let (client, api_key) = dispatch::llm_client().await?;
+
+    let system = format!(
+        "You are a scrum master's assistant, answering questions about the user's current \
+        sprint dashboard. You have a compact snapshot of the sprint state below: the sprint \
+        metadata, every issue with its status/assignee/points, every open and recently merged \
+        PR, and a per-developer workload breakdown.\n\n\
+        {context_text}\n\n\
+        Rules:\n\
+        - Answer ONLY from the snapshot. If something isn't in the data, say so plainly.\n\
+        - Be concrete: cite ticket keys, PR numbers, and developer names where relevant.\n\
+        - When asked to rebalance, suggest specific moves (ticket → developer) with brief reasons.\n\
+        - Keep replies tight — this is a conversation, not an essay. Use bullet points for lists.\n\
+        - Reply in plain markdown. No JSON."
+    );
+
+    dispatch::dispatch_multi_streaming(
+        &app,
+        &client,
+        &api_key,
+        &system,
+        &history_json,
+        2048,
+        "sprint-chat-stream",
+    )
+    .await
+}
+
 /// Generate a sprint retrospective summary from pre-compiled sprint data.
 #[tauri::command]
 pub async fn generate_sprint_retrospective(
@@ -56,30 +93,3 @@ pub async fn generate_sprint_retrospective(
     dispatch::dispatch(&app, &client, &api_key, system, &user, 1024).await
 }
 
-#[tauri::command]
-pub async fn generate_standup_briefing(
-    app: tauri::AppHandle,
-    standup_text: String,
-) -> Result<String, String> {
-    let (client, api_key) = dispatch::llm_client().await?;
-
-    let system = "You are a scrum master assistant. \
-        Generate concise, ready-to-read daily standup briefings from team activity data. \
-        Be specific (use ticket keys and PR numbers). \
-        Keep the total length suitable for reading aloud in a 10-15 minute standup.";
-
-    let user = format!(
-        "Generate a standup briefing from this team activity data:\n\n{standup_text}\n\n\
-        Format:\n\
-        1. One-sentence sprint status.\n\
-        2. One block per team member:\n   \
-           **Name**\n   \
-           Yesterday: ...\n   \
-           Today: ...\n   \
-           Blockers: ... (or \"None\")\n\
-        3. A brief **Flags** section for items the scrum master should raise proactively.\n\
-        Skip members with genuinely no data."
-    );
-
-    dispatch::dispatch(&app, &client, &api_key, system, &user, 1024).await
-}

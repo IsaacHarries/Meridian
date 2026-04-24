@@ -6,6 +6,7 @@ import type {
   JiraIssue,
   JiraUser,
   BitbucketPr,
+  BitbucketTask,
   BitbucketUser,
   BitbucketComment,
 } from "./tauri";
@@ -522,6 +523,66 @@ const ALL_SPRINT_ISSUES: JiraIssue[] = [
     null,
     null
   ),
+
+  // ── Ready-for-QA PR targets (tickets backing PRs #90 and #91 below) ─────
+  makeIssue(
+    "PROJ-152",
+    "Add WebSocket support for real-time notifications",
+    "In Review",
+    "In Progress",
+    ALICE,
+    5,
+    "Story",
+    "Medium",
+    `Push notifications to connected clients via WebSocket. Fall back to polling when the socket is unavailable.`,
+    ["frontend", "realtime"],
+    null,
+    null
+  ),
+  makeIssue(
+    "PROJ-153",
+    "Cache user profile data to reduce DB load",
+    "In Review",
+    "In Progress",
+    BOB,
+    3,
+    "Task",
+    "Medium",
+    `User profile lookups hit Postgres on every request. Cache in Redis with a 10-minute TTL and bust on profile update.`,
+    ["performance", "caching"],
+    null,
+    null
+  ),
+
+  // ── Needs-Verification tickets (exercise the new QA list on the dashboard) ──
+  makeIssue(
+    "PROJ-154",
+    "Profile picture upload endpoint",
+    "Needs Verification",
+    "In Progress",
+    CAROL,
+    3,
+    "Story",
+    "Medium",
+    `POST /users/:id/avatar accepts a multipart upload, resizes to 256x256, and stores in object storage. PR merged; awaiting QA sign-off.`,
+    ["backend", "uploads"],
+    null,
+    null
+  ),
+  makeIssue(
+    "PROJ-155",
+    "Fix login redirect loop on SSO",
+    "Needs Verification",
+    "In Progress",
+    DAN,
+    2,
+    "Bug",
+    "High",
+    `SSO users were being redirected back to the login page after successful auth. Root cause: session cookie's SameSite attribute. Fix merged; QA to verify across IdPs.`,
+    ["bug", "auth"],
+    "PROJ-139",
+    "Auth Hardening"
+  ),
 ];
 
 // ── Completed sprints ─────────────────────────────────────────────────────────
@@ -890,7 +951,68 @@ Validates uploaded files on both frontend (before upload) and backend (before pr
     changesRequested: false,
     draft: false,
   },
+  // ── Ready for QA: 2+ approvals, no changes requested, tasks resolved/empty.
+  // Recent dates so classifyPr → "good" (won't show up in PR Attention).
+  {
+    id: 90,
+    title: "PROJ-152: WebSocket notification channel with polling fallback",
+    description: `## Summary
+Adds a WebSocket server on \`/ws/notifications\` for logged-in clients. Falls back to 30s polling when the socket can't be established.`,
+    state: "OPEN",
+    author: BB_ALICE,
+    reviewers: [
+      { user: BB_ME, approved: true, state: "approved" },
+      { user: BB_BOB, approved: true, state: "approved" },
+    ],
+    sourceBranch: "feature/PROJ-152-websockets",
+    destinationBranch: "main",
+    createdOn: "2026-04-22T10:00:00.000Z",
+    updatedOn: "2026-04-24T08:15:00.000Z",
+    commentCount: 4,
+    taskCount: 2,
+    url: "https://bitbucket.org/example/repo/pull-requests/90",
+    jiraIssueKey: "PROJ-152",
+    changesRequested: false,
+    draft: false,
+  },
+  {
+    id: 91,
+    title: "PROJ-153: Redis-backed user profile cache",
+    description: `## Summary
+Caches profile lookups in Redis with a 10-minute TTL. Invalidates on PATCH /users/:id.`,
+    state: "OPEN",
+    author: BB_BOB,
+    reviewers: [
+      { user: BB_ME, approved: true, state: "approved" },
+      { user: BB_ALICE, approved: true, state: "approved" },
+    ],
+    sourceBranch: "feature/PROJ-153-profile-cache",
+    destinationBranch: "main",
+    createdOn: "2026-04-23T09:00:00.000Z",
+    updatedOn: "2026-04-24T09:30:00.000Z",
+    commentCount: 2,
+    taskCount: 1,
+    url: "https://bitbucket.org/example/repo/pull-requests/91",
+    jiraIssueKey: "PROJ-153",
+    changesRequested: false,
+    draft: false,
+  },
 ];
+
+// ── PR tasks ──────────────────────────────────────────────────────────────────
+// Map of PR id → tasks. The Sprint Dashboard's "Ready for QA" list fetches
+// tasks for any PR with 2+ approvals; tasks only block promotion if they're
+// unresolved AND not in EXEMPT_TASK_PREFIXES ("qa review", "design review").
+
+export const PR_TASKS_BY_ID: Record<number, BitbucketTask[]> = {
+  90: [
+    { id: 9001, content: "Add reconnect backoff jitter", resolved: true, commentId: null },
+    { id: 9002, content: "QA review: smoke test on Safari iOS", resolved: false, commentId: null },
+  ],
+  91: [
+    { id: 9101, content: "Design review: confirm cache TTL with product", resolved: false, commentId: null },
+  ],
+};
 
 export const MERGED_PRS: BitbucketPr[] = [
   // ── Sprint 18 (Jan 20 – Feb 2) — API v2 ───────────────────────────────────

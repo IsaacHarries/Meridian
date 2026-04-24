@@ -7,8 +7,6 @@ export type WorkflowId =
   | "review-pr"
   | "sprint-dashboard"
   | "retrospectives"
-  | "standup"
-  | "workload-balancer"
   | "ticket-quality"
   | "knowledge-base"
   | "address-pr-comments"
@@ -34,16 +32,6 @@ const WORKFLOW_META: Record<WorkflowId, { title: string; description: string; st
     title: "Sprint Retrospectives",
     description: "Metrics and AI summaries for completed sprints.",
     step: 6,
-  },
-  "standup": {
-    title: "Daily Standup Briefing",
-    description: "Auto-generated standup agenda from JIRA and Bitbucket activity.",
-    step: 7,
-  },
-  "workload-balancer": {
-    title: "Team Workload Balancer",
-    description: "Visualise and rebalance work across the team.",
-    step: 8,
   },
   "ticket-quality": {
     title: "Groom Tickets",

@@ -39,13 +39,12 @@ Data sources: JIRA API and Bitbucket API. Built for individual use — not distr
 
 1. **Implement a Ticket** — 8-agent pipeline: Grooming → Impact Analysis → Triage → Implementation → Test Generation → Code Review → PR Description → Retrospective
 2. **PR Review Assistant** — AI-assisted review of assigned PRs across 4 lenses (see below)
-3. **Sprint Dashboard** — real-time sprint health, team performance, blockers
+3. **Sprint Dashboard** — real-time sprint health, blockers, team performance, and team workload with AI rebalancing suggestions (also the launch point for standup recordings)
 4. **Sprint Retrospectives** — completed sprint analysis, trend charts, AI summary
-5. **Daily Standup Briefing** — per-person standup agenda from JIRA/Bitbucket activity
-6. **Team Workload Balancer** — remaining story points per dev, AI rebalancing suggestions
-7. **Ticket Quality Checker** — readiness assessment against AC completeness, scope, dependencies
-8. **Knowledge Base / Decision Log** — searchable log of decisions, patterns, retro learnings
-9. **Address PR Comments** — AI reads reviewer comments, checks out branch in worktree, proposes and applies fixes
+5. **Ticket Quality Checker** — readiness assessment against AC completeness, scope, dependencies
+6. **Knowledge Base / Decision Log** — searchable log of decisions, patterns, retro learnings
+7. **Address PR Comments** — AI reads reviewer comments, checks out branch in worktree, proposes and applies fixes
+8. **Transcribe Meeting** — local whisper transcription; start from any screen via the header record button (auto-tags "standup" from Sprint Dashboard, "retro" from Retrospectives)
 
 ---
 

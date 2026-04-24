@@ -387,7 +387,7 @@ function JiraStep({
         </p>
         <h2 className="text-xl font-semibold">JIRA Credentials</h2>
         <p className="text-sm text-muted-foreground mt-1">
-          For sprint dashboards, ticket details, and standup briefings.
+          For sprint dashboards and ticket details.
         </p>
       </div>
 

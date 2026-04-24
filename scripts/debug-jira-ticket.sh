@@ -7,7 +7,7 @@
 #   4. Auto-discovery simulation — mirrors exactly what Meridian does
 #
 # Uses the same env vars already defined in ~/.zshrc:
-#   JIRA_EMAIL        (e.g. isaac.harries@bd.com)
+#   JIRA_EMAIL        (Atlassian account email)
 #   JIRA_API_TOKEN    (your Atlassian API token)
 #   JIRA_BASE_URL     (optional — defaults to https://bdbi.atlassian.net)
 #

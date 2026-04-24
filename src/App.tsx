@@ -1,8 +1,10 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { OpenSettingsProvider } from "@/context/OpenSettingsContext";
+import { OpenMeetingsProvider } from "@/context/OpenMeetingsContext";
+import { RecordingContextTagsProvider } from "@/context/RecordingContextTagsContext";
 import { ThemeProvider } from "@/providers/ThemeProvider";
 import { Loader2 } from "lucide-react";
-import { Toaster, toast } from "sonner";
+import { Toaster } from "sonner";
 import { type CredentialStatus, credentialStatusComplete, getCredentialStatus, getNonSecretConfig, setLocalLlmUrlCache, jiraComplete, bitbucketComplete } from "@/lib/tauri";
 import { useWorkloadAlertStore, POLL_INTERVAL_MS } from "@/stores/workloadAlertStore";
 import { BackgroundRenderer, getBackgroundId, useBgChangeListener } from "@/lib/backgrounds";
@@ -33,8 +35,6 @@ import { LandingScreen } from "@/screens/LandingScreen";
 import { WorkflowScreen, type WorkflowId } from "@/screens/WorkflowScreen";
 import { SprintDashboardScreen } from "@/screens/SprintDashboardScreen";
 import { RetrospectivesScreen } from "@/screens/RetrospectivesScreen";
-import { StandupScreen } from "@/screens/StandupScreen";
-import { WorkloadBalancerScreen } from "@/screens/WorkloadBalancerScreen";
 import { KnowledgeBaseScreen } from "@/screens/KnowledgeBaseScreen";
 import { TicketQualityScreen } from "@/screens/TicketQualityScreen";
 import { PrReviewScreen } from "@/screens/PrReviewScreen";
@@ -59,8 +59,6 @@ const WORKFLOW_IDS: WorkflowId[] = [
   "review-pr",
   "sprint-dashboard",
   "retrospectives",
-  "standup",
-  "workload-balancer",
   "ticket-quality",
   "knowledge-base",
   "address-pr-comments",
@@ -100,37 +98,13 @@ function AppInner() {
   }, []);
 
   const checkWorkload = useWorkloadAlertStore((s) => s.checkWorkload);
-  // Track which overloaded dev names we've already toasted so we don't repeat on
-  // every poll if nothing has changed.
-  const toastedDevsRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
-    // Only poll when both JIRA and Bitbucket credentials are present
+    // Poll the workload store so the Sprint Dashboard landing-card badge stays
+    // fresh. Only polls when both JIRA and Bitbucket credentials are present.
     if (!credStatus || !jiraComplete(credStatus) || !bitbucketComplete(credStatus)) return;
-
-    async function runCheck() {
-      const overloaded = await checkWorkload();
-      const newlyOverloaded = overloaded.filter((name) => !toastedDevsRef.current.has(name));
-      // Remove devs from the toasted set if they're no longer overloaded
-      const currentSet = new Set(overloaded);
-      for (const name of toastedDevsRef.current) {
-        if (!currentSet.has(name)) toastedDevsRef.current.delete(name);
-      }
-      if (newlyOverloaded.length > 0) {
-        for (const name of newlyOverloaded) {
-          toastedDevsRef.current.add(name);
-          toast.warning(`Workload alert: ${name} is overloaded`, {
-            description: "Open the Team Workload Balancer to review and rebalance.",
-            duration: 8000,
-          });
-        }
-      }
-    }
-
-    // Run immediately on mount (or when credentials become available)
-    runCheck();
-
-    const interval = setInterval(runCheck, POLL_INTERVAL_MS);
+    void checkWorkload();
+    const interval = setInterval(() => void checkWorkload(), POLL_INTERVAL_MS);
     return () => clearInterval(interval);
   }, [credStatus, checkWorkload]);
 
@@ -139,6 +113,10 @@ function AppInner() {
     setScreenBeforeSettings(screen);
     setScreen("settings");
   }, [screen]);
+
+  const openMeetings = useCallback(() => {
+    setScreen("meetings");
+  }, []);
 
   function closeSettings() {
     getCredentialStatus()
@@ -161,6 +139,8 @@ function AppInner() {
 
   return (
     <OpenSettingsProvider openSettings={openSettings}>
+     <OpenMeetingsProvider openMeetings={openMeetings}>
+      <RecordingContextTagsProvider tags={recordingContextTagsForScreen(screen)}>
       {screen === "loading" ? (
         <LoadingScreen />
       ) : screen === "onboarding" ? (
@@ -170,14 +150,10 @@ function AppInner() {
           onClose={closeSettings}
           onNavigate={(id) => setScreen(id as Screen)}
         />
-      ) : screen === "sprint-dashboard" ? (
-        <SprintDashboardScreen onBack={() => setScreen("landing")} />
+      ) : screen === "sprint-dashboard" && credStatus ? (
+        <SprintDashboardScreen credStatus={credStatus} onBack={() => setScreen("landing")} />
       ) : screen === "retrospectives" ? (
         <RetrospectivesScreen onBack={() => setScreen("landing")} />
-      ) : screen === "standup" && credStatus ? (
-        <StandupScreen credStatus={credStatus} onBack={() => setScreen("landing")} />
-      ) : screen === "workload-balancer" && credStatus ? (
-        <WorkloadBalancerScreen credStatus={credStatus} onBack={() => setScreen("landing")} />
       ) : screen === "knowledge-base" ? (
         <KnowledgeBaseScreen onBack={() => setScreen("landing")} />
       ) : screen === "ticket-quality" && credStatus ? (
@@ -201,8 +177,18 @@ function AppInner() {
       ) : (
         <LoadingScreen />
       )}
+      </RecordingContextTagsProvider>
+     </OpenMeetingsProvider>
     </OpenSettingsProvider>
   );
+}
+
+function recordingContextTagsForScreen(screen: Screen): string[] {
+  switch (screen) {
+    case "sprint-dashboard": return ["standup"];
+    case "retrospectives": return ["retro"];
+    default: return [];
+  }
 }
 
 function GlobalBackground() {

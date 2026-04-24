@@ -21,7 +21,7 @@ use crate::agents;
 use crate::llms;
 
 pub use agents::briefing::{
-    generate_sprint_retrospective, generate_standup_briefing, generate_workload_suggestions,
+    chat_sprint_dashboard, generate_sprint_retrospective, generate_workload_suggestions,
 };
 pub use agents::dispatch::llm_client;
 pub use agents::grooming::{
@@ -72,9 +72,10 @@ pub use knowledge::{
     delete_knowledge_entry, export_knowledge_markdown, load_knowledge_entries, save_knowledge_entry,
 };
 pub use meetings::{
-    active_meeting_id, delete_meeting, download_whisper_model, get_meetings_dir, list_meetings,
-    list_microphones, list_whisper_models, load_meeting, pause_meeting_recording,
-    resume_meeting_recording, save_meeting, start_meeting_recording, stop_meeting_recording,
+    active_meeting_id, delete_meeting, diarize_meeting, download_whisper_model, get_meetings_dir,
+    list_meetings, list_microphones, list_whisper_models, load_meeting, pause_meeting_recording,
+    rename_meeting_speaker, resume_meeting_recording, save_meeting, start_meeting_recording,
+    stop_meeting_recording,
 };
 pub use llms::claude::{cancel_review, get_claude_models};
 pub use llms::copilot::{

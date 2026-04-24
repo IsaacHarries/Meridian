@@ -40,6 +40,7 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { HeaderSettingsButton } from "@/components/HeaderSettingsButton";
+import { HeaderRecordButton } from "@/components/HeaderRecordButton";
 import {
   APP_HEADER_BAR,
   APP_HEADER_ROW_PANEL,
@@ -2490,7 +2491,7 @@ function JiraSection({
           <div>
             <CardTitle className="text-base">JIRA</CardTitle>
             <CardDescription className="text-xs mt-0.5">
-              Sprint data, tickets, and standup briefings
+              Sprint data and ticket details
             </CardDescription>
           </div>
           <div className="flex items-center gap-2">
@@ -4256,8 +4257,8 @@ function MockClaudeModeSection({ onToggle }: { onToggle: () => void }) {
               )}
             </div>
             <p className="text-xs text-muted-foreground leading-relaxed">
-              Return pre-recorded agent responses for pipelines, standup,
-              retros, workload, ticket quality, and PR review — no Anthropic API
+              Return pre-recorded agent responses for pipelines, retros,
+              workload, ticket quality, and PR review — no Anthropic API
               calls made. JIRA and Bitbucket are unaffected (enable Mock Data
               Mode for those).
             </p>
@@ -4495,6 +4496,7 @@ export function SettingsScreen({ onClose, onNavigate }: SettingsScreenProps) {
           <h1 className={cn(APP_HEADER_TITLE, "shrink-0")}>Settings</h1>
           <div className="min-w-0 flex-1" aria-hidden />
           <div className="flex shrink-0 items-center gap-1">
+            <HeaderRecordButton />
             <HeaderSettingsButton />
             <Button variant="ghost" size="icon" onClick={onClose} aria-label="Close settings">
               <X className="h-4 w-4" />

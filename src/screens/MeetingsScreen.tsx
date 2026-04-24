@@ -8,21 +8,27 @@ import {
   Sparkles,
   Loader2,
   Trash2,
-  Send,
   Plus,
   Clock,
   Tag as TagIcon,
+  Users,
+  X,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
+import { SlashCommandInput } from "@/components/SlashCommandInput";
+import {
+  createGlobalCommands,
+  type SlashCommand,
+} from "@/lib/slashCommands";
 import { WorkflowPanelHeader, APP_HEADER_TITLE } from "@/components/appHeaderLayout";
 import {
   listMicrophones,
   type MicrophoneInfo,
   type MeetingRecord,
+  type SpeakerCandidate,
 } from "@/lib/tauri";
 import { getPreferences } from "@/lib/preferences";
 import {
@@ -31,8 +37,8 @@ import {
 } from "@/stores/meetingsStore";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
+import { ask } from "@tauri-apps/plugin-dialog";
 
-const DEFAULT_TAGS = ["standup", "planning", "retro", "1:1", "other"];
 
 interface MeetingsScreenProps {
   onBack: () => void;
@@ -65,7 +71,7 @@ export function MeetingsScreen({ onBack }: MeetingsScreenProps) {
   }, [active]);
 
   return (
-    <div className="min-h-screen flex flex-col">
+    <div className="h-screen flex flex-col overflow-hidden">
       <WorkflowPanelHeader
         leading={
           <>
@@ -324,36 +330,11 @@ function ActiveRecordingView({ onStopped }: { onStopped: () => void }) {
             className="text-lg font-semibold h-10"
           />
 
-          <div className="flex items-center gap-2 flex-wrap">
-            <TagIcon className="h-3.5 w-3.5 text-muted-foreground" />
-            {DEFAULT_TAGS.map((t) => {
-              const activeTags = isLive ? active.tags : draftTags;
-              const selected = activeTags.includes(t);
-              return (
-                <button
-                  key={t}
-                  disabled={isLive}
-                  onClick={() => {
-                    if (isLive) return;
-                    setDraftTags(
-                      selected
-                        ? draftTags.filter((x) => x !== t)
-                        : [...draftTags, t],
-                    );
-                  }}
-                  className={cn(
-                    "text-xs px-2 py-1 rounded-full border transition-colors",
-                    selected
-                      ? "bg-primary text-primary-foreground border-primary"
-                      : "bg-background text-muted-foreground hover:bg-muted border-input",
-                    isLive && "opacity-60 cursor-not-allowed",
-                  )}
-                >
-                  {t}
-                </button>
-              );
-            })}
-          </div>
+          <TagEditor
+            tags={isLive ? active.tags : draftTags}
+            onChange={setDraftTags}
+            disabled={isLive}
+          />
         </div>
       </div>
 
@@ -499,6 +480,20 @@ function MeetingDetailView({ record }: { record: MeetingRecord }) {
   const renameMeeting = useMeetingsStore((s) => s.renameMeeting);
   const setMeetingTags = useMeetingsStore((s) => s.setMeetingTags);
   const deleteSelectedMeeting = useMeetingsStore((s) => s.deleteSelectedMeeting);
+  const renameSpeaker = useMeetingsStore((s) => s.renameSpeaker);
+
+  // Build a map from raw speaker id (e.g. "SPEAKER_00") to the user-assigned
+  // name, so transcript rows can render the friendly label even when the
+  // segment only carries the raw id.
+  const speakerNameById = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const sp of record.speakers ?? []) {
+      if (sp.displayName) map.set(sp.id, sp.displayName);
+    }
+    return map;
+  }, [record.speakers]);
+
+  const hasDiarization = (record.speakers?.length ?? 0) > 0;
 
   const [title, setTitle] = useState(record.title);
   const isBusy = busy.has(record.id);
@@ -512,13 +507,6 @@ function MeetingDetailView({ record }: { record: MeetingRecord }) {
     if (title.trim() && title !== record.title) {
       await renameMeeting(record.id, title.trim());
     }
-  }
-
-  function toggleTag(tag: string) {
-    const next = record.tags.includes(tag)
-      ? record.tags.filter((t) => t !== tag)
-      : [...record.tags, tag];
-    setMeetingTags(record.id, next);
   }
 
   const hasSummary = !!record.summary || record.actionItems.length > 0 || record.decisions.length > 0;
@@ -536,10 +524,12 @@ function MeetingDetailView({ record }: { record: MeetingRecord }) {
         <Button
           variant="outline"
           size="sm"
-          onClick={() => {
-            if (confirm("Delete this meeting? The transcript will be permanently removed.")) {
-              deleteSelectedMeeting();
-            }
+          onClick={async () => {
+            const confirmed = await ask(
+              "The transcript will be permanently removed.",
+              { title: "Delete this meeting?", kind: "warning" },
+            );
+            if (confirmed) void deleteSelectedMeeting();
           }}
         >
           <Trash2 className="h-4 w-4" />
@@ -556,26 +546,10 @@ function MeetingDetailView({ record }: { record: MeetingRecord }) {
         <span>{record.micDeviceName}</span>
       </div>
 
-      <div className="flex items-center gap-1.5 flex-wrap">
-        <TagIcon className="h-3.5 w-3.5 text-muted-foreground" />
-        {DEFAULT_TAGS.map((t) => {
-          const selected = record.tags.includes(t);
-          return (
-            <button
-              key={t}
-              onClick={() => toggleTag(t)}
-              className={cn(
-                "text-xs px-2 py-1 rounded-full border transition-colors",
-                selected
-                  ? "bg-primary text-primary-foreground border-primary"
-                  : "bg-background text-muted-foreground hover:bg-muted border-input",
-              )}
-            >
-              {t}
-            </button>
-          );
-        })}
-      </div>
+      <TagEditor
+        tags={record.tags}
+        onChange={(next) => setMeetingTags(record.id, next)}
+      />
 
       {record.suggestedTitle &&
         record.title.trim() &&
@@ -678,6 +652,30 @@ function MeetingDetailView({ record }: { record: MeetingRecord }) {
         )}
       </section>
 
+      {/* Speakers */}
+      {hasDiarization && (
+        <section className="space-y-3">
+          <div className="flex items-center justify-between">
+            <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide flex items-center gap-1.5">
+              <Users className="h-3.5 w-3.5" /> Speakers
+            </h3>
+          </div>
+          <Card>
+            <CardContent className="p-4 space-y-2">
+              {(record.speakers ?? []).map((sp) => (
+                <SpeakerRow
+                  key={sp.id}
+                  id={sp.id}
+                  displayName={sp.displayName ?? null}
+                  candidates={sp.candidates ?? []}
+                  onRename={(name) => renameSpeaker(sp.id, name)}
+                />
+              ))}
+            </CardContent>
+          </Card>
+        </section>
+      )}
+
       {/* Transcript */}
       <section className="space-y-3">
         <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">
@@ -691,14 +689,24 @@ function MeetingDetailView({ record }: { record: MeetingRecord }) {
               </p>
             ) : (
               <div className="space-y-2 font-mono text-sm">
-                {record.segments.map((seg, i) => (
-                  <div key={i} className="flex gap-3">
-                    <span className="text-muted-foreground shrink-0">
-                      {formatTimestamp(seg.startSec)}
-                    </span>
-                    <span>{seg.text}</span>
-                  </div>
-                ))}
+                {record.segments.map((seg, i) => {
+                  const label = seg.speakerId
+                    ? speakerNameById.get(seg.speakerId) ?? seg.speakerId
+                    : null;
+                  return (
+                    <div key={i} className="flex gap-3">
+                      <span className="text-muted-foreground shrink-0 w-12">
+                        {formatTimestamp(seg.startSec)}
+                      </span>
+                      {label && (
+                        <span className="shrink-0 w-32 font-semibold text-primary/90 truncate">
+                          {label}
+                        </span>
+                      )}
+                      <span className="min-w-0">{seg.text}</span>
+                    </div>
+                  );
+                })}
               </div>
             )}
           </CardContent>
@@ -708,9 +716,77 @@ function MeetingDetailView({ record }: { record: MeetingRecord }) {
   );
 }
 
+function SpeakerRow({
+  id,
+  displayName,
+  candidates,
+  onRename,
+}: {
+  id: string;
+  displayName: string | null;
+  candidates: SpeakerCandidate[];
+  onRename: (name: string | null) => Promise<void>;
+}) {
+  const [value, setValue] = useState(displayName ?? "");
+  useEffect(() => setValue(displayName ?? ""), [displayName]);
+
+  // Show the candidate picker when recognition surfaced multiple plausible
+  // names and no display name is set yet. Picking one commits via onRename;
+  // the backend clears `candidates` on rename so this row collapses back to
+  // the plain input afterwards.
+  const showPicker = !displayName && candidates.length > 0;
+
+  return (
+    <div className="flex items-start gap-3">
+      <span className="font-mono text-xs text-muted-foreground w-28 shrink-0 pt-1.5">
+        {id}
+      </span>
+      <div className="flex-1 min-w-0 space-y-1.5">
+        <Input
+          value={value}
+          onChange={(e) => setValue(e.target.value)}
+          onBlur={() => {
+            const trimmed = value.trim();
+            const next = trimmed === "" ? null : trimmed;
+            if (next !== displayName) {
+              void onRename(next);
+            }
+          }}
+          placeholder={
+            showPicker
+              ? "Not one of these? Type a name"
+              : "Name this speaker (e.g., Isaac)"
+          }
+          className="h-8 text-sm"
+        />
+        {showPicker && (
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-xs text-muted-foreground">
+              Could be:
+            </span>
+            {candidates.map((c) => (
+              <button
+                key={c.name}
+                onClick={() => void onRename(c.name)}
+                className="text-xs px-2 py-0.5 rounded-full border border-input bg-background hover:bg-muted transition-colors"
+                title={`similarity ${c.similarity.toFixed(2)}`}
+              >
+                {c.name}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function MeetingChatPanel({ record }: { record: MeetingRecord }) {
   const busy = useMeetingsStore((s) => s.busy);
   const sendChatMessage = useMeetingsStore((s) => s.sendChatMessage);
+  const summarizeSelected = useMeetingsStore((s) => s.summarizeSelected);
+  const clearSelectedChat = useMeetingsStore((s) => s.clearSelectedChat);
+  const dropLastAssistantTurn = useMeetingsStore((s) => s.dropLastAssistantTurn);
   const [input, setInput] = useState("");
   const bottomRef = useRef<HTMLDivElement>(null);
   const isBusy = busy.has(record.id);
@@ -721,16 +797,94 @@ function MeetingChatPanel({ record }: { record: MeetingRecord }) {
     bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [history.length, isBusy]);
 
-  async function handleSend() {
-    const text = input.trim();
-    if (!text || isBusy) return;
-    setInput("");
-    try {
-      await sendChatMessage(text);
-    } catch (e) {
-      toast.error("Chat failed", { description: String(e) });
+  // Resolve speaker id → name for the /speakers output.
+  const speakerLines = useMemo(() => {
+    const lines: string[] = [];
+    for (const sp of record.speakers ?? []) {
+      lines.push(
+        sp.displayName ? `${sp.id} — ${sp.displayName}` : `${sp.id} (unnamed)`,
+      );
     }
-  }
+    return lines;
+  }, [record.speakers]);
+
+  const commands: SlashCommand[] = useMemo(
+    () => [
+      ...createGlobalCommands({
+        history,
+        clearHistory: clearSelectedChat,
+        sendMessage: sendChatMessage,
+        removeLastAssistantMessage: dropLastAssistantTurn,
+      }),
+      {
+        name: "summarize",
+        description: "Regenerate this meeting's summary",
+        execute: async () => {
+          await summarizeSelected();
+          toast.success("Regenerating summary…");
+        },
+      },
+      {
+        name: "speakers",
+        description: "List speakers and any names assigned",
+        execute: ({ toast: t }) => {
+          if (speakerLines.length === 0) {
+            t.info("No speakers have been detected for this meeting");
+            return;
+          }
+          t("Speakers", { description: speakerLines.join("\n") });
+        },
+      },
+      {
+        name: "transcript",
+        description: "Ask for the full diarized transcript",
+        execute: async () => {
+          await sendChatMessage(
+            "Please provide the full diarized transcript in a readable form, with speaker names where known.",
+          );
+        },
+      },
+      {
+        name: "actions",
+        description: "Ask for just the action items",
+        execute: async () => {
+          await sendChatMessage(
+            "List just the action items from this meeting as a bulleted list, with the owner if mentioned.",
+          );
+        },
+      },
+      {
+        name: "decisions",
+        description: "Ask for just the decisions made",
+        execute: async () => {
+          await sendChatMessage(
+            "List just the decisions that were made during this meeting as a bulleted list.",
+          );
+        },
+      },
+      {
+        name: "at",
+        description: "Focus the next question on a timestamp",
+        args: "HH:MM",
+        execute: ({ args, setInput }) => {
+          const ts = args.trim();
+          if (!ts) {
+            setInput("/at ");
+            return;
+          }
+          setInput(`At ${ts} — `);
+        },
+      },
+    ],
+    [
+      history,
+      clearSelectedChat,
+      sendChatMessage,
+      dropLastAssistantTurn,
+      summarizeSelected,
+      speakerLines,
+    ],
+  );
 
   return (
     <>
@@ -749,7 +903,7 @@ function MeetingChatPanel({ record }: { record: MeetingRecord }) {
         {history.length === 0 ? (
           <p className="text-xs text-muted-foreground italic text-center pt-6">
             Ask anything about this meeting — what was discussed, decisions made,
-            action items, or details you want to recall.
+            action items, or details you want to recall. Type <span className="font-mono">/</span> to see commands.
           </p>
         ) : (
           history.map((msg, i) => (
@@ -784,27 +938,175 @@ function MeetingChatPanel({ record }: { record: MeetingRecord }) {
       </div>
 
       <div className="shrink-0 px-4 pb-4 pt-2 border-t">
-        <div className="flex gap-2 items-end">
-          <Textarea
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
-                e.preventDefault();
-                handleSend();
-              }
-            }}
-            rows={2}
-            placeholder="Ask about this meeting. ⌘↵ to send."
-            className="resize-none text-sm"
-            disabled={isBusy}
-          />
-          <Button onClick={handleSend} disabled={isBusy || !input.trim()} size="sm">
-            <Send className="h-4 w-4" />
-          </Button>
-        </div>
+        <SlashCommandInput
+          value={input}
+          onChange={setInput}
+          onSend={async (text) => {
+            try {
+              await sendChatMessage(text);
+            } catch (e) {
+              toast.error("Chat failed", { description: String(e) });
+            }
+          }}
+          commands={commands}
+          busy={isBusy}
+          placeholder="Ask about this meeting. Enter to send. / for commands."
+        />
       </div>
     </>
+  );
+}
+
+// ── Tag editor ───────────────────────────────────────────────────────────────
+//
+// Renders the union of DEFAULT_TAGS and whatever extra tags the meeting already
+// carries, so custom tags stay visible as selectable pills. Custom tags get a
+// small red × badge overlapping their top-right corner for deletion (the
+// built-in defaults are non-destructive — click the pill to deselect).
+
+function TagEditor({
+  tags,
+  onChange,
+  disabled,
+}: {
+  tags: string[];
+  onChange: (next: string[]) => void;
+  disabled?: boolean;
+}) {
+  const tagVocab = useMeetingsStore((s) => s.tagVocab);
+  const addTagToVocab = useMeetingsStore((s) => s.addTagToVocab);
+  const removeTagFromVocab = useMeetingsStore((s) => s.removeTagFromVocab);
+
+  // Pill list = persisted vocab ∪ any tags already on this meeting that
+  // aren't in the vocab (e.g. a historical meeting whose tag was later
+  // removed from the vocabulary). Preserves vocab order; meeting-only tags
+  // are appended.
+  const allTags = useMemo(() => {
+    const vocabSet = new Set(tagVocab);
+    const extras = tags.filter((t) => !vocabSet.has(t));
+    return [...tagVocab, ...extras];
+  }, [tagVocab, tags]);
+
+  function toggle(tag: string) {
+    if (disabled) return;
+    const next = tags.includes(tag)
+      ? tags.filter((t) => t !== tag)
+      : [...tags, tag];
+    onChange(next);
+  }
+
+  function removePill(tag: string) {
+    if (disabled) return;
+    // Remove from both the vocab (persisted) and this meeting's selection.
+    // Other meetings that still have this tag keep it — they just won't see
+    // it as a clickable pill unless they re-add it.
+    removeTagFromVocab(tag);
+    onChange(tags.filter((t) => t !== tag));
+  }
+
+  function addTag(raw: string) {
+    const t = raw.trim().toLowerCase();
+    if (!t) return;
+    addTagToVocab(t);
+    if (!tags.includes(t)) onChange([...tags, t]);
+  }
+
+  return (
+    <div className="flex items-center gap-2 flex-wrap">
+      <TagIcon className="h-3.5 w-3.5 text-muted-foreground" />
+      {allTags.map((t) => {
+        const selected = tags.includes(t);
+        return (
+          <div key={t} className="relative group">
+            <button
+              disabled={disabled}
+              onClick={() => toggle(t)}
+              className={cn(
+                "text-xs px-2 py-1 rounded-full border transition-colors",
+                selected
+                  ? "bg-primary text-primary-foreground border-primary"
+                  : "bg-background text-muted-foreground hover:bg-muted border-input",
+                disabled && "opacity-60 cursor-not-allowed",
+              )}
+            >
+              {t}
+            </button>
+            {!disabled && (
+              <button
+                type="button"
+                aria-label={`Remove tag ${t}`}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  removePill(t);
+                }}
+                className="absolute top-0 right-0 translate-x-1/2 -translate-y-1/2 h-4 w-4 rounded-full bg-red-500 text-white flex items-center justify-center shadow-sm focus:outline-none focus:ring-1 focus:ring-red-400 opacity-0 group-hover:opacity-40 hover:!opacity-100 transition-opacity duration-150"
+              >
+                <X className="h-2.5 w-2.5" strokeWidth={3} />
+              </button>
+            )}
+          </div>
+        );
+      })}
+      {!disabled && <AddTagPill onSubmit={addTag} />}
+    </div>
+  );
+}
+
+// "+" pill that animates open into an editable text field. Matches the size
+// and rounded-full silhouette of the tag pills so it visually sits with them;
+// the inner content swaps between a Plus icon and an input, while the pill
+// itself transitions width between a compact ~28px and a roomier ~112px.
+function AddTagPill({ onSubmit }: { onSubmit: (value: string) => void }) {
+  const [editing, setEditing] = useState(false);
+  const [value, setValue] = useState("");
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  function commit() {
+    if (value.trim()) onSubmit(value);
+    setValue("");
+    setEditing(false);
+  }
+
+  return (
+    <div
+      className={cn(
+        "h-7 rounded-full border border-input bg-background text-xs transition-all duration-200 ease-out overflow-hidden flex items-center",
+        editing ? "w-28" : "w-7 hover:bg-muted cursor-pointer",
+      )}
+      onClick={() => {
+        if (!editing) {
+          setEditing(true);
+          // Wait for the width transition to begin, then focus the input so
+          // the caret lands once the pill has opened.
+          requestAnimationFrame(() => inputRef.current?.focus());
+        }
+      }}
+    >
+      {editing ? (
+        <input
+          ref={inputRef}
+          value={value}
+          onChange={(e) => setValue(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              commit();
+            } else if (e.key === "Escape") {
+              e.preventDefault();
+              setValue("");
+              setEditing(false);
+            }
+          }}
+          onBlur={commit}
+          placeholder="tag name"
+          className="w-full h-full px-3 bg-transparent outline-none placeholder:text-muted-foreground/60"
+        />
+      ) : (
+        <div className="w-full h-full flex items-center justify-center text-muted-foreground">
+          <Plus className="h-3 w-3" strokeWidth={2.5} />
+        </div>
+      )}
+    </div>
   );
 }
 

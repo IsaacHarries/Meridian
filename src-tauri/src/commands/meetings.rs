@@ -40,11 +40,26 @@ pub struct MicrophoneInfo {
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct MeetingSegment {
-    #[serde(rename = "startSec")]
+    // `null` is tolerated on read (legacy corrupt files wrote non-finite f32
+    // as JSON null); treated as 0.0 so the rest of the record still loads.
+    #[serde(rename = "startSec", deserialize_with = "deserialize_f32_null_as_zero")]
     pub start_sec: f32,
-    #[serde(rename = "endSec")]
+    #[serde(rename = "endSec", deserialize_with = "deserialize_f32_null_as_zero")]
     pub end_sec: f32,
     pub text: String,
+    // Speaker label assigned by the diarization pass. `None` until the user runs
+    // diarize_meeting on the saved recording; older meetings loaded from disk
+    // will also be None (hence #[serde(default)]).
+    #[serde(default, rename = "speakerId", skip_serializing_if = "Option::is_none")]
+    pub speaker_id: Option<String>,
+}
+
+fn deserialize_f32_null_as_zero<'de, D>(de: D) -> Result<f32, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let v: Option<f32> = Option::deserialize(de)?;
+    Ok(v.unwrap_or(0.0))
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
@@ -74,12 +89,52 @@ pub struct MeetingRecord {
     pub suggested_tags: Vec<String>,
     #[serde(default, rename = "chatHistory")]
     pub chat_history: Vec<ChatMessage>,
+    #[serde(default)]
+    pub speakers: Vec<MeetingSpeaker>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct ChatMessage {
     pub role: String,
     pub content: String,
+}
+
+// One entry per distinct voice detected by the diarization pass. The embedding
+// is a 256-dim WeSpeaker vector (averaged across all chunks assigned to this
+// cluster); it's what a future cross-meeting "enrollment" step will use to
+// match this voice against known named speakers. `display_name` is the label
+// the user has assigned — None until they name it.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct MeetingSpeaker {
+    pub id: String,
+    // Tolerate `null` entries in the embedding vector when reading: older
+    // meetings persisted before the NaN-sanitisation fix may contain `null`
+    // values (serde_json's default formatter writes non-finite f32 values as
+    // literal `null` rather than erroring). Treat those as 0.0.
+    #[serde(deserialize_with = "deserialize_f32_vec_null_as_zero")]
+    pub embedding: Vec<f32>,
+    #[serde(default, rename = "displayName", skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+    // Populated by the recognition pass when a cluster's top-match confidence
+    // is too close to a runner-up to auto-assign. The UI surfaces these as
+    // clickable choices so the user resolves the ambiguity. Cleared once a
+    // display_name is assigned.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub candidates: Vec<SpeakerCandidate>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct SpeakerCandidate {
+    pub name: String,
+    pub similarity: f32,
+}
+
+fn deserialize_f32_vec_null_as_zero<'de, D>(de: D) -> Result<Vec<f32>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let raw: Vec<Option<f32>> = Vec::deserialize(de)?;
+    Ok(raw.into_iter().map(|v| v.unwrap_or(0.0)).collect())
 }
 
 // ── Paths ─────────────────────────────────────────────────────────────────
@@ -102,6 +157,237 @@ fn model_filename(model_id: &str) -> String {
 
 fn model_path(app: &tauri::AppHandle, model_id: &str) -> Result<PathBuf, String> {
     Ok(models_dir(app)?.join(model_filename(model_id)))
+}
+
+// ── Speaker voice registry ────────────────────────────────────────────────
+//
+// A single JSON file holding every named voice sample the user has confirmed
+// across all meetings. Used by the auto-recognition pass to label new
+// clusters by cosine-similarity against remembered embeddings without having
+// to rescan every meeting file.
+
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+pub struct SpeakerRegistry {
+    #[serde(default)]
+    pub entries: Vec<SpeakerRegistryEntry>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct SpeakerRegistryEntry {
+    pub name: String,
+    #[serde(rename = "meetingId")]
+    pub meeting_id: String,
+    #[serde(rename = "clusterId")]
+    pub cluster_id: String,
+    #[serde(deserialize_with = "deserialize_f32_vec_null_as_zero")]
+    pub vector: Vec<f32>,
+}
+
+// Confident auto-assign: top name's best sample is at least this similar.
+const RECOGNIZE_HIGH_THRESHOLD: f32 = 0.70;
+// Floor for even considering a name as a candidate in the ambiguous case.
+const RECOGNIZE_LOW_THRESHOLD: f32 = 0.55;
+// If top1 - top2 (across distinct names) is below this, we treat as ambiguous
+// and surface the top candidates instead of auto-assigning.
+const RECOGNIZE_AMBIGUITY_MARGIN: f32 = 0.05;
+
+// Registry maintenance. The goal: bound growth per person and avoid storing
+// near-duplicate samples (same mic, same room) that add no signal but pull
+// the max-similarity match upward under unfavourable conditions.
+const REGISTRY_MAX_PER_PERSON: usize = 20;
+// New sample is averaged into the closest existing one (instead of appended)
+// if cosine similarity to any existing entry meets this. Chosen so that
+// typical same-voice/same-conditions samples collapse together (>0.92 is
+// comfortably in "same recording context" territory for WeSpeaker), but
+// distinctly different acoustic settings keep their own slot.
+const REGISTRY_MERGE_THRESHOLD: f32 = 0.92;
+// Auto-recognised matches are only fed back into the registry when they were
+// very confident. 0.80 leaves a healthy margin above the 0.70 labelling
+// threshold, so low-confidence auto-matches (which could drift the registry
+// if wrong) don't contaminate future recognitions. Manual names always feed
+// back regardless — the user vouched for them.
+const REGISTRY_AUTO_UPDATE_THRESHOLD: f32 = 0.80;
+
+fn registry_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let dir = resolve_data_dir(app)?.join("speakers");
+    fs::create_dir_all(&dir).map_err(|e| format!("Cannot create speakers dir: {e}"))?;
+    Ok(dir.join("registry.json"))
+}
+
+fn load_registry(app: &tauri::AppHandle) -> Result<SpeakerRegistry, String> {
+    let path = registry_path(app)?;
+    if !path.exists() {
+        return Ok(SpeakerRegistry::default());
+    }
+    let content = fs::read_to_string(&path)
+        .map_err(|e| format!("Read {}: {e}", path.display()))?;
+    serde_json::from_str(&content)
+        .map_err(|e| format!("Parse {}: {e}", path.display()))
+}
+
+fn save_registry(app: &tauri::AppHandle, reg: &SpeakerRegistry) -> Result<(), String> {
+    let path = registry_path(app)?;
+    let json = serde_json::to_string_pretty(reg)
+        .map_err(|e| format!("Serialise registry: {e}"))?;
+    fs::write(&path, json).map_err(|e| format!("Write {}: {e}", path.display()))
+}
+
+// Enroll a voice sample for a named person. Drops any prior entry at the
+// same (meeting_id, cluster_id) first so a rename moves the sample rather
+// than duplicating it; then either merges into a near-duplicate (avg in
+// place) or appends as a distinct sample; finally enforces a per-person
+// cap by collapsing the closest existing pair if needed. Returns true when
+// the registry changed (caller saves the file in that case).
+fn enroll_registry_entry(
+    reg: &mut SpeakerRegistry,
+    name: &str,
+    meeting_id: &str,
+    cluster_id: &str,
+    vector: Vec<f32>,
+) {
+    // Drop any previous entry keyed to this cluster (rename case).
+    reg.entries
+        .retain(|e| !(e.meeting_id == meeting_id && e.cluster_id == cluster_id));
+
+    // Near-duplicate merge: if the incoming vector is very similar to any
+    // existing sample for this name, average it into that slot rather than
+    // appending. Keeps the registry rich without accumulating redundancy.
+    if let Some((idx, _sim)) = reg
+        .entries
+        .iter()
+        .enumerate()
+        .filter(|(_, e)| e.name == name)
+        .map(|(i, e)| (i, cosine_similarity(&e.vector, &vector)))
+        .max_by(|a, b| a.1.total_cmp(&b.1))
+        .filter(|(_, sim)| *sim >= REGISTRY_MERGE_THRESHOLD)
+    {
+        average_vector_in_place(&mut reg.entries[idx].vector, &vector);
+        return;
+    }
+
+    // New distinct sample.
+    reg.entries.push(SpeakerRegistryEntry {
+        name: name.to_string(),
+        meeting_id: meeting_id.to_string(),
+        cluster_id: cluster_id.to_string(),
+        vector,
+    });
+
+    // Enforce cap: if this name now has too many samples, collapse the
+    // most-similar pair into one. Operates only on this name's entries so
+    // other people are untouched.
+    let person_indices: Vec<usize> = reg
+        .entries
+        .iter()
+        .enumerate()
+        .filter(|(_, e)| e.name == name)
+        .map(|(i, _)| i)
+        .collect();
+    if person_indices.len() > REGISTRY_MAX_PER_PERSON {
+        let mut best: Option<(usize, usize, f32)> = None;
+        for i in 0..person_indices.len() {
+            for j in (i + 1)..person_indices.len() {
+                let sim = cosine_similarity(
+                    &reg.entries[person_indices[i]].vector,
+                    &reg.entries[person_indices[j]].vector,
+                );
+                if best.map_or(true, |(_, _, bs)| sim > bs) {
+                    best = Some((person_indices[i], person_indices[j], sim));
+                }
+            }
+        }
+        if let Some((keep, drop, _)) = best {
+            // Average the dropped entry's vector into the kept one before
+            // removing, so the pair's information isn't lost — just fused.
+            let donor = reg.entries[drop].vector.clone();
+            average_vector_in_place(&mut reg.entries[keep].vector, &donor);
+            // `drop > keep` by construction (nested loop), remove is safe.
+            reg.entries.remove(drop);
+        }
+    }
+}
+
+fn average_vector_in_place(existing: &mut [f32], incoming: &[f32]) {
+    let n = existing.len().min(incoming.len());
+    for i in 0..n {
+        existing[i] = (existing[i] + incoming[i]) * 0.5;
+    }
+}
+
+fn remove_registry_entry(reg: &mut SpeakerRegistry, meeting_id: &str, cluster_id: &str) {
+    reg.entries
+        .retain(|e| !(e.meeting_id == meeting_id && e.cluster_id == cluster_id));
+}
+
+fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
+    if a.len() != b.len() || a.is_empty() {
+        return 0.0;
+    }
+    let mut dot = 0.0f32;
+    let mut na = 0.0f32;
+    let mut nb = 0.0f32;
+    for i in 0..a.len() {
+        dot += a[i] * b[i];
+        na += a[i] * a[i];
+        nb += b[i] * b[i];
+    }
+    let denom = na.sqrt() * nb.sqrt();
+    if denom <= f32::EPSILON {
+        0.0
+    } else {
+        (dot / denom).clamp(-1.0, 1.0)
+    }
+}
+
+// For a single query embedding, return (name, best_similarity) for every
+// distinct name in the registry, sorted descending by best similarity.
+fn best_per_name(
+    registry: &SpeakerRegistry,
+    query: &[f32],
+) -> Vec<(String, f32)> {
+    use std::collections::BTreeMap;
+    let mut best: BTreeMap<String, f32> = BTreeMap::new();
+    for entry in &registry.entries {
+        let sim = cosine_similarity(query, &entry.vector);
+        let slot = best.entry(entry.name.clone()).or_insert(f32::MIN);
+        if sim > *slot {
+            *slot = sim;
+        }
+    }
+    let mut out: Vec<(String, f32)> = best.into_iter().collect();
+    out.sort_by(|a, b| b.1.total_cmp(&a.1));
+    out
+}
+
+// Decide how to label a single cluster based on its scored name list.
+// Returns (display_name, candidates):
+//   - confident match  → (Some(name), [])
+//   - ambiguous        → (None,       [top candidates above the floor])
+//   - no useful match  → (None,       [])
+fn decide_recognition(scored: &[(String, f32)]) -> (Option<String>, Vec<SpeakerCandidate>) {
+    let top1 = match scored.first() {
+        Some(t) => t,
+        None => return (None, Vec::new()),
+    };
+    if top1.1 < RECOGNIZE_LOW_THRESHOLD {
+        return (None, Vec::new());
+    }
+    let top2 = scored.get(1);
+    let margin = top2.map(|t| top1.1 - t.1).unwrap_or(f32::INFINITY);
+    if top1.1 >= RECOGNIZE_HIGH_THRESHOLD && margin >= RECOGNIZE_AMBIGUITY_MARGIN {
+        return (Some(top1.0.clone()), Vec::new());
+    }
+    // Ambiguous: surface the top names that are plausibly this speaker.
+    let candidates: Vec<SpeakerCandidate> = scored
+        .iter()
+        .take(4)
+        .filter(|(_, sim)| *sim >= RECOGNIZE_LOW_THRESHOLD)
+        .map(|(name, sim)| SpeakerCandidate {
+            name: name.clone(),
+            similarity: *sim,
+        })
+        .collect();
+    (None, candidates)
 }
 
 // ── Mic enumeration ───────────────────────────────────────────────────────
@@ -258,8 +544,17 @@ struct ActiveSession {
     stop_flag: Arc<AtomicBool>,
     pause_flag: Arc<AtomicBool>,
     segments: Arc<Mutex<Vec<MeetingSegment>>>,
+    // Full mono 16kHz PCM buffer captured during the session, kept in RAM (not
+    // on disk) so the post-stop diarization pass has the raw audio to analyse.
+    // Shared with the recording thread. Released when the session ends.
+    audio_buffer: Arc<Mutex<Vec<f32>>>,
     handle: Option<thread::JoinHandle<Result<(), String>>>,
 }
+
+// Keep the last recorded session's audio buffer available for diarize_meeting,
+// which the frontend invokes after stop_meeting_recording resolves. We stash
+// only one buffer at a time, keyed by meeting id — a new recording replaces it.
+static LAST_AUDIO: Mutex<Option<(String, Vec<f32>)>> = Mutex::new(None);
 
 static ACTIVE: Mutex<Option<ActiveSession>> = Mutex::new(None);
 
@@ -328,6 +623,7 @@ pub fn start_meeting_recording(
     let stop_flag = Arc::new(AtomicBool::new(false));
     let pause_flag = Arc::new(AtomicBool::new(false));
     let segments: Arc<Mutex<Vec<MeetingSegment>>> = Arc::new(Mutex::new(Vec::new()));
+    let audio_buffer: Arc<Mutex<Vec<f32>>> = Arc::new(Mutex::new(Vec::new()));
 
     let handle = spawn_recording_thread(
         app.clone(),
@@ -341,6 +637,7 @@ pub fn start_meeting_recording(
         stop_flag.clone(),
         pause_flag.clone(),
         segments.clone(),
+        audio_buffer.clone(),
     )?;
 
     let started_instant = Instant::now();
@@ -358,6 +655,7 @@ pub fn start_meeting_recording(
             stop_flag,
             pause_flag,
             segments,
+            audio_buffer,
             handle: Some(handle),
         });
     }
@@ -427,6 +725,21 @@ pub fn stop_meeting_recording(app: tauri::AppHandle) -> Result<MeetingRecord, St
         g.clone()
     };
 
+    // Move the captured audio into LAST_AUDIO so diarize_meeting can pick it
+    // up. Takes ownership — the session's Arc is dropped next.
+    {
+        let audio = {
+            let mut g = sess
+                .audio_buffer
+                .lock()
+                .map_err(|e| format!("Audio buffer poisoned: {e}"))?;
+            std::mem::take(&mut *g)
+        };
+        if let Ok(mut last) = LAST_AUDIO.lock() {
+            *last = Some((sess.meeting_id.clone(), audio));
+        }
+    }
+
     let record = MeetingRecord {
         id: sess.meeting_id.clone(),
         title: sess.title,
@@ -443,6 +756,7 @@ pub fn stop_meeting_recording(app: tauri::AppHandle) -> Result<MeetingRecord, St
         suggested_title: None,
         suggested_tags: Vec::new(),
         chat_history: Vec::new(),
+        speakers: Vec::new(),
     };
 
     write_meeting(&app, &record)?;
@@ -474,6 +788,7 @@ fn spawn_recording_thread(
     stop_flag: Arc<AtomicBool>,
     pause_flag: Arc<AtomicBool>,
     segments: Arc<Mutex<Vec<MeetingSegment>>>,
+    audio_buffer: Arc<Mutex<Vec<f32>>>,
 ) -> Result<thread::JoinHandle<Result<(), String>>, String> {
     let handle = thread::Builder::new()
         .name("meridian-meetings".into())
@@ -552,6 +867,12 @@ fn spawn_recording_thread(
                     let chunk: Vec<f32> = buffer.drain(..chunk_samples).collect();
                     let mono = downmix_to_mono(&chunk, channels);
                     let resampled = resample_to_16k(&mono, sample_rate);
+                    // Append to the full-session buffer used by diarization on stop.
+                    // We keep the paused-state check identical to the Whisper path so
+                    // the transcript and the diarization timeline stay aligned.
+                    if let Ok(mut g) = audio_buffer.lock() {
+                        g.extend_from_slice(&resampled);
+                    }
                     let produced = transcribe_chunk(
                         &ctx,
                         &resampled,
@@ -578,6 +899,9 @@ fn spawn_recording_thread(
             if buffer.len() >= min_samples {
                 let mono = downmix_to_mono(&buffer, channels);
                 let resampled = resample_to_16k(&mono, sample_rate);
+                if let Ok(mut g) = audio_buffer.lock() {
+                    g.extend_from_slice(&resampled);
+                }
                 let _ = transcribe_chunk(
                     &ctx,
                     &resampled,
@@ -639,6 +963,7 @@ fn transcribe_chunk(
             start_sec: offset_sec + t0,
             end_sec: offset_sec + t1,
             text: text.trim().to_string(),
+            speaker_id: None,
         };
         if seg.text.is_empty() {
             continue;
@@ -814,4 +1139,295 @@ pub fn get_meetings_dir(app: tauri::AppHandle) -> Result<String, String> {
 pub fn active_meeting_id() -> Result<Option<String>, String> {
     let guard = ACTIVE.lock().map_err(|e| format!("Lock poisoned: {e}"))?;
     Ok(guard.as_ref().map(|s| s.meeting_id.clone()))
+}
+
+// ── Diarization ───────────────────────────────────────────────────────────
+//
+// Runs offline speaker diarization over the PCM captured by the previous
+// recording session. Emits speaker labels per existing whisper segment
+// (by dominant overlap) and averaged 256-dim embeddings per cluster.
+// The user invokes this right after stop_meeting_recording; the buffer is
+// held in RAM only (never written to disk) and released once consumed.
+
+// Minimum usable audio length — below ~3s the pipeline produces noisy clusters
+// and the speaker_count estimator often collapses to zero.
+const DIARIZE_MIN_SAMPLES: usize = TARGET_SR as usize * 3;
+
+#[tauri::command]
+pub fn diarize_meeting(
+    app: tauri::AppHandle,
+    meeting_id: String,
+) -> Result<MeetingRecord, String> {
+    use speakrs::{ExecutionMode, OwnedDiarizationPipeline};
+
+    // Pull the audio buffer that stop_meeting_recording stashed. If the id
+    // doesn't match, the user either stopped another meeting first or the app
+    // was reloaded — in which case we can't reconstruct audio and must bail.
+    let audio: Vec<f32> = {
+        let mut guard = LAST_AUDIO
+            .lock()
+            .map_err(|e| format!("LAST_AUDIO poisoned: {e}"))?;
+        match guard.take() {
+            Some((id, buf)) if id == meeting_id => buf,
+            Some((id, buf)) => {
+                // Put it back so a later call with the matching id still works.
+                *guard = Some((id, buf));
+                return Err(
+                    "Raw audio for this meeting is no longer in memory. Diarization must run immediately after the recording stops.".into(),
+                );
+            }
+            None => {
+                return Err(
+                    "No audio buffer available for diarization. Start a recording, then run diarization after stopping.".into(),
+                );
+            }
+        }
+    };
+
+    if audio.len() < DIARIZE_MIN_SAMPLES {
+        return Err(format!(
+            "Recording is too short for diarization ({:.1}s captured, need ≥ 3s).",
+            audio.len() as f32 / TARGET_SR as f32
+        ));
+    }
+
+    let mut record = {
+        let path = meeting_path(&app, &meeting_id)?;
+        let content = fs::read_to_string(&path)
+            .map_err(|e| format!("Read {}: {e}", path.display()))?;
+        serde_json::from_str::<MeetingRecord>(&content)
+            .map_err(|e| format!("Parse {}: {e}", path.display()))?
+    };
+
+    let _ = app.emit(
+        "meetings-diarize-progress",
+        serde_json::json!({ "meetingId": &meeting_id, "stage": "loading-models" }),
+    );
+
+    // CoreMl for Apple Silicon. speakrs falls back gracefully on other platforms
+    // via its Cpu mode; we force that path on non-macOS targets at compile time.
+    #[cfg(target_os = "macos")]
+    let mode = ExecutionMode::CoreMl;
+    #[cfg(not(target_os = "macos"))]
+    let mode = ExecutionMode::Cpu;
+
+    let mut pipeline = OwnedDiarizationPipeline::from_pretrained(mode)
+        .map_err(|e| format!("Diarization pipeline init failed: {e}"))?;
+
+    let _ = app.emit(
+        "meetings-diarize-progress",
+        serde_json::json!({ "meetingId": &meeting_id, "stage": "running" }),
+    );
+
+    let result = pipeline
+        .run(&audio)
+        .map_err(|e| format!("Diarization run failed: {e}"))?;
+
+    // 1) Assign a speaker to each whisper segment by dominant-overlap. speakrs
+    //    returns `Vec<Segment>` already merged into speaker turns, keyed by
+    //    labels like "SPEAKER_00".
+    for seg in record.segments.iter_mut() {
+        let best = dominant_overlap_speaker(
+            &result.segments,
+            seg.start_sec as f64,
+            seg.end_sec as f64,
+        );
+        seg.speaker_id = best;
+    }
+
+    // 2) Compute one averaged embedding per cluster. hard_clusters has shape
+    //    (chunks, speakers_per_chunk) → cluster_id; embeddings has shape
+    //    (chunks, speakers_per_chunk, 256). -1 means "unassigned" — skip.
+    let clusters = &result.hard_clusters;
+    let embeddings = &result.embeddings;
+    let (n_chunks, n_spk) = clusters.dim();
+    let emb_dim = embeddings.shape().get(2).copied().unwrap_or(0);
+
+    let mut sums: std::collections::BTreeMap<i32, (Vec<f32>, usize)> =
+        std::collections::BTreeMap::new();
+
+    for c in 0..n_chunks {
+        for s in 0..n_spk {
+            let cluster_id = clusters[[c, s]];
+            if cluster_id < 0 {
+                continue;
+            }
+            // Skip chunk-speaker pairs whose embedding contains any non-finite
+            // values — they'd poison the running sum with NaN and we'd end up
+            // serialising null into the meeting file.
+            let mut has_nonfinite = false;
+            for d in 0..emb_dim {
+                if !embeddings[[c, s, d]].is_finite() {
+                    has_nonfinite = true;
+                    break;
+                }
+            }
+            if has_nonfinite {
+                continue;
+            }
+            let entry = sums
+                .entry(cluster_id)
+                .or_insert_with(|| (vec![0.0; emb_dim], 0));
+            for d in 0..emb_dim {
+                entry.0[d] += embeddings[[c, s, d]];
+            }
+            entry.1 += 1;
+        }
+    }
+
+    let mut speakers: Vec<MeetingSpeaker> = sums
+        .into_iter()
+        .map(|(cluster_id, (mut sum, count))| {
+            if count > 0 {
+                let inv = 1.0 / count as f32;
+                for v in sum.iter_mut() {
+                    *v *= inv;
+                }
+            }
+            // Belt-and-braces: even with the NaN filter above, any stray
+            // non-finite value here would serialise as JSON `null` and break
+            // the next load. Replace with 0.0 so the file stays parseable.
+            for v in sum.iter_mut() {
+                if !v.is_finite() {
+                    *v = 0.0;
+                }
+            }
+            MeetingSpeaker {
+                id: format!("SPEAKER_{cluster_id:02}"),
+                embedding: sum,
+                display_name: None,
+                candidates: Vec::new(),
+            }
+        })
+        .collect();
+
+    // Auto-recognize against the cross-meeting voice registry before writing
+    // the record out. Confident matches populate display_name directly;
+    // ambiguous clusters get a short list of candidates for the user to pick.
+    let registry = load_registry(&app).unwrap_or_default();
+    if !registry.entries.is_empty() {
+        let mut reg_mut = registry.clone();
+        let mut registry_changed = false;
+
+        for sp in speakers.iter_mut() {
+            let scored = best_per_name(&registry, &sp.embedding);
+            let top_sim = scored.first().map(|(_, s)| *s).unwrap_or(0.0);
+            let (auto_name, candidates) = decide_recognition(&scored);
+            if let Some(name) = auto_name {
+                sp.display_name = Some(name.clone());
+                // Only feed very confident matches back into the registry.
+                // A merely-labelled match (~0.70) is good enough to annotate
+                // the transcript but not confident enough to contaminate the
+                // registry if it happened to be wrong.
+                if top_sim >= REGISTRY_AUTO_UPDATE_THRESHOLD {
+                    enroll_registry_entry(
+                        &mut reg_mut,
+                        &name,
+                        &meeting_id,
+                        &sp.id,
+                        sp.embedding.clone(),
+                    );
+                    registry_changed = true;
+                }
+            } else {
+                sp.candidates = candidates;
+            }
+        }
+
+        if registry_changed {
+            save_registry(&app, &reg_mut)?;
+        }
+    }
+
+    record.speakers = speakers;
+
+    write_meeting(&app, &record)?;
+
+    let _ = app.emit(
+        "meetings-diarize-progress",
+        serde_json::json!({
+            "meetingId": &meeting_id,
+            "stage": "done",
+            "speakerCount": record.speakers.len(),
+        }),
+    );
+
+    Ok(record)
+}
+
+#[tauri::command]
+pub fn rename_meeting_speaker(
+    app: tauri::AppHandle,
+    meeting_id: String,
+    speaker_id: String,
+    display_name: Option<String>,
+) -> Result<MeetingRecord, String> {
+    let mut record = {
+        let path = meeting_path(&app, &meeting_id)?;
+        let content = fs::read_to_string(&path)
+            .map_err(|e| format!("Read {}: {e}", path.display()))?;
+        serde_json::from_str::<MeetingRecord>(&content)
+            .map_err(|e| format!("Parse {}: {e}", path.display()))?
+    };
+    let trimmed = display_name.and_then(|s| {
+        let t = s.trim();
+        if t.is_empty() { None } else { Some(t.to_string()) }
+    });
+
+    // Pull the vector before mutating so we can push it into the registry.
+    let vector: Option<Vec<f32>> = record
+        .speakers
+        .iter()
+        .find(|sp| sp.id == speaker_id)
+        .map(|sp| sp.embedding.clone());
+
+    for sp in record.speakers.iter_mut() {
+        if sp.id == speaker_id {
+            sp.display_name = trimmed.clone();
+            // Assigning (or clearing) a name resolves any prior ambiguity.
+            sp.candidates.clear();
+        }
+    }
+    write_meeting(&app, &record)?;
+
+    // Update the cross-meeting registry. A manually-confirmed name is always
+    // trusted (the user vouched for it), so enroll unconditionally — with
+    // near-duplicate merging and per-person cap handled inside the helper.
+    // Clearing the name just removes whatever entry was keyed to this
+    // cluster. Don't error if the registry file is missing.
+    if let Ok(mut reg) = load_registry(&app) {
+        match (&trimmed, vector) {
+            (Some(name), Some(vec)) => {
+                enroll_registry_entry(&mut reg, name, &meeting_id, &speaker_id, vec);
+            }
+            _ => {
+                remove_registry_entry(&mut reg, &meeting_id, &speaker_id);
+            }
+        }
+        let _ = save_registry(&app, &reg);
+    }
+
+    Ok(record)
+}
+
+// Pick the diarization speaker that overlaps a whisper segment for the most
+// cumulative time. Returns None if the whisper segment does not overlap any
+// diarized speech (e.g. entirely inside an unclassified gap).
+fn dominant_overlap_speaker(
+    segments: &[speakrs::Segment],
+    start: f64,
+    end: f64,
+) -> Option<String> {
+    use std::collections::BTreeMap;
+    let mut totals: BTreeMap<&str, f64> = BTreeMap::new();
+    for seg in segments {
+        let overlap = (seg.end.min(end) - seg.start.max(start)).max(0.0);
+        if overlap > 0.0 {
+            *totals.entry(seg.speaker.as_str()).or_insert(0.0) += overlap;
+        }
+    }
+    totals
+        .into_iter()
+        .max_by(|a, b| a.1.total_cmp(&b.1))
+        .map(|(sp, _)| sp.to_string())
 }

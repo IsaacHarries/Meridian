@@ -20,8 +20,10 @@ pub async fn summarize_meeting(
     let (client, api_key) = dispatch::llm_client().await?;
 
     let system = "You are an assistant that reviews a meeting transcript produced by live \
-        speech-to-text (no speaker labels). Write a precise analysis the user can consult later. \
-        Be concrete and faithful to the transcript — do not invent facts, attendees, or decisions.\n\n\
+        speech-to-text. The transcript may include speaker labels in the form \"Name: …\" or \
+        \"SPEAKER_00: …\" when diarization has run; attribute quotes to those labels when \
+        present. Write a precise analysis the user can consult later. Be concrete and faithful \
+        to the transcript — do not invent facts, attendees, or decisions.\n\n\
         Return ONLY a JSON object, no markdown fences, matching this schema:\n\
         {\n\
           \"summary\": \"<2–4 sentence summary of what the meeting was about and what was concluded>\",\n\
@@ -57,15 +59,17 @@ pub async fn chat_meeting(
 
     let system = format!(
         "You are helping the user recall details from a meeting they attended. You have \
-        the full transcript (produced by automatic speech-to-text — no speaker labels, possible \
-        transcription errors on proper nouns and technical terms).\n\n\
+        the full transcript (produced by automatic speech-to-text, so expect transcription \
+        errors on proper nouns and technical terms).\n\n\
         {context_text}\n\n\
         Rules:\n\
         - Answer ONLY from the transcript. Quote the relevant portion when useful.\n\
         - If the answer is not in the transcript, say so plainly — do not speculate.\n\
         - Be concise. This is a conversation, not an essay.\n\
-        - The transcript has no speaker labels. If asked \"who said X\", explain that you \
-          cannot attribute speakers, but point to where in the meeting it was said.\n\
+        - Speaker attribution: lines may be prefixed with a speaker label such as \"Name: …\" \
+          (a named person) or \"SPEAKER_00: …\" (an unnamed cluster from diarization). When \
+          asked who said something, use those labels directly. If a line has no prefix, the \
+          speaker is unknown for that portion.\n\
         - Reply in plain prose. No JSON."
     );
 

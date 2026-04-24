@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { JiraTicketLink } from "@/components/JiraTicketLink";
 import {
   ArrowLeft,
@@ -10,25 +10,48 @@ import {
   GitPullRequest,
   User,
   CheckCircle2,
+  ClipboardCheck,
   XCircle,
+  TrendingUp,
+  TrendingDown,
+  Minus,
+  Eye,
+  EyeOff,
+  Loader2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { WorkflowPanelHeader, APP_HEADER_TITLE } from "@/components/appHeaderLayout";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { SlashCommandInput } from "@/components/SlashCommandInput";
+import {
+  createGlobalCommands,
+  type ChatTurn,
+  type SlashCommand,
+} from "@/lib/slashCommands";
+import { toast } from "sonner";
+import { cn } from "@/lib/utils";
 import {
   type JiraSprint,
   type JiraIssue,
   type BitbucketPr,
   type BitbucketTask,
+  type CredentialStatus,
+  aiProviderComplete,
+  chatSprintDashboard,
+  generateWorkloadSuggestions,
   getAllActiveSprintIssues,
   getOpenPrs,
   getMergedPrs,
   getPrTasks,
   openUrl,
 } from "@/lib/tauri";
+import { classifyWorkloads } from "@/lib/workloadClassifier";
+import { getIgnoredDevs, setIgnoredDevs } from "@/lib/preferences";
+import { useWorkloadAlertStore } from "@/stores/workloadAlertStore";
 
 interface SprintDashboardScreenProps {
+  credStatus: CredentialStatus;
   onBack: () => void;
 }
 
@@ -289,6 +312,9 @@ function buildPrListItems(
   prTasks: Map<number, BitbucketTask[]>,
 ): PrListItem[] {
   return openPrs.map((pr) => {
+    // `has` — not `length` — distinguishes "not fetched" (unknown → assume
+    // blocking) from "fetched but zero tasks" (nothing blocking, ready for QA).
+    const fetched = prTasks.has(pr.id);
     const tasks = prTasks.get(pr.id) ?? [];
     return {
       pr,
@@ -296,7 +322,7 @@ function buildPrListItems(
       ageBd: businessDaysAgo(pr.createdOn),
       updBd: businessDaysAgo(pr.updatedOn),
       approvalCount: pr.reviewers.filter((r) => r.approved).length,
-      hasBlockingTasks: tasks.length > 0 ? hasBlockingIncompleteTasks(tasks) : true, // unknown → assume blocking
+      hasBlockingTasks: fetched ? hasBlockingIncompleteTasks(tasks) : true,
     };
   });
 }
@@ -374,6 +400,9 @@ function HealthSummaryCard({
   const prItems      = buildPrListItems(openPrs, progress, prTasks);
   const attentionPrs = buildAttentionPrs(prItems);
   const readyForQa   = buildReadyForQaPrs(prItems);
+  const needsVerification = issues.filter(
+    (i) => i.status.trim().toLowerCase() === "needs verification"
+  );
 
   return (
     <Card>
@@ -516,13 +545,62 @@ function HealthSummaryCard({
           </div>
         )}
 
-        {/* All clear */}
-        {attentionPrs.length === 0 && readyForQa.length === 0 && prHealth.total > 0 && (
-          <div className="border-t pt-3 flex items-center gap-2 text-xs text-emerald-600 dark:text-emerald-400">
-            <CheckCircle2 className="h-3.5 w-3.5" />
-            All PRs are in good standing
+        {/* ── Needs Verification ── */}
+        {needsVerification.length > 0 && (
+          <div
+            className={`${
+              attentionPrs.length === 0 && readyForQa.length === 0
+                ? "border-t pt-3"
+                : "pt-1"
+            } space-y-1.5`}
+          >
+            <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide flex items-center gap-1.5">
+              <ClipboardCheck className="h-3.5 w-3.5 text-sky-500" />
+              Needs Verification
+              <span className="ml-1 rounded-full bg-sky-100 text-sky-700 dark:bg-sky-900/50 dark:text-sky-300 px-1.5 py-0.5 text-[10px] font-medium leading-none">
+                {needsVerification.length}
+              </span>
+            </p>
+            {needsVerification.map((issue) => (
+              <div key={issue.key} className="py-2 border-b last:border-0 space-y-1">
+                {/* Row 1: status dot + clickable title */}
+                <div className="flex items-center gap-2">
+                  <span className="h-2 w-2 rounded-full shrink-0 bg-sky-500" />
+                  <button
+                    onClick={() => issue.url && openUrl(issue.url)}
+                    className="flex-1 min-w-0 truncate text-xs font-medium text-left hover:underline hover:text-primary transition-colors"
+                    title={issue.url ? "Open in JIRA" : undefined}
+                    disabled={!issue.url}
+                  >
+                    {issue.summary}
+                  </button>
+                </div>
+                {/* Row 2: JiraTicketLink + badge + structured metadata */}
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 pl-4 text-xs text-muted-foreground">
+                  <JiraTicketLink ticketKey={issue.key} url={issue.url ?? undefined} />
+                  <Badge variant="secondary" className="text-[10px]">Needs Verification</Badge>
+                  <span>
+                    Assignee <strong className="text-foreground">{issue.assignee?.displayName ?? "Unassigned"}</strong>
+                  </span>
+                  <span>
+                    Last update <strong className="text-foreground">{daysSince(issue.updated)}d ago</strong>
+                  </span>
+                </div>
+              </div>
+            ))}
           </div>
         )}
+
+        {/* All clear */}
+        {attentionPrs.length === 0 &&
+          readyForQa.length === 0 &&
+          needsVerification.length === 0 &&
+          prHealth.total > 0 && (
+            <div className="border-t pt-3 flex items-center gap-2 text-xs text-emerald-600 dark:text-emerald-400">
+              <CheckCircle2 className="h-3.5 w-3.5" />
+              All PRs are in good standing
+            </div>
+          )}
       </CardContent>
     </Card>
   );
@@ -1044,13 +1122,380 @@ function TeamPerformanceCard({
   );
 }
 
+// ── Team workload (merged from the former Workload Balancer screen) ──────────
+
+type LoadStatus = "overloaded" | "balanced" | "underutilised";
+
+interface DevWorkload {
+  name: string;
+  issues: JiraIssue[];
+  remainingPts: number;
+  totalPts: number;
+  donePts: number;
+  reviewCount: number;
+  loadStatus: LoadStatus;
+}
+
+function remainingPoints(issues: JiraIssue[]): number {
+  return issues
+    .filter((i) => statusCategory(i) !== "done")
+    .reduce((s, i) => s + (i.storyPoints ?? 0), 0);
+}
+
+function buildWorkloads(issues: JiraIssue[], openPrs: BitbucketPr[]): DevWorkload[] {
+  // Use the shared classifier so the load-status badge here always matches the
+  // landing-page attention badge driven by the same logic.
+  const classified = classifyWorkloads(issues, openPrs);
+  const statusMap = new Map(classified.map((d) => [d.name, d.loadStatus]));
+
+  const map = new Map<string, JiraIssue[]>();
+  for (const issue of issues) {
+    const name = issue.assignee?.displayName ?? "Unassigned";
+    if (!map.has(name)) map.set(name, []);
+    map.get(name)!.push(issue);
+  }
+
+  const raw: DevWorkload[] = Array.from(map.entries()).map(([name, devIssues]) => ({
+    name,
+    issues: devIssues,
+    remainingPts: remainingPoints(devIssues),
+    totalPts: totalPoints(devIssues),
+    donePts: totalPoints(devIssues.filter((i) => statusCategory(i) === "done")),
+    reviewCount: openPrs.filter((pr) =>
+      pr.reviewers.some((r) => r.user.displayName === name),
+    ).length,
+    loadStatus: (statusMap.get(name) ?? "balanced") as LoadStatus,
+  }));
+
+  return raw.sort(
+    (a, b) =>
+      b.issues.filter((i) => statusCategory(i) !== "done").length -
+      a.issues.filter((i) => statusCategory(i) !== "done").length,
+  );
+}
+
+function formatWorkloadForClaude(
+  sprint: JiraSprint | null,
+  workloads: DevWorkload[],
+  unstartedTickets: JiraIssue[],
+): string {
+  const lines: string[] = [
+    `Sprint: ${sprint?.name ?? "Unknown"}`,
+    `Days remaining: ${sprint?.endDate ? Math.ceil((new Date(sprint.endDate).getTime() - Date.now()) / 86_400_000) : "unknown"}`,
+    "",
+    "Developer workloads:",
+  ];
+
+  for (const d of workloads) {
+    const remaining = d.issues.filter((i) => statusCategory(i) !== "done");
+    lines.push(
+      `  ${d.name}: ${d.remainingPts}pt remaining (${remaining.length} tickets), ` +
+        `${d.reviewCount} PRs to review, status: ${d.loadStatus}`,
+    );
+    for (const issue of remaining) {
+      lines.push(
+        `    - ${issue.key} "${issue.summary}" (${issue.storyPoints ?? 0}pt, ${issue.status})`,
+      );
+    }
+  }
+
+  lines.push("", "Unstarted tickets (candidates for reassignment):");
+  for (const t of unstartedTickets) {
+    const assignee = t.assignee?.displayName ?? "Unassigned";
+    lines.push(
+      `  ${t.key} "${t.summary}" (${t.storyPoints ?? 0}pt) — currently: ${assignee}`,
+    );
+  }
+
+  const teamAvg =
+    workloads.length > 0
+      ? Math.round(workloads.reduce((s, d) => s + d.remainingPts, 0) / workloads.length)
+      : 0;
+  lines.push("", `Team average remaining: ${teamAvg}pt`);
+
+  return lines.join("\n");
+}
+
+const LOAD_STATUS_STYLE: Record<
+  LoadStatus,
+  { bar: string; badge: "destructive" | "success" | "secondary"; icon: React.ElementType; label: string }
+> = {
+  overloaded: { bar: "bg-red-500", badge: "destructive", icon: TrendingUp, label: "Overloaded" },
+  balanced: { bar: "bg-emerald-500", badge: "success", icon: Minus, label: "Balanced" },
+  underutilised: { bar: "bg-blue-400", badge: "secondary", icon: TrendingDown, label: "Under-utilised" },
+};
+
+function DevCard({
+  dev,
+  maxTickets,
+  ignored,
+  onToggleIgnored,
+}: {
+  dev: DevWorkload;
+  maxTickets: number;
+  ignored: boolean;
+  onToggleIgnored: () => void;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const style = LOAD_STATUS_STYLE[ignored ? "balanced" : dev.loadStatus];
+  const Icon = style.icon;
+  const remaining = dev.issues.filter((i) => statusCategory(i) !== "done");
+  const done = dev.issues.filter((i) => statusCategory(i) === "done");
+  const remainingPct = maxTickets > 0 ? (remaining.length / maxTickets) * 100 : 0;
+
+  return (
+    <Card className={ignored ? "opacity-50" : ""}>
+      <button
+        onClick={() => setExpanded((e) => !e)}
+        className="w-full px-4 py-3 text-left hover:bg-muted/30 transition-colors rounded-t-lg"
+      >
+        <div className="flex items-center gap-3">
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-2 mb-2">
+              <span className="font-medium text-sm">{dev.name}</span>
+              {!ignored && (
+                <Badge variant={style.badge} className="text-[10px] gap-0.5">
+                  <Icon className="h-2.5 w-2.5" />
+                  {style.label}
+                </Badge>
+              )}
+              {ignored && (
+                <span className="text-[10px] text-muted-foreground">Not tracked</span>
+              )}
+            </div>
+            <div className="h-2.5 rounded-full bg-muted overflow-hidden">
+              <div
+                className={`h-full rounded-full transition-all ${ignored ? "bg-muted-foreground/30" : style.bar}`}
+                style={{ width: `${remainingPct}%` }}
+              />
+            </div>
+          </div>
+
+          <div className="text-xs text-muted-foreground text-right shrink-0 space-y-0.5">
+            <p>
+              <span className="font-medium text-foreground tabular-nums">
+                {remaining.length}
+              </span>{" "}
+              ticket{remaining.length !== 1 ? "s" : ""} remaining
+            </p>
+            <p>{dev.remainingPts}pt left</p>
+            {dev.reviewCount > 0 && (
+              <p className="flex items-center gap-0.5 justify-end">
+                <GitPullRequest className="h-3 w-3" />
+                {dev.reviewCount} to review
+              </p>
+            )}
+          </div>
+
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              onToggleIgnored();
+            }}
+            title={ignored ? "Start tracking" : "Stop tracking"}
+            className="shrink-0 p-1 rounded hover:bg-muted/60 transition-colors text-muted-foreground hover:text-foreground"
+          >
+            {ignored ? <Eye className="h-3.5 w-3.5" /> : <EyeOff className="h-3.5 w-3.5" />}
+          </button>
+
+          {expanded ? (
+            <ChevronDown className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+          ) : (
+            <ChevronRight className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+          )}
+        </div>
+      </button>
+
+      {expanded && (
+        <CardContent className="pt-1 pb-4 space-y-3">
+          {remaining.length > 0 && (
+            <div>
+              <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide mb-2">
+                Remaining work
+              </p>
+              <ul className="space-y-1">
+                {remaining.map((issue) => (
+                  <li key={issue.key} className="flex items-center gap-2 text-xs">
+                    <JiraTicketLink ticketKey={issue.key} url={issue.url} />
+                    <span className="truncate">{issue.summary}</span>
+                    {issue.storyPoints != null && (
+                      <span className="text-muted-foreground/60 shrink-0">
+                        {issue.storyPoints}pt
+                      </span>
+                    )}
+                    <Badge variant="secondary" className="text-[10px] shrink-0 ml-auto">
+                      {issue.status}
+                    </Badge>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+          {done.length > 0 && (
+            <div>
+              <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide mb-2">
+                Completed ({done.length})
+              </p>
+              <ul className="space-y-1">
+                {done.map((issue) => (
+                  <li
+                    key={issue.key}
+                    className="flex items-center gap-2 text-xs text-muted-foreground"
+                  >
+                    <JiraTicketLink ticketKey={issue.key} url={issue.url} />
+                    <span className="truncate line-through">{issue.summary}</span>
+                    {issue.storyPoints != null && (
+                      <span className="shrink-0">{issue.storyPoints}pt</span>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </CardContent>
+      )}
+    </Card>
+  );
+}
+
+function TeamWorkloadSection({
+  issues,
+  openPrs,
+  ignoredDevs,
+  onToggleIgnoredDev,
+}: {
+  issues: JiraIssue[];
+  openPrs: BitbucketPr[];
+  ignoredDevs: Set<string>;
+  onToggleIgnoredDev: (name: string) => void;
+}) {
+  const workloads = buildWorkloads(issues, openPrs).sort((a, b) => {
+    const aIgnored = ignoredDevs.has(a.name) ? 1 : 0;
+    const bIgnored = ignoredDevs.has(b.name) ? 1 : 0;
+    return aIgnored - bIgnored; // ignored sink to bottom
+  });
+  const unstartedTickets = issues.filter((i) => statusCategory(i) === "todo");
+  const tracked = workloads.filter((d) => !ignoredDevs.has(d.name));
+  const overloaded = tracked.filter((d) => d.loadStatus === "overloaded").length;
+  const underutilised = tracked.filter((d) => d.loadStatus === "underutilised").length;
+  const totalRemaining = tracked.reduce(
+    (s, d) => s + d.issues.filter((i) => statusCategory(i) !== "done").length,
+    0,
+  );
+  const avgRemaining = tracked.length > 0 ? Math.round(totalRemaining / tracked.length) : 0;
+  const maxTickets = Math.max(
+    ...workloads.map((d) => d.issues.filter((i) => statusCategory(i) !== "done").length),
+    1,
+  );
+
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <CardTitle className="text-base">Team Workload</CardTitle>
+          <div className="flex items-center gap-2 text-xs text-muted-foreground">
+            <span>
+              Team avg <strong className="text-foreground tabular-nums">{avgRemaining}</strong> tickets remaining
+            </span>
+            {overloaded > 0 && (
+              <Badge variant="destructive" className="gap-1">
+                <TrendingUp className="h-2.5 w-2.5" />
+                {overloaded} overloaded
+              </Badge>
+            )}
+            {underutilised > 0 && (
+              <Badge variant="secondary" className="gap-1 border-blue-500/30 text-blue-600">
+                <TrendingDown className="h-2.5 w-2.5" />
+                {underutilised} under-utilised
+              </Badge>
+            )}
+          </div>
+        </div>
+      </CardHeader>
+      <CardContent>
+        <div
+          className={cn(
+            "grid gap-4 items-start",
+            unstartedTickets.length > 0 ? "lg:grid-cols-[1fr_360px]" : "lg:grid-cols-1",
+          )}
+        >
+          <div className="space-y-3">
+            {workloads.length === 0 ? (
+              <p className="text-sm text-muted-foreground py-4">
+                No assigned issues found in the active sprint.
+              </p>
+            ) : (
+              workloads.map((dev) => (
+                <DevCard
+                  key={dev.name}
+                  dev={dev}
+                  maxTickets={maxTickets}
+                  ignored={ignoredDevs.has(dev.name)}
+                  onToggleIgnored={() => onToggleIgnoredDev(dev.name)}
+                />
+              ))
+            )}
+          </div>
+
+          {unstartedTickets.length > 0 && (
+            <Card>
+              <CardHeader className="pb-2">
+                <CardTitle className="text-sm">
+                  Unstarted tickets ({unstartedTickets.length})
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-1">
+                {unstartedTickets.map((t) => (
+                  <div key={t.key} className="flex items-center gap-2 text-xs">
+                    <JiraTicketLink ticketKey={t.key} url={t.url} />
+                    <span className="truncate">{t.summary}</span>
+                    {t.storyPoints != null && (
+                      <span className="text-muted-foreground/60 shrink-0">
+                        {t.storyPoints}pt
+                      </span>
+                    )}
+                  </div>
+                ))}
+              </CardContent>
+            </Card>
+          )}
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
 // ── Main screen ───────────────────────────────────────────────────────────────
 
-export function SprintDashboardScreen({ onBack }: SprintDashboardScreenProps) {
+export function SprintDashboardScreen({ credStatus, onBack }: SprintDashboardScreenProps) {
   const [allData, setAllData] = useState<AllSprintsData | null>(null);
   const [selectedSprintIndex, setSelectedSprintIndex] = useState<number | "all">(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  // Workload state (merged from the former Workload Balancer screen)
+  const aiAvailable = aiProviderComplete(credStatus);
+  const checkWorkload = useWorkloadAlertStore((s) => s.checkWorkload);
+  const [ignoredDevs, setIgnoredDevsState] = useState<Set<string>>(new Set());
+
+  useEffect(() => {
+    getIgnoredDevs().then(setIgnoredDevsState).catch(() => {});
+  }, []);
+
+  const toggleIgnoredDev = useCallback(
+    (name: string) => {
+      setIgnoredDevsState((prev) => {
+        const next = new Set(prev);
+        if (next.has(name)) next.delete(name);
+        else next.add(name);
+        // Persist, then refresh the alert store so the landing badge reflects
+        // the new ignored list without waiting for the next poll.
+        setIgnoredDevs(next).then(() => checkWorkload()).catch(() => {});
+        return next;
+      });
+    },
+    [checkWorkload],
+  );
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -1095,6 +1540,10 @@ export function SprintDashboardScreen({ onBack }: SprintDashboardScreenProps) {
     }
   }, []);
 
+  const handleSelectSprint = useCallback((idx: number | "all") => {
+    setSelectedSprintIndex(idx);
+  }, []);
+
   useEffect(() => {
     load();
   }, [load]);
@@ -1128,8 +1577,16 @@ export function SprintDashboardScreen({ onBack }: SprintDashboardScreenProps) {
 
   const multiSprint = (allData?.sprints.length ?? 0) > 1;
 
+  // Key for the chat panel — resetting when the selected sprint changes
+  // unmounts the panel and clears its chat history, since the prior
+  // conversation was grounded in a different sprint's data.
+  const sprintChatKey =
+    selectedSprintIndex === "all"
+      ? "all"
+      : String(allData?.sprints[selectedSprintIndex]?.sprint.id ?? "none");
+
   return (
-    <div className="min-h-screen">
+    <div className="h-screen flex flex-col overflow-hidden">
       <WorkflowPanelHeader
         leading={
           <>
@@ -1152,7 +1609,9 @@ export function SprintDashboardScreen({ onBack }: SprintDashboardScreenProps) {
         }
       />
 
-      <main className="max-w-5xl mx-auto px-6 py-8 bg-background/60 rounded-xl">
+      <div className="flex flex-1 min-h-0">
+        <main className="flex-1 min-w-0 overflow-y-auto">
+          <div className="max-w-5xl mx-auto px-6 py-8 bg-background/60 rounded-xl">
         {loading && !allData && (
           <div className="flex items-center justify-center py-24 text-muted-foreground text-sm gap-2">
             <RefreshCw className="h-4 w-4 animate-spin" />
@@ -1182,7 +1641,7 @@ export function SprintDashboardScreen({ onBack }: SprintDashboardScreenProps) {
             {multiSprint && (
               <div className="flex gap-2 flex-wrap">
                 <button
-                  onClick={() => setSelectedSprintIndex("all")}
+                  onClick={() => handleSelectSprint("all")}
                   className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors border ${
                     selectedSprintIndex === "all"
                       ? "bg-primary text-primary-foreground border-primary"
@@ -1194,7 +1653,7 @@ export function SprintDashboardScreen({ onBack }: SprintDashboardScreenProps) {
                 {allData.sprints.map(({ sprint }, idx) => (
                   <button
                     key={sprint.id}
-                    onClick={() => setSelectedSprintIndex(idx)}
+                    onClick={() => handleSelectSprint(idx)}
                     className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors border ${
                       idx === selectedSprintIndex
                         ? "bg-primary text-primary-foreground border-primary"
@@ -1221,13 +1680,340 @@ export function SprintDashboardScreen({ onBack }: SprintDashboardScreenProps) {
                   openPrs={data.openPrs}
                   mergedPrs={data.mergedPrs}
                 />
+                <TeamWorkloadSection
+                  issues={data.issues}
+                  openPrs={data.openPrs}
+                  ignoredDevs={ignoredDevs}
+                  onToggleIgnoredDev={toggleIgnoredDev}
+                />
                 <BlockersPanel risks={risks} />
                 <TeamPerformanceCard devStats={devStats} />
               </>
             )}
           </div>
         )}
-      </main>
+          </div>
+        </main>
+
+        <aside className="w-[420px] shrink-0 border-l bg-background/40 flex flex-col min-h-0">
+          <SprintChatPanel
+            key={sprintChatKey}
+            data={data}
+            aiAvailable={aiAvailable}
+          />
+        </aside>
+      </div>
     </div>
+  );
+}
+
+// ── Chat panel ────────────────────────────────────────────────────────────────
+
+function buildSprintContext(data: DashboardData): string {
+  const workloads = buildWorkloads(data.issues, data.openPrs);
+  const unstarted = data.issues.filter((i) => statusCategory(i) === "todo");
+  const days = daysRemaining(data.sprint?.endDate ?? null);
+
+  const lines: string[] = [];
+  lines.push(`Sprint: ${data.sprint?.name ?? "(combined view across active sprints)"}`);
+  if (data.sprint?.startDate) lines.push(`Start: ${data.sprint.startDate}`);
+  if (data.sprint?.endDate) {
+    lines.push(`End: ${data.sprint.endDate} (${days ?? "?"} days remaining)`);
+  }
+  lines.push(
+    `Totals: ${data.issues.length} tickets, ${totalPoints(data.issues)}pt across the sprint.`,
+  );
+  lines.push("");
+
+  lines.push("ISSUES:");
+  for (const i of data.issues) {
+    const assignee = i.assignee?.displayName ?? "Unassigned";
+    const pts = i.storyPoints != null ? `${i.storyPoints}pt` : "?pt";
+    lines.push(
+      `  ${i.key} [${i.status}] "${i.summary}" — ${assignee} — ${pts}`,
+    );
+  }
+  lines.push("");
+
+  lines.push("OPEN PRS:");
+  if (data.openPrs.length === 0) {
+    lines.push("  (none)");
+  } else {
+    for (const pr of data.openPrs) {
+      const approvals = pr.reviewers.filter((r) => r.approved).length;
+      const flags = [
+        pr.draft ? "draft" : null,
+        pr.changesRequested ? "changes-requested" : null,
+      ]
+        .filter(Boolean)
+        .join(", ");
+      const ageBd = Math.floor(businessDaysAgo(pr.createdOn));
+      lines.push(
+        `  #${pr.id} "${pr.title}" by ${pr.author.displayName} — ${approvals} approval${approvals === 1 ? "" : "s"}, ${ageBd}bd old${flags ? ` (${flags})` : ""}`,
+      );
+    }
+  }
+  lines.push("");
+
+  lines.push(formatWorkloadForClaude(data.sprint, workloads, unstarted));
+  return lines.join("\n");
+}
+
+function SprintChatPanel({
+  data,
+  aiAvailable,
+}: {
+  data: DashboardData | null;
+  aiAvailable: boolean;
+}) {
+  const [history, setHistory] = useState<ChatTurn[]>([]);
+  const [input, setInput] = useState("");
+  const [busy, setBusy] = useState(false);
+  const bottomRef = useRef<HTMLDivElement>(null);
+
+  // Keep a ref so callbacks see the latest snapshot without having to rebuild
+  // on every sprint data tick.
+  const dataRef = useRef(data);
+  useEffect(() => {
+    dataRef.current = data;
+  }, [data]);
+
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+  }, [history.length, busy]);
+
+  const sendMessage = useCallback(
+    async (text: string) => {
+      if (!aiAvailable) {
+        toast.error("Configure an AI provider in Settings to use chat.");
+        return;
+      }
+      if (!dataRef.current) {
+        toast.error("Load sprint data before chatting.");
+        return;
+      }
+      const userMsg: ChatTurn = { role: "user", content: text };
+      const nextHistory: ChatTurn[] = [...history, userMsg];
+      setHistory(nextHistory);
+      setBusy(true);
+      try {
+        const context = buildSprintContext(dataRef.current);
+        const reply = await chatSprintDashboard(
+          context,
+          JSON.stringify(nextHistory),
+        );
+        setHistory([
+          ...nextHistory,
+          { role: "assistant", content: reply.trim() },
+        ]);
+      } catch (e) {
+        toast.error("Chat failed", { description: String(e) });
+      } finally {
+        setBusy(false);
+      }
+    },
+    [history, aiAvailable],
+  );
+
+  const runRebalance = useCallback(async () => {
+    if (!aiAvailable) {
+      toast.error("Configure an AI provider in Settings to use /rebalance.");
+      return;
+    }
+    if (!dataRef.current) {
+      toast.error("Load sprint data before rebalancing.");
+      return;
+    }
+    const { sprint, issues, openPrs } = dataRef.current;
+    const workloads = buildWorkloads(issues, openPrs);
+    const unstarted = issues.filter((i) => statusCategory(i) === "todo");
+    const userMsg: ChatTurn = { role: "user", content: "/rebalance" };
+    const nextHistory: ChatTurn[] = [...history, userMsg];
+    setHistory(nextHistory);
+    setBusy(true);
+    try {
+      const text = formatWorkloadForClaude(sprint, workloads, unstarted);
+      const result = await generateWorkloadSuggestions(text);
+      setHistory([
+        ...nextHistory,
+        { role: "assistant", content: result.trim() },
+      ]);
+    } catch (e) {
+      toast.error("Rebalance failed", { description: String(e) });
+    } finally {
+      setBusy(false);
+    }
+  }, [history, aiAvailable]);
+
+  const commands: SlashCommand[] = useMemo(
+    () => [
+      ...createGlobalCommands({
+        history,
+        clearHistory: () => setHistory([]),
+        sendMessage,
+        removeLastAssistantMessage: () =>
+          setHistory((h) =>
+            h[h.length - 1]?.role === "assistant" ? h.slice(0, -1) : h,
+          ),
+      }),
+      {
+        name: "rebalance",
+        description:
+          "Analyse workload distribution and suggest ticket reassignments",
+        execute: async () => {
+          await runRebalance();
+        },
+      },
+      {
+        name: "standup",
+        description: "Generate a concise standup briefing for this sprint",
+        execute: async () => {
+          await sendMessage(
+            "Write a concise standup briefing for this sprint. Three short sections: " +
+              "**Shipped** (tickets done or PRs merged since yesterday), " +
+              "**In flight** (what each developer is actively working on), " +
+              "**Blocked / at risk** (blockers, stalled PRs, overloaded people). " +
+              "Reference ticket keys and names. Keep it tight — this is read aloud in 2 minutes.",
+          );
+        },
+      },
+      {
+        name: "risks",
+        description: "Rank at-risk tickets with reasons",
+        execute: async () => {
+          await sendMessage(
+            "List the tickets most at risk of not completing this sprint, ranked by severity. " +
+              "For each, cite the ticket key and a one-line reason (e.g. stale PR, blocked status, " +
+              "overloaded assignee, missing AC, no activity). Group them under **High**, **Medium**, **Low**.",
+          );
+        },
+      },
+      {
+        name: "stale",
+        description: "List PRs that have gone stale",
+        execute: async () => {
+          await sendMessage(
+            "List the open PRs that have gone stale (≥5 business days old, or ≥3 business days since last update). " +
+              "For each, give: PR number, title, author, age, and a suggested nudge (e.g. ping a reviewer, " +
+              "rebase, split into smaller PRs). Skip drafts unless they've been drafts for over a week.",
+          );
+        },
+      },
+      {
+        name: "ready",
+        description: "List PRs that could move to QA / merge",
+        execute: async () => {
+          await sendMessage(
+            "List the open PRs that are ready to move forward: 2+ approvals, no changes-requested, " +
+              "and not drafts. For each, cite the PR number, title, author, and any remaining PR tasks " +
+              "that still need to be resolved before merge.",
+          );
+        },
+      },
+      {
+        name: "dev",
+        description: "Focus the next question on a specific developer",
+        args: "<name>",
+        execute: ({ args, setInput }) => {
+          const name = args.trim();
+          if (!name) {
+            setInput("/dev ");
+            return;
+          }
+          setInput(`Focus on ${name} — `);
+        },
+      },
+      {
+        name: "ticket",
+        description: "Focus the next question on a specific ticket",
+        args: "<KEY>",
+        execute: ({ args, setInput }) => {
+          const key = args.trim();
+          if (!key) {
+            setInput("/ticket ");
+            return;
+          }
+          setInput(`What's the status of ${key} — `);
+        },
+      },
+    ],
+    [history, sendMessage, runRebalance],
+  );
+
+  return (
+    <>
+      <div className="shrink-0 px-4 py-2.5 border-b flex items-center justify-between">
+        <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+          Ask about this sprint
+        </p>
+        {busy && (
+          <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+            <Loader2 className="h-3 w-3 animate-spin" /> Thinking…
+          </div>
+        )}
+      </div>
+
+      <div className="flex-1 min-h-0 overflow-y-auto px-4 py-3 space-y-2">
+        {history.length === 0 ? (
+          <p className="text-xs text-muted-foreground italic text-center pt-6">
+            {aiAvailable ? (
+              <>
+                Ask anything about this sprint — velocity, blockers, at-risk
+                tickets, or who's overloaded. Try{" "}
+                <span className="font-mono">/rebalance</span> for workload
+                suggestions. Type <span className="font-mono">/</span> to see
+                all commands.
+              </>
+            ) : (
+              "Configure an AI provider in Settings to chat about this sprint."
+            )}
+          </p>
+        ) : (
+          history.map((msg, i) => (
+            <div
+              key={i}
+              className={cn(
+                "flex",
+                msg.role === "user" ? "justify-end" : "justify-start",
+              )}
+            >
+              <div
+                className={cn(
+                  "max-w-[90%] rounded-lg px-3 py-2 text-sm leading-relaxed whitespace-pre-wrap",
+                  msg.role === "user"
+                    ? "bg-primary text-primary-foreground"
+                    : "bg-muted text-foreground",
+                )}
+              >
+                {msg.content}
+              </div>
+            </div>
+          ))
+        )}
+        {busy && (
+          <div className="flex justify-start pt-1">
+            <div className="bg-muted rounded-lg px-3 py-2 flex items-center gap-2 text-sm text-muted-foreground">
+              <Loader2 className="h-3.5 w-3.5 animate-spin" /> Thinking…
+            </div>
+          </div>
+        )}
+        <div ref={bottomRef} />
+      </div>
+
+      <div className="shrink-0 px-4 pb-4 pt-2 border-t">
+        <SlashCommandInput
+          value={input}
+          onChange={setInput}
+          onSend={sendMessage}
+          commands={commands}
+          busy={busy}
+          placeholder={
+            aiAvailable
+              ? "Ask about this sprint. Enter to send. / for commands."
+              : "Chat unavailable — configure AI in Settings."
+          }
+        />
+      </div>
+    </>
   );
 }

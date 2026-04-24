@@ -1,6 +1,7 @@
 import { useEffect, useState, useMemo } from "react";
 import { AlertTriangle, TrendingUp, CheckSquare, GitPullRequest } from "lucide-react";
 import { HeaderSettingsButton } from "@/components/HeaderSettingsButton";
+import { HeaderRecordButton } from "@/components/HeaderRecordButton";
 import { APP_HEADER_BAR, APP_HEADER_ROW_LANDING } from "@/components/appHeaderLayout";
 import { useOpenSettings } from "@/context/OpenSettingsContext";
 import { useImplementTicketStore } from "@/stores/implementTicketStore";
@@ -267,20 +268,6 @@ const WORKFLOW_CARDS: {
     ready: false,
   },
   {
-    id: "standup",
-    emoji: "☀️",
-    title: "Daily Standup Briefing",
-    description: "Auto-generated standup agenda from JIRA activity",
-    ready: false,
-  },
-  {
-    id: "workload-balancer",
-    emoji: "⚖️",
-    title: "Team Workload Balancer",
-    description: "Visualise and rebalance work across the team",
-    ready: false,
-  },
-  {
     id: "ticket-quality",
     emoji: "✅",
     title: "Groom Tickets",
@@ -347,6 +334,7 @@ export function LandingScreen({ credStatus, onNavigate }: LandingScreenProps) {
     <div className="min-h-screen flex flex-col">
       <header className={APP_HEADER_BAR}>
         <div className={APP_HEADER_ROW_LANDING}>
+          <HeaderRecordButton className="relative z-10" />
           <HeaderSettingsButton className="relative z-10 shrink-0" />
         </div>
       </header>
@@ -376,7 +364,7 @@ export function LandingScreen({ credStatus, onNavigate }: LandingScreenProps) {
                     ? prBadgeLabel
                     : null;
                 const needsAttention =
-                  card.id === "workload-balancer" && workloadNeedsAttention;
+                  card.id === "sprint-dashboard" && workloadNeedsAttention;
                 const attentionParts: string[] = [];
                 if (overloadedDevs.length > 0) attentionParts.push(`${overloadedDevs.length} overloaded`);
                 if (underutilisedDevs.length > 0) attentionParts.push(`${underutilisedDevs.length} under-utilised`);

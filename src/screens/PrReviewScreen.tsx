@@ -41,6 +41,9 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
+import { SlashCommandInput } from "@/components/SlashCommandInput";
+import { createGlobalCommands, type SlashCommand } from "@/lib/slashCommands";
+import { ask } from "@tauri-apps/plugin-dialog";
 import { WorkflowPanelHeader, APP_HEADER_TITLE } from "@/components/appHeaderLayout";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import {
@@ -2194,18 +2197,127 @@ export function PrReviewScreen({ credStatus, onBack }: PrReviewScreenProps) {
   }, [reviewChat, reviewChatStreamText]);
 
   // ── Send chat message ────────────────────────────────────────────────────────
-  async function sendReviewChatMessage() {
-    const msg = reviewChatInput.trim();
-    if (!msg || !report || !selectedPr) return;
-    setReviewChatInput("");
-    setReviewChatSending(true);
-    try {
-      const enriched = await enrichMessageWithUrls(msg);
-      await store().sendReviewChatMessage(enriched);
-    } finally {
-      setReviewChatSending(false);
-    }
-  }
+  // (Normal-message send is now handled inline by SlashCommandInput's onSend.
+  // Commands use their own tighter-scoped send closure below.)
+
+  const reviewChatCommands: SlashCommand[] = useMemo(() => {
+    const send = async (text: string) => {
+      setReviewChatSending(true);
+      try {
+        const enriched = await enrichMessageWithUrls(text);
+        await store().sendReviewChatMessage(enriched);
+      } finally {
+        setReviewChatSending(false);
+      }
+    };
+
+    return [
+      ...createGlobalCommands({
+        history: reviewChat,
+        clearHistory: () => store().clearReviewChat(),
+        sendMessage: send,
+        removeLastAssistantMessage: () => store().dropLastReviewAssistantTurn(),
+      }),
+      {
+        name: "approve",
+        description: "Approve the PR (confirms first)",
+        execute: async ({ toast: t }) => {
+          if (!selectedPr) return;
+          const ok = await ask(
+            `Approve PR #${selectedPr.id}: ${selectedPr.title}?`,
+            { title: "Approve PR", kind: "info" },
+          );
+          if (ok) {
+            await store().submitReview("approve");
+            t.success("PR approved");
+          }
+        },
+      },
+      {
+        name: "request-changes",
+        description: "Submit a request-changes review",
+        execute: async ({ toast: t }) => {
+          if (!selectedPr) return;
+          const ok = await ask(
+            `Request changes on PR #${selectedPr.id}?`,
+            { title: "Request changes", kind: "warning" },
+          );
+          if (ok) {
+            await store().submitReview("needs_work");
+            t.success("Requested changes");
+          }
+        },
+      },
+      {
+        name: "diff",
+        description: "Ask the AI to discuss the current diff",
+        args: "[file]",
+        execute: async ({ args }) => {
+          const prompt = args
+            ? `Focus on the changes in ${args} and explain what changed and why.`
+            : "Summarise the full diff — the key changes and any risks you see.";
+          await send(prompt);
+        },
+      },
+      {
+        name: "findings",
+        description: "Show the current review findings",
+        execute: ({ toast: t }) => {
+          if (!report) {
+            t.info("No findings yet. Run the review first.");
+            return;
+          }
+          const all: string[] = [];
+          for (const [lensName, lens] of Object.entries(report.lenses)) {
+            for (const f of lens.findings.slice(0, 6)) {
+              const loc = [f.file, f.line_range].filter(Boolean).join(":");
+              all.push(
+                `[${f.severity}] ${lensName}: ${f.title}${loc ? ` — ${loc}` : ""}`,
+              );
+            }
+          }
+          if (all.length === 0) {
+            t.info("No findings reported");
+            return;
+          }
+          t("Findings", { description: all.slice(0, 20).join("\n") });
+        },
+      },
+      {
+        name: "lens",
+        description: "Focus the chat on a single lens",
+        args: "security|logic|ac|quality",
+        execute: async ({ args, toast: t }) => {
+          const lens = args.trim().toLowerCase();
+          const known = ["security", "logic", "ac", "quality"];
+          if (!known.includes(lens)) {
+            t.error("Pick one of: security, logic, ac, quality");
+            return;
+          }
+          await send(
+            `Re-examine this PR strictly through the ${lens} lens. Surface anything you may have understated in the initial review.`,
+          );
+        },
+      },
+      {
+        name: "comment",
+        description: "Post a top-level PR comment",
+        args: "<text>",
+        execute: async ({ args, toast: t }) => {
+          if (!args.trim()) {
+            t.error("Provide the comment text, e.g. /comment LGTM pending tests");
+            return;
+          }
+          try {
+            await store().postComment(args);
+            t.success("Comment posted");
+          } catch (e) {
+            t.error("Failed to post comment", { description: String(e) });
+          }
+        },
+      },
+    ];
+  }, [reviewChat, selectedPr, report]);
 
 
   async function copySummary() {
@@ -2778,30 +2890,22 @@ export function PrReviewScreen({ credStatus, onBack }: PrReviewScreenProps) {
 
                     {/* Input */}
                     <div className="px-4 pb-4 space-y-2 border-t pt-3">
-                      <div className="flex gap-2">
-                        <Textarea
-                          value={reviewChatInput}
-                          onChange={(e) => setReviewChatInput(e.target.value)}
-                          placeholder="Ask about a finding…"
-                          className="min-h-[52px] resize-none text-sm"
-                          onKeyDown={(e) => {
-                            if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && reviewChatInput.trim()) {
-                              e.preventDefault();
-                              sendReviewChatMessage();
-                            }
-                          }}
-                          disabled={reviewChatSending}
-                        />
-                        <Button
-                          size="icon"
-                          onClick={sendReviewChatMessage}
-                          disabled={!reviewChatInput.trim() || reviewChatSending}
-                          title="Send (⌘↵)"
-                        >
-                          <Send className="h-4 w-4" />
-                        </Button>
-                      </div>
-                      <p className="text-xs text-muted-foreground">⌘↵ to send</p>
+                      <SlashCommandInput
+                        value={reviewChatInput}
+                        onChange={setReviewChatInput}
+                        onSend={async (text) => {
+                          setReviewChatSending(true);
+                          try {
+                            const enriched = await enrichMessageWithUrls(text);
+                            await store().sendReviewChatMessage(enriched);
+                          } finally {
+                            setReviewChatSending(false);
+                          }
+                        }}
+                        commands={reviewChatCommands}
+                        busy={reviewChatSending}
+                        placeholder="Ask about a finding. Enter to send. / for commands."
+                      />
                     </div>
                   </div>
                 )}

@@ -25,6 +25,7 @@ import {
   type BitbucketPr,
   type SprintReportCache,
   getCompletedSprints,
+  getAllActiveSprints,
   getSprintIssuesById,
   getMergedPrs,
   generateSprintRetrospective,
@@ -622,12 +623,18 @@ export function RetrospectivesScreen({ onBack }: RetrospectivesScreenProps) {
   const [trendData, setTrendData] = useState<TrendPoint[]>([]);
   const [loadingTrend, setLoadingTrend] = useState(false);
 
-  // Fetch the sprint list — extracted so the refresh button can call it directly
+  // Fetch the sprint list — extracted so the refresh button can call it directly.
+  // Includes active sprints: the user closes sprints *after* the retro meeting,
+  // so the retro often happens while the sprint is still active.
   const loadSprintList = useCallback(() => {
     setLoadingList(true);
     setListError(null);
-    getCompletedSprints(10)
-      .then((list) => {
+    Promise.all([
+      getAllActiveSprints().catch(() => [] as JiraSprint[]),
+      getCompletedSprints(10),
+    ])
+      .then(([active, completed]) => {
+        const list = [...active, ...completed];
         setSprints(list);
         if (list.length > 0) setSelectedId(list[0].id);
       })
@@ -686,9 +693,11 @@ export function RetrospectivesScreen({ onBack }: RetrospectivesScreenProps) {
     loadSprint(selectedId, sprint);
   }, [selectedId, sprints, loadSprint]);
 
-  // Build trend data whenever cache grows
+  // Build trend data whenever cache grows. Active sprints are excluded — an
+  // in-flight sprint would skew the completion-rate trend downward.
   const buildTrend = useCallback(async () => {
-    const toLoad = sprints.slice(0, 6).filter((s) => !cache.current.has(s.id));
+    const completedOnly = sprints.filter((s) => s.state !== "active");
+    const toLoad = completedOnly.slice(0, 6).filter((s) => !cache.current.has(s.id));
 
     if (toLoad.length > 0) {
       setLoadingTrend(true);
@@ -714,7 +723,7 @@ export function RetrospectivesScreen({ onBack }: RetrospectivesScreenProps) {
       setLoadingTrend(false);
     }
 
-    const points: TrendPoint[] = sprints
+    const points: TrendPoint[] = completedOnly
       .slice(0, 6)
       .reverse()
       .filter((s) => cache.current.has(s.id))
@@ -774,25 +783,36 @@ export function RetrospectivesScreen({ onBack }: RetrospectivesScreenProps) {
             Loading sprints…
           </div>
         ) : sprints.length === 0 && !listError ? (
-          <p className="text-sm text-muted-foreground">No completed sprints found.</p>
+          <p className="text-sm text-muted-foreground">No sprints found.</p>
         ) : (
           <div className="flex gap-2 overflow-x-auto pb-1 scrollbar-none">
-            {sprints.map((sprint) => (
-              <button
-                key={sprint.id}
-                onClick={() => setSelectedId(sprint.id)}
-                className={`shrink-0 rounded-lg border px-3 py-2 text-sm text-left transition-colors ${
-                  selectedId === sprint.id
-                    ? "border-foreground bg-foreground/60 text-background"
-                    : "border-border bg-card/60 hover:bg-accent/60"
-                }`}
-              >
-                <p className="font-medium whitespace-nowrap">{sprint.name}</p>
-                <p className="text-[10px] opacity-60 mt-0.5 whitespace-nowrap">
-                  {sprintDateRange(sprint)}
-                </p>
-              </button>
-            ))}
+            {sprints.map((sprint) => {
+              const isActive = sprint.state === "active";
+              return (
+                <button
+                  key={sprint.id}
+                  onClick={() => setSelectedId(sprint.id)}
+                  className={`shrink-0 rounded-lg border px-3 py-2 text-sm text-left transition-colors ${
+                    selectedId === sprint.id
+                      ? "border-foreground bg-foreground/60 text-background"
+                      : "border-border bg-card/60 hover:bg-accent/60"
+                  }`}
+                >
+                  <p className="font-medium whitespace-nowrap flex items-center gap-1.5">
+                    {sprint.name}
+                    {isActive && (
+                      <span className="inline-flex items-center gap-1 text-[9px] font-medium uppercase tracking-wide rounded px-1.5 py-0.5 bg-emerald-500/20 text-emerald-500">
+                        <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                        Active
+                      </span>
+                    )}
+                  </p>
+                  <p className="text-[10px] opacity-60 mt-0.5 whitespace-nowrap">
+                    {sprintDateRange(sprint)}
+                  </p>
+                </button>
+              );
+            })}
           </div>
         )}
 
@@ -835,8 +855,9 @@ export function RetrospectivesScreen({ onBack }: RetrospectivesScreenProps) {
           </>
         )}
 
-        {/* Trend analysis */}
-        {sprints.length > 1 && (
+        {/* Trend analysis — completed sprints only; active sprints would skew
+            completion-rate stats since the sprint isn't finished yet. */}
+        {sprints.filter((s) => s.state !== "active").length > 1 && (
           <div className="border-t pt-6 space-y-4">
             <div className="flex items-center justify-between">
               <h2 className="text-sm font-medium text-muted-foreground uppercase tracking-wider">
@@ -861,7 +882,7 @@ export function RetrospectivesScreen({ onBack }: RetrospectivesScreenProps) {
               </p>
             )}
 
-            <TrendAnalysisPanel sprints={sprints} />
+            <TrendAnalysisPanel sprints={sprints.filter((s) => s.state !== "active")} />
           </div>
         )}
       </main>

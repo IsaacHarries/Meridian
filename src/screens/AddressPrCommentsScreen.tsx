@@ -1,8 +1,10 @@
-import { useEffect, useState, useRef, useCallback } from "react";
-import { ArrowLeft, GitPullRequest, MessageSquare, CheckSquare, RefreshCw, GitBranch, Loader2, Check, X, ChevronDown, ChevronRight, Send, ThumbsUp, ThumbsDown, AlertTriangle, GitCommit, Upload } from "lucide-react";
+import { useEffect, useState, useRef, useCallback, useMemo } from "react";
+import { ArrowLeft, GitPullRequest, MessageSquare, CheckSquare, RefreshCw, GitBranch, Loader2, Check, X, ChevronDown, ChevronRight, ThumbsUp, ThumbsDown, AlertTriangle, GitCommit, Upload } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
+import { SlashCommandInput } from "@/components/SlashCommandInput";
+import { createGlobalCommands, type SlashCommand } from "@/lib/slashCommands";
 import { WorkflowPanelHeader, APP_HEADER_TITLE } from "@/components/appHeaderLayout";
 import {
   type CredentialStatus,
@@ -549,11 +551,11 @@ export function AddressPrCommentsScreen({ credStatus, onBack }: Props) {
   }
 
   // ── Chat ──────────────────────────────────────────────────────────────────
-  async function handleChatSend() {
-    if (!chatInput.trim() || chatLoading || !selectedPr) return;
-    const userMsg = chatInput.trim();
-    setChatInput("");
-    const newHistory: ChatMessage[] = [...chatHistory, { role: "user", content: userMsg }];
+  // Raw send that runs the PR-address chat turn. Shared by both the
+  // SlashCommandInput and any commands that want to ask the agent something.
+  async function sendChatRaw(text: string) {
+    if (!selectedPr || chatLoading) return;
+    const newHistory: ChatMessage[] = [...chatHistory, { role: "user", content: text }];
     setChatHistory(newHistory);
     setChatLoading(true);
 
@@ -567,10 +569,9 @@ export function AddressPrCommentsScreen({ credStatus, onBack }: Props) {
     ].join("\n");
 
     const historyJson = JSON.stringify(
-      newHistory.map((m) => ({ role: m.role, content: [{ type: "text", text: m.content }] }))
+      newHistory.map((m) => ({ role: m.role, content: [{ type: "text", text: m.content }] })),
     );
 
-    // Subscribe to streaming
     let response = "";
     const unlisten = await listen<string>("address-pr-chat-stream", (event) => {
       response += event.payload;
@@ -587,6 +588,96 @@ export function AddressPrCommentsScreen({ credStatus, onBack }: Props) {
       setChatLoading(false);
     }
   }
+
+  const addressChatCommands: SlashCommand[] = useMemo(
+    () => [
+      ...createGlobalCommands({
+        history: chatHistory,
+        clearHistory: () => setChatHistory([]),
+        sendMessage: (text: string) => sendChatRaw(text),
+        removeLastAssistantMessage: () =>
+          setChatHistory((prev) => {
+            if (prev.length === 0 || prev[prev.length - 1].role !== "assistant") {
+              return prev;
+            }
+            return prev.slice(0, -1);
+          }),
+      }),
+      {
+        name: "fix",
+        description: "Re-propose a fix for a specific file",
+        args: "<file>",
+        execute: async ({ args, toast: t }) => {
+          if (!args.trim()) {
+            t.error("Provide a file path, e.g. /fix src/foo.ts");
+            return;
+          }
+          await sendChatRaw(
+            `Re-examine your proposed fix for ${args.trim()} and suggest a revised version.`,
+          );
+        },
+      },
+      {
+        name: "diff",
+        description: "Ask the AI to describe the current worktree diff",
+        execute: async () => {
+          await sendChatRaw(
+            "Describe the current worktree diff at a high level — files touched and notable changes.",
+          );
+        },
+      },
+      {
+        name: "revert",
+        description: "Discard the current fix attempt (not yet implemented)",
+        execute: ({ toast: t }) => {
+          t.info("Revert isn't wired yet", {
+            description:
+              "To reset, close this PR flow and re-open — the worktree will be freshly checked out.",
+          });
+        },
+      },
+      {
+        name: "commit",
+        description: "Commit accumulated fixes",
+        args: "[message]",
+        execute: async ({ args, toast: t }) => {
+          const msg = args.trim() || commitMessage.trim();
+          if (!msg) {
+            t.error("No commit message available", {
+              description: "Pass one via /commit <message> or fill in the commit box.",
+            });
+            return;
+          }
+          setCommitMessage(msg);
+          await handleCommit();
+        },
+      },
+      {
+        name: "push",
+        description: "Push the fix branch",
+        execute: async () => {
+          await handlePush();
+        },
+      },
+      {
+        name: "branch",
+        description: "Show the checked-out branch",
+        execute: ({ toast: t }) => {
+          if (!selectedPr) {
+            t.info("No PR selected");
+            return;
+          }
+          t("Current branch", {
+            description: `${selectedPr.sourceBranch} → ${selectedPr.destinationBranch}`,
+          });
+        },
+      },
+    ],
+    // handleCommit and handlePush are stable functions closing over state,
+    // but their behaviour depends on commitMessage/fixPlan/chatHistory — we
+    // rebuild the array when those change.
+    [chatHistory, selectedPr, commitMessage, fixPlan],
+  );
 
   // ── Fix plan mutators ──────────────────────────────────────────────────────
   function toggleApprove(i: number) {
@@ -717,25 +808,15 @@ export function AddressPrCommentsScreen({ credStatus, onBack }: Props) {
                   <div ref={chatEndRef} />
                 </div>
                 {/* Chat input */}
-                <div className="flex gap-2 pt-1 border-t">
-                  <Textarea
+                <div className="pt-1 border-t">
+                  <SlashCommandInput
                     value={chatInput}
-                    onChange={(e) => setChatInput(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleChatSend(); }
-                    }}
-                    placeholder="Ask about the fix plan or request changes…"
-                    className="min-h-[60px] text-sm resize-none"
-                    disabled={chatLoading}
+                    onChange={setChatInput}
+                    onSend={(text) => sendChatRaw(text)}
+                    commands={addressChatCommands}
+                    busy={chatLoading}
+                    placeholder="Ask about the fix plan. Enter to send. / for commands."
                   />
-                  <Button
-                    size="icon"
-                    onClick={handleChatSend}
-                    disabled={chatLoading || !chatInput.trim()}
-                    className="shrink-0"
-                  >
-                    <Send className="h-4 w-4" />
-                  </Button>
                 </div>
               </div>
             )}

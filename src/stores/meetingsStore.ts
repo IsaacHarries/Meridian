@@ -36,12 +36,19 @@ import {
   downloadWhisperModel,
   summarizeMeeting,
   chatMeeting,
+  diarizeMeeting,
+  renameMeetingSpeaker,
   parseAgentJson,
 } from "@/lib/tauri";
-import { getPreferences } from "@/lib/preferences";
+import { getPreferences, setPreference } from "@/lib/preferences";
 import { loadCache, saveCache } from "@/lib/storeCache";
 
 export const MEETINGS_STORE_KEY = "meridian-meetings-store";
+
+// Seed used on first run (no persisted vocab yet). Editable by the user from
+// the moment it loads — these aren't "built-ins" that come back if deleted.
+const DEFAULT_TAG_VOCAB = ["standup", "planning", "retro", "1:1", "other"];
+const TAG_VOCAB_PREF_KEY = "meeting_tag_vocab";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -95,11 +102,17 @@ interface MeetingsState {
   whisperModels: WhisperModelStatus[];
   modelProgress: Record<string, ModelProgress>;
 
+  // ── Tag vocabulary (persisted to preferences) ─────────────────────────────
+  tagVocab: string[];
+
   // ── Actions ───────────────────────────────────────────────────────────────
   _set: (patch: Partial<MeetingsState>) => void;
   setDraftTitle: (title: string) => void;
   setDraftTags: (tags: string[]) => void;
   setMicOverride: (mic: string | null) => void;
+
+  addTagToVocab: (tag: string) => void;
+  removeTagFromVocab: (tag: string) => void;
 
   loadMeetingsList: () => Promise<void>;
   selectMeeting: (id: string | null) => Promise<void>;
@@ -110,6 +123,7 @@ interface MeetingsState {
   startRecording: (
     modelId: string,
     micName: string | null,
+    extraTags?: string[],
   ) => Promise<void>;
   pauseRecording: () => Promise<void>;
   resumeRecording: () => Promise<void>;
@@ -117,6 +131,14 @@ interface MeetingsState {
 
   summarizeSelected: () => Promise<void>;
   sendChatMessage: (input: string) => Promise<void>;
+
+  diarizeSelected: () => Promise<void>;
+  renameSpeaker: (speakerId: string, displayName: string | null) => Promise<void>;
+
+  /** Hard-clear the chat history for the selected meeting (persisted). */
+  clearSelectedChat: () => Promise<void>;
+  /** Drop just the last assistant turn — used by /retry to regenerate. */
+  dropLastAssistantTurn: () => Promise<void>;
 
   refreshWhisperModels: () => Promise<void>;
   startModelDownload: (modelId: string) => Promise<void>;
@@ -126,10 +148,21 @@ interface MeetingsState {
 
 function buildTranscriptText(record: MeetingRecord): string {
   if (record.segments.length === 0) return "(no transcript available)";
+
+  // Resolve speaker id → user-assigned name so the AI agent sees real names
+  // instead of anonymous "SPEAKER_00" labels. Falls back to the raw cluster
+  // id when no name has been assigned yet, and omits the prefix entirely
+  // for segments that were never diarized.
+  const nameById = new Map<string, string>();
+  for (const sp of record.speakers ?? []) {
+    nameById.set(sp.id, sp.displayName?.trim() || sp.id);
+  }
+
   return record.segments
     .map((s) => {
       const t = formatTimestamp(s.startSec);
-      return `[${t}] ${s.text}`;
+      const speaker = s.speakerId ? nameById.get(s.speakerId) ?? s.speakerId : null;
+      return speaker ? `[${t}] ${speaker}: ${s.text}` : `[${t}] ${s.text}`;
     })
     .join("\n");
 }
@@ -175,11 +208,33 @@ export const useMeetingsStore = create<MeetingsState>()((set, get) => ({
   whisperModels: [],
   modelProgress: {},
 
+  tagVocab: DEFAULT_TAG_VOCAB,
+
   _set: (patch) => set(patch as Partial<MeetingsState>),
 
   setDraftTitle: (title) => set({ draftTitle: title }),
   setDraftTags: (tags) => set({ draftTags: tags }),
   setMicOverride: (mic) => set({ micOverride: mic }),
+
+  addTagToVocab: (tag) => {
+    const normalized = tag.trim().toLowerCase();
+    if (!normalized) return;
+    set((s) => {
+      if (s.tagVocab.includes(normalized)) return s;
+      const next = [...s.tagVocab, normalized];
+      void setPreference(TAG_VOCAB_PREF_KEY, JSON.stringify(next));
+      return { tagVocab: next };
+    });
+  },
+
+  removeTagFromVocab: (tag) => {
+    set((s) => {
+      if (!s.tagVocab.includes(tag)) return s;
+      const next = s.tagVocab.filter((t) => t !== tag);
+      void setPreference(TAG_VOCAB_PREF_KEY, JSON.stringify(next));
+      return { tagVocab: next };
+    });
+  },
 
   loadMeetingsList: async () => {
     set({ loading: true });
@@ -232,14 +287,19 @@ export const useMeetingsStore = create<MeetingsState>()((set, get) => ({
     set((s) => ({ meetings: replaceOrInsert(s.meetings, updated) }));
   },
 
-  startRecording: async (modelId, micName) => {
+  startRecording: async (modelId, micName, extraTags) => {
     if (get().active) throw new Error("A meeting is already recording.");
     const { draftTitle, draftTags } = get();
+    // Merge any screen-context tags (e.g. "standup" when started from the
+    // Standup screen) with the user's draft tags, de-duplicated.
+    const tags = extraTags && extraTags.length > 0
+      ? Array.from(new Set([...draftTags, ...extraTags]))
+      : draftTags;
     const req = {
       // Leave the title empty when the user didn't type one — the AI will
       // suggest one during summary and we'll auto-apply it.
       title: draftTitle.trim(),
-      tags: draftTags,
+      tags,
       micName,
       modelId,
     };
@@ -286,10 +346,12 @@ export const useMeetingsStore = create<MeetingsState>()((set, get) => ({
         selectedId: record.id,
         draftTitle: "",
       }));
-      // Auto-generate summary + AI title in the background so the meeting
-      // doesn't sit in the list as "Untitled meeting". The UI still shows a
-      // manual "Regenerate" button for the user to run again later.
+      // The raw PCM buffer only lives in RAM until the NEXT recording replaces
+      // it, so diarization has to fire here. Run it eagerly (before summary)
+      // since the user may trigger another recording quickly. Summary doesn't
+      // need the audio, so it's fine to kick off in parallel.
       if (record.segments.length > 0) {
+        void get().diarizeSelected();
         void get().summarizeSelected();
       }
       return record;
@@ -315,15 +377,18 @@ export const useMeetingsStore = create<MeetingsState>()((set, get) => ({
       );
       const parsed = parseAgentJson<MeetingSummaryJson>(raw);
       if (!parsed) throw new Error("Could not parse summary JSON");
-      // If the user didn't set a title, auto-apply the AI's suggestion so the
-      // meeting list stops saying "Untitled meeting". If the user typed
-      // something, keep it — the suggestion still appears as a "Use" prompt.
+      // Diarization runs concurrently with this call after stopRecording. If
+      // it finished first, the on-disk record now has .speakers and
+      // .segments[*].speakerId that are NOT in `record` (captured before the
+      // AI call). Re-read the freshest record so those fields aren't clobbered
+      // when we write the summary back.
+      const latest = await loadMeeting(selectedId).catch(() => record);
       const autoTitle =
-        !record.title.trim() && parsed.suggestedTitle
+        !latest.title.trim() && parsed.suggestedTitle
           ? parsed.suggestedTitle
-          : record.title;
+          : latest.title;
       const updated: MeetingRecord = {
-        ...record,
+        ...latest,
         title: autoTitle,
         summary: parsed.summary ?? null,
         actionItems: parsed.actionItems ?? [],
@@ -390,6 +455,61 @@ export const useMeetingsStore = create<MeetingsState>()((set, get) => ({
         return { busy: nextBusy, chatStreamText: nextStream };
       });
     }
+  },
+
+  diarizeSelected: async () => {
+    const { selectedId } = get();
+    if (!selectedId) return;
+    set((s) => ({ busy: new Set(s.busy).add(selectedId) }));
+    try {
+      const updated = await diarizeMeeting(selectedId);
+      set((s) => ({ meetings: replaceOrInsert(s.meetings, updated) }));
+    } catch (e) {
+      // Expected failure modes (raw audio no longer in RAM, too-short clip)
+      // surface as plain Error strings; don't treat them as app-breaking.
+      console.error("[meetings] diarizeSelected", e);
+      throw e;
+    } finally {
+      set((s) => {
+        const next = new Set(s.busy);
+        next.delete(selectedId);
+        return { busy: next };
+      });
+    }
+  },
+
+  renameSpeaker: async (speakerId, displayName) => {
+    const { selectedId } = get();
+    if (!selectedId) return;
+    const updated = await renameMeetingSpeaker(selectedId, speakerId, displayName);
+    set((s) => ({ meetings: replaceOrInsert(s.meetings, updated) }));
+  },
+
+  clearSelectedChat: async () => {
+    const { selectedId, meetings } = get();
+    if (!selectedId) return;
+    const record = meetings.find((m) => m.id === selectedId);
+    if (!record || (record.chatHistory ?? []).length === 0) return;
+    const updated: MeetingRecord = { ...record, chatHistory: [] };
+    await saveMeeting(updated);
+    set((s) => ({ meetings: replaceOrInsert(s.meetings, updated) }));
+  },
+
+  dropLastAssistantTurn: async () => {
+    const { selectedId, meetings } = get();
+    if (!selectedId) return;
+    const record = meetings.find((m) => m.id === selectedId);
+    if (!record) return;
+    const history = record.chatHistory ?? [];
+    if (history.length === 0 || history[history.length - 1].role !== "assistant") {
+      return;
+    }
+    const updated: MeetingRecord = {
+      ...record,
+      chatHistory: history.slice(0, -1),
+    };
+    await saveMeeting(updated);
+    set((s) => ({ meetings: replaceOrInsert(s.meetings, updated) }));
   },
 
   refreshWhisperModels: async () => {
@@ -524,7 +644,10 @@ export async function hydrateMeetingsStore(): Promise<void> {
     });
   }
 
-  // Pull the default mic from Settings if the user hasn't set an override.
+  // Pull the default mic + tag vocab from preferences. Tag vocab is seeded
+  // with DEFAULT_TAG_VOCAB on first run (no key present yet); once the user
+  // edits the vocabulary, the preference file takes over as the source of
+  // truth and the defaults are never re-injected.
   try {
     const prefs = await getPreferences();
     const prefMic = prefs["meeting_mic"] ?? "";
@@ -532,6 +655,19 @@ export async function hydrateMeetingsStore(): Promise<void> {
       // Don't set as override — micOverride means per-meeting override. The
       // fallback ordering (override → pref → system default) is handled at
       // recording start time.
+    }
+    const rawVocab = prefs[TAG_VOCAB_PREF_KEY];
+    if (rawVocab) {
+      try {
+        const parsed = JSON.parse(rawVocab);
+        if (Array.isArray(parsed)) {
+          useMeetingsStore.setState({
+            tagVocab: parsed.filter((t): t is string => typeof t === "string"),
+          });
+        }
+      } catch {
+        /* fall back to DEFAULT_TAG_VOCAB already in state */
+      }
     }
   } catch {
     /* ignore */

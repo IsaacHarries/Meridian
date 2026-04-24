@@ -149,6 +149,10 @@ interface PrReviewState {
   cancelReview: () => void;
   submitReview: (action: "approve" | "needs_work") => Promise<void>;
   sendReviewChatMessage: (input: string) => Promise<string>;
+  /** Wipe the review chat history for the currently-selected PR. */
+  clearReviewChat: () => void;
+  /** Drop just the last assistant turn — used by /retry. */
+  dropLastReviewAssistantTurn: () => void;
   /** Post a general or inline comment. Returns the posted comment or throws. */
   postComment: (
     content: string,
@@ -592,6 +596,22 @@ export const usePrReviewStore = create<PrReviewState>()(
         if (chatFlushTimer !== null) clearTimeout(chatFlushTimer);
         unlisten();
       }
+    },
+
+    clearReviewChat: () => {
+      const { selectedPr } = get();
+      if (!selectedPr) return;
+      patchSession(selectedPr.id, { reviewChat: [], reviewChatStreamText: "" });
+    },
+
+    dropLastReviewAssistantTurn: () => {
+      const { selectedPr, sessions } = get();
+      if (!selectedPr) return;
+      const session = sessions.get(selectedPr.id);
+      if (!session) return;
+      const chat = session.reviewChat;
+      if (chat.length === 0 || chat[chat.length - 1].role !== "assistant") return;
+      patchSession(selectedPr.id, { reviewChat: chat.slice(0, -1) });
     },
 
     // ── Post a comment ─────────────────────────────────────────────────────────

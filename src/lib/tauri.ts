@@ -401,18 +401,6 @@ export async function debugJiraEndpoints(): Promise<string> {
 
 // ── Claude commands ───────────────────────────────────────────────────────────
 
-export async function generateStandupBriefing(
-  standupText: string,
-): Promise<string> {
-  if (isMockClaudeMode()) {
-    const { MOCK_STANDUP_MARKDOWN } = await import("./mockClaudeResponses");
-    return MOCK_STANDUP_MARKDOWN;
-  }
-  return invokeWithLlmCheck<string>("generate_standup_briefing", {
-    standupText,
-  });
-}
-
 export async function generateSprintRetrospective(
   sprintText: string,
 ): Promise<string> {
@@ -435,6 +423,17 @@ export async function generateWorkloadSuggestions(
   }
   return invokeWithLlmCheck<string>("generate_workload_suggestions", {
     workloadText,
+  });
+}
+
+/** Multi-turn chat over the current sprint dashboard snapshot. */
+export async function chatSprintDashboard(
+  contextText: string,
+  historyJson: string,
+): Promise<string> {
+  return invokeWithLlmCheck<string>("chat_sprint_dashboard", {
+    contextText,
+    historyJson,
   });
 }
 
@@ -1046,6 +1045,10 @@ export async function getPrComments(prId: number): Promise<BitbucketComment[]> {
 }
 
 export async function getPrTasks(prId: number): Promise<BitbucketTask[]> {
+  if (isMockMode()) {
+    const { PR_TASKS_BY_ID } = await import("./mockData");
+    return PR_TASKS_BY_ID[prId] ?? [];
+  }
   return invoke<BitbucketTask[]>("get_pr_tasks", { prId });
 }
 
@@ -2082,11 +2085,26 @@ export interface MeetingSegment {
   startSec: number;
   endSec: number;
   text: string;
+  // Populated by the diarization pass. Absent on legacy segments and on
+  // meetings that have not been diarized yet.
+  speakerId?: string | null;
 }
 
 export interface MeetingChatMessage {
   role: "user" | "assistant";
   content: string;
+}
+
+export interface SpeakerCandidate {
+  name: string;
+  similarity: number;
+}
+
+export interface MeetingSpeaker {
+  id: string;
+  embedding: number[];
+  displayName?: string | null;
+  candidates?: SpeakerCandidate[];
 }
 
 export interface MeetingRecord {
@@ -2105,6 +2123,7 @@ export interface MeetingRecord {
   suggestedTitle: string | null;
   suggestedTags: string[];
   chatHistory: MeetingChatMessage[];
+  speakers?: MeetingSpeaker[];
 }
 
 export interface StartMeetingRequest {
@@ -2160,6 +2179,22 @@ export async function resumeMeetingRecording(): Promise<void> {
 
 export async function stopMeetingRecording(): Promise<MeetingRecord> {
   return invoke<MeetingRecord>("stop_meeting_recording");
+}
+
+export async function diarizeMeeting(meetingId: string): Promise<MeetingRecord> {
+  return invoke<MeetingRecord>("diarize_meeting", { meetingId });
+}
+
+export async function renameMeetingSpeaker(
+  meetingId: string,
+  speakerId: string,
+  displayName: string | null,
+): Promise<MeetingRecord> {
+  return invoke<MeetingRecord>("rename_meeting_speaker", {
+    meetingId,
+    speakerId,
+    displayName,
+  });
 }
 
 export async function activeMeetingId(): Promise<string | null> {

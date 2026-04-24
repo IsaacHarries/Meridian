@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import { HeaderSettingsButton } from "@/components/HeaderSettingsButton";
+import { HeaderRecordButton } from "@/components/HeaderRecordButton";
 import { cn } from "@/lib/utils";
 
 /** Matches the landing page header chrome (full-width bar). */
@@ -43,6 +44,7 @@ export function WorkflowPanelHeader({
         <div className="min-w-0 flex-1" aria-hidden />
         <div className="relative z-10 flex shrink-0 items-center gap-2">
           {trailing}
+          <HeaderRecordButton />
           <HeaderSettingsButton className="shrink-0" />
         </div>
       </div>

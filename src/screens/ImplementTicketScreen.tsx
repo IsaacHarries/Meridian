@@ -4,6 +4,9 @@ import { listen } from "@tauri-apps/api/event";
 import { cn } from "@/lib/utils";
 import { PipelineProgress } from "@/components/PipelineProgress";
 import { HeaderSettingsButton } from "@/components/HeaderSettingsButton";
+import { HeaderRecordButton } from "@/components/HeaderRecordButton";
+import { SlashCommandInput } from "@/components/SlashCommandInput";
+import { createGlobalCommands, type SlashCommand } from "@/lib/slashCommands";
 import {
   APP_HEADER_BAR,
   APP_HEADER_ROW_PANEL,
@@ -16,7 +19,6 @@ import {
   CheckCircle2,
   Circle,
   ChevronRight,
-  Send,
   Sparkles,
   Copy,
   Check,
@@ -36,7 +38,6 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Textarea } from "@/components/ui/textarea";
 import { Input } from "@/components/ui/input";
 import {
   type JiraIssue,
@@ -1756,13 +1757,16 @@ interface PipelineChatPanelProps {
   onSavedToolRequest: (id: string) => void;
   chatInput: string;
   onChatInputChange: (v: string) => void;
-  onSend: () => void;
+  /** Send text through the unified pipeline send function. */
+  onSend: (text: string) => void;
   onCancel: () => void;
   onFinalizePlan: () => void;
   sending: boolean;
   finalizing: boolean;
   proceeding: boolean;
   streamingText: string;
+  /** Slash-command set. Built by the caller based on which stage is active. */
+  commands: SlashCommand[];
 }
 
 const CHAT_STAGE_LABEL: Partial<Record<Stage, string>> = {
@@ -1796,6 +1800,7 @@ function PipelineChatPanel({
   finalizing,
   proceeding,
   streamingText,
+  commands,
 }: PipelineChatPanelProps) {
   const bottomRef = useRef<HTMLDivElement>(null);
 
@@ -1969,40 +1974,16 @@ function PipelineChatPanel({
             )}
           </Button>
         )}
-        <div className="flex gap-2">
-          <Textarea
-            value={chatInput}
-            onChange={(e) => onChatInputChange(e.target.value)}
-            placeholder={placeholder}
-            className="min-h-[52px] resize-none text-sm"
-            disabled={!inputActive || sending || finalizing || proceeding}
-            onKeyDown={(e) => {
-              if (
-                e.key === "Enter" &&
-                (e.metaKey || e.ctrlKey) &&
-                chatInput.trim() &&
-                inputActive
-              ) {
-                e.preventDefault();
-                onSend();
-              }
-            }}
-          />
-          <Button
-            size="icon"
-            onClick={onSend}
-            disabled={
-              !chatInput.trim() ||
-              !inputActive ||
-              sending ||
-              finalizing ||
-              proceeding
-            }
-            title="Send (⌘↵)"
-          >
-            <Send className="h-4 w-4" />
-          </Button>
-        </div>
+        <SlashCommandInput
+          value={chatInput}
+          onChange={onChatInputChange}
+          onSend={(text) => {
+            if (inputActive) onSend(text);
+          }}
+          commands={commands}
+          busy={!inputActive || sending || finalizing || proceeding}
+          placeholder={placeholder}
+        />
         {sending ? (
           <div className="flex items-center justify-between">
             <p className="text-xs text-muted-foreground">AI is thinking…</p>
@@ -2014,7 +1995,7 @@ function PipelineChatPanel({
             </button>
           </div>
         ) : inputActive ? (
-          <p className="text-xs text-muted-foreground">⌘↵ to send</p>
+          <p className="text-xs text-muted-foreground">Enter to send · Shift+Enter for newline</p>
         ) : null}
       </div>
     </div>
@@ -2570,10 +2551,14 @@ export function ImplementTicketScreen({
   }
 
   // ── Unified chat send — routes to store based on current pipeline stage ───────
-  async function sendChatMessage() {
-    const msg = chatInput.trim();
+  // Accepts the text directly so slash-commands can send synthetic prompts
+  // (e.g. /plan sends "Show the current implementation plan") without going
+  // through the chatInput state, which SlashCommandInput may have already
+  // cleared before invoking the callback.
+  async function sendChatMessage(text?: string) {
+    const msg = (text ?? chatInput).trim();
     if (!msg) return;
-    setChatInput("");
+    if (text === undefined) setChatInput("");
     cancelledRef.current = false;
     setChatSending(true);
     try {
@@ -2594,6 +2579,196 @@ export function ImplementTicketScreen({
       setPlanFinalizing(false);
     }
   }
+
+  const pipelineChatCommands: SlashCommand[] = useMemo(() => {
+    // The "current" history depends on which slot is active. We merge every
+    // active thread so /clear / /retry operate on whatever the user is
+    // looking at — the pipeline UI shows all sections in one scrolling pane.
+    const isCheckpointActive =
+      pendingApproval !== null && pendingApproval !== "grooming";
+    const activeStage: Stage | "triage" | "grooming" = isCheckpointActive
+      ? (pendingApproval as Stage)
+      : currentStage === "triage"
+        ? "triage"
+        : currentStage === "grooming" || pendingApproval === "grooming"
+          ? "grooming"
+          : "triage";
+    const history: TriageMessage[] =
+      activeStage === "triage"
+        ? triageHistory
+        : activeStage === "grooming"
+          ? groomingChat
+          : (checkpointChats[activeStage as Stage] ?? []);
+
+    const clearActive = () => {
+      if (activeStage === "triage") {
+        useImplementTicketStore.setState({ triageHistory: [] });
+      } else if (activeStage === "grooming") {
+        useImplementTicketStore.setState({ groomingChat: [] });
+      } else {
+        const stage = activeStage as Stage;
+        useImplementTicketStore.setState((s) => ({
+          checkpointChats: { ...s.checkpointChats, [stage]: [] },
+        }));
+      }
+    };
+
+    const dropLastAssistant = () => {
+      useImplementTicketStore.setState((s) => {
+        if (activeStage === "triage") {
+          const h = s.triageHistory;
+          if (h.length === 0 || h[h.length - 1].role !== "assistant") return s;
+          return { ...s, triageHistory: h.slice(0, -1) };
+        }
+        if (activeStage === "grooming") {
+          const h = s.groomingChat;
+          if (h.length === 0 || h[h.length - 1].role !== "assistant") return s;
+          return { ...s, groomingChat: h.slice(0, -1) };
+        }
+        const stage = activeStage as Stage;
+        const h = s.checkpointChats[stage] ?? [];
+        if (h.length === 0 || h[h.length - 1].role !== "assistant") return s;
+        return {
+          ...s,
+          checkpointChats: {
+            ...s.checkpointChats,
+            [stage]: h.slice(0, -1),
+          },
+        };
+      });
+    };
+
+    const isTriageActive = currentStage === "triage" && pendingApproval === null;
+
+    const baseCommands: SlashCommand[] = [
+      ...createGlobalCommands({
+        history,
+        clearHistory: clearActive,
+        sendMessage: (text: string) => sendChatMessage(text),
+        removeLastAssistantMessage: dropLastAssistant,
+      }),
+    ];
+
+    // Stage-specific commands. We expose everything unconditionally —
+    // commands that don't apply to the current stage still resolve and
+    // produce a contextual message. Filtering by stage would feel more
+    // opinionated but also hide the capability from users exploring via /.
+    const triageCommands: SlashCommand[] = [
+      {
+        name: "plan",
+        description: "Show the current implementation plan",
+        execute: async () => {
+          await sendChatMessage(
+            "Please share the current implementation plan in its latest form.",
+          );
+        },
+      },
+      {
+        name: "files",
+        description: "Glob the worktree for files matching a pattern",
+        args: "<pattern>",
+        execute: async ({ args, toast: t }) => {
+          if (!args.trim()) {
+            t.error("Provide a pattern, e.g. /files src/**/*.tsx");
+            return;
+          }
+          await sendChatMessage(
+            `Use glob_repo_files to list files matching \`${args.trim()}\`. Summarise the key ones.`,
+          );
+        },
+      },
+      {
+        name: "grep",
+        description: "Grep the worktree",
+        args: "<pattern>",
+        execute: async ({ args, toast: t }) => {
+          if (!args.trim()) {
+            t.error("Provide a pattern, e.g. /grep TODO");
+            return;
+          }
+          await sendChatMessage(
+            `Use grep_repo_files to find \`${args.trim()}\` in the worktree. Report top matches.`,
+          );
+        },
+      },
+      {
+        name: "risk",
+        description: "Ask the AI to summarise impact/risk findings",
+        execute: async () => {
+          await sendChatMessage(
+            "Summarise the impact-analysis findings — what's risky about this change?",
+          );
+        },
+      },
+      {
+        name: "finalize",
+        description: "Finalise the plan (advances past Triage)",
+        execute: async ({ toast: t }) => {
+          if (!isTriageActive) {
+            t.info("Finalise is only available during Triage");
+            return;
+          }
+          await handleFinalizePlan();
+        },
+      },
+    ];
+
+    const checkpointCommands: SlashCommand[] = [
+      {
+        name: "approve",
+        aliases: ["next"],
+        description: "Approve the current stage (use the button above)",
+        execute: ({ toast: t }) => {
+          t.info("Use the Approve button to confirm this stage", {
+            description:
+              "Approval commits output to disk — surfaced as a button so it's unambiguous.",
+          });
+        },
+      },
+      {
+        name: "reject",
+        description: "Reject this stage with a reason",
+        args: "<reason>",
+        execute: async ({ args, toast: t }) => {
+          if (!args.trim()) {
+            t.error("Provide a reason, e.g. /reject needs more tests");
+            return;
+          }
+          await sendChatMessage(
+            `I'm rejecting this stage: ${args.trim()}. Please revise.`,
+          );
+        },
+      },
+      {
+        name: "diff",
+        description: "Ask the AI to summarise the current diff",
+        execute: async () => {
+          await sendChatMessage(
+            "Summarise the current diff from the worktree — files touched and key changes.",
+          );
+        },
+      },
+      {
+        name: "stage",
+        description: "Show which pipeline stage is active",
+        execute: ({ toast: t }) => {
+          const label = pendingApproval
+            ? `Pending approval: ${pendingApproval}`
+            : `Current stage: ${currentStage}`;
+          t("Stage", { description: label });
+        },
+      },
+    ];
+
+    return [...baseCommands, ...triageCommands, ...checkpointCommands];
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    currentStage,
+    pendingApproval,
+    triageHistory,
+    groomingChat,
+    checkpointChats,
+  ]);
 
   function dismissToolRequest(id: string) {
     setToolRequests((prev) =>
@@ -2903,6 +3078,7 @@ export function ImplementTicketScreen({
 
           <div className="min-w-0 flex-1" aria-hidden />
 
+          <HeaderRecordButton className="relative z-30" />
           <HeaderSettingsButton className="relative z-30 shrink-0" />
 
           {/* Meridian mark centred in header; morphs to pipeline ring when a ticket run is active */}
@@ -3120,6 +3296,7 @@ export function ImplementTicketScreen({
                         ? triageStreamText
                         : checkpointStreamText
                     }
+                    commands={pipelineChatCommands}
                   />
                 </div>
               </div>

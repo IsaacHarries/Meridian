@@ -5,7 +5,7 @@
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "npm run build && (cd ../src-sidecar && npm run bundle)",
+    "beforeBuildCommand": "npm run build && (cd src-sidecar && npm run bundle)",
     "frontendDist": "../dist"
   },
   "app": {

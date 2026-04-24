@@ -1,12 +1,13 @@
-import { useEffect, useRef, useState, useCallback } from "react";
+import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { JiraTicketLink } from "@/components/JiraTicketLink";
+import { SlashCommandInput } from "@/components/SlashCommandInput";
+import { createGlobalCommands, type SlashCommand } from "@/lib/slashCommands";
 import {
   ArrowLeft,
   Search,
   Loader2,
   CheckCircle2,
   XCircle,
-  Send,
   ChevronDown,
   ChevronRight,
   ExternalLink,
@@ -253,30 +254,21 @@ function MessageBubble({ msg }: { msg: GroomChatMessage }) {
 
 // ── Chat panel ────────────────────────────────────────────────────────────────
 
-function ChatInput({ disabled, onSend }: { disabled: boolean; onSend: (text: string) => void }) {
-  const [value, setValue] = useState("");
-
-  function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
-    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); submit(); }
-  }
-  function submit() {
-    const trimmed = value.trim();
-    if (!trimmed || disabled) return;
-    setValue("");
-    onSend(trimmed);
-  }
-
-  return (
-    <div className="flex gap-2 items-end pt-3 border-t shrink-0">
-      <Textarea value={value} onChange={(e) => setValue(e.target.value)} onKeyDown={handleKeyDown}
-        placeholder={'Ask a question or say "update the AC to..." (Enter to send, Shift+Enter for newline)'} disabled={disabled} rows={2} className="resize-none flex-1 min-h-[40px] text-sm" />
-      <Button size="icon" onClick={submit} disabled={disabled || !value.trim()}><Send className="h-4 w-4" /></Button>
-    </div>
-  );
-}
-
-function ChatPanel({ messages, thinking, probeStatus, onSend }: { messages: GroomChatMessage[]; thinking: boolean; probeStatus: string; onSend: (text: string) => void }) {
+function ChatPanel({
+  messages,
+  thinking,
+  probeStatus,
+  onSend,
+  commands,
+}: {
+  messages: GroomChatMessage[];
+  thinking: boolean;
+  probeStatus: string;
+  onSend: (text: string) => void;
+  commands: SlashCommand[];
+}) {
   const bottomRef = useRef<HTMLDivElement>(null);
+  const [value, setValue] = useState("");
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages, thinking]);
 
   return (
@@ -304,7 +296,16 @@ function ChatPanel({ messages, thinking, probeStatus, onSend }: { messages: Groo
           )}
           <div ref={bottomRef} />
         </div>
-        <ChatInput disabled={thinking} onSend={onSend} />
+        <div className="pt-3 border-t shrink-0">
+          <SlashCommandInput
+            value={value}
+            onChange={setValue}
+            onSend={(text) => onSend(text)}
+            commands={commands}
+            busy={thinking}
+            placeholder='Ask a question or say "update the AC to…". Enter to send. / for commands.'
+          />
+        </div>
       </CardContent>
     </Card>
   );
@@ -823,6 +824,87 @@ export function TicketQualityScreen({ credStatus, onBack }: TicketQualityScreenP
 
   const selectedSprint = sprints.find((s) => s.id === selectedSprintId) ?? null;
 
+  const groomingCommands: SlashCommand[] = useMemo(() => {
+    const history = session?.chat ?? [];
+    return [
+      ...createGlobalCommands({
+        history,
+        clearHistory: () => {
+          setSession((prev) => (prev ? { ...prev, chat: [] } : prev));
+        },
+        sendMessage: (text: string) => sendChatMessage(text),
+        removeLastAssistantMessage: () => {
+          setSession((prev) => {
+            if (!prev) return prev;
+            const chat = prev.chat;
+            if (chat.length === 0 || chat[chat.length - 1].role !== "assistant") return prev;
+            return { ...prev, chat: chat.slice(0, -1) };
+          });
+        },
+      }),
+      {
+        name: "blockers",
+        description: "Show grooming blockers the assistant flagged",
+        execute: ({ toast: t }) => {
+          if (!session) { t.info("No session active"); return; }
+          const blockers = session.drafts
+            .filter((d) => d.reasoning?.toLowerCase().includes("block"))
+            .map((d) => `• ${d.field}: ${d.reasoning}`);
+          if (blockers.length === 0) {
+            t.info("No blockers flagged in the current session");
+            return;
+          }
+          t("Blockers", { description: blockers.join("\n") });
+        },
+      },
+      {
+        name: "ac",
+        description: "Show the current acceptance criteria",
+        execute: async () => {
+          await sendChatMessage("Show me the current acceptance criteria verbatim.");
+        },
+      },
+      {
+        name: "revise",
+        description: "Ask the assistant to revise a specific field",
+        args: "<field>",
+        execute: async ({ args, toast: t }) => {
+          if (!args.trim()) {
+            t.error("Provide a field name, e.g. /revise acceptance-criteria");
+            return;
+          }
+          await sendChatMessage(`Please revise the ${args.trim()} field and surface a new suggested value.`);
+        },
+      },
+      {
+        name: "apply",
+        description: "Push all approved field revisions to JIRA",
+        execute: async ({ toast: t }) => {
+          if (!session) { t.info("No session active"); return; }
+          const toApply = session.drafts.filter((d) => d.status === "approved" && d.applyResult !== "ok");
+          if (toApply.length === 0) {
+            t.info("Nothing to apply — approve some changes first");
+            return;
+          }
+          await applyChanges();
+          t.success(`Applied ${toApply.length} change${toApply.length === 1 ? "" : "s"}`);
+        },
+      },
+      {
+        name: "template",
+        description: "Remind the assistant of the grooming format template",
+        execute: async () => {
+          await sendChatMessage(
+            "What's the active grooming format template you're working against?",
+          );
+        },
+      },
+    ];
+    // sendChatMessage + applyChanges close over `session`, so we tie the
+    // memo to that. They're stable otherwise.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session]);
+
   return (
     <div className="h-screen flex flex-col overflow-hidden">
       <WorkflowPanelHeader
@@ -926,7 +1008,7 @@ export function TicketQualityScreen({ credStatus, onBack }: TicketQualityScreenP
         {/* ── Right pane: grooming assistant (flush to right edge, always visible) ── */}
         <div className="flex flex-col min-h-0 py-4 pl-0 pr-4" style={{ width: chatWidth, minWidth: chatWidth, maxWidth: chatWidth }}>
           {session ? (
-            <ChatPanel messages={session.chat} thinking={session.thinking} probeStatus={session.probeStatus} onSend={sendChatMessage} />
+            <ChatPanel messages={session.chat} thinking={session.thinking} probeStatus={session.probeStatus} onSend={sendChatMessage} commands={groomingCommands} />
           ) : (
             <Card className="flex flex-col flex-1 min-h-0">
               <CardHeader className="pb-2 shrink-0 border-b">
