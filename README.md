@@ -4,7 +4,7 @@
 
 # Meridian
 
-A personal productivity desktop application for a senior engineer and scrum master. Meridian combines an AI-assisted ticket implementation pipeline with engineering leadership tooling — sprint dashboards, retrospectives, standup briefings, workload balancing, and more — all drawing from JIRA and Bitbucket as the single source of truth.
+A personal productivity desktop application for a senior engineer and scrum master. Meridian combines an AI-assisted ticket implementation pipeline with engineering leadership tooling — sprint dashboard, retrospectives, PR review, ticket quality checks, meeting transcription, and a searchable knowledge base — all drawing from JIRA and Bitbucket as the single source of truth.
 
 ---
 
@@ -13,9 +13,11 @@ A personal productivity desktop application for a senior engineer and scrum mast
 | Layer | Technology |
 |---|---|
 | Desktop shell | [Tauri v2](https://tauri.app) (Rust backend, native OS integration) |
-| Frontend | React 18 + TypeScript |
+| Frontend | React 18 + TypeScript, Zustand for state, Recharts for charts |
 | UI components | [shadcn/ui](https://ui.shadcn.com) + Tailwind CSS |
-| AI agents | Claude API (Anthropic) via direct REST — Gemini and local LLM supported as fallbacks |
+| AI orchestration | Node.js sidecar running the [Claude Agent SDK](https://docs.claude.com/en/docs/claude-code/sdk) |
+| LLM providers | Claude (Anthropic), Gemini (Google), GitHub Copilot, local OpenAI-compatible servers |
+| Speech-to-text | Local Whisper (no audio leaves the machine) |
 | Data sources | JIRA REST API, Bitbucket REST API |
 | Credential storage | macOS Keychain (via `security` CLI) |
 
@@ -24,37 +26,45 @@ A personal productivity desktop application for a senior engineer and scrum mast
 ## Features
 
 ### Implement a Ticket (8-agent pipeline)
-The primary workflow. Select a JIRA ticket and run it through a sequenced pipeline of Claude sub-agents:
+The primary workflow. Select a JIRA ticket and run it through a sequenced pipeline of sub-agents, with a human checkpoint after every step:
 
-1. **Grooming** — Parses the ticket and identifies relevant codebase areas
-2. **Impact Analysis** — Maps dependencies and assesses blast radius
-3. **Triage** — Human-in-the-loop planning session; produces an agreed implementation plan
-4. **Implementation Guide** — Concrete, step-by-step implementation instructions
-5. **Test Suggestions** — Generates unit and integration test recommendations
-6. **Plan Review** — Code-review pass against the agreed plan
-7. **PR Description** — Writes a complete, professional pull request description
-8. **Retrospective** — Captures learnings and suggests Agent Skill updates
+1. **Grooming** — Parses the ticket, blocks on missing AC / description / story points
+2. **Impact Analysis** — Maps dependencies, blast radius, and risk
+3. **Triage** — Iterative human-in-the-loop planning conversation
+4. **Implementation** — Writes the code (no tests — that is step 5's job)
+5. **Test Generation** — Generates unit and integration tests independently
+6. **Code Review** — Reviews the diff against the agreed plan
+7. **PR Description** — Drafts the pull request description from a configurable template
+8. **Retrospective** — Captures learnings and proposes Agent Skill updates
+
+All agents operate against a local git worktree (sandboxed file access via `glob`, `grep`, `read_file`, `write_file`), never the Bitbucket API.
+
+### PR Review Assistant
+AI-assisted code review across four lenses with a chat window for follow-ups:
+- Acceptance criteria compliance
+- Security & vulnerability analysis
+- Logic error analysis
+- General code quality
+
+Findings are categorised as Blocking / Non-blocking / Nitpick and cite specific file and line ranges.
+
+### Address PR Comments
+Reads reviewer comments on your open PRs, checks the branch out into a dedicated worktree, and proposes / applies fixes — separate from the implementation and PR-review worktrees so all three workflows can run concurrently without branch conflicts.
 
 ### Sprint Dashboard
-Real-time view of sprint health — story points, burndown, team performance, PR cycle times, blockers, and an AI-generated health summary.
+Real-time sprint health: story points, burndown, blockers, PR cycle times, per-developer capacity bars with AI rebalancing suggestions, an AI-generated health summary, and a "Needs Verification" list. Also the launch point for standup recordings.
 
 ### Sprint Retrospectives
-Browse completed sprints, view velocity trends, and generate AI retrospective summaries exportable as markdown.
-
-### Daily Standup Briefing
-One-click standup agenda generated from yesterday's JIRA and Bitbucket activity. Per-person cards with what was done, what's in progress, and what's blocked.
-
-### Team Workload Balancer
-Visual capacity bars per developer with AI-suggested rebalancing recommendations.
+Browse completed sprints, view multi-sprint velocity and trend charts, and generate AI retrospective summaries with embedded charts. Exportable as markdown.
 
 ### Ticket Quality Checker
 Runs any backlog ticket through a readiness assessment — acceptance criteria completeness, scope clarity, dependency identification, and suggested rewrites.
 
-### Knowledge Base / Decision Log
-Searchable, persistent log of architectural decisions, codebase patterns, and retrospective learnings. Entries can be promoted into Agent Skills.
+### Transcribe Meeting
+One-click local transcription via Whisper. Start from any screen via the header record button — auto-tagged "standup" from the Sprint Dashboard, "retro" from Retrospectives. Supports speaker diarization and rename.
 
-### PR Review Assistant
-AI-assisted code review across four lenses: acceptance criteria compliance, security analysis, logic error detection, and general code quality. Findings are categorised as Blocking / Non-blocking / Nitpick.
+### Knowledge Base / Decision Log
+Searchable, persistent log of architectural decisions, codebase patterns, and retrospective learnings. Entries can be promoted into Agent Skills that subsequent pipeline runs will load automatically.
 
 ---
 
@@ -64,6 +74,7 @@ AI-assisted code review across four lenses: acceptance criteria compliance, secu
 - [Rust](https://rustup.rs) (stable toolchain)
 - [Tauri CLI v2](https://tauri.app/start/prerequisites/)
 - macOS (credential storage uses the macOS Keychain)
+- [Whisper](https://github.com/openai/whisper) installed locally if you intend to use meeting transcription
 
 ---
 
@@ -73,18 +84,26 @@ AI-assisted code review across four lenses: acceptance criteria compliance, secu
 # Install frontend dependencies
 npm install
 
+# Build the Node.js Claude Agent SDK sidecar
+npm --prefix src-sidecar install
+npm --prefix src-sidecar run build
+
 # Start the Tauri dev server (hot-reload)
 npm run tauri dev
 ```
 
 The Vite dev server runs on `http://localhost:1420` and Tauri opens a native window pointed at it.
 
+```bash
+# Run the test suite
+npm test
+```
+
 ---
 
 ## Building
 
 ```bash
-# Produce a signed, distributable .app / .dmg
 npm run tauri build
 ```
 
@@ -98,7 +117,7 @@ On first launch the app routes to an onboarding screen where you provide:
 
 | Credential | Where to get it |
 |---|---|
-| **Anthropic API key** | [platform.claude.com](https://platform.claude.com) → API Keys |
+| **Anthropic API key** (or OAuth) | [platform.claude.com](https://platform.claude.com) → API Keys |
 | **JIRA base URL** | Your Atlassian workspace URL, e.g. `https://yourcompany.atlassian.net` |
 | **JIRA email** | The email on your Atlassian account |
 | **JIRA API token** | [id.atlassian.com/manage-profile/security/api-tokens](https://id.atlassian.com/manage-profile/security/api-tokens) |
@@ -106,9 +125,18 @@ On first launch the app routes to an onboarding screen where you provide:
 | **Bitbucket username** | Your Bitbucket account username |
 | **Bitbucket app password** | Bitbucket → Settings → App passwords (repo read + PR read/write) |
 
+You also configure the local repo worktree the agent pipeline operates against:
+
+| Setting | Purpose |
+|---|---|
+| **Repo worktree path** | Absolute path to the worktree the implementation pipeline writes to |
+| **PR review worktree path** | Separate worktree used by PR Review (avoids branch conflicts) |
+| **PR address worktree path** | Separate worktree used by Address PR Comments |
+| **Repo base branch** | Branch the worktree tracks (default: `develop`) |
+
 All credentials are stored in the macOS Keychain — never written to disk in plaintext and never exposed to the frontend.
 
-Credentials can be updated at any time via the **Settings** screen (gear icon, top-right).
+Credentials and settings can be updated at any time via the **Settings** screen (gear icon, top-right).
 
 ---
 
@@ -118,7 +146,8 @@ Meridian supports multiple AI providers with automatic fallback:
 
 1. **Claude** (Anthropic) — primary, supports API keys and OAuth tokens
 2. **Gemini** (Google) — secondary fallback
-3. **Local LLM** — Ollama or any OpenAI-compatible server
+3. **GitHub Copilot** — tertiary fallback (uses your Copilot subscription)
+4. **Local LLM** — Ollama or any OpenAI-compatible server
 
 Provider order and credentials are configured in Settings. When a provider returns a quota or rate-limit error, Meridian automatically tries the next in the chain.
 
@@ -128,14 +157,24 @@ Provider order and credentials are configured in Settings. When a provider retur
 
 ```
 meridian/
-├── src/                    # React frontend
-│   ├── components/         # Shared UI components
-│   ├── lib/                # Utilities, space effects, Tauri bindings
-│   └── screens/            # Full-page screen components
-├── src-tauri/              # Rust/Tauri backend
+├── src/                         # React frontend
+│   ├── components/              # Shared UI components
+│   ├── screens/                 # Full-page screen components
+│   ├── stores/                  # Zustand stores
+│   ├── lib/                     # Utilities, Tauri bindings, theme
+│   └── providers/               # React context providers
+├── src-sidecar/                 # Node.js Claude Agent SDK sidecar
+│   └── src/                     # Agent runtime, Gemini bridge, IPC protocol
+├── src-tauri/                   # Rust/Tauri backend
 │   └── src/
-│       └── commands/       # Tauri commands (claude.rs, credentials.rs, …)
-└── public/                 # Static assets
+│       ├── agents/              # Pipeline agents (grooming, planning, implementation, review…)
+│       ├── commands/            # Tauri commands exposed to the frontend
+│       ├── integrations/        # JIRA, Bitbucket, sidecar process management
+│       ├── llms/                # Claude / Gemini / Copilot / local-LLM clients
+│       └── storage/             # Credentials, preferences, knowledge base, store cache
+├── docs/                        # Internal design notes
+├── scripts/                     # Debug helpers (JIRA, Bitbucket)
+└── public/                      # Static assets
 ```
 
 ---
@@ -145,3 +184,4 @@ meridian/
 - Built for individual use — not distributed publicly.
 - API calls are stateless; no codebase content is retained between sessions.
 - Training opt-out should be enabled on your Anthropic account ([platform.claude.com](https://platform.claude.com) → Settings → Privacy).
+- Meeting audio is transcribed locally via Whisper — it never leaves your machine.
