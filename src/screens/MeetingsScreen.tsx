@@ -291,7 +291,7 @@ function NewMeetingSplitButton({
   }, [open]);
 
   const primaryLabel =
-    mode === "record" ? "Record audio" : "Write notes";
+    mode === "record" ? "Transcribe" : "Write notes";
   const PrimaryIcon = mode === "record" ? Mic : NotebookPen;
 
   return (
@@ -327,7 +327,7 @@ function NewMeetingSplitButton({
             }}
           >
             <Mic className="h-4 w-4" />
-            Record audio
+            Transcribe
           </button>
           <button
             className={cn(
@@ -949,7 +949,7 @@ function ActiveRecordingView({ onStopped }: { onStopped: () => void }) {
             ) : (
               <Play className="h-4 w-4 mr-2" />
             )}
-            Start recording
+            Start Transcribing
           </Button>
         ) : (
           <>

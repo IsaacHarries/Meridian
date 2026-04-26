@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { Mic, Pause, Play, Square, ExternalLink, Loader2, AlertTriangle } from "lucide-react";
+import { Pause, Play, Square, ExternalLink, Loader2, AlertTriangle } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -11,6 +11,32 @@ import {
 import { useOpenMeetings } from "@/context/OpenMeetingsContext";
 import { useRecordingContextTags } from "@/context/RecordingContextTagsContext";
 import { getPreferences } from "@/lib/preferences";
+
+function LiveTranscribeIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 48 48"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={2}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      xmlns="http://www.w3.org/2000/svg"
+      aria-hidden="true"
+    >
+      <path d="M32.7554,34.8415H8.1671A2.7945,2.7945,0,0,1,5.3727,32.047V8.2944A2.7944,2.7944,0,0,1,8.1671,5.5H22.531Z" />
+      <path d="M25.2,13.1585H39.8329a2.7945,2.7945,0,0,1,2.7944,2.7945V39.7056A2.7944,2.7944,0,0,1,39.8329,42.5H25.469L22.8,34.8414" />
+      <line x1="32.7554" y1="34.8415" x2="25.469" y2="42.5" />
+      <path d="M16.0441,11.0706h0a3.96,3.96,0,0,1,3.96,3.96v4.8958a3.96,3.96,0,0,1-3.96,3.96h0a3.96,3.96,0,0,1-3.96-3.96h0V15.0307a3.96,3.96,0,0,1,3.96-3.96Z" />
+      <path d="M9.4018,21.1048a6.7645,6.7645,0,0,0,13.2847,0" />
+      <line x1="16.0441" y1="26.5891" x2="16.0441" y2="29.9251" />
+      <line x1="27.9687" y1="21.1048" x2="39.2192" y2="21.1048" />
+      <line x1="31.3835" y1="30.9044" x2="39.2192" y2="30.9044" />
+      <line x1="29.7307" y1="26.0046" x2="39.2192" y2="26.0046" />
+    </svg>
+  );
+}
 
 export function HeaderRecordButton({ className }: { className?: string }) {
   const active = useMeetingsStore((s) => s.active);
@@ -167,8 +193,8 @@ export function HeaderRecordButton({ className }: { className?: string }) {
           if (isLive) setPopoverOpen((v) => !v);
           else void handleStartClick();
         }}
-        aria-label={isLive ? "Open recording controls" : "Start recording a meeting"}
-        title={isLive ? "Recording — click for controls" : "Record a meeting"}
+        aria-label={isLive ? "Open recording controls" : "Start transcribing a meeting"}
+        title={isLive ? "Recording — click for controls" : "Transcribe a meeting"}
         // Icon-only when idle; wider pill with inline timer when live.
         className={cn(
           "shrink-0 h-9",
@@ -186,7 +212,7 @@ export function HeaderRecordButton({ className }: { className?: string }) {
             </span>
           </>
         ) : (
-          <Mic className="h-4 w-4" />
+          <LiveTranscribeIcon className="h-5 w-5" />
         )}
       </Button>
 
