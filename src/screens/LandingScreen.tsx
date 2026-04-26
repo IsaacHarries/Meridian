@@ -3,7 +3,7 @@ import { AlertTriangle, TrendingUp, CheckSquare, GitPullRequest } from "lucide-r
 import { HeaderSettingsButton } from "@/components/HeaderSettingsButton";
 import { HeaderRecordButton } from "@/components/HeaderRecordButton";
 import { HeaderTasksButton } from "@/components/HeaderTasksButton";
-import { APP_HEADER_BAR, APP_HEADER_ROW_LANDING } from "@/components/appHeaderLayout";
+import { APP_HEADER_BAR } from "@/components/appHeaderLayout";
 import { useOpenSettings } from "@/context/OpenSettingsContext";
 import { useImplementTicketStore } from "@/stores/implementTicketStore";
 import { useMeetingsStore } from "@/stores/meetingsStore";
@@ -52,6 +52,15 @@ import {
   getNonSecretConfig,
 } from "@/lib/tauri";
 import type { WorkflowId } from "@/screens/WorkflowScreen";
+import { WORKFLOW_ICONS } from "@/lib/workflowIcons";
+import {
+  useLandingLayoutId,
+  type RenderableCard,
+} from "@/lib/landingLayouts";
+import { ConstellationLayout } from "@/components/landing/ConstellationLayout";
+import { BentoLayout } from "@/components/landing/BentoLayout";
+import { ShapedLayout } from "@/components/landing/ShapedLayout";
+import { OrbitalLayout } from "@/components/landing/OrbitalLayout";
 
 interface LandingScreenProps {
   credStatus: CredentialStatus;
@@ -236,66 +245,48 @@ function SprintSummary({ credStatus }: { credStatus: CredentialStatus }) {
 
 const WORKFLOW_CARDS: {
   id: WorkflowId;
-  emoji: string;
   title: string;
   description: string;
-  ready: boolean;
 }[] = [
   {
     id: "implement-ticket",
-    emoji: "🎫",
     title: "Implement a Ticket",
     description: "Full 8-agent pipeline from JIRA ticket to PR",
-    ready: false,
   },
   {
     id: "review-pr",
-    emoji: "🔍",
     title: "Review a Pull Request",
     description: "AI-assisted code review across 5 analysis lenses",
-    ready: false,
   },
   {
     id: "sprint-dashboard",
-    emoji: "📊",
     title: "Sprint Dashboard",
     description: "Real-time sprint health, team performance, and blockers",
-    ready: false,
   },
   {
     id: "retrospectives",
-    emoji: "🔄",
     title: "Sprint Retrospectives",
     description: "Metrics and AI summaries for completed sprints",
-    ready: false,
   },
   {
     id: "ticket-quality",
-    emoji: "✅",
     title: "Groom Tickets",
     description: "Readiness assessment for backlog and sprint tickets",
-    ready: false,
   },
   {
     id: "knowledge-base",
-    emoji: "🧠",
     title: "Knowledge Base",
     description: "Searchable log of decisions, patterns, and learnings",
-    ready: false,
   },
   {
     id: "address-pr-comments",
-    emoji: "💬",
     title: "Address PR Tasks & Comments",
     description: "AI reviews your PR's tasks and comments and applies fixes in a worktree",
-    ready: true,
   },
   {
     id: "meetings",
-    emoji: "📝",
     title: "Meetings",
     description: "Transcribe meetings locally with whisper or capture freeform notes — then ask an AI about past conversations",
-    ready: true,
   },
 ];
 
@@ -336,79 +327,77 @@ export function LandingScreen({ credStatus, onNavigate }: LandingScreenProps) {
   // Meetings tile copy — leave only the freeform-notes framing.
   const transcriptionDisabled = useMeetingsStore((s) => s.transcriptionDisabled);
 
+  const layoutId = useLandingLayoutId();
+  const isOrbital = layoutId === "orbital";
+
   return (
     <div className="min-h-screen flex flex-col">
       <header className={APP_HEADER_BAR}>
-        <div className={APP_HEADER_ROW_LANDING}>
-          <HeaderRecordButton className="relative z-10" />
-          <HeaderTasksButton className="relative z-10" />
-          <HeaderSettingsButton className="relative z-10 shrink-0" />
+        <div className="flex h-14 w-full items-center gap-3 overflow-hidden pl-3 pr-2.5 sm:pl-4 sm:pr-3">
+          <h1 className="flex-1 min-w-0 truncate text-base font-medium tracking-tight text-foreground/90">
+            {quip}
+          </h1>
+          <div className="flex items-center gap-2 shrink-0">
+            <HeaderRecordButton className="relative z-10" />
+            <HeaderTasksButton className="relative z-10" />
+            <HeaderSettingsButton className="relative z-10 shrink-0" />
+          </div>
         </div>
       </header>
 
-      <main className="flex-1 flex items-center">
-          <div className="w-full max-w-5xl mx-auto px-6 py-8 space-y-8 bg-background/60 rounded-xl">
+      {/* Sprint-summary strip — spans the full window width below the header. */}
+      <div className="border-b border-border/60 bg-background/40 backdrop-blur-sm">
+        <div className="px-6 py-3">
+          <SprintSummary credStatus={credStatus} />
+        </div>
+      </div>
+
+      <main className={`flex-1 flex ${isOrbital ? "flex-col" : "items-center"}`}>
+          <div
+            className={
+              isOrbital
+                ? "flex-1 w-full flex flex-col gap-3 px-3 sm:px-4 py-3 min-h-0"
+                : "w-full max-w-5xl mx-auto px-6 py-6 space-y-6 bg-background/60 rounded-xl"
+            }
+          >
             {!allComplete && (
-              <MissingCredentialsBanner credStatus={credStatus} />
+              <div className={isOrbital ? "max-w-6xl mx-auto w-full" : undefined}>
+                <MissingCredentialsBanner credStatus={credStatus} />
+              </div>
             )}
 
-            <div className="space-y-3">
-              <div>
-                <h1 className="text-2xl font-semibold tracking-tight mb-1">{quip}</h1>
-              </div>
-              <SprintSummary credStatus={credStatus} />
-            </div>
-
-            <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-              {WORKFLOW_CARDS.map((card) => {
+            {(() => {
+              const renderable: RenderableCard[] = WORKFLOW_CARDS.map((card) => {
                 const description =
                   card.id === "meetings" && transcriptionDisabled
                     ? "Capture freeform notes about your meetings — then ask an AI about past conversations"
                     : card.description;
-                const hasSession =
-                  (card.id === "implement-ticket" && implementActive) ||
-                  (card.id === "review-pr" && prActive);
-                const sessionLabel =
-                  card.id === "implement-ticket"
-                    ? implementBadgeLabel
-                    : card.id === "review-pr"
-                    ? prBadgeLabel
-                    : null;
-                const needsAttention =
-                  card.id === "sprint-dashboard" && workloadNeedsAttention;
-                const attentionParts: string[] = [];
-                if (overloadedDevs.length > 0) attentionParts.push(`${overloadedDevs.length} overloaded`);
-                if (underutilisedDevs.length > 0) attentionParts.push(`${underutilisedDevs.length} under-utilised`);
-                const attentionLabel = attentionParts.join(", ");
-                return (
-                <button
-                  key={card.id}
-                  onClick={() => onNavigate(card.id)}
-                  className="group relative flex flex-col gap-2 rounded-xl border bg-card/60 p-4 text-left transition-colors hover:bg-accent/60 cursor-pointer"
-                >
-                  {hasSession && (
-                    <span className="absolute top-2 right-2 flex items-center gap-1 rounded-full bg-primary/15 border border-primary/30 px-1.5 py-0.5 text-[10px] font-medium text-primary">
-                      <span className="h-1.5 w-1.5 rounded-full bg-primary animate-pulse" />
-                      {sessionLabel ?? "In progress"}
-                    </span>
-                  )}
-                  {needsAttention && (
-                    <span className="absolute top-2 right-2 flex items-center gap-1 rounded-full bg-amber-500/15 border border-amber-500/40 px-1.5 py-0.5 text-[10px] font-medium text-amber-500">
-                      <AlertTriangle className="h-2.5 w-2.5" />
-                      {attentionLabel}
-                    </span>
-                  )}
-                  <span className="text-2xl">{card.emoji}</span>
-                  <div>
-                    <p className="text-sm font-medium leading-snug">{card.title}</p>
-                    <p className="text-xs text-muted-foreground mt-0.5 leading-snug">
-                      {description}
-                    </p>
-                  </div>
-                </button>
-                );
-              })}
-            </div>
+                let badge: RenderableCard["badge"] = null;
+                if (card.id === "implement-ticket" && implementActive) {
+                  badge = { kind: "session", label: implementBadgeLabel ?? "In progress" };
+                } else if (card.id === "review-pr" && prActive) {
+                  badge = { kind: "session", label: prBadgeLabel ?? "In progress" };
+                } else if (card.id === "sprint-dashboard" && workloadNeedsAttention) {
+                  const parts: string[] = [];
+                  if (overloadedDevs.length > 0) parts.push(`${overloadedDevs.length} overloaded`);
+                  if (underutilisedDevs.length > 0) parts.push(`${underutilisedDevs.length} under-utilised`);
+                  badge = { kind: "attention", label: parts.join(", ") };
+                }
+                return {
+                  id: card.id,
+                  Icon: WORKFLOW_ICONS[card.id],
+                  title: card.title,
+                  description,
+                  badge,
+                };
+              });
+              switch (layoutId) {
+                case "bento":   return <BentoLayout      cards={renderable} onNavigate={onNavigate} />;
+                case "shaped":  return <ShapedLayout     cards={renderable} onNavigate={onNavigate} />;
+                case "orbital": return <OrbitalLayout    cards={renderable} onNavigate={onNavigate} />;
+                default:        return <ConstellationLayout cards={renderable} onNavigate={onNavigate} />;
+              }
+            })()}
           </div>
         </main>
 

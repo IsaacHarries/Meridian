@@ -21,6 +21,12 @@ import {
   setBackgroundId,
 } from "@/lib/backgrounds";
 import {
+  LANDING_LAYOUTS,
+  getLandingLayoutId,
+  setLandingLayoutId,
+  type LandingLayoutId,
+} from "@/lib/landingLayouts";
+import {
   CheckCircle,
   AlertCircle,
   Loader2,
@@ -166,10 +172,16 @@ const BG_CATEGORIES: BgCategory[] = [
 function ThemeSection() {
   const { config, setAccent } = useTheme();
   const [selectedBg, setSelectedBg] = useState(() => getBackgroundId());
+  const [selectedLayout, setSelectedLayout] = useState<LandingLayoutId>(() => getLandingLayoutId());
 
   function pickBackground(id: string) {
     setSelectedBg(id);
     setBackgroundId(id);
+  }
+
+  function pickLayout(id: LandingLayoutId) {
+    setSelectedLayout(id);
+    setLandingLayoutId(id);
   }
 
   return (
@@ -177,7 +189,7 @@ function ThemeSection() {
       <CardHeader>
         <CardTitle className="text-base">Appearance</CardTitle>
         <CardDescription>
-          Choose your accent colour and background.
+          Choose your accent colour, background, and landing-page layout.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-6">
@@ -249,6 +261,44 @@ function ThemeSection() {
               </div>
             );
           })}
+        </div>
+
+        {/* Landing layout */}
+        <div className="space-y-2">
+          <p className="text-sm font-medium">Landing layout</p>
+          <p className="text-xs text-muted-foreground">
+            How the home screen arranges your workflows.
+          </p>
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 pt-1">
+            {LANDING_LAYOUTS.map((layout) => {
+              const isSelected = selectedLayout === layout.id;
+              return (
+                <button
+                  key={layout.id}
+                  onClick={() => pickLayout(layout.id)}
+                  title={layout.description}
+                  className={`group relative flex flex-col gap-2 rounded-md border p-2 text-left transition-all ${
+                    isSelected
+                      ? "border-primary ring-2 ring-primary ring-offset-2"
+                      : "border-border hover:border-primary/50"
+                  }`}
+                >
+                  <div className="aspect-[5/3] w-full rounded-sm bg-muted/40 overflow-hidden flex items-center justify-center text-muted-foreground group-hover:text-foreground transition-colors">
+                    <layout.Wireframe />
+                  </div>
+                  <div>
+                    <p className="text-xs font-medium leading-tight">{layout.name}</p>
+                    <p className="text-[10px] text-muted-foreground leading-snug mt-0.5 line-clamp-2">
+                      {layout.description}
+                    </p>
+                  </div>
+                  {isSelected && (
+                    <div className="absolute top-1 right-1 w-3 h-3 rounded-full bg-primary" />
+                  )}
+                </button>
+              );
+            })}
+          </div>
         </div>
       </CardContent>
     </Card>
