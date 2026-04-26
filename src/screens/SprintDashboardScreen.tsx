@@ -1548,26 +1548,36 @@ export function SprintDashboardScreen({ credStatus, onBack }: SprintDashboardScr
     load();
   }, [load]);
 
-  // Derive the currently-selected sprint's data
-  const selected = selectedSprintIndex === "all" ? null : (allData?.sprints[selectedSprintIndex] ?? null);
-  const data: DashboardData | null =
-    selectedSprintIndex === "all" && allData
-      ? {
-          sprint: null,
-          issues: allData.sprints.flatMap((s) => s.issues),
-          openPrs: allData.openPrs,
-          mergedPrs: allData.mergedPrs,
-          prTasks: allData.prTasks,
-        }
-      : selected
-      ? {
+  // Derive the currently-selected sprint's data. Open/merged PRs are fetched
+  // globally — when a single sprint is selected we filter them down to PRs
+  // tied to that sprint's issues so PR Health (and everything downstream)
+  // reflects the chosen sprint instead of the global PR list.
+  let data: DashboardData | null = null;
+  if (allData) {
+    if (selectedSprintIndex === "all") {
+      data = {
+        sprint: null,
+        issues: allData.sprints.flatMap((s) => s.issues),
+        openPrs: allData.openPrs,
+        mergedPrs: allData.mergedPrs,
+        prTasks: allData.prTasks,
+      };
+    } else {
+      const selected = allData.sprints[selectedSprintIndex];
+      if (selected) {
+        const issueKeys = new Set(selected.issues.map((i) => i.key));
+        const inSprint = (pr: BitbucketPr) =>
+          pr.jiraIssueKey != null && issueKeys.has(pr.jiraIssueKey);
+        data = {
           sprint: selected.sprint,
           issues: selected.issues,
-          openPrs: allData!.openPrs,
-          mergedPrs: allData!.mergedPrs,
-          prTasks: allData!.prTasks,
-        }
-      : null;
+          openPrs: allData.openPrs.filter(inSprint),
+          mergedPrs: allData.mergedPrs.filter(inSprint),
+          prTasks: allData.prTasks,
+        };
+      }
+    }
+  }
 
   const days = data?.sprint ? daysRemaining(data.sprint.endDate) : null;
   const risks = data ? buildRisks(data.issues, data.openPrs, days) : [];

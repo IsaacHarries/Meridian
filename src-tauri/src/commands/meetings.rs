@@ -62,6 +62,23 @@ where
     Ok(v.unwrap_or(0.0))
 }
 
+// Distinguishes a meeting captured by live transcription from one where the
+// user typed freeform notes (e.g. company meetings where audio recording is
+// not permitted). Defaults to `Transcript` so existing on-disk records load
+// unchanged.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum MeetingKind {
+    Transcript,
+    Notes,
+}
+
+impl Default for MeetingKind {
+    fn default() -> Self {
+        MeetingKind::Transcript
+    }
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 pub struct MeetingRecord {
     pub id: String,
@@ -91,6 +108,10 @@ pub struct MeetingRecord {
     pub chat_history: Vec<ChatMessage>,
     #[serde(default)]
     pub speakers: Vec<MeetingSpeaker>,
+    #[serde(default)]
+    pub kind: MeetingKind,
+    #[serde(default)]
+    pub notes: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -757,6 +778,8 @@ pub fn stop_meeting_recording(app: tauri::AppHandle) -> Result<MeetingRecord, St
         suggested_tags: Vec::new(),
         chat_history: Vec::new(),
         speakers: Vec::new(),
+        kind: MeetingKind::Transcript,
+        notes: None,
     };
 
     write_meeting(&app, &record)?;
@@ -1090,6 +1113,58 @@ fn write_meeting(app: &tauri::AppHandle, record: &MeetingRecord) -> Result<(), S
 #[tauri::command]
 pub fn save_meeting(app: tauri::AppHandle, record: MeetingRecord) -> Result<(), String> {
     write_meeting(&app, &record)
+}
+
+/// Create a new "notes mode" meeting — no audio, no transcript. The user types
+/// freeform text into the notes field after creation. Returns the freshly
+/// written record so the UI can select it immediately.
+#[tauri::command]
+pub fn create_notes_meeting(
+    app: tauri::AppHandle,
+    title: String,
+    tags: Vec<String>,
+) -> Result<MeetingRecord, String> {
+    let record = MeetingRecord {
+        id: new_meeting_id(),
+        title,
+        started_at: now_iso(),
+        ended_at: None,
+        duration_sec: 0,
+        mic_device_name: String::new(),
+        model: String::new(),
+        tags,
+        segments: Vec::new(),
+        summary: None,
+        action_items: Vec::new(),
+        decisions: Vec::new(),
+        suggested_title: None,
+        suggested_tags: Vec::new(),
+        chat_history: Vec::new(),
+        speakers: Vec::new(),
+        kind: MeetingKind::Notes,
+        notes: Some(String::new()),
+    };
+    write_meeting(&app, &record)?;
+    Ok(record)
+}
+
+/// Save freeform notes text for a notes-mode meeting. Returns the updated
+/// record so the caller can refresh state. Loading-then-writing keeps the rest
+/// of the on-disk record (tags, summary, etc.) untouched.
+#[tauri::command]
+pub fn update_meeting_notes(
+    app: tauri::AppHandle,
+    meeting_id: String,
+    notes: String,
+) -> Result<MeetingRecord, String> {
+    let path = meeting_path(&app, &meeting_id)?;
+    let content = fs::read_to_string(&path)
+        .map_err(|e| format!("Read {}: {e}", path.display()))?;
+    let mut record: MeetingRecord = serde_json::from_str(&content)
+        .map_err(|e| format!("Parse {}: {e}", path.display()))?;
+    record.notes = Some(notes);
+    write_meeting(&app, &record)?;
+    Ok(record)
 }
 
 #[tauri::command]

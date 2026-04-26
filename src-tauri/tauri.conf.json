@@ -1,7 +1,7 @@
 {
   "productName": "Meridian",
   "version": "0.1.0",
-  "identifier": "com.meridian.app",
+  "identifier": "com.meridian.desktop",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",

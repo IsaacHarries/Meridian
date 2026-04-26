@@ -38,10 +38,13 @@ import {
   chatMeeting,
   diarizeMeeting,
   renameMeetingSpeaker,
+  createNotesMeeting as createNotesMeetingCmd,
+  updateMeetingNotes,
   parseAgentJson,
 } from "@/lib/tauri";
 import { getPreferences, setPreference } from "@/lib/preferences";
 import { loadCache, saveCache } from "@/lib/storeCache";
+import { extractTiptapPlainText } from "@/lib/tiptapText";
 
 export const MEETINGS_STORE_KEY = "meridian-meetings-store";
 
@@ -49,6 +52,28 @@ export const MEETINGS_STORE_KEY = "meridian-meetings-store";
 // the moment it loads — these aren't "built-ins" that come back if deleted.
 const DEFAULT_TAG_VOCAB = ["standup", "planning", "retro", "1:1", "other"];
 const TAG_VOCAB_PREF_KEY = "meeting_tag_vocab";
+
+// Remembers which "new meeting" mode the user picked last from the split-button
+// dropdown so reopening the panel defaults to the same option.
+export type NewMeetingMode = "record" | "notes";
+const NEW_MEETING_MODE_PREF_KEY = "meeting_default_new_kind";
+const DEFAULT_NEW_MEETING_MODE: NewMeetingMode = "record";
+
+// When `true`, every entry point to live audio recording is hidden — the
+// header record button, the "Record audio" option in the split-button
+// dropdown, and the Microphone / Whisper Model cards in Settings. Notes-mode
+// is still available. Set by the user in Settings → Meetings; persisted under
+// this preference key. Default: enabled (transcription on).
+const TRANSCRIPTION_DISABLED_PREF_KEY = "meeting_transcription_disabled";
+
+// Vertical leading inside the rich notes editor. Persisted as a preference
+// rather than a per-meeting setting because line-height is a personal
+// reading-comfort choice, not document data. The numeric values are
+// resolved inside RichNotesEditor — the store just remembers the chosen
+// preset. Default: "normal" (1.5).
+export type NotesLineHeight = "compact" | "normal" | "relaxed";
+const NOTES_LINE_HEIGHT_PREF_KEY = "meeting_notes_line_height";
+const DEFAULT_NOTES_LINE_HEIGHT: NotesLineHeight = "normal";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -105,11 +130,25 @@ interface MeetingsState {
   // ── Tag vocabulary (persisted to preferences) ─────────────────────────────
   tagVocab: string[];
 
+  // ── Last-chosen "New meeting" mode (persisted to preferences) ─────────────
+  // Drives the default for the split-button dropdown in MeetingsScreen.
+  newMeetingMode: NewMeetingMode;
+
+  // ── Transcription disabled (persisted to preferences) ─────────────────────
+  // When `true`, all audio-recording entry points are hidden across the app.
+  transcriptionDisabled: boolean;
+
+  // ── Notes line height (persisted to preferences) ──────────────────────────
+  notesLineHeight: NotesLineHeight;
+
   // ── Actions ───────────────────────────────────────────────────────────────
   _set: (patch: Partial<MeetingsState>) => void;
   setDraftTitle: (title: string) => void;
   setDraftTags: (tags: string[]) => void;
   setMicOverride: (mic: string | null) => void;
+  setNewMeetingMode: (mode: NewMeetingMode) => void;
+  setTranscriptionDisabled: (disabled: boolean) => void;
+  setNotesLineHeight: (mode: NotesLineHeight) => void;
 
   addTagToVocab: (tag: string) => void;
   removeTagFromVocab: (tag: string) => void;
@@ -128,6 +167,17 @@ interface MeetingsState {
   pauseRecording: () => Promise<void>;
   resumeRecording: () => Promise<void>;
   stopRecording: () => Promise<MeetingRecord | null>;
+
+  /** Create a notes-mode meeting (no audio) and select it. */
+  createNotesMeeting: () => Promise<MeetingRecord>;
+  /** Persist freeform notes for the selected notes-mode meeting. */
+  saveSelectedNotes: (notes: string) => Promise<void>;
+  /**
+   * Persist freeform notes for a specific meeting by id. Used by the Tasks
+   * panel to flip taskItem checked state on a meeting that isn't currently
+   * selected.
+   */
+  saveNotesForMeeting: (meetingId: string, notes: string) => Promise<void>;
 
   summarizeSelected: () => Promise<void>;
   sendChatMessage: (input: string) => Promise<void>;
@@ -165,6 +215,18 @@ function buildTranscriptText(record: MeetingRecord): string {
       return speaker ? `[${t}] ${speaker}: ${s.text}` : `[${t}] ${s.text}`;
     })
     .join("\n");
+}
+
+// The text we feed to the summarize / chat agents. For transcript-mode meetings
+// this is the joined segment text; for notes-mode it's the rich-editor
+// document flattened to markdown-ish plain text (TipTap stores JSON, but the
+// agents speak text — see extractTiptapPlainText). Either may be empty
+// (caller should guard).
+function buildAgentInputText(record: MeetingRecord): string {
+  if (record.kind === "notes") {
+    return extractTiptapPlainText(record.notes);
+  }
+  return buildTranscriptText(record);
 }
 
 function formatTimestamp(sec: number): string {
@@ -210,11 +272,36 @@ export const useMeetingsStore = create<MeetingsState>()((set, get) => ({
 
   tagVocab: DEFAULT_TAG_VOCAB,
 
+  newMeetingMode: DEFAULT_NEW_MEETING_MODE,
+
+  transcriptionDisabled: false,
+
+  notesLineHeight: DEFAULT_NOTES_LINE_HEIGHT,
+
   _set: (patch) => set(patch as Partial<MeetingsState>),
 
   setDraftTitle: (title) => set({ draftTitle: title }),
   setDraftTags: (tags) => set({ draftTags: tags }),
   setMicOverride: (mic) => set({ micOverride: mic }),
+  setNewMeetingMode: (mode) => {
+    set({ newMeetingMode: mode });
+    void setPreference(NEW_MEETING_MODE_PREF_KEY, mode);
+  },
+  setTranscriptionDisabled: (disabled) => {
+    set({ transcriptionDisabled: disabled });
+    void setPreference(TRANSCRIPTION_DISABLED_PREF_KEY, disabled ? "true" : "false");
+    // When the user disables transcription, force the "New meeting" default
+    // to notes so reopening the Meetings panel doesn't surface the now-hidden
+    // record path.
+    if (disabled) {
+      set({ newMeetingMode: "notes" });
+      void setPreference(NEW_MEETING_MODE_PREF_KEY, "notes");
+    }
+  },
+  setNotesLineHeight: (mode) => {
+    set({ notesLineHeight: mode });
+    void setPreference(NOTES_LINE_HEIGHT_PREF_KEY, mode);
+  },
 
   addTagToVocab: (tag) => {
     const normalized = tag.trim().toLowerCase();
@@ -334,6 +421,32 @@ export const useMeetingsStore = create<MeetingsState>()((set, get) => ({
     );
   },
 
+  createNotesMeeting: async () => {
+    const { draftTitle, draftTags } = get();
+    const record = await createNotesMeetingCmd(draftTitle.trim(), draftTags);
+    set((s) => ({
+      meetings: replaceOrInsert(s.meetings, record),
+      selectedId: record.id,
+      // Clear the staged title so the next freshly-opened meeting starts blank,
+      // mirroring the behaviour after stopRecording() finishes.
+      draftTitle: "",
+      draftTags: [],
+    }));
+    return record;
+  },
+
+  saveSelectedNotes: async (notes) => {
+    const { selectedId } = get();
+    if (!selectedId) return;
+    const updated = await updateMeetingNotes(selectedId, notes);
+    set((s) => ({ meetings: replaceOrInsert(s.meetings, updated) }));
+  },
+
+  saveNotesForMeeting: async (meetingId, notes) => {
+    const updated = await updateMeetingNotes(meetingId, notes);
+    set((s) => ({ meetings: replaceOrInsert(s.meetings, updated) }));
+  },
+
   stopRecording: async () => {
     const active = get().active;
     if (!active) return null;
@@ -371,7 +484,7 @@ export const useMeetingsStore = create<MeetingsState>()((set, get) => ({
     set((s) => ({ busy: new Set(s.busy).add(selectedId) }));
     try {
       const raw = await summarizeMeeting(
-        buildTranscriptText(record),
+        buildAgentInputText(record),
         record.title,
         record.tags,
       );
@@ -428,7 +541,7 @@ export const useMeetingsStore = create<MeetingsState>()((set, get) => ({
 
     try {
       const reply = await chatMeeting(
-        buildTranscriptText(record),
+        buildAgentInputText(record),
         JSON.stringify(nextHistory),
       );
       const assistantMsg: MeetingChatMessage = {
@@ -668,6 +781,28 @@ export async function hydrateMeetingsStore(): Promise<void> {
       } catch {
         /* fall back to DEFAULT_TAG_VOCAB already in state */
       }
+    }
+    const rawMode = prefs[NEW_MEETING_MODE_PREF_KEY];
+    if (rawMode === "record" || rawMode === "notes") {
+      useMeetingsStore.setState({ newMeetingMode: rawMode });
+    }
+    const rawDisabled = prefs[TRANSCRIPTION_DISABLED_PREF_KEY];
+    if (rawDisabled === "true") {
+      useMeetingsStore.setState({
+        transcriptionDisabled: true,
+        // Mirror the same coercion setTranscriptionDisabled does, so the panel
+        // doesn't briefly show "Record audio" as the default before the user
+        // touches it.
+        newMeetingMode: "notes",
+      });
+    }
+    const rawLineHeight = prefs[NOTES_LINE_HEIGHT_PREF_KEY];
+    if (
+      rawLineHeight === "compact" ||
+      rawLineHeight === "normal" ||
+      rawLineHeight === "relaxed"
+    ) {
+      useMeetingsStore.setState({ notesLineHeight: rawLineHeight });
     }
   } catch {
     /* ignore */

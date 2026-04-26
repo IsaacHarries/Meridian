@@ -2,9 +2,11 @@ import { useEffect, useState, useMemo } from "react";
 import { AlertTriangle, TrendingUp, CheckSquare, GitPullRequest } from "lucide-react";
 import { HeaderSettingsButton } from "@/components/HeaderSettingsButton";
 import { HeaderRecordButton } from "@/components/HeaderRecordButton";
+import { HeaderTasksButton } from "@/components/HeaderTasksButton";
 import { APP_HEADER_BAR, APP_HEADER_ROW_LANDING } from "@/components/appHeaderLayout";
 import { useOpenSettings } from "@/context/OpenSettingsContext";
 import { useImplementTicketStore } from "@/stores/implementTicketStore";
+import { useMeetingsStore } from "@/stores/meetingsStore";
 import { usePrReviewStore } from "@/stores/prReviewStore";
 import { useWorkloadAlertStore } from "@/stores/workloadAlertStore";
 
@@ -290,9 +292,9 @@ const WORKFLOW_CARDS: {
   },
   {
     id: "meetings",
-    emoji: "🎙️",
-    title: "Transcribe Meeting",
-    description: "Transcribe meetings locally with whisper and ask an AI about past conversations",
+    emoji: "📝",
+    title: "Meetings",
+    description: "Transcribe meetings locally with whisper or capture freeform notes — then ask an AI about past conversations",
     ready: true,
   },
 ];
@@ -330,11 +332,16 @@ export function LandingScreen({ credStatus, onNavigate }: LandingScreenProps) {
   const underutilisedDevs = useWorkloadAlertStore((s) => s.underutilisedDevs);
   const workloadNeedsAttention = overloadedDevs.length > 0 || underutilisedDevs.length > 0;
 
+  // When transcription is off in Settings, drop "Transcribe" from the
+  // Meetings tile copy — leave only the freeform-notes framing.
+  const transcriptionDisabled = useMeetingsStore((s) => s.transcriptionDisabled);
+
   return (
     <div className="min-h-screen flex flex-col">
       <header className={APP_HEADER_BAR}>
         <div className={APP_HEADER_ROW_LANDING}>
           <HeaderRecordButton className="relative z-10" />
+          <HeaderTasksButton className="relative z-10" />
           <HeaderSettingsButton className="relative z-10 shrink-0" />
         </div>
       </header>
@@ -354,6 +361,10 @@ export function LandingScreen({ credStatus, onNavigate }: LandingScreenProps) {
 
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
               {WORKFLOW_CARDS.map((card) => {
+                const description =
+                  card.id === "meetings" && transcriptionDisabled
+                    ? "Capture freeform notes about your meetings — then ask an AI about past conversations"
+                    : card.description;
                 const hasSession =
                   (card.id === "implement-ticket" && implementActive) ||
                   (card.id === "review-pr" && prActive);
@@ -391,7 +402,7 @@ export function LandingScreen({ credStatus, onNavigate }: LandingScreenProps) {
                   <div>
                     <p className="text-sm font-medium leading-snug">{card.title}</p>
                     <p className="text-xs text-muted-foreground mt-0.5 leading-snug">
-                      {card.description}
+                      {description}
                     </p>
                   </div>
                 </button>

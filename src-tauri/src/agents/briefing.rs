@@ -78,7 +78,15 @@ pub async fn generate_sprint_retrospective(
         "You are an experienced agile coach helping a scrum master run sprint retrospectives. \
         Write concise, honest, and actionable retrospective summaries based on sprint metrics. \
         Be specific — reference story points, completion rates, and PR data where relevant. \
-        Avoid generic filler. Each section should be 2-4 bullet points.";
+        Avoid generic filler. Each section should be 2-4 bullet points.\n\n\
+        The input may include a `=== MEETINGS ===` block listing meetings (standups, plannings, \
+        retros, 1:1s, etc.) captured during the sprint, with their summaries, decisions, action \
+        items, or — for written-notes meetings — the user's freeform notes verbatim. When this \
+        block is present, weave its content into your observations: highlight blockers raised in \
+        standup, decisions made in planning, follow-ups from 1:1s, and any tension between what \
+        was said in meetings and what the metrics show. Cite a specific meeting when you do (\
+        \"In the planning meeting on 2025-01-15…\"). When the block says \"none,\" do not invent \
+        meeting content — proceed with metrics only.";
 
     let user = format!(
         "Generate a sprint retrospective summary from the following sprint data:\n\n{sprint_text}\n\n\

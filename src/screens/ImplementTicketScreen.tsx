@@ -13,6 +13,7 @@ import {
   APP_HEADER_TITLE,
 } from "@/components/appHeaderLayout";
 import { JiraTicketLink } from "@/components/JiraTicketLink";
+import { MarkdownBlock } from "@/components/MarkdownBlock";
 import {
   ArrowLeft,
   Loader2,
@@ -35,6 +36,11 @@ import {
   RefreshCw,
   PanelLeftClose,
   PanelLeftOpen,
+  Pencil,
+  X,
+  Eye,
+  EyeOff,
+  Search,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -55,6 +61,7 @@ import {
   type BitbucketPr,
   type RetrospectiveOutput,
   type TriageMessage,
+  type TriageTurnOutput,
   type RetroKbEntry,
   aiProviderComplete,
   jiraComplete,
@@ -75,6 +82,7 @@ import {
   type GroomingBlocker,
 } from "@/stores/implementTicketStore";
 import { enrichMessageWithUrls } from "@/lib/urlFetch";
+import { fuzzyFilterIssues, mergeIssuesById } from "@/lib/fuzzySearch";
 import {
   ToolRequestCard,
   type ToolRequest,
@@ -570,18 +578,41 @@ function SuggestedEditCard({
   edit,
   onApprove,
   onDecline,
+  onEdit,
+  highlighted,
 }: {
   edit: SuggestedEdit;
   onApprove: (id: string) => void;
   onDecline: (id: string) => void;
+  onEdit: (id: string, newSuggested: string) => void;
+  highlighted?: boolean;
 }) {
   const isPending = edit.status === "pending";
   const isApproved = edit.status === "approved";
   const isDeclined = edit.status === "declined";
 
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(edit.suggested);
+
+  function startEditing() {
+    setDraft(edit.suggested);
+    setEditing(true);
+  }
+
+  function saveEditing() {
+    const next = draft.trim();
+    if (next.length > 0 && next !== edit.suggested) onEdit(edit.id, next);
+    setEditing(false);
+  }
+
+  function cancelEditing() {
+    setDraft(edit.suggested);
+    setEditing(false);
+  }
+
   return (
     <div
-      className={`border rounded-md overflow-hidden transition-opacity ${isDeclined ? "opacity-40" : ""}`}
+      className={`border rounded-md overflow-hidden transition-opacity ${isDeclined ? "opacity-40" : ""} ${highlighted ? "animate-update-glow ring-1 ring-primary/40" : ""}`}
     >
       {/* Header */}
       <div
@@ -614,40 +645,51 @@ function SuggestedEditCard({
             </span>
           )}
         </div>
-        {isPending && (
-          <div className="flex items-center gap-1">
+        <div className="flex items-center gap-1">
+          {!isDeclined && !editing && (
             <button
-              onClick={() => onApprove(edit.id)}
-              className="flex items-center gap-1 text-xs px-2 py-0.5 rounded bg-green-600 text-white hover:bg-green-700 transition-colors"
-            >
-              <Check className="h-3 w-3" /> Approve
-            </button>
-            <button
-              onClick={() => onDecline(edit.id)}
+              onClick={startEditing}
+              title="Edit the suggested text"
               className="flex items-center gap-1 text-xs px-2 py-0.5 rounded border hover:bg-muted transition-colors"
             >
-              Decline
+              <Pencil className="h-3 w-3" /> Edit
             </button>
-          </div>
-        )}
-        {isApproved && (
-          <button
-            onClick={() => onDecline(edit.id)}
-            className="text-xs text-muted-foreground hover:text-foreground transition-colors"
-          >
-            Undo
-          </button>
-        )}
-        {isDeclined && (
-          <button
-            onClick={() => onApprove(edit.id)}
-            className="text-xs text-muted-foreground hover:text-foreground transition-colors"
-          >
-            Restore
-          </button>
-        )}
+          )}
+          {isPending && !editing && (
+            <>
+              <button
+                onClick={() => onApprove(edit.id)}
+                className="flex items-center gap-1 text-xs px-2 py-0.5 rounded bg-green-600 text-white hover:bg-green-700 transition-colors"
+              >
+                <Check className="h-3 w-3" /> Approve
+              </button>
+              <button
+                onClick={() => onDecline(edit.id)}
+                className="flex items-center gap-1 text-xs px-2 py-0.5 rounded border hover:bg-muted transition-colors"
+              >
+                Decline
+              </button>
+            </>
+          )}
+          {isApproved && !editing && (
+            <button
+              onClick={() => onDecline(edit.id)}
+              className="text-xs text-muted-foreground hover:text-foreground transition-colors"
+            >
+              Undo
+            </button>
+          )}
+          {isDeclined && !editing && (
+            <button
+              onClick={() => onApprove(edit.id)}
+              className="text-xs text-muted-foreground hover:text-foreground transition-colors"
+            >
+              Restore
+            </button>
+          )}
+        </div>
       </div>
-      {/* Diff */}
+      {/* Diff / editor */}
       {!isDeclined && (
         <div className="divide-y text-xs font-mono">
           {edit.current !== null && (
@@ -656,10 +698,50 @@ function SuggestedEditCard({
               {edit.current}
             </div>
           )}
-          <div className="px-3 py-2 bg-green-50 dark:bg-green-950/20 text-green-700 dark:text-green-300 whitespace-pre-wrap leading-relaxed">
-            <span className="select-none mr-1 opacity-60">+</span>
-            {edit.suggested}
-          </div>
+          {editing ? (
+            <div className="bg-green-50 dark:bg-green-950/20">
+              <textarea
+                value={draft}
+                onChange={(e) => setDraft(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+                    e.preventDefault();
+                    saveEditing();
+                  } else if (e.key === "Escape") {
+                    e.preventDefault();
+                    cancelEditing();
+                  }
+                }}
+                autoFocus
+                rows={Math.max(3, Math.min(20, draft.split("\n").length + 1))}
+                className="w-full px-3 py-2 bg-transparent text-green-800 dark:text-green-200 font-mono text-xs leading-relaxed resize-y focus:outline-none focus:ring-1 focus:ring-green-500/50"
+                placeholder="Edit the suggested text…"
+              />
+              <div className="flex items-center justify-end gap-1 px-2 py-1 border-t border-green-200/50 dark:border-green-800/40 bg-green-50/60 dark:bg-green-950/30">
+                <span className="text-[10px] text-muted-foreground mr-auto pl-1">
+                  ⌘/Ctrl+Enter to save · Esc to cancel
+                </span>
+                <button
+                  onClick={cancelEditing}
+                  className="flex items-center gap-1 text-xs px-2 py-0.5 rounded border hover:bg-muted transition-colors"
+                >
+                  <X className="h-3 w-3" /> Cancel
+                </button>
+                <button
+                  onClick={saveEditing}
+                  disabled={draft.trim().length === 0}
+                  className="flex items-center gap-1 text-xs px-2 py-0.5 rounded bg-green-600 text-white hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                >
+                  <Check className="h-3 w-3" /> Save
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div className="px-3 py-2 bg-green-50 dark:bg-green-950/20 text-green-700 dark:text-green-300 whitespace-pre-wrap leading-relaxed">
+              <span className="select-none mr-1 opacity-60">+</span>
+              {edit.suggested}
+            </div>
+          )}
         </div>
       )}
       {/* Reasoning */}
@@ -672,41 +754,69 @@ function SuggestedEditCard({
   );
 }
 
-function ClarifyingQuestionsCard({
-  questions,
-  onDismiss,
+// ── Resolvable list ──────────────────────────────────────────────────────────
+// Renders the union of `initial` and `current`, marking items missing from
+// `current` as resolved (strikethrough). Used for both clarifying questions
+// and ambiguities so the engineer can see what was answered without losing
+// the original list.
+
+function ResolvableList({
+  title,
+  initial,
+  current,
+  icon,
+  highlight,
 }: {
-  questions: string[];
-  onDismiss: () => void;
+  title: string;
+  initial: string[];
+  current: string[];
+  icon: React.ReactNode;
+  highlight?: boolean;
 }) {
-  if (questions.length === 0) return null;
+  const merged: { text: string; resolved: boolean }[] = [];
+  const seen = new Set<string>();
+  for (const text of initial) {
+    if (seen.has(text)) continue;
+    seen.add(text);
+    merged.push({ text, resolved: !current.includes(text) });
+  }
+  for (const text of current) {
+    if (seen.has(text)) continue;
+    seen.add(text);
+    merged.push({ text, resolved: false });
+  }
+  if (merged.length === 0) return null;
+
+  const remaining = merged.filter((m) => !m.resolved).length;
+  const resolved = merged.length - remaining;
+
   return (
-    <div className="border border-amber-300 dark:border-amber-700 rounded-md overflow-hidden">
-      <div className="px-3 py-2 bg-amber-50 dark:bg-amber-950/30 flex items-center justify-between">
-        <div className="flex items-center gap-2 text-sm font-medium text-amber-800 dark:text-amber-200">
-          <AlertTriangle className="h-4 w-4" />
-          Questions from the agent
-        </div>
-        <button
-          onClick={onDismiss}
-          className="text-xs text-muted-foreground hover:text-foreground"
-        >
-          Dismiss
-        </button>
+    <div
+      className={`border rounded-md overflow-hidden ${highlight ? "animate-update-glow ring-1 ring-primary/40" : ""}`}
+    >
+      <div className="px-3 py-2 bg-muted/30 flex items-center gap-2 text-sm font-medium">
+        {icon}
+        <span>{title}</span>
+        <span className="text-xs font-normal text-muted-foreground ml-auto">
+          {resolved > 0
+            ? `${resolved} resolved · ${remaining} open`
+            : `${remaining} open`}
+        </span>
       </div>
       <ul className="divide-y">
-        {questions.map((q, i) => (
+        {merged.map((item, i) => (
           <li
             key={i}
-            className="px-3 py-2 text-sm text-amber-900 dark:text-amber-100"
+            className={`px-3 py-2 text-sm leading-relaxed ${
+              item.resolved
+                ? "line-through text-muted-foreground"
+                : "text-foreground"
+            }`}
           >
-            {i + 1}. {q}
+            {i + 1}. {item.text}
           </li>
         ))}
       </ul>
-      <div className="px-3 py-2 border-t text-xs text-muted-foreground">
-        Answer these in the chat below ↓
-      </div>
     </div>
   );
 }
@@ -757,10 +867,15 @@ interface GroomingPanelProps {
   expectedBehavior?: string | null;
   suggestedEdits: SuggestedEdit[];
   clarifyingQuestions: string[];
+  clarifyingQuestionsInitial: string[];
+  ambiguitiesInitial: string[];
+  highlights: { editIds: string[]; questions: boolean; ambiguities: boolean };
+  showHighlights: boolean;
+  onToggleHighlights: () => void;
   filesRead: string[];
   onApproveEdit: (id: string) => void;
   onDeclineEdit: (id: string) => void;
-  onDismissQuestions: () => void;
+  onEditSuggested: (id: string, newSuggested: string) => void;
   onUpdateJira: () => void;
   jiraUpdateStatus: "idle" | "saving" | "saved" | "error";
   jiraUpdateError: string;
@@ -776,10 +891,15 @@ function GroomingPanel({
   expectedBehavior,
   suggestedEdits,
   clarifyingQuestions,
+  clarifyingQuestionsInitial,
+  ambiguitiesInitial,
+  highlights,
+  showHighlights,
+  onToggleHighlights,
   filesRead,
   onApproveEdit,
   onDeclineEdit,
-  onDismissQuestions,
+  onEditSuggested,
   onUpdateJira,
   jiraUpdateStatus,
   jiraUpdateError,
@@ -795,10 +915,6 @@ function GroomingPanel({
         text: `${a.area} — ${a.reason}`,
         status: "unchanged" as const,
       }));
-
-  const ambiguityItems = hasDiff
-    ? diffStringArrays(baseline!.ambiguities, data.ambiguities)
-    : data.ambiguities.map((t) => ({ text: t, status: "unchanged" as const }));
 
   const depItems = hasDiff
     ? diffStringArrays(baseline!.dependencies, data.dependencies)
@@ -854,10 +970,45 @@ function GroomingPanel({
         )}
       </div>
 
-      {/* Clarifying questions — shown prominently when present */}
-      <ClarifyingQuestionsCard
-        questions={clarifyingQuestions}
-        onDismiss={onDismissQuestions}
+      {/* Highlights toggle — shows when there is anything to highlight */}
+      {(highlights.editIds.length > 0 ||
+        highlights.questions ||
+        highlights.ambiguities) && (
+        <div className="flex items-center justify-end">
+          <button
+            onClick={onToggleHighlights}
+            className="text-xs text-muted-foreground hover:text-foreground flex items-center gap-1.5 transition-colors"
+            title={
+              showHighlights
+                ? "Hide the update highlights"
+                : "Show the update highlights"
+            }
+          >
+            {showHighlights ? (
+              <EyeOff className="h-3.5 w-3.5" />
+            ) : (
+              <Eye className="h-3.5 w-3.5" />
+            )}
+            {showHighlights ? "Hide highlights" : "Show highlights"}
+          </button>
+        </div>
+      )}
+
+      {/* Open items — clarifying questions + ambiguities (with strike-through
+          when resolved through chat) */}
+      <ResolvableList
+        title="Clarifying Questions"
+        initial={clarifyingQuestionsInitial}
+        current={clarifyingQuestions}
+        icon={<AlertTriangle className="h-4 w-4 text-amber-500" />}
+        highlight={showHighlights && highlights.questions}
+      />
+      <ResolvableList
+        title="Ambiguities"
+        initial={ambiguitiesInitial}
+        current={data.ambiguities}
+        icon={<AlertTriangle className="h-4 w-4 text-amber-500" />}
+        highlight={showHighlights && highlights.ambiguities}
       />
 
       {/* JIRA description sections */}
@@ -908,6 +1059,10 @@ function GroomingPanel({
               edit={edit}
               onApprove={onApproveEdit}
               onDecline={onDeclineEdit}
+              onEdit={onEditSuggested}
+              highlighted={
+                showHighlights && highlights.editIds.includes(edit.id)
+              }
             />
           ))}
           {/* Update JIRA — lives here, below the edits */}
@@ -956,12 +1111,6 @@ function GroomingPanel({
         items={relevantItems}
         icon={<FileCode className="h-4 w-4 text-muted-foreground" />}
         hasChanges={relevantItems.some((i) => i.status !== "unchanged")}
-      />
-      <DiffedCollapsibleList
-        title="Ambiguities"
-        items={ambiguityItems}
-        icon={<AlertTriangle className="h-4 w-4 text-amber-500" />}
-        hasChanges={ambiguityItems.some((i) => i.status !== "unchanged")}
       />
       <DiffedCollapsibleList
         title="Dependencies"
@@ -1682,6 +1831,168 @@ function StreamingLoader({
   );
 }
 
+// ── Triage panel ─────────────────────────────────────────────────────────────
+// Living-document layout: the latest agent proposal sits at the top as the
+// "current plan", and prior rounds collapse into a Revisions timeline so the
+// engineer can see how the plan got here without scrolling a chat transcript.
+// Live-streams the agent's in-progress reply at the top while a follow-up is
+// being processed.
+
+interface TriageRevision {
+  /** The user's clarification that triggered this revision. */
+  clarification: string;
+  /** The agent's proposal that was current *before* this clarification was sent. */
+  previousProposal: string;
+}
+
+function buildRevisions(
+  history: TriageMessage[],
+  turns: TriageTurnOutput[],
+): {
+  current: string | null;
+  revisions: TriageRevision[];
+} {
+  if (turns.length === 0) return { current: null, revisions: [] };
+  const current = turns[turns.length - 1].proposal;
+
+  // Skip the seed "Please analyse this ticket…" message and pair each user
+  // clarification with the proposal that was current right before it was sent.
+  const userTurns = history
+    .slice(history[0]?.role === "user" ? 1 : 0)
+    .filter((m) => m.role === "user");
+
+  const revisions: TriageRevision[] = [];
+  for (let i = 0; i < userTurns.length; i++) {
+    const prior = turns[i];
+    if (!prior) continue;
+    revisions.push({
+      clarification: userTurns[i].content,
+      previousProposal: prior.proposal,
+    });
+  }
+  return { current, revisions };
+}
+
+function summarizeClarification(text: string): string {
+  const oneLine = text.replace(/\s+/g, " ").trim();
+  return oneLine.length > 110 ? oneLine.slice(0, 107) + "…" : oneLine;
+}
+
+function RevisionRow({ revision, index }: { revision: TriageRevision; index: number }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="border rounded-md overflow-hidden bg-card/30">
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-muted/40 transition-colors"
+      >
+        <span className="text-[10px] font-mono shrink-0 px-1.5 py-0.5 rounded bg-muted text-muted-foreground">
+          v{index + 1}
+        </span>
+        <span className="text-xs text-foreground/80 flex-1 truncate">
+          {summarizeClarification(revision.clarification)}
+        </span>
+        <ChevronDown
+          className={`h-3.5 w-3.5 text-muted-foreground transition-transform shrink-0 ${open ? "rotate-180" : ""}`}
+        />
+      </button>
+      {open && (
+        <div className="border-t divide-y">
+          <div className="px-3 py-2 bg-muted/20">
+            <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground mb-1">
+              Your clarification
+            </p>
+            <p className="text-xs leading-relaxed whitespace-pre-wrap">{revision.clarification}</p>
+          </div>
+          <div className="px-3 py-2">
+            <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground mb-1">
+              Previous proposal (replaced)
+            </p>
+            <div className="opacity-70">
+              <MarkdownBlock text={revision.previousProposal} />
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function TriagePanel({
+  history,
+  turns,
+  streamText,
+}: {
+  history: TriageMessage[];
+  turns: TriageTurnOutput[];
+  streamText: string;
+}) {
+  const { current, revisions } = buildRevisions(history, turns);
+  const [revisionsOpen, setRevisionsOpen] = useState(false);
+
+  return (
+    <div className="space-y-4">
+      {/* Current proposal — the headline */}
+      <div className="rounded-md border bg-card/40">
+        <div className="flex items-center justify-between gap-2 px-4 py-2 border-b bg-muted/20">
+          <div className="flex items-center gap-2">
+            <Sparkles className="h-3.5 w-3.5 text-muted-foreground" />
+            <span className="text-xs font-medium text-foreground">
+              Current proposed approach
+            </span>
+            {revisions.length > 0 && (
+              <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-muted text-muted-foreground">
+                v{revisions.length + 1}
+              </span>
+            )}
+          </div>
+          {streamText && (
+            <span className="flex items-center gap-1.5 text-[10px] uppercase tracking-wide text-muted-foreground">
+              <Loader2 className="h-3 w-3 animate-spin" />
+              Updating
+            </span>
+          )}
+        </div>
+        <div className="px-4 py-3">
+          {streamText ? (
+            <pre className="text-xs font-mono whitespace-pre-wrap leading-relaxed text-muted-foreground">
+              {streamText}
+            </pre>
+          ) : current ? (
+            <MarkdownBlock text={current} />
+          ) : (
+            <p className="text-sm text-muted-foreground italic">
+              Waiting for the agent's first proposal…
+            </p>
+          )}
+        </div>
+      </div>
+
+      {/* Revisions timeline */}
+      {revisions.length > 0 && (
+        <div>
+          <button
+            onClick={() => setRevisionsOpen((v) => !v)}
+            className="flex items-center gap-2 text-xs font-medium text-muted-foreground uppercase tracking-wide hover:text-foreground transition-colors"
+          >
+            <ChevronRight
+              className={`h-3.5 w-3.5 transition-transform ${revisionsOpen ? "rotate-90" : ""}`}
+            />
+            Revisions ({revisions.length})
+          </button>
+          {revisionsOpen && (
+            <div className="mt-2 space-y-2">
+              {revisions.map((rev, i) => (
+                <RevisionRow key={i} revision={rev} index={i} />
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 interface StageApprovalRowProps {
   stage: Stage;
   onProceed: () => void;
@@ -1824,8 +2135,18 @@ function PipelineChatPanel({
   const sections: Array<{ stage: Stage; messages: TriageMessage[] }> = [];
   if (groomingChat.length > 0)
     sections.push({ stage: "grooming", messages: groomingChat });
-  if (triageHistory.length > 0)
-    sections.push({ stage: "triage", messages: triageHistory });
+  if (triageHistory.length > 0) {
+    // Drop only the seeded "Please analyse this ticket…" user prompt — the
+    // assistant turns now contain just the chat-friendly message + enumerated
+    // questions (the full proposal lives in the middle panel), so they belong
+    // in the chat thread.
+    const turnsForChat = triageHistory.slice(
+      triageHistory[0]?.role === "user" ? 1 : 0,
+    );
+    if (turnsForChat.length > 0) {
+      sections.push({ stage: "triage", messages: turnsForChat });
+    }
+  }
   for (const stage of [
     "impact",
     "plan",
@@ -2044,8 +2365,11 @@ function TicketSelector({
     return () => clearTimeout(timer);
   }, [q]);
 
-  const list = q ? searchResults : sprintIssues;
-  const busy = q ? searching : loading;
+  const list = useMemo(() => {
+    if (!q) return sprintIssues;
+    return fuzzyFilterIssues(q, mergeIssuesById(sprintIssues, searchResults));
+  }, [q, sprintIssues, searchResults]);
+  const busy = q ? searching && list.length === 0 : loading;
 
   return (
     <div className="max-w-2xl mx-auto space-y-4">
@@ -2055,7 +2379,7 @@ function TicketSelector({
         </h2>
         <div className="relative">
           <Input
-            placeholder="Search by text or key (e.g. PROJ-123)…"
+            placeholder="Fuzzy search by text or key (e.g. PROJ-123)…"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             className="pl-4"
@@ -2236,6 +2560,7 @@ export function ImplementTicketScreen({
     grooming,
     impact,
     triageHistory,
+    triageTurns,
     plan,
     implementation,
     implementationStreamText,
@@ -2253,6 +2578,10 @@ export function ImplementTicketScreen({
 
     groomingEdits,
     clarifyingQuestions,
+    clarifyingQuestionsInitial,
+    ambiguitiesInitial,
+    groomingHighlights,
+    showHighlights,
     filesRead,
     groomingChat,
     groomingBaseline,
@@ -2274,6 +2603,42 @@ export function ImplementTicketScreen({
   } = useImplementTicketStore();
 
   const store = useImplementTicketStore.getState;
+
+  // ── Find-in-page search ──────────────────────────────────────────────────────
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchStatus, setSearchStatus] = useState<"" | "no-match">("");
+  const searchInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      const isFind = (e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "f";
+      if (isFind) {
+        e.preventDefault();
+        setSearchOpen(true);
+        setTimeout(() => searchInputRef.current?.select(), 0);
+      } else if (e.key === "Escape" && searchOpen) {
+        setSearchOpen(false);
+        setSearchStatus("");
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [searchOpen]);
+
+  function findNext(direction: "forward" | "backward") {
+    if (!searchQuery.trim()) return;
+    // window.find is non-standard but supported in WebKit/Chromium webviews.
+    const found = (window as unknown as {
+      find: (
+        s: string,
+        caseSensitive: boolean,
+        backwards: boolean,
+        wrap: boolean,
+      ) => boolean;
+    }).find(searchQuery, false, direction === "backward", true);
+    setSearchStatus(found ? "" : "no-match");
+  }
 
   // Auto-resume a stage that was interrupted when the app was closed last session.
   // consumePendingResume() returns the stage once and clears it, so this only fires once.
@@ -2601,16 +2966,17 @@ export function ImplementTicketScreen({
           : (checkpointChats[activeStage as Stage] ?? []);
 
     const clearActive = () => {
-      if (activeStage === "triage") {
-        useImplementTicketStore.setState({ triageHistory: [] });
-      } else if (activeStage === "grooming") {
-        useImplementTicketStore.setState({ groomingChat: [] });
-      } else {
-        const stage = activeStage as Stage;
-        useImplementTicketStore.setState((s) => ({
-          checkpointChats: { ...s.checkpointChats, [stage]: [] },
-        }));
-      }
+      // The chat panel is unified — it shows the grooming, triage, and every
+      // checkpoint-chat section in one scroll. "/clear" matches that mental
+      // model and wipes them all so the user actually sees the chat empty.
+      // Stage outputs (grooming, plan, impact, etc.) are preserved; only the
+      // back-and-forth conversations are cleared.
+      useImplementTicketStore.setState({
+        groomingChat: [],
+        triageHistory: [],
+        triageTurns: [],
+        checkpointChats: {},
+      });
     };
 
     const dropLastAssistant = () => {
@@ -2856,10 +3222,15 @@ export function ImplementTicketScreen({
             expectedBehavior={selectedIssue?.expectedBehavior}
             suggestedEdits={groomingEdits}
             clarifyingQuestions={clarifyingQuestions}
+            clarifyingQuestionsInitial={clarifyingQuestionsInitial}
+            ambiguitiesInitial={ambiguitiesInitial}
+            highlights={groomingHighlights}
+            showHighlights={showHighlights}
+            onToggleHighlights={() => store().toggleHighlights()}
             filesRead={filesRead}
             onApproveEdit={(id) => store().handleApproveEdit(id)}
             onDeclineEdit={(id) => store().handleDeclineEdit(id)}
-            onDismissQuestions={() => store()._set({ clarifyingQuestions: [] })}
+            onEditSuggested={(id, text) => store().handleEditSuggested(id, text)}
             onUpdateJira={() => store().pushGroomingToJira()}
             jiraUpdateStatus={jiraUpdateStatus}
             jiraUpdateError={jiraUpdateError}
@@ -2912,15 +3283,17 @@ export function ImplementTicketScreen({
         );
       }
       return (
-        <div className="rounded-md border bg-muted/20 px-4 py-3 text-sm text-muted-foreground">
-          <p className="font-medium text-foreground mb-1">
-            Planning conversation in progress
-          </p>
-          <p>
-            Use the chat panel on the right to discuss the implementation
-            approach with the agent, then click{" "}
-            <span className="font-medium">Finalise Plan</span> when ready.
-          </p>
+        <div className="space-y-4">
+          <TriagePanel
+            history={triageHistory}
+            turns={triageTurns}
+            streamText={triageStreamText}
+          />
+          <div className="rounded-md border bg-muted/20 px-4 py-3 text-xs text-muted-foreground">
+            Refine via the chat on the right. Click{" "}
+            <span className="font-medium text-foreground">Finalise Plan</span>{" "}
+            when ready.
+          </div>
         </div>
       );
     }
@@ -3078,6 +3451,20 @@ export function ImplementTicketScreen({
 
           <div className="min-w-0 flex-1" aria-hidden />
 
+          <Button
+            variant="ghost"
+            size="icon"
+            className="relative z-30 shrink-0"
+            onClick={() => {
+              setSearchOpen((v) => !v);
+              if (!searchOpen) {
+                setTimeout(() => searchInputRef.current?.select(), 0);
+              }
+            }}
+            title="Search this panel (⌘/Ctrl+F)"
+          >
+            <Search className="h-4 w-4" />
+          </Button>
           <HeaderRecordButton className="relative z-30" />
           <HeaderSettingsButton className="relative z-30 shrink-0" />
 
@@ -3111,6 +3498,64 @@ export function ImplementTicketScreen({
           </div>
         </div>
       </header>
+
+      {/* Find-in-page search bar */}
+      {searchOpen && (
+        <div className="shrink-0 border-b bg-muted/30 px-4 py-2 flex items-center gap-2">
+          <Search className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+          <input
+            ref={searchInputRef}
+            value={searchQuery}
+            onChange={(e) => {
+              setSearchQuery(e.target.value);
+              setSearchStatus("");
+            }}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                findNext(e.shiftKey ? "backward" : "forward");
+              } else if (e.key === "Escape") {
+                e.preventDefault();
+                setSearchOpen(false);
+                setSearchStatus("");
+              }
+            }}
+            placeholder="Find in panel… (Enter for next, Shift+Enter for previous)"
+            className="flex-1 min-w-0 bg-background border border-input rounded-md px-2.5 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-primary/50"
+          />
+          {searchStatus === "no-match" && searchQuery && (
+            <span className="text-xs text-amber-600 dark:text-amber-400 shrink-0">
+              No matches
+            </span>
+          )}
+          <button
+            onClick={() => findNext("backward")}
+            disabled={!searchQuery.trim()}
+            className="text-xs px-2 py-0.5 rounded border hover:bg-muted disabled:opacity-40 transition-colors"
+            title="Previous match (Shift+Enter)"
+          >
+            ↑
+          </button>
+          <button
+            onClick={() => findNext("forward")}
+            disabled={!searchQuery.trim()}
+            className="text-xs px-2 py-0.5 rounded border hover:bg-muted disabled:opacity-40 transition-colors"
+            title="Next match (Enter)"
+          >
+            ↓
+          </button>
+          <button
+            onClick={() => {
+              setSearchOpen(false);
+              setSearchStatus("");
+            }}
+            className="text-xs text-muted-foreground hover:text-foreground p-1"
+            title="Close (Esc)"
+          >
+            <X className="h-3.5 w-3.5" />
+          </button>
+        </div>
+      )}
 
       {/* Ticket info bar — shown once a ticket is selected */}
       {selectedIssue && (
@@ -3207,6 +3652,21 @@ export function ImplementTicketScreen({
                                   viewingStage as keyof typeof STAGE_LABELS
                                 ]}
                         </h2>
+                        {viewingStage !== "complete" && (
+                          <button
+                            onClick={() =>
+                              store().retryStage(viewingStage as Stage)
+                            }
+                            className="text-muted-foreground hover:text-foreground transition-colors"
+                            title={`Re-run the ${
+                              STAGE_LABELS[
+                                viewingStage as keyof typeof STAGE_LABELS
+                              ] ?? viewingStage
+                            } agent`}
+                          >
+                            <RefreshCw className="h-3.5 w-3.5" />
+                          </button>
+                        )}
                         {viewingStage === "implementation" && implementation && (
                           <div className="flex gap-0.5">
                             {(["status", "diff"] as const).map((t) => (

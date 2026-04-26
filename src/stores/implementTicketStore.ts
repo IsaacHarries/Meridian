@@ -20,6 +20,7 @@ import {
   type PrDescriptionOutput,
   type RetrospectiveOutput,
   type TriageMessage,
+  type TriageTurnOutput,
   type SuggestedEdit,
   type SuggestedEditStatus,
   type RetroKbEntry,
@@ -200,6 +201,46 @@ function prependSkill(
   return `=== ${label} (follow these) ===\n${skill}\n\n${text}`;
 }
 
+/**
+ * Parse a raw triage agent response into a TriageTurnOutput. Falls back
+ * gracefully when the JSON can't be parsed (e.g. truncation): the raw text
+ * is treated as the proposal, with a small disclaimer message in chat.
+ */
+function parseTriageTurn(raw: string): TriageTurnOutput {
+  const parsed = parseAgentJson<TriageTurnOutput>(raw);
+  if (parsed && typeof parsed.proposal === "string") {
+    return {
+      message: typeof parsed.message === "string" ? parsed.message : "",
+      proposal: parsed.proposal,
+      questions: Array.isArray(parsed.questions) ? parsed.questions : [],
+    };
+  }
+  return {
+    message:
+      "I had trouble formatting my response — the raw output is in the proposal panel.",
+    proposal: raw,
+    questions: [],
+  };
+}
+
+/**
+ * Build the chat-bubble text for a triage turn: the conversational `message`
+ * followed by the agent's questions, enumerated when there are multiple so
+ * the engineer can answer each by number.
+ */
+function formatTriageChatContent(turn: TriageTurnOutput): string {
+  const parts: string[] = [];
+  const msg = turn.message?.trim();
+  if (msg) parts.push(msg);
+  const qs = (turn.questions ?? []).filter((q) => q && q.trim());
+  if (qs.length === 1) {
+    parts.push(qs[0]);
+  } else if (qs.length > 1) {
+    parts.push(qs.map((q, i) => `${i + 1}. ${q}`).join("\n"));
+  }
+  return parts.join("\n\n") || "(no message)";
+}
+
 export function detectGroomingBlockers(
   issue: JiraIssue,
   grooming: GroomingOutput,
@@ -263,6 +304,7 @@ export type PipelineSession = Pick<
   | "grooming"
   | "impact"
   | "triageHistory"
+  | "triageTurns"
   | "plan"
   | "guidance"
   | "implementation"
@@ -278,6 +320,9 @@ export type PipelineSession = Pick<
   | "groomingBlockers"
   | "groomingEdits"
   | "clarifyingQuestions"
+  | "clarifyingQuestionsInitial"
+  | "ambiguitiesInitial"
+  | "groomingHighlights"
   | "filesRead"
   | "groomingChat"
   | "groomingBaseline"
@@ -308,6 +353,10 @@ interface ImplementTicketState {
   grooming: GroomingOutput | null;
   impact: ImpactOutput | null;
   triageHistory: TriageMessage[];
+  /** Structured per-turn triage output, parallel to assistant turns in
+   *  triageHistory. Used by the middle panel to render the current proposal
+   *  + revisions while the chat keeps the conversational message+questions. */
+  triageTurns: TriageTurnOutput[];
   plan: ImplementationPlan | null;
   guidance: GuidanceOutput | null;
   implementation: ImplementationOutput | null;
@@ -332,6 +381,20 @@ interface ImplementTicketState {
   groomingBlockers: GroomingBlocker[];
   groomingEdits: SuggestedEdit[];
   clarifyingQuestions: string[];
+  /** Snapshot of clarifying questions at first grooming run. Used to render
+   * resolved (answered) ones as strikethrough while keeping them visible. */
+  clarifyingQuestionsInitial: string[];
+  /** Snapshot of ambiguities at first grooming run. Same purpose as above. */
+  ambiguitiesInitial: string[];
+  /** Tracks which items were just updated by the chat turn — drives the glow
+   * animation until the user interacts or toggles highlights off. */
+  groomingHighlights: {
+    editIds: string[];
+    questions: boolean;
+    ambiguities: boolean;
+  };
+  /** User toggle to hide the update-glow highlights. Persisted. */
+  showHighlights: boolean;
   filesRead: string[];
   groomingChat: TriageMessage[];
   groomingBaseline: GroomingOutput | null;
@@ -401,6 +464,13 @@ interface ImplementTicketState {
   sendGroomingChatMessage: (input: string) => Promise<void>;
   handleApproveEdit: (id: string) => void;
   handleDeclineEdit: (id: string) => void;
+  handleEditSuggested: (id: string, newSuggested: string) => void;
+  /** Clear the glow highlights on a specific edit (when the user interacts with it). */
+  clearEditHighlight: (id: string) => void;
+  /** Clear all grooming highlights at once. */
+  clearAllGroomingHighlights: () => void;
+  /** Flip the showHighlights toggle. */
+  toggleHighlights: () => void;
   pushGroomingToJira: () => Promise<void>;
   saveToKnowledgeBase: (entries: RetroKbEntry[]) => Promise<void>;
   markComplete: (stage: Stage) => void;
@@ -435,6 +505,10 @@ export const INITIAL: Omit<
   | "sendGroomingChatMessage"
   | "handleApproveEdit"
   | "handleDeclineEdit"
+  | "handleEditSuggested"
+  | "clearEditHighlight"
+  | "clearAllGroomingHighlights"
+  | "toggleHighlights"
   | "pushGroomingToJira"
   | "saveToKnowledgeBase"
   | "markComplete"
@@ -453,6 +527,7 @@ export const INITIAL: Omit<
   grooming: null,
   impact: null,
   triageHistory: [],
+  triageTurns: [],
   plan: null,
   guidance: null,
   implementation: null,
@@ -470,6 +545,10 @@ export const INITIAL: Omit<
   groomingBlockers: [],
   groomingEdits: [],
   clarifyingQuestions: [],
+  clarifyingQuestionsInitial: [],
+  ambiguitiesInitial: [],
+  groomingHighlights: { editIds: [], questions: false, ambiguities: false },
+  showHighlights: true,
   filesRead: [],
   groomingChat: [],
   groomingBaseline: null,
@@ -513,6 +592,7 @@ export function snapshotSession(s: ImplementTicketState): PipelineSession {
     grooming: s.grooming,
     impact: s.impact,
     triageHistory: s.triageHistory,
+    triageTurns: s.triageTurns,
     plan: s.plan,
     guidance: s.guidance,
     implementation: s.implementation,
@@ -528,6 +608,9 @@ export function snapshotSession(s: ImplementTicketState): PipelineSession {
     groomingBlockers: s.groomingBlockers,
     groomingEdits: s.groomingEdits,
     clarifyingQuestions: s.clarifyingQuestions,
+    clarifyingQuestionsInitial: s.clarifyingQuestionsInitial,
+    ambiguitiesInitial: s.ambiguitiesInitial,
+    groomingHighlights: s.groomingHighlights,
     filesRead: s.filesRead,
     groomingChat: s.groomingChat,
     groomingBaseline: s.groomingBaseline,
@@ -606,6 +689,13 @@ export const useImplementTicketStore = create<ImplementTicketState>()(
             grooming: null,
             groomingEdits: [],
             clarifyingQuestions: [],
+            clarifyingQuestionsInitial: [],
+            ambiguitiesInitial: [],
+            groomingHighlights: {
+              editIds: [],
+              questions: false,
+              ambiguities: false,
+            },
             groomingBlockers: [],
             groomingProgress: "",
             groomingStreamText: "",
@@ -618,6 +708,7 @@ export const useImplementTicketStore = create<ImplementTicketState>()(
         case "triage":
           Object.assign(outputResets, {
             triageHistory: [],
+            triageTurns: [],
             triageStreamText: "",
           });
           break;
@@ -695,6 +786,10 @@ export const useImplementTicketStore = create<ImplementTicketState>()(
         groomingEdits: s.groomingEdits.map((e) =>
           e.id === id ? { ...e, status: "approved" as SuggestedEditStatus } : e,
         ),
+        groomingHighlights: {
+          ...s.groomingHighlights,
+          editIds: s.groomingHighlights.editIds.filter((e) => e !== id),
+        },
       })),
 
     handleDeclineEdit: (id) =>
@@ -702,7 +797,37 @@ export const useImplementTicketStore = create<ImplementTicketState>()(
         groomingEdits: s.groomingEdits.map((e) =>
           e.id === id ? { ...e, status: "declined" as SuggestedEditStatus } : e,
         ),
+        groomingHighlights: {
+          ...s.groomingHighlights,
+          editIds: s.groomingHighlights.editIds.filter((e) => e !== id),
+        },
       })),
+
+    handleEditSuggested: (id, newSuggested) =>
+      set((s) => ({
+        groomingEdits: s.groomingEdits.map((e) =>
+          e.id === id ? { ...e, suggested: newSuggested } : e,
+        ),
+        groomingHighlights: {
+          ...s.groomingHighlights,
+          editIds: s.groomingHighlights.editIds.filter((e) => e !== id),
+        },
+      })),
+
+    clearEditHighlight: (id) =>
+      set((s) => ({
+        groomingHighlights: {
+          ...s.groomingHighlights,
+          editIds: s.groomingHighlights.editIds.filter((e) => e !== id),
+        },
+      })),
+
+    clearAllGroomingHighlights: () =>
+      set({
+        groomingHighlights: { editIds: [], questions: false, ambiguities: false },
+      }),
+
+    toggleHighlights: () => set((s) => ({ showHighlights: !s.showHighlights })),
 
     // ── startPipeline ──────────────────────────────────────────────────────────
     startPipeline: async (issue) => {
@@ -897,7 +1022,23 @@ export const useImplementTicketStore = create<ImplementTicketState>()(
         const raw = await runGroomingAgent(groomingInput, fileContentsBlock);
         console.log("[Meridian] runGroomingStage: runGroomingAgent finished");
         const data = parseAgentJson<GroomingOutput>(raw);
-        if (!data) throw new Error("Could not parse grooming output");
+        if (!data) {
+          // Log the raw response so we can diagnose why parsing failed.
+          // Truncated JSON (token cap hit) is the most common cause — detect
+          // by checking whether the response ends with a closing brace.
+          console.error(
+            "[Meridian] grooming output parse failed. Raw length:",
+            raw.length,
+            "Last 200 chars:",
+            raw.slice(-200),
+          );
+          const looksTruncated = !raw.trimEnd().endsWith("}");
+          throw new Error(
+            looksTruncated
+              ? `The agent's response was truncated mid-JSON (${raw.length} chars, did not end with '}'). The model may have hit its token limit on a large ticket. Try retrying — if it persists, the cap may need to be raised again.`
+              : `Could not parse grooming output (${raw.length} chars). Check the developer console for the raw response.`,
+          );
+        }
 
         const edits: SuggestedEdit[] = (data.suggested_edits ?? []).map(
           (e) => ({
@@ -907,16 +1048,24 @@ export const useImplementTicketStore = create<ImplementTicketState>()(
         );
 
         const questions = data.clarifying_questions ?? [];
+        const ambiguities = data.ambiguities ?? [];
+        const openItems: { label: string; text: string }[] = [
+          ...questions.map((q) => ({ label: "Question", text: q })),
+          ...ambiguities.map((a) => ({ label: "Ambiguity", text: a })),
+        ];
         const initialChat: TriageMessage[] =
-          questions.length > 0
+          openItems.length > 0
             ? [
                 {
                   role: "assistant",
                   content:
-                    questions.length === 1
-                      ? `I have a question before we finalise the grooming:\n\n${questions[0]}`
-                      : `I have a few questions before we finalise the grooming:\n\n${questions
-                          .map((q, i) => `${i + 1}. ${q}`)
+                    openItems.length === 1
+                      ? `I have one item to clarify before we finalise the grooming:\n\n**${openItems[0].label}:** ${openItems[0].text}`
+                      : `I have a few items to clarify before we finalise the grooming:\n\n${openItems
+                          .map(
+                            (item, i) =>
+                              `${i + 1}. **${item.label}:** ${item.text}`,
+                          )
                           .join("\n\n")}`,
                 },
               ]
@@ -927,6 +1076,13 @@ export const useImplementTicketStore = create<ImplementTicketState>()(
           grooming: data,
           groomingEdits: edits,
           clarifyingQuestions: questions,
+          clarifyingQuestionsInitial: questions,
+          ambiguitiesInitial: ambiguities,
+          groomingHighlights: {
+            editIds: [],
+            questions: false,
+            ambiguities: false,
+          },
           groomingChat: initialChat,
           groomingBlockers: currentIssue
             ? detectGroomingBlockers(currentIssue, data)
@@ -999,11 +1155,13 @@ export const useImplementTicketStore = create<ImplementTicketState>()(
           contextText,
           JSON.stringify([{ role: "user", content: initialMessage }]),
         );
+        const turn = parseTriageTurn(response);
         set({
           triageHistory: [
             { role: "user", content: initialMessage },
-            { role: "assistant", content: response },
+            { role: "assistant", content: formatTriageChatContent(turn) },
           ],
+          triageTurns: [turn],
           triageStreamText: "",
         });
       } catch (e) {
@@ -1016,6 +1174,7 @@ export const useImplementTicketStore = create<ImplementTicketState>()(
       await get()._reloadSkills();
       const {
         triageHistory,
+        triageTurns,
         ticketText,
         grooming,
         impact,
@@ -1033,15 +1192,30 @@ export const useImplementTicketStore = create<ImplementTicketState>()(
           skills,
           groomingChat,
         );
+        // The chat-formatted assistant content (message + enumerated questions)
+        // is displayed-only — for the agent we substitute the raw structured
+        // turn JSON so it can see its own prior proposals and iterate on them.
+        const agentHistory = newHistory.map((msg, idx) => {
+          if (msg.role !== "assistant") return msg;
+          const assistantIdxBefore = newHistory
+            .slice(0, idx)
+            .filter((m) => m.role === "assistant").length;
+          const t = triageTurns[assistantIdxBefore];
+          return t
+            ? { role: "assistant" as const, content: JSON.stringify(t) }
+            : msg;
+        });
         const response = await runTriageTurn(
           contextText,
-          JSON.stringify(newHistory),
+          JSON.stringify(agentHistory),
         );
+        const turn = parseTriageTurn(response);
         set({
           triageHistory: [
             ...newHistory,
-            { role: "assistant", content: response },
+            { role: "assistant", content: formatTriageChatContent(turn) },
           ],
+          triageTurns: [...triageTurns, turn],
           triageStreamText: "",
         });
       } catch (e) {
@@ -1578,6 +1752,9 @@ export const useImplementTicketStore = create<ImplementTicketState>()(
         // ── Apply updated_output for non-implementation stages ───────────────
         if (parsed?.updated_output && stage !== "implementation") {
           switch (stage) {
+            case "impact":
+              set({ impact: parsed.updated_output as ImpactOutput });
+              break;
             case "plan":
               set({ plan: parsed.updated_output as ImplementationPlan });
               break;
@@ -1688,9 +1865,28 @@ export const useImplementTicketStore = create<ImplementTicketState>()(
           message: string;
           updated_edits: Omit<SuggestedEdit, "status">[];
           updated_questions: string[];
+          updated_ambiguities?: string[];
         }>(response);
 
-        const displayMessage = parsed?.message ?? response;
+        // If the full JSON failed to parse (most often because the response
+        // was truncated mid-object), try to salvage just the prose `message`
+        // field so the user sees clean text in the chat instead of raw JSON.
+        // The panel won't update in this case — surface that clearly.
+        let displayMessage: string;
+        if (parsed?.message) {
+          displayMessage = parsed.message;
+        } else {
+          const m = response.match(/"message"\s*:\s*"((?:[^"\\]|\\.)*)"/);
+          const salvaged = m
+            ? (() => {
+                try { return JSON.parse(`"${m[1]}"`) as string; }
+                catch { return null; }
+              })()
+            : null;
+          displayMessage = salvaged
+            ? `${salvaged}\n\n_(Note: the agent's response couldn't be fully parsed, so the panel above didn't update. Try asking again.)_`
+            : "Sorry — the agent's response couldn't be parsed. Try rephrasing your message.";
+        }
         set({
           groomingChat: [
             ...newHistory,
@@ -1699,6 +1895,10 @@ export const useImplementTicketStore = create<ImplementTicketState>()(
         });
 
         if (parsed) {
+          const highlightEditIds: string[] = [];
+          let questionsChanged = false;
+          let ambiguitiesChanged = false;
+
           if (parsed.updated_edits && parsed.updated_edits.length > 0) {
             set((st) => {
               const existingById = new Map(
@@ -1709,14 +1909,16 @@ export const useImplementTicketStore = create<ImplementTicketState>()(
                 const existing = existingById.get(incoming.id);
                 if (existing) {
                   const idx = merged.findIndex((e) => e.id === incoming.id);
+                  const textChanged =
+                    existing.suggested !== incoming.suggested ||
+                    existing.current !== incoming.current;
+                  if (textChanged) highlightEditIds.push(incoming.id);
                   merged[idx] = {
                     ...incoming,
-                    status:
-                      existing.status === "pending"
-                        ? "pending"
-                        : existing.status,
+                    status: textChanged ? "pending" : existing.status,
                   };
                 } else {
+                  highlightEditIds.push(incoming.id);
                   merged.push({ ...incoming, status: "pending" });
                 }
               }
@@ -1724,7 +1926,42 @@ export const useImplementTicketStore = create<ImplementTicketState>()(
             });
           }
           if (parsed.updated_questions !== undefined) {
+            const prior = get().clarifyingQuestions;
+            if (
+              prior.length !== parsed.updated_questions.length ||
+              prior.some((q, i) => q !== parsed.updated_questions[i])
+            ) {
+              questionsChanged = true;
+            }
             set({ clarifyingQuestions: parsed.updated_questions });
+          }
+          if (parsed.updated_ambiguities !== undefined && get().grooming) {
+            const prior = get().grooming?.ambiguities ?? [];
+            if (
+              prior.length !== parsed.updated_ambiguities.length ||
+              prior.some((a, i) => a !== parsed.updated_ambiguities![i])
+            ) {
+              ambiguitiesChanged = true;
+            }
+            set((st) => ({
+              grooming: st.grooming
+                ? { ...st.grooming, ambiguities: parsed.updated_ambiguities! }
+                : st.grooming,
+            }));
+          }
+
+          if (
+            highlightEditIds.length > 0 ||
+            questionsChanged ||
+            ambiguitiesChanged
+          ) {
+            set({
+              groomingHighlights: {
+                editIds: highlightEditIds,
+                questions: questionsChanged,
+                ambiguities: ambiguitiesChanged,
+              },
+            });
           }
         }
 

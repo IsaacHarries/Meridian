@@ -61,3 +61,130 @@
   }
 }
 
+/* TipTap rich notes editor styles. The prose plugin handles most blocks, but
+   the empty-state placeholder and task-list checkbox layout need bespoke CSS
+   that the typography plugin doesn't ship.
+
+   The `--notes-line-height` custom property is set on the editor wrapper from
+   user preference (Compact / Normal / Relaxed). It governs every block's
+   leading; default 1.5 stays tight enough that pressing Enter feels like
+   a real new line, not a new paragraph. We also clamp Tailwind prose's
+   long-form paragraph margins — those are tuned for articles, not notes. */
+.ProseMirror p,
+.ProseMirror ul,
+.ProseMirror ol,
+.ProseMirror blockquote,
+.ProseMirror pre {
+  line-height: var(--notes-line-height, 1.5);
+}
+
+.ProseMirror h1,
+.ProseMirror h2,
+.ProseMirror h3,
+.ProseMirror h4 {
+  line-height: var(--notes-line-height, 1.5);
+}
+
+.ProseMirror p {
+  margin-top: 0.25em;
+  margin-bottom: 0.25em;
+}
+
+.ProseMirror h1,
+.ProseMirror h2,
+.ProseMirror h3,
+.ProseMirror h4 {
+  margin-top: 0.6em;
+  margin-bottom: 0.2em;
+}
+
+.ProseMirror li {
+  margin-top: 0.1em;
+  margin-bottom: 0.1em;
+}
+
+.ProseMirror li > p {
+  margin-top: 0;
+  margin-bottom: 0;
+}
+
+.ProseMirror blockquote {
+  margin: 0.4em 0;
+}
+
+.ProseMirror p.is-editor-empty:first-child::before {
+  content: attr(data-placeholder);
+  color: hsl(var(--muted-foreground));
+  pointer-events: none;
+  float: left;
+  height: 0;
+}
+
+.ProseMirror ul[data-type="taskList"] {
+  list-style: none;
+  padding-left: 0;
+  margin-left: 0;
+}
+
+.ProseMirror ul[data-type="taskList"] li {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  margin: 0.25rem 0;
+}
+
+.ProseMirror ul[data-type="taskList"] li > label {
+  flex-shrink: 0;
+  /* Make the label exactly one text-line tall and center the checkbox inside
+     it — that way the checkbox lines up with the first line of the item's
+     content regardless of the surrounding font metrics. `1lh` is the modern,
+     exact match; the `em` value below is a fallback for engines that don't
+     support `lh` units. */
+  display: inline-flex;
+  align-items: center;
+  min-height: 1.5em;
+  min-height: 1lh;
+  user-select: none;
+}
+
+.ProseMirror ul[data-type="taskList"] li > label > input[type="checkbox"] {
+  cursor: pointer;
+  accent-color: hsl(var(--primary));
+}
+
+.ProseMirror ul[data-type="taskList"] li > div {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.ProseMirror ul[data-type="taskList"] li > div > p {
+  margin: 0;
+}
+
+.ProseMirror ul[data-type="taskList"] li[data-checked="true"] > div > p {
+  color: hsl(var(--muted-foreground));
+  text-decoration: line-through;
+}
+
+/* Highlight mark — TipTap renders `<mark>`, but Tailwind's typography plugin
+   strips most default browser styles. Restore a yellow marker that works in
+   both light and dark themes. */
+.ProseMirror mark {
+  background-color: rgb(253 224 71 / 0.45);
+  color: inherit;
+  padding: 0 0.15em;
+  border-radius: 0.15em;
+}
+
+.dark .ProseMirror mark {
+  background-color: rgb(250 204 21 / 0.35);
+}
+
+/* Inline links — make them visibly clickable while editing without changing
+   the cursor behaviour. */
+.ProseMirror a {
+  color: hsl(var(--primary));
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: text;
+}

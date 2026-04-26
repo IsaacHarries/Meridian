@@ -6,7 +6,7 @@ use super::dispatch;
 
 /// Produce a structured analysis of a completed meeting.
 ///
-/// Input: the full transcript (speaker-less — just the text, with optional
+/// Input: the full conversation text (with optional speaker labels and
 /// timestamps the caller has pre-formatted), plus the user's current title
 /// and tag list. Output: strict JSON with `summary`, `actionItems`, `decisions`,
 /// `suggestedTitle`, `suggestedTags`.
@@ -19,26 +19,31 @@ pub async fn summarize_meeting(
 ) -> Result<String, String> {
     let (client, api_key) = dispatch::llm_client().await?;
 
-    let system = "You are an assistant that reviews a meeting transcript produced by live \
-        speech-to-text. The transcript may include speaker labels in the form \"Name: …\" or \
-        \"SPEAKER_00: …\" when diarization has run; attribute quotes to those labels when \
-        present. Write a precise analysis the user can consult later. Be concrete and faithful \
-        to the transcript — do not invent facts, attendees, or decisions.\n\n\
+    let system = "You are an assistant that reviews material from a meeting the user attended. \
+        The input is EITHER (a) a recorded conversation produced by automatic speech-to-text — \
+        possibly including speaker labels in the form \"Name: …\" or \"SPEAKER_00: …\" when \
+        diarization has run; attribute quotes to those labels when present — OR (b) freeform \
+        written notes the user typed during a meeting where audio could not be recorded. \
+        Treat both inputs the same way: write a precise analysis the user can consult later. \
+        Be concrete and faithful to what was said or written — do not invent facts, attendees, \
+        or decisions. If the notes are very brief, your summary should be brief too.\n\n\
+        IMPORTANT: Never use the word \"transcript\" in any output field. Refer to the \
+        material as the meeting, the conversation, or the notes — whichever fits.\n\n\
         Return ONLY a JSON object, no markdown fences, matching this schema:\n\
         {\n\
-          \"summary\": \"<2–4 sentence summary of what the meeting was about and what was concluded>\",\n\
+          \"summary\": \"<2–4 sentence overview of what the meeting was about and what was concluded>\",\n\
           \"actionItems\": [\"<one concrete action item per string: who/what/when where mentioned>\", ...],\n\
           \"decisions\": [\"<one decision per string, stated plainly>\", ...],\n\
           \"suggestedTitle\": \"<a short descriptive title (≤ 8 words), or null to keep current>\",\n\
           \"suggestedTags\": [\"standup\"|\"planning\"|\"retro\"|\"1:1\"|\"other\", ...]\n\
         }\n\
-        Leave an array empty if the transcript contains nothing of that kind. \
+        Leave an array empty if the input contains nothing of that kind. \
         Prefer `suggestedTags` from the enum above; only add a new tag if absolutely necessary.";
 
     let user = format!(
         "Current title: {current_title}\n\
         Current tags: {current_tags_json}\n\n\
-        === TRANSCRIPT ===\n\
+        === MEETING CONTENT ===\n\
         {transcript_text}\n\n\
         Return the JSON object now."
     );

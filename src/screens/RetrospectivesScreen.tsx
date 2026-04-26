@@ -23,6 +23,7 @@ import {
   type JiraSprint,
   type JiraIssue,
   type BitbucketPr,
+  type MeetingRecord,
   type SprintReportCache,
   getCompletedSprints,
   getAllActiveSprints,
@@ -31,7 +32,9 @@ import {
   generateSprintRetrospective,
   saveSprintReport,
   loadSprintReport,
+  listMeetings,
 } from "@/lib/tauri";
+import { extractTiptapPlainText } from "@/lib/tiptapText";
 
 interface RetrospectivesScreenProps {
   onBack: () => void;
@@ -379,10 +382,62 @@ function TeamBreakdownCard({ sprint, issues }: { sprint: JiraSprint; issues: Jir
 
 // ── AI Retrospective Summary ──────────────────────────────────────────────────
 
+// Selects meetings whose start time falls within the sprint window. The
+// boundary check is loose on purpose: sprint dates often have time-of-day
+// noise, and a meeting started slightly before/after still belongs to the
+// sprint conversationally.
+function meetingsInSprint(
+  sprint: JiraSprint,
+  meetings: MeetingRecord[],
+): MeetingRecord[] {
+  const start = sprint.startDate ?? "";
+  const end = sprint.endDate ?? "9999";
+  return meetings
+    .filter((m) => m.startedAt >= start && m.startedAt <= end)
+    .sort((a, b) => a.startedAt.localeCompare(b.startedAt));
+}
+
+function formatMeetingsBlock(meetings: MeetingRecord[]): string {
+  if (meetings.length === 0) {
+    return "Meetings captured this sprint: none.";
+  }
+  const lines: string[] = [`Meetings captured this sprint (${meetings.length}):`];
+  for (const m of meetings) {
+    const date = m.startedAt.slice(0, 10);
+    const kind = m.kind === "notes" ? "notes" : "transcript";
+    const tagStr = m.tags.length > 0 ? ` [${m.tags.join(", ")}]` : "";
+    const title = m.title.trim() || "(untitled)";
+    lines.push("");
+    lines.push(`— ${date} · ${title} · ${kind}${tagStr}`);
+    if (m.summary) {
+      lines.push(`  Summary: ${m.summary.replace(/\s+/g, " ").trim()}`);
+    } else if (m.kind === "notes") {
+      // No summary yet — include the user's notes verbatim. Notes are stored
+      // as TipTap JSON; flatten to markdown-ish plain text so the retro agent
+      // can read them.
+      const plain = extractTiptapPlainText(m.notes);
+      if (plain) {
+        lines.push("  Notes:");
+        for (const ln of plain.split("\n")) {
+          lines.push(`    ${ln}`);
+        }
+      }
+    }
+    if (m.decisions.length > 0) {
+      lines.push(`  Decisions: ${m.decisions.join("; ")}`);
+    }
+    if (m.actionItems.length > 0) {
+      lines.push(`  Action items: ${m.actionItems.join("; ")}`);
+    }
+  }
+  return lines.join("\n");
+}
+
 function buildSprintContext(
   sprint: JiraSprint,
   issues: JiraIssue[],
-  prs: BitbucketPr[]
+  prs: BitbucketPr[],
+  meetings: MeetingRecord[],
 ): string {
   const done = issues.filter((i) => isDone(i, sprint.endDate));
   const committed = issues.reduce((s, i) => s + (i.storyPoints ?? 0), 0);
@@ -437,6 +492,9 @@ function buildSprintContext(
       ([name, d]) =>
         `  ${name}: ${d.done}/${d.total} tickets done, ${d.pts} story points`
     ),
+    "",
+    "=== MEETINGS ===",
+    formatMeetingsBlock(meetings),
   ];
 
   return lines.filter((l) => l !== "").join("\n");
@@ -460,7 +518,11 @@ function AiSummaryPanel({
     setState("loading");
     setError("");
     try {
-      const context = buildSprintContext(sprint, issues, prs);
+      // Pull meetings on demand rather than at screen mount — that way a
+      // recently-recorded meeting is always reflected without a refresh.
+      const allMeetings = await listMeetings().catch(() => [] as MeetingRecord[]);
+      const sprintMeetings = meetingsInSprint(sprint, allMeetings);
+      const context = buildSprintContext(sprint, issues, prs, sprintMeetings);
       const result = await generateSprintRetrospective(context);
       setSummary(result);
       setState("done");

@@ -44,7 +44,7 @@ Data sources: JIRA API and Bitbucket API. Built for individual use — not distr
 5. **Ticket Quality Checker** — readiness assessment against AC completeness, scope, dependencies
 6. **Knowledge Base / Decision Log** — searchable log of decisions, patterns, retro learnings
 7. **Address PR Comments** — AI reads reviewer comments, checks out branch in worktree, proposes and applies fixes
-8. **Transcribe Meeting** — local whisper transcription; start from any screen via the header record button (auto-tags "standup" from Sprint Dashboard, "retro" from Retrospectives)
+8. **Meetings** — local whisper transcription _or_ freeform notes (when recording is not allowed); both are tagged, timestamped, and AI-summarisable, and feed into Sprint Retrospectives. Start a recording from any screen via the header record button (auto-tags "standup" from Sprint Dashboard, "retro" from Retrospectives); notes are created from the Meetings screen via the split-button dropdown, which remembers the last mode chosen.
 
 ---
 

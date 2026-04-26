@@ -166,7 +166,7 @@ pub async fn run_grooming_agent(
         &api_key,
         &system,
         &user,
-        3000,
+        8000,
         "grooming-stream",
     )
     .await;
@@ -202,6 +202,9 @@ pub async fn run_grooming_chat_turn(
         - Ask follow-up clarifying questions if you still need information\n\
         - When the engineer answers a question, incorporate it into your suggestions immediately\n\
         - Lead toward a complete, well-groomed ticket\n\n\
+        IMPORTANT — you have NO ability to write to JIRA, Bitbucket, or any external system. \
+        You only return suggested edits as JSON; the engineer must approve them in the UI before \
+        anything is pushed anywhere.\n\n\
         CRITICAL: You MUST always respond with ONLY a valid JSON object — no markdown fences, no prose outside the JSON, \
         no matter how conversational the engineer's message is. Every single response must be valid JSON.\n\n\
         Required schema:\n\
@@ -217,11 +220,17 @@ pub async fn run_grooming_chat_turn(
               \"reasoning\": \"<why>\"\n\
             }}\n\
           ],\n\
-          \"updated_questions\": [\"<any remaining open questions you still need answered>\"]\n\
+          \"updated_questions\": [\"<any remaining open questions you still need answered>\"],\n\
+          \"updated_ambiguities\": [\"<remaining unresolved ambiguities — drop ones the engineer has clarified>\"]\n\
         }}\n\n\
         Rules:\n\
         - updated_edits may be empty if no changes are needed this turn\n\
         - To remove a suggestion, omit its id from updated_edits (the frontend will not delete it — include it with a note in reasoning if it should be withdrawn)\n\
+        - updated_ambiguities MUST reflect the conversation so far. If the engineer has clarified a previously \
+          listed ambiguity, drop it from this list. If new ambiguities surface, add them. \
+          Return the FULL current list every turn — it replaces the previous list, it does not merge.\n\
+        - If you change the suggested text or current text of an existing edit, the engineer's previous \
+          approval is automatically reset and they must re-approve — your edit is a fresh proposal.\n\
         - Keep the message focused and concise\n\
         - Even if the engineer says only 'yes', 'ok', or 'thanks', you must still return the full JSON object{templates_block}"
     );
@@ -231,7 +240,7 @@ pub async fn run_grooming_chat_turn(
         &api_key,
         &system,
         &history_json,
-        1200,
+        4096,
         "grooming-chat-stream",
     )
     .await

@@ -41,6 +41,7 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
+import { Input } from "@/components/ui/input";
 import { SlashCommandInput } from "@/components/SlashCommandInput";
 import { createGlobalCommands, type SlashCommand } from "@/lib/slashCommands";
 import { ask } from "@tauri-apps/plugin-dialog";
@@ -492,13 +493,13 @@ function InlineCommentThread({
               </button>
               {editingTaskId === task.id ? (
                 <div className="flex-1 space-y-1">
-                  <Textarea
+                  <Input
                     value={taskEditDraft}
                     onChange={(e) => setTaskEditDraft(e.target.value)}
-                    className="text-xs min-h-[52px] resize-none"
+                    className="text-xs h-7"
                     autoFocus
                     onKeyDown={(e) => {
-                      if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && taskEditDraft.trim()) {
+                      if (e.key === "Enter" && taskEditDraft.trim()) {
                         e.preventDefault();
                         saveTaskEdit();
                       } else if (e.key === "Escape") {
@@ -2704,7 +2705,7 @@ export function PrReviewScreen({ credStatus, onBack }: PrReviewScreenProps) {
                         </span>
                       </button>
                       {acExpanded && (
-                        <div className="px-4 py-3 text-xs leading-relaxed text-foreground whitespace-pre-wrap">
+                        <div className="px-4 py-3 text-xs leading-relaxed text-muted-foreground whitespace-pre-wrap">
                           {linkedIssue.acceptanceCriteria}
                         </div>
                       )}

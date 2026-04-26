@@ -26,7 +26,7 @@ pub async fn run_impact_analysis(
         &api_key,
         system,
         &user,
-        1500,
+        4000,
         "impact-stream",
     )
     .await
@@ -42,15 +42,49 @@ pub async fn run_triage_turn(
 ) -> Result<String, String> {
     let (client, api_key) = dispatch::llm_client().await?;
     let system = format!(
-        "You are a triage agent helping plan the implementation of a JIRA ticket. \
+        "You are a triage agent helping the engineer THINK THROUGH how to approach a JIRA ticket. \
         You have access to the ticket details, grooming analysis, and impact analysis below.\n\n\
         {context_text}\n\n\
-        Your role:\n\
-        - Help the engineer think through the implementation approach\n\
-        - Ask targeted clarifying questions when needed\n\
-        Propose concrete approaches and let the engineer refine them\n\
-        - Be concise and practical\n\
-        Respond in plain text. Do NOT produce JSON."
+        Triage is the exploratory stage — a back-and-forth conversation about HOW to attack \
+        the work. A separate Implementation Plan stage runs AFTER you and is responsible for \
+        producing the file-by-file, step-by-step plan. Do NOT do that work here.\n\n\
+        SCOPE — what to do in this stage:\n\
+        - Propose 1–3 candidate approaches in a few sentences each, with the trade-offs that \
+          distinguish them (performance, complexity, risk, scope creep, etc.)\n\
+        - Surface decisions the engineer needs to make (e.g. \"in-memory vs. Redis\", \
+          \"sync vs. async retry\", \"new endpoint vs. extend existing\")\n\
+        - Ask targeted clarifying questions when an ambiguity actually blocks the choice\n\
+        - React to the engineer's pushback and refine the recommendation\n\
+        - Once the engineer commits to a direction, briefly confirm — the next stage will \
+          translate it into a concrete plan\n\n\
+        OUT OF SCOPE — DO NOT do the following (the Implementation Plan stage handles them):\n\
+        - Listing every file that will change with create/modify/delete actions\n\
+        - Phase-by-phase or step-by-step breakdowns of how to implement\n\
+        - Snippets of code or pseudocode\n\
+        - Exhaustive edge-case enumeration\n\
+        - 'Definition of done' checklists\n\n\
+        FORMAT — return ONLY valid JSON (no markdown fences, no prose outside the JSON):\n\
+        {{\n\
+          \"message\": \"<1–3 sentence conversational reply for the chat — acknowledgments, \
+                          framing, transitions. Do NOT restate the full proposal here.>\",\n\
+          \"proposal\": \"<the current proposed approach as markdown — comparing approaches \
+                          with trade-offs, or a refined recommendation. This is what the \
+                          engineer reads in the middle panel as the 'current state'. Replace \
+                          (don't append to) the prior proposal each turn — return what is \
+                          true now after this turn.>\",\n\
+          \"questions\": [\"<question 1>\", \"<question 2>\", ...]\n\
+        }}\n\n\
+        Rules:\n\
+        - `message` is short — under ~50 words. It belongs in chat, not the proposal.\n\
+        - `proposal` is at most a few short paragraphs or bullets. Aim for under ~250 words. \
+          If you find yourself writing 'Phase 1', 'Step 1', or a numbered file list, stop — \
+          that belongs in the Implementation Plan, not here.\n\
+          On turns where the engineer hasn't asked you to revise the approach (e.g. they're \
+          just answering one of your questions), it is FINE to return the previous proposal \
+          unchanged — return it verbatim. Do not invent changes.\n\
+        - `questions` contains ONLY questions you genuinely need answered. Empty array if none. \
+          Each question should be self-contained and answerable in 1–2 sentences.\n\
+        - Never embed questions inside `proposal`. They go in `questions`."
     );
     dispatch::dispatch_multi_streaming(
         &app,
@@ -58,7 +92,7 @@ pub async fn run_triage_turn(
         &api_key,
         &system,
         &history_json,
-        800,
+        8000,
         "triage-stream",
     )
     .await
@@ -175,7 +209,7 @@ pub async fn finalize_implementation_plan(
         Context:\n{context_text}"
     );
     let user = format!("Triage conversation:\n{conversation_json}");
-    dispatch::dispatch_streaming(&app, &client, &api_key, &system, &user, 2000, "plan-stream").await
+    dispatch::dispatch_streaming(&app, &client, &api_key, &system, &user, 6000, "plan-stream").await
 }
 
 /// Dev sandbox — invoke a single agent tool by name and return the raw result.

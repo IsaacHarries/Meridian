@@ -29,7 +29,7 @@ pub async fn run_implementation_guidance(
         &api_key,
         system,
         &user,
-        2000,
+        6000,
         "guidance-stream",
     )
     .await
@@ -709,7 +709,7 @@ pub async fn run_retrospective_agent(
     let user = format!(
         "Ticket:\n{ticket_text}\n\nImplementation plan:\n{plan_json}\n\nImplementation result:\n{impl_json}\n\nReview:\n{review_json}"
     );
-    dispatch::dispatch_streaming(&app, &client, &api_key, system, &user, 1500, "retro-stream").await
+    dispatch::dispatch_streaming(&app, &client, &api_key, system, &user, 4000, "retro-stream").await
 }
 
 /// Agent 6 — Code Review: review the actual diff produced by the implementation agent.
@@ -753,7 +753,7 @@ pub async fn run_plan_review(
         &api_key,
         system,
         &user,
-        1500,
+        6000,
         "review-stream",
     )
     .await
@@ -814,5 +814,5 @@ pub async fn run_pr_description_gen(
     let user = format!(
         "Ticket:\n{ticket_text}\n\nImplementation plan:\n{plan_json}\n\nImplementation result:\n{impl_json}\n\nReview notes:\n{review_json}"
     );
-    dispatch::dispatch_streaming(&app, &client, &api_key, &system, &user, 2000, "pr-stream").await
+    dispatch::dispatch_streaming(&app, &client, &api_key, &system, &user, 4000, "pr-stream").await
 }

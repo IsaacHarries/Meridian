@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { JiraTicketLink } from "@/components/JiraTicketLink";
 import { SlashCommandInput } from "@/components/SlashCommandInput";
 import { createGlobalCommands, type SlashCommand } from "@/lib/slashCommands";
+import { fuzzyFilterIssues, mergeIssuesById } from "@/lib/fuzzySearch";
 import {
   ArrowLeft,
   Search,
@@ -505,9 +506,12 @@ function TicketSelector({ sprints, selectedSprintId, onSelectSprint, sprintIssue
     return () => clearTimeout(timer);
   }, [q]);
 
-  const rawList = q ? searchResults : sprintIssues;
+  const rawList = useMemo(() => {
+    if (!q) return sprintIssues;
+    return fuzzyFilterIssues(q, mergeIssuesById(sprintIssues, searchResults));
+  }, [q, sprintIssues, searchResults]);
   const displayList = sortIssues(rawList, sortField, sortDir);
-  const showLoading = q ? searching : loadingIssues;
+  const showLoading = q ? searching && rawList.length === 0 : loadingIssues;
 
   return (
     <div className="flex flex-col flex-1 min-h-0 gap-3">
@@ -522,7 +526,7 @@ function TicketSelector({ sprints, selectedSprintId, onSelectSprint, sprintIssue
       )}
       <div className="relative shrink-0">
         <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground pointer-events-none" />
-        <Input placeholder="Search tickets or enter key (e.g. PROJ-123)…" value={search} onChange={(e) => setSearch(e.target.value)} className="pl-9" />
+        <Input placeholder="Fuzzy search tickets or enter key (e.g. PROJ-123)…" value={search} onChange={(e) => setSearch(e.target.value)} className="pl-9" />
       </div>
       <div className="shrink-0 flex items-center gap-1.5">
         <span className="text-xs text-muted-foreground">Sort:</span>

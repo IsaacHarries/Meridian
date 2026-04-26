@@ -20,6 +20,7 @@ export function HeaderRecordButton({ className }: { className?: string }) {
   const pauseRecording = useMeetingsStore((s) => s.pauseRecording);
   const resumeRecording = useMeetingsStore((s) => s.resumeRecording);
   const stopRecording = useMeetingsStore((s) => s.stopRecording);
+  const transcriptionDisabled = useMeetingsStore((s) => s.transcriptionDisabled);
   const openMeetings = useOpenMeetings();
   const contextTags = useRecordingContextTags();
 
@@ -136,6 +137,11 @@ export function HeaderRecordButton({ className }: { className?: string }) {
     () => (active?.segments ?? []).slice(-4),
     [active?.segments],
   );
+
+  // When the user has disabled transcription in Settings, this button is the
+  // primary entry to live recording — hide it entirely. Existing in-flight
+  // recordings (rare) still render so the user can stop them gracefully.
+  if (transcriptionDisabled && !isLive) return null;
 
   const dot = (
     <span className="relative flex h-2.5 w-2.5">

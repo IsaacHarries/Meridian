@@ -49,8 +49,8 @@ const WORKFLOW_META: Record<WorkflowId, { title: string; description: string; st
     step: 13,
   },
   "meetings": {
-    title: "Transcribe Meeting",
-    description: "Record and transcribe meetings locally with whisper; ask an AI about past conversations.",
+    title: "Meetings",
+    description: "Record and transcribe meetings locally with whisper, or capture freeform notes — then ask an AI about past conversations.",
     step: 14,
   },
 };

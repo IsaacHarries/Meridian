@@ -60,8 +60,8 @@ Browse completed sprints, view multi-sprint velocity and trend charts, and gener
 ### Ticket Quality Checker
 Runs any backlog ticket through a readiness assessment — acceptance criteria completeness, scope clarity, dependency identification, and suggested rewrites.
 
-### Transcribe Meeting
-One-click local transcription via Whisper. Start from any screen via the header record button — auto-tagged "standup" from the Sprint Dashboard, "retro" from Retrospectives. Supports speaker diarization and rename.
+### Meetings
+Two ways to capture meetings: local Whisper transcription (one-click via the header record button on any screen — auto-tagged "standup" from Sprint Dashboard, "retro" from Retrospectives, with speaker diarization and rename), or freeform written notes for meetings where recording is not permitted. Either mode is taggable, timestamped, and summarisable on demand by the AI; meeting summaries also feed into Sprint Retrospectives.
 
 ### Knowledge Base / Decision Log
 Searchable, persistent log of architectural decisions, codebase patterns, and retrospective learnings. Entries can be promoted into Agent Skills that subsequent pipeline runs will load automatically.

@@ -14,6 +14,7 @@ pub mod repo;
 pub mod skills;
 pub mod sprint_reports;
 pub mod store_cache;
+pub mod tasks;
 pub mod trend_analyses;
 pub mod validate;
 
@@ -71,11 +72,12 @@ pub use jira::{
 pub use knowledge::{
     delete_knowledge_entry, export_knowledge_markdown, load_knowledge_entries, save_knowledge_entry,
 };
+pub use tasks::{create_task, delete_task, list_tasks, update_task};
 pub use meetings::{
-    active_meeting_id, delete_meeting, diarize_meeting, download_whisper_model, get_meetings_dir,
-    list_meetings, list_microphones, list_whisper_models, load_meeting, pause_meeting_recording,
-    rename_meeting_speaker, resume_meeting_recording, save_meeting, start_meeting_recording,
-    stop_meeting_recording,
+    active_meeting_id, create_notes_meeting, delete_meeting, diarize_meeting,
+    download_whisper_model, get_meetings_dir, list_meetings, list_microphones, list_whisper_models,
+    load_meeting, pause_meeting_recording, rename_meeting_speaker, resume_meeting_recording,
+    save_meeting, start_meeting_recording, stop_meeting_recording, update_meeting_notes,
 };
 pub use llms::claude::{cancel_review, get_claude_models};
 pub use llms::copilot::{
@@ -88,7 +90,9 @@ pub use llms::gemini::{
 };
 pub use llms::local_llm::{get_local_models, test_local_llm_stored, validate_local_llm};
 pub use preferences::{delete_preference, get_preferences, set_preference};
-pub use crate::storage::preferences::get_data_dir;
+pub use crate::storage::preferences::{
+    data_directory_has_content, get_data_dir, move_data_directory, relaunch_app,
+};
 pub use grooming_templates::{
     get_grooming_template_path, load_grooming_template, reveal_grooming_templates_dir,
     save_grooming_template,

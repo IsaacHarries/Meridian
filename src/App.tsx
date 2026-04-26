@@ -11,6 +11,8 @@ import { BackgroundRenderer, getBackgroundId, useBgChangeListener } from "@/lib/
 import { hydrateImplementStore } from "@/stores/implementTicketStore";
 import { hydratePrReviewStore } from "@/stores/prReviewStore";
 import { hydrateMeetingsStore } from "@/stores/meetingsStore";
+import { hydrateTasksStore, useTasksStore } from "@/stores/tasksStore";
+import { TasksPanel } from "@/components/TasksPanel";
 import {
   SpaceEffectsOverlay,
   fireShootingStar,
@@ -80,6 +82,7 @@ function AppInner() {
       hydrateImplementStore(),
       hydratePrReviewStore(),
       hydrateMeetingsStore(),
+      hydrateTasksStore(),
     ]);
 
     getCredentialStatus()
@@ -141,6 +144,7 @@ function AppInner() {
     <OpenSettingsProvider openSettings={openSettings}>
      <OpenMeetingsProvider openMeetings={openMeetings}>
       <RecordingContextTagsProvider tags={recordingContextTagsForScreen(screen)}>
+      <ScreenWithTasksPanel>
       {screen === "loading" ? (
         <LoadingScreen />
       ) : screen === "onboarding" ? (
@@ -177,9 +181,30 @@ function AppInner() {
       ) : (
         <LoadingScreen />
       )}
+      </ScreenWithTasksPanel>
       </RecordingContextTagsProvider>
      </OpenMeetingsProvider>
     </OpenSettingsProvider>
+  );
+}
+
+// Wraps the active screen and reserves space on the right for the Tasks panel
+// when it's open. The panel itself is `position: fixed` so it slots in over
+// that reserved column without each individual screen having to know about it.
+//
+// The reserved width tracks the user's chosen panelWidth — which they can
+// drag-resize via the panel's left edge — so the screen content always meets
+// the panel exactly at its border, no overlap and no gap.
+function ScreenWithTasksPanel({ children }: { children: React.ReactNode }) {
+  const open = useTasksStore((s) => s.panelOpen);
+  const width = useTasksStore((s) => s.panelWidth);
+  return (
+    <>
+      <div style={{ paddingRight: open ? width : 0 }}>
+        {children}
+      </div>
+      <TasksPanel />
+    </>
   );
 }
 

@@ -706,7 +706,6 @@ export async function listCachedSprintIds(): Promise<number[]> {
 }
 
 export async function getSprintReportsDir(): Promise<string> {
-  if (isMockMode()) return "(mock mode)";
   return invoke<string>("get_sprint_reports_dir");
 }
 
@@ -846,8 +845,19 @@ export async function deleteTrendAnalysis(id: string): Promise<void> {
 }
 
 export async function getDataDir(): Promise<string> {
-  if (isMockMode()) return "(mock mode)";
   return invoke<string>("get_data_dir");
+}
+
+export async function dataDirectoryHasContent(path: string): Promise<boolean> {
+  return invoke<boolean>("data_directory_has_content", { path });
+}
+
+export async function moveDataDirectory(from: string, to: string): Promise<void> {
+  return invoke<void>("move_data_directory", { from, to });
+}
+
+export async function relaunchApp(): Promise<void> {
+  return invoke<void>("relaunch_app");
 }
 
 export async function getFutureSprints(limit: number): Promise<JiraSprint[]> {
@@ -1214,6 +1224,20 @@ export interface GroomingChatResponse {
   message: string;
   updated_edits: Omit<SuggestedEdit, "status">[];
   updated_questions: string[];
+  updated_ambiguities?: string[];
+}
+
+/**
+ * One assistant turn from the triage agent. Stored alongside `triageHistory`
+ * so the middle panel can render `proposal` separately from the chat reply.
+ */
+export interface TriageTurnOutput {
+  /** Short conversational reply for the chat (1–3 sentences). */
+  message: string;
+  /** Current proposed approach (markdown) — the middle panel headline. */
+  proposal: string;
+  /** Questions the agent needs the engineer to answer; rendered enumerated in chat. */
+  questions: string[];
 }
 
 export interface ImpactOutput {
@@ -2107,6 +2131,8 @@ export interface MeetingSpeaker {
   candidates?: SpeakerCandidate[];
 }
 
+export type MeetingKind = "transcript" | "notes";
+
 export interface MeetingRecord {
   id: string;
   title: string;
@@ -2124,6 +2150,12 @@ export interface MeetingRecord {
   suggestedTags: string[];
   chatHistory: MeetingChatMessage[];
   speakers?: MeetingSpeaker[];
+  // `transcript` for live-recorded meetings, `notes` for freeform note-taking.
+  // Older on-disk records default to `transcript`.
+  kind?: MeetingKind;
+  // Freeform notes body for notes-mode meetings. Null/undefined for transcript
+  // meetings.
+  notes?: string | null;
 }
 
 export interface StartMeetingRequest {
@@ -2205,6 +2237,20 @@ export async function saveMeeting(record: MeetingRecord): Promise<void> {
   return invoke<void>("save_meeting", { record });
 }
 
+export async function createNotesMeeting(
+  title: string,
+  tags: string[],
+): Promise<MeetingRecord> {
+  return invoke<MeetingRecord>("create_notes_meeting", { title, tags });
+}
+
+export async function updateMeetingNotes(
+  meetingId: string,
+  notes: string,
+): Promise<MeetingRecord> {
+  return invoke<MeetingRecord>("update_meeting_notes", { meetingId, notes });
+}
+
 export async function loadMeeting(id: string): Promise<MeetingRecord> {
   return invoke<MeetingRecord>("load_meeting", { id });
 }
@@ -2241,4 +2287,30 @@ export async function chatMeeting(
     contextText,
     historyJson,
   });
+}
+
+// ── Manual tasks ──────────────────────────────────────────────────────────────
+
+export interface TaskRecord {
+  id: string;
+  text: string;
+  completed: boolean;
+  createdAt: string;
+  completedAt?: string;
+}
+
+export async function listTasks(): Promise<TaskRecord[]> {
+  return invoke<TaskRecord[]>("list_tasks");
+}
+
+export async function createTask(text: string): Promise<TaskRecord> {
+  return invoke<TaskRecord>("create_task", { text });
+}
+
+export async function updateTask(record: TaskRecord): Promise<TaskRecord> {
+  return invoke<TaskRecord>("update_task", { record });
+}
+
+export async function deleteTask(id: string): Promise<void> {
+  return invoke<void>("delete_task", { id });
 }

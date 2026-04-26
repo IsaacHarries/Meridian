@@ -585,7 +585,24 @@ pub async fn chat_pr_review(
         - Do NOT produce JSON — reply in plain prose only\n\
         - When writing or suggesting code examples, follow the project-specific conventions \
           below. For example: if the standards specify Vitest, use Vitest syntax — not Jest \
-          or any other framework.{skills_block}"
+          or any other framework.\n\
+        \n\
+        TOOLS — USE THEM PROACTIVELY:\n\
+        You have access to repo-inspection tools that read the local git worktree. Whenever a \
+        question requires knowledge of files, build setup, tests, or configuration that is not \
+        already in the diff or report above, you MUST call the relevant tool before answering. \
+        Do NOT speculate or answer from general knowledge when the answer can be verified from \
+        the codebase. Do NOT announce that you are about to use tools — just use them, then \
+        answer.\n\
+        - glob_repo — find files by pattern (e.g. '**/*.test.cpp', 'CMakeLists.txt', \
+          'engine-socket/**/*')\n\
+        - grep_repo — search file contents for a regex (e.g. test framework imports, target \
+          names, build flags)\n\
+        - read_repo_file — read a specific file when you need its full contents\n\
+        - get_repo_diff — get the diff between branches if the report's diff is insufficient\n\
+        - git_log — recent commit history, optionally filtered to a path\n\
+        Typical pattern for a codebase question: glob_repo to locate candidates → grep_repo or \
+        read_repo_file to inspect → answer with concrete file paths and line references.{skills_block}"
     );
     dispatch::dispatch_multi_streaming_with_tools(
         &app,
@@ -593,7 +610,7 @@ pub async fn chat_pr_review(
         &api_key,
         &system,
         &history_json,
-        1024,
+        4096,
         "pr-review-chat-stream",
     )
     .await
@@ -671,7 +688,7 @@ pub async fn chat_address_pr(
         &api_key,
         &system,
         &history_json,
-        1024,
+        4096,
         "address-pr-chat-stream",
     )
     .await

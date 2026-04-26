@@ -1,11 +1,12 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Mutex, OnceLock};
+use std::sync::Mutex;
 
-use aes_gcm::aead::rand_core::RngCore;
-use aes_gcm::aead::{Aead, KeyInit, OsRng};
-use aes_gcm::{Aes256Gcm, Nonce};
-use sha2::{Digest, Sha256};
+use crate::storage::crypto;
+
+// Domain separator for the credential store's derived key. Must not
+// change — existing on-disk credentials are encrypted under this domain.
+const DOMAIN: &str = "meridian-credential-store-v1:";
 
 // ── Storage file path ─────────────────────────────────────────────────────────
 
@@ -31,70 +32,9 @@ fn store_path() -> PathBuf {
         .unwrap_or_else(|| {
             dirs::data_local_dir()
                 .unwrap_or_else(|| PathBuf::from("."))
-                .join("com.meridian.app")
+                .join("com.meridian.desktop")
                 .join("credentials.bin")
         })
-}
-
-// ── Encryption ────────────────────────────────────────────────────────────────
-
-fn machine_key() -> [u8; 32] {
-    static KEY: OnceLock<[u8; 32]> = OnceLock::new();
-    *KEY.get_or_init(|| {
-        let uuid = machine_uuid();
-        let mut h = Sha256::new();
-        h.update(b"meridian-credential-store-v1:");
-        h.update(uuid.as_bytes());
-        h.finalize().into()
-    })
-}
-
-fn machine_uuid() -> String {
-    #[cfg(target_os = "macos")]
-    {
-        use std::process::Command;
-        if let Ok(out) = Command::new("ioreg")
-            .args(["-rd1", "-c", "IOPlatformExpertDevice"])
-            .output()
-        {
-            let text = String::from_utf8_lossy(&out.stdout);
-            for line in text.lines() {
-                if line.contains("IOPlatformUUID") {
-                    let parts: Vec<&str> = line.splitn(2, '=').collect();
-                    if let Some(rhs) = parts.get(1) {
-                        let uuid = rhs.trim().trim_matches('"').trim().to_string();
-                        if !uuid.is_empty() {
-                            return uuid;
-                        }
-                    }
-                }
-            }
-        }
-    }
-    std::process::Command::new("hostname")
-        .output()
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .unwrap_or_else(|_| "meridian-default-host".to_string())
-}
-
-fn encrypt(plaintext: &[u8]) -> Vec<u8> {
-    let cipher = Aes256Gcm::new_from_slice(&machine_key()).expect("key is 32 bytes");
-    let mut nonce_bytes = [0u8; 12];
-    OsRng.fill_bytes(&mut nonce_bytes);
-    let nonce = Nonce::from_slice(&nonce_bytes);
-    let mut ct = cipher.encrypt(nonce, plaintext).expect("encryption failed");
-    let mut out = nonce_bytes.to_vec();
-    out.append(&mut ct);
-    out
-}
-
-fn decrypt(data: &[u8]) -> Option<Vec<u8>> {
-    if data.len() < 12 {
-        return None;
-    }
-    let (nonce_bytes, ct) = data.split_at(12);
-    let cipher = Aes256Gcm::new_from_slice(&machine_key()).ok()?;
-    cipher.decrypt(Nonce::from_slice(nonce_bytes), ct).ok()
 }
 
 // ── Read / write the credential map ──────────────────────────────────────────
@@ -104,7 +44,7 @@ pub fn load_map() -> HashMap<String, String> {
         Ok(d) => d,
         Err(_) => return HashMap::new(),
     };
-    let plain = match decrypt(&data) {
+    let plain = match crypto::decrypt(DOMAIN, &data) {
         Some(p) => p,
         None => return HashMap::new(),
     };
@@ -113,7 +53,7 @@ pub fn load_map() -> HashMap<String, String> {
 
 pub fn save_map(map: &HashMap<String, String>) -> Result<(), String> {
     let json = serde_json::to_vec(map).map_err(|e| format!("Serialisation error: {e}"))?;
-    let enc = encrypt(&json);
+    let enc = crypto::encrypt(DOMAIN, &json);
     std::fs::write(store_path(), enc).map_err(|e| format!("Failed to write credential store: {e}"))
 }
 
