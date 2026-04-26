@@ -345,8 +345,10 @@ export function LandingScreen({ credStatus, onNavigate }: LandingScreenProps) {
         </div>
       </header>
 
-      {/* Sprint-summary strip — spans the full window width below the header. */}
-      <div className="border-b border-border/60 bg-background/40 backdrop-blur-sm">
+      {/* Sprint-summary strip — spans the full window width below the header.
+          relative + z-20 keeps it stacked above the orbital's overflowing
+          backdrop circle (which lives in <main> and bleeds upward). */}
+      <div className="relative z-20 border-b border-border/60 bg-background/40 backdrop-blur-sm">
         <div className="px-6 py-3">
           <SprintSummary credStatus={credStatus} />
         </div>

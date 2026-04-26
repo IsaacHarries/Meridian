@@ -43,7 +43,7 @@ export function getLandingLayoutId(): LandingLayoutId {
   const raw = localStorage.getItem(LS_KEY);
   return (VALID_IDS as string[]).includes(raw ?? "")
     ? (raw as LandingLayoutId)
-    : "constellation";
+    : "orbital";
 }
 
 export function setLandingLayoutId(id: LandingLayoutId): void {

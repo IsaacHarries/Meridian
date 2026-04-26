@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { WorkflowId } from "@/screens/WorkflowScreen";
 import type { LandingLayoutProps } from "@/lib/landingLayouts";
 import { CardBadge } from "./CardBadge";
@@ -8,54 +8,108 @@ import { CardBadge } from "./CardBadge";
 // 8 workflow nodes orbit a wireframe planet on a single ring at NODE_R.
 
 const VBOX_W = 1200;
-const VBOX_H = 800;
+const VBOX_H = 960;          // 5:4 — more vertical room than the previous 3:2
 const CX = VBOX_W / 2;
 const CY = VBOX_H / 2;
-const PLANET_R = 200;       // wireframe sphere outer radius
-const ORBIT_R = 340;        // outer orbital ring (where the nodes sit)
-const ORBIT_TILT = 0.18;    // ry/rx ratio for the orbital ring (slight tilt)
+const PLANET_R = 240;       // wireframe sphere outer radius
+const ORBIT_R = 360;        // node-orbit radius — circular path around the planet
 
 const NODE_COUNT = 8;
 function nodeAngle(i: number): number {
   return -Math.PI / 2 + (i * Math.PI * 2) / NODE_COUNT;
 }
 
-// Position on the orbital ring (a tilted ellipse, not a circle), in viewBox units.
+// Position on the orbital ring — a perfect circle of radius ORBIT_R.
 function nodePos(i: number): { x: number; y: number } {
   const a = nodeAngle(i);
   return {
     x: CX + ORBIT_R * Math.cos(a),
-    // Compress vertical extent so the ring reads as tilted toward the viewer.
-    y: CY + ORBIT_R * (1 - ORBIT_TILT) * Math.sin(a),
+    y: CY + ORBIT_R * Math.sin(a),
   };
 }
 
 // ── Planet wireframe ──────────────────────────────────────────────────────────
-// Classic globe-icon construction: outer sphere outline + a few vertical
-// longitudes (all sharing top/bottom poles, varying rx) + a few horizontal
-// latitudes (centred on cy, scaled to fit inside the sphere).
+// Classic globe-icon construction: sphere outline + N rotating longitude
+// ellipses (sharing top/bottom poles, sweeping rx in sync to simulate the
+// globe rotating around its polar axis) + a static equator + latitudes.
+
+const N_LONGITUDES = 6;          // longitudes evenly distributed in 3D
+const ROTATION_PERIOD_S = 90;    // seconds per full rotation
+const LONGITUDE_OPACITY = 0.4;   // constant stroke opacity for any visible longitude
+const AXIAL_TILT_DEG = 23.5;     // Earth's axial tilt relative to its orbital plane
 
 function PlanetWireframe() {
+  const longitudeRefs = useRef<(SVGEllipseElement | null)[]>([]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    // Project a longitude line at base angle θ as 2D rx given a rotation
+    // phase. Longitudes with sin > 0 face the viewer; sin < 0 are behind the
+    // planet and we hide them so the rotation reads as directional rather
+    // than a symmetric pulse. Stroke opacity stays constant for every
+    // visible longitude — only rx animates.
+    const apply = (phase: number) => {
+      for (let i = 0; i < N_LONGITUDES; i++) {
+        const ref = longitudeRefs.current[i];
+        if (!ref) continue;
+        const baseAngle = (i * 2 * Math.PI) / N_LONGITUDES;
+        const s = Math.sin(baseAngle + phase);
+        if (s > 0) {
+          ref.setAttribute("rx", (s * PLANET_R).toString());
+          ref.setAttribute("opacity", LONGITUDE_OPACITY.toString());
+        } else {
+          ref.setAttribute("opacity", "0");
+        }
+      }
+    };
+
+    // Respect prefers-reduced-motion: paint once at a non-zero phase so the
+    // longitudes are still visible, but skip the RAF loop.
+    const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    if (reducedMotion) {
+      apply(Math.PI / 4);
+      return;
+    }
+
+    let raf = 0;
+    const start = performance.now();
+    const tick = (now: number) => {
+      const phase = (((now - start) / 1000) / ROTATION_PERIOD_S) * 2 * Math.PI;
+      apply(phase);
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, []);
+
   const stroke = "currentColor";
   // Latitudes at ±lat_offset (as a fraction of PLANET_R) — rx scales by
   // sqrt(1 - offset²) so the ellipse touches the sphere's outline.
   const latitudes = [0.5, -0.5];
   return (
-    <g>
+    // Tilt the entire wireframe (sphere + longitudes + latitudes) by Earth's
+    // axial tilt. The longitude animation rotates around the now-tilted
+    // polar axis, matching how Earth spins relative to its orbital plane.
+    <g transform={`rotate(${AXIAL_TILT_DEG} ${CX} ${CY})`}>
       {/* Sphere outline */}
       <circle cx={CX} cy={CY} r={PLANET_R} stroke={stroke} fill="none" strokeWidth={1.5} opacity={0.55} />
-      {/* Longitudes — vertical ellipses through the top/bottom poles */}
-      {[0.32, 0.62].map((frac) => (
+      {/* Animated longitudes — initial rx=0/opacity=0; the RAF effect updates
+          them every frame to simulate rotation around the polar axis. */}
+      {Array.from({ length: N_LONGITUDES }, (_, i) => (
         <ellipse
-          key={`lon-${frac}`}
+          key={i}
+          ref={(el) => {
+            longitudeRefs.current[i] = el;
+          }}
           cx={CX}
           cy={CY}
-          rx={PLANET_R * frac}
+          rx={0}
           ry={PLANET_R}
           stroke={stroke}
           fill="none"
           strokeWidth={1.2}
-          opacity={0.4}
+          opacity={0}
         />
       ))}
       {/* Equator */}
@@ -83,14 +137,14 @@ function PlanetWireframe() {
           opacity={0.32}
         />
       ))}
-      {/* Faint planet fill so the orbital ring reads as passing behind it */}
+      {/* Faint planet fill so the rotating longitudes read as wrapping a
+          translucent sphere rather than floating in front of it. */}
       <circle
         cx={CX}
         cy={CY}
         r={PLANET_R}
         fill="hsl(var(--background) / 0.55)"
         opacity={0.6}
-        style={{ mixBlendMode: "normal" }}
       />
     </g>
   );
@@ -101,15 +155,15 @@ export function OrbitalLayout({ cards, onNavigate }: LandingLayoutProps) {
   const hovered = cards.find((c) => c.id === hoveredId) ?? null;
 
   return (
-    <div className="max-w-6xl w-full mx-auto bg-background/60 rounded-xl p-4 sm:p-6">
+    <div className="max-w-7xl w-full mx-auto p-4 sm:p-6">
       <div
-        className="relative w-full aspect-[3/2] mx-auto"
-        style={{ maxHeight: "calc(100vh - 200px)" }}
+        className="relative w-full aspect-[5/4] mx-auto"
+        style={{ maxHeight: "calc(100vh - 170px)" }}
       >
         <svg
           viewBox={`0 0 ${VBOX_W} ${VBOX_H}`}
           preserveAspectRatio="xMidYMid meet"
-          className="absolute inset-0 w-full h-full text-primary pointer-events-none"
+          className="absolute inset-0 w-full h-full text-primary pointer-events-none overflow-visible"
           fill="none"
           stroke="currentColor"
         >
@@ -144,22 +198,10 @@ export function OrbitalLayout({ cards, onNavigate }: LandingLayoutProps) {
           const { x, y } = nodePos(i);
           const xPct = (x / VBOX_W) * 100;
           const yPct = (y / VBOX_H) * 100;
-          // Label renders on the outward side of the halo (away from the
-          // planet) so the orbital ring stays clear of text.
-          const isLeft = xPct < 35;
-          const isRight = xPct > 65;
-          const isBottomHalf = yPct >= 50;
-          // The badge always sits directly below the halo. When the title
-          // label is also below the halo (bottom-half nodes), push it further
-          // down so it doesn't overlap the badge.
-          const labelOffsetForBadge = isBottomHalf && card.badge ? "mt-9" : "mt-1.5";
-          const labelClass = isRight
-            ? "left-full ml-2 top-1/2 -translate-y-1/2 text-left"
-            : isLeft
-            ? "right-full mr-2 top-1/2 -translate-y-1/2 text-right"
-            : yPct < 50
-            ? "bottom-full mb-1.5 left-1/2 -translate-x-1/2 text-center"
-            : `top-full ${labelOffsetForBadge} left-1/2 -translate-x-1/2 text-center`;
+          // Label always renders directly above the halo, regardless of the
+          // card's position on the orbital ring. The badge sits below the
+          // halo, so above-the-halo placement never collides with it.
+          const labelClass = "bottom-full mb-1.5 left-1/2 -translate-x-1/2 text-center";
           return (
             <button
               key={card.id}
@@ -175,8 +217,8 @@ export function OrbitalLayout({ cards, onNavigate }: LandingLayoutProps) {
                 transform: "translate(-50%, -50%)",
               }}
             >
-              <span className="absolute inset-0 flex items-center justify-center rounded-full border bg-card/85 backdrop-blur-sm shadow-sm transition-all group-hover:scale-110 group-hover:border-primary group-hover:bg-accent group-hover:shadow-md group-focus-visible:scale-110 group-focus-visible:border-primary">
-                <card.Icon className="h-7 w-7 text-foreground/85 group-hover:text-primary transition-colors" />
+              <span className="absolute inset-0 flex items-center justify-center rounded-full border border-blue-400/40 bg-blue-500/15 backdrop-blur-sm shadow-sm transition-all group-hover:scale-110 group-hover:border-blue-400 group-hover:bg-blue-500/25 group-hover:shadow-md group-focus-visible:scale-110 group-focus-visible:border-blue-400">
+                <card.Icon className="h-7 w-7 text-white/90 group-hover:text-white transition-colors" />
               </span>
               {card.badge && (
                 <CardBadge
@@ -185,7 +227,7 @@ export function OrbitalLayout({ cards, onNavigate }: LandingLayoutProps) {
                 />
               )}
               <span
-                className={`absolute text-xs font-medium whitespace-nowrap text-foreground/80 group-hover:text-primary transition-colors pointer-events-none ${labelClass}`}
+                className={`absolute rounded-md bg-background/75 backdrop-blur-sm px-2 py-0.5 text-xs font-medium whitespace-nowrap text-white/90 group-hover:text-white group-hover:bg-background/85 transition-colors pointer-events-none ${labelClass}`}
               >
                 {card.title}
               </span>

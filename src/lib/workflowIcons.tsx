@@ -67,29 +67,45 @@ export function SprintDashboardIcon(props: IconProps) {
   );
 }
 
-// 4. Sprint Retrospectives — orbit with a single highlighted node + trail
+// 4. Sprint Retrospectives — telescope pointed at the Big Dipper (looking back)
 export function RetrospectivesIcon(props: IconProps) {
   return (
     <IconBase {...props}>
-      <circle cx="16" cy="16" r="9" opacity="0.35" />
-      <circle cx="16" cy="7" r="1.6" fill="currentColor" />
-      <circle cx="22.4" cy="9.6" r="0.7" fill="currentColor" opacity="0.7" />
-      <circle cx="25" cy="16" r="0.5" fill="currentColor" opacity="0.45" />
-      <path d="M9 9 A9 9 0 0 1 16 7" strokeWidth="1.6" />
+      {/* Big Dipper — handle (3 stars curving) + bowl (4-star parallelogram).
+          Stars spread further apart for legibility. */}
+      <path d="M3 4 L9 3 L15 5 L21 7 L22 13 L30 13 L29 7 L21 7" opacity="0.5" />
+      <circle cx="3"  cy="4"  r="1.3" fill="currentColor" />
+      <circle cx="9"  cy="3"  r="1.1" fill="currentColor" />
+      <circle cx="15" cy="5"  r="1.1" fill="currentColor" />
+      <circle cx="21" cy="7"  r="1.4" fill="currentColor" />
+      <circle cx="22" cy="13" r="1.2" fill="currentColor" />
+      <circle cx="30" cy="13" r="1.2" fill="currentColor" />
+      <circle cx="29" cy="7"  r="1.2" fill="currentColor" />
+
+      {/* Tripod legs */}
+      <path d="M9 24 L5 30 M9 24 L13 30" />
+      {/* Telescope tube — bigger, aimed upper-right toward the constellation */}
+      <g transform="rotate(-32 9 24)">
+        <rect x="1.5" y="22" width="16" height="4" rx="1" />
+      </g>
     </IconBase>
   );
 }
 
-// 5. Groom Tickets / Quality — checklist with check + ambient dots
+// 5. Groom Tickets — hair comb (literal "grooming" tool)
 export function TicketQualityIcon(props: IconProps) {
   return (
     <IconBase {...props}>
-      <path d="M7 9 H21" />
-      <path d="M7 16 H21" />
-      <path d="M7 23 H17" />
-      <circle cx="24" cy="9" r="0.9" fill="currentColor" opacity="0.7" />
-      <circle cx="24" cy="16" r="0.9" fill="currentColor" opacity="0.7" />
-      <path d="M21 22 L24 25 L29 19" strokeWidth="1.7" />
+      {/* Diagonal pocket-comb silhouette — drawn upright, rotated -45°,
+          flipped horizontally, then rotated 90° clockwise around the centre. */}
+      <g transform="rotate(90 16 16) matrix(-1 0 0 1 32 0) rotate(-45 16 16)">
+        {/* Elongated rounded handle/spine */}
+        <rect x="3" y="18" width="26" height="4" rx="2" />
+        {/* Hanging hole near the handle's tip */}
+        <circle cx="6" cy="20" r="1" />
+        {/* Eight teeth extending up from the body half of the spine */}
+        <path d="M13 18 V10 M15 18 V10 M17 18 V10 M19 18 V10 M21 18 V10 M23 18 V10 M25 18 V10 M27 18 V10" />
+      </g>
     </IconBase>
   );
 }
