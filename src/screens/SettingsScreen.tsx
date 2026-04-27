@@ -119,6 +119,7 @@ import {
   setLocalLlmUrlCache,
   getStoreCacheInfo,
   clearAllStoreCaches,
+  deleteStoreCache,
   validateWorktree,
   validatePrReviewWorktree,
   validatePrAddressWorktree,
@@ -3454,14 +3455,32 @@ function formatBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
 }
 
+const ALL_KEY = "__all__";
+
+function resetInMemoryStoreFor(key: string) {
+  if (key === IMPLEMENT_STORE_KEY) {
+    useImplementTicketStore.setState({
+      ...IMPLEMENT_INITIAL,
+      sessions: new Map(),
+    });
+  } else if (key === PR_REVIEW_STORE_KEY) {
+    usePrReviewStore.setState({
+      sessions: new Map(),
+      prsForReview: [],
+      allOpenPrs: [],
+      selectedPr: null,
+      isSessionActive: false,
+      prListLoaded: false,
+    });
+  }
+}
+
 function CacheSection() {
   const [info, setInfo] = useState<Record<string, number> | null>(null);
   const [loading, setLoading] = useState(false);
-  const [clearing, setClearing] = useState(false);
-  const [confirmed, setConfirmed] = useState(false);
-  const [done, setDone] = useState(false);
-
-  const resetImplementSession = useImplementTicketStore((s) => s.resetSession);
+  const [clearingKey, setClearingKey] = useState<string | null>(null);
+  const [confirmingKey, setConfirmingKey] = useState<string | null>(null);
+  const [doneMessage, setDoneMessage] = useState<string | null>(null);
 
   async function loadInfo() {
     setLoading(true);
@@ -3482,35 +3501,35 @@ function CacheSection() {
   const totalBytes = info ? Object.values(info).reduce((a, b) => a + b, 0) : 0;
   const hasCache = totalBytes > 0;
 
-  async function handleClear() {
-    if (!confirmed) {
-      setConfirmed(true);
+  async function handleClear(key: string) {
+    if (confirmingKey !== key) {
+      setConfirmingKey(key);
       return;
     }
-    setClearing(true);
+    setClearingKey(key);
     try {
-      await clearAllStoreCaches();
-      // Reset in-memory store state too
-      resetImplementSession();
-      useImplementTicketStore.setState({
-        ...IMPLEMENT_INITIAL,
-        sessions: new Map(),
-      });
-      usePrReviewStore.setState({
-        sessions: new Map(),
-        prsForReview: [],
-        allOpenPrs: [],
-        selectedPr: null,
-        isSessionActive: false,
-        prListLoaded: false,
-      });
-      setInfo({});
-      setDone(true);
-      setConfirmed(false);
+      if (key === ALL_KEY) {
+        await clearAllStoreCaches();
+        Object.keys(info ?? {}).forEach(resetInMemoryStoreFor);
+        setInfo({});
+        setDoneMessage("All session caches cleared.");
+      } else {
+        await deleteStoreCache(key);
+        resetInMemoryStoreFor(key);
+        setInfo((prev) => {
+          if (!prev) return prev;
+          const next = { ...prev };
+          delete next[key];
+          return next;
+        });
+        const label = CACHE_KEY_LABELS[key] ?? key;
+        setDoneMessage(`Cleared ${label}.`);
+      }
+      setConfirmingKey(null);
     } catch {
       /* non-critical */
     } finally {
-      setClearing(false);
+      setClearingKey(null);
     }
   }
 
@@ -3541,20 +3560,50 @@ function CacheSection() {
             <Loader2 className="h-3 w-3 animate-spin" /> Loading cache info…
           </div>
         ) : info && Object.keys(info).length > 0 ? (
-          <div className="space-y-1.5">
-            {Object.entries(info).map(([key, size]) => (
-              <div
-                key={key}
-                className="flex items-center justify-between text-xs"
-              >
-                <span className="text-muted-foreground">
-                  {CACHE_KEY_LABELS[key] ?? key}
-                </span>
-                <span className="font-mono text-muted-foreground">
-                  {formatBytes(size)}
-                </span>
-              </div>
-            ))}
+          <div className="space-y-1">
+            {Object.entries(info).map(([key, size]) => {
+              const isConfirming = confirmingKey === key;
+              const isClearing = clearingKey === key;
+              return (
+                <div
+                  key={key}
+                  className="flex items-center justify-between gap-2 text-xs py-0.5"
+                >
+                  <span className="text-muted-foreground truncate">
+                    {CACHE_KEY_LABELS[key] ?? key}
+                  </span>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <span className="font-mono text-muted-foreground">
+                      {formatBytes(size)}
+                    </span>
+                    <Button
+                      variant={isConfirming ? "destructive" : "ghost"}
+                      size="sm"
+                      onClick={() => handleClear(key)}
+                      disabled={isClearing || (clearingKey !== null && !isClearing)}
+                      className="h-7 gap-1.5 px-2"
+                    >
+                      {isClearing ? (
+                        <Loader2 className="h-3 w-3 animate-spin" />
+                      ) : (
+                        <Trash2 className="h-3 w-3" />
+                      )}
+                      {isConfirming ? "Confirm" : "Clear"}
+                    </Button>
+                    {isConfirming && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => setConfirmingKey(null)}
+                        className="h-7 px-2"
+                      >
+                        Cancel
+                      </Button>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
           </div>
         ) : (
           <p className="text-xs text-muted-foreground">
@@ -3562,35 +3611,36 @@ function CacheSection() {
           </p>
         )}
 
-        {done && (
+        {doneMessage && (
           <p className="text-xs text-emerald-600 dark:text-emerald-400 flex items-center gap-1">
-            <CheckCircle className="h-3 w-3" /> Cache cleared. All session data
-            has been removed.
+            <CheckCircle className="h-3 w-3" /> {doneMessage}
           </p>
         )}
 
         <div className="flex items-center gap-2 flex-wrap">
           {hasCache && (
             <Button
-              variant={confirmed ? "destructive" : "outline"}
+              variant={confirmingKey === ALL_KEY ? "destructive" : "outline"}
               size="sm"
-              onClick={handleClear}
-              disabled={clearing}
+              onClick={() => handleClear(ALL_KEY)}
+              disabled={clearingKey !== null}
               className="gap-1.5"
             >
-              {clearing ? (
+              {clearingKey === ALL_KEY ? (
                 <Loader2 className="h-3 w-3 animate-spin" />
               ) : (
                 <Trash2 className="h-3 w-3" />
               )}
-              {confirmed ? "Click again to confirm" : "Clear cache"}
+              {confirmingKey === ALL_KEY
+                ? "Click again to confirm"
+                : "Clear all"}
             </Button>
           )}
-          {confirmed && (
+          {confirmingKey === ALL_KEY && (
             <Button
               variant="ghost"
               size="sm"
-              onClick={() => setConfirmed(false)}
+              onClick={() => setConfirmingKey(null)}
             >
               Cancel
             </Button>
@@ -3599,7 +3649,7 @@ function CacheSection() {
             variant="ghost"
             size="sm"
             onClick={() => {
-              setDone(false);
+              setDoneMessage(null);
               loadInfo();
             }}
             disabled={loading}
@@ -3609,10 +3659,13 @@ function CacheSection() {
           </Button>
         </div>
 
-        {confirmed && (
+        {confirmingKey && (
           <p className="text-xs text-amber-600 dark:text-amber-400">
-            This will permanently delete all saved pipeline sessions and PR
-            review data. In-progress work will be lost.
+            {confirmingKey === ALL_KEY
+              ? "This will permanently delete all saved pipeline sessions and PR review data. In-progress work will be lost."
+              : `This will permanently delete the "${
+                  CACHE_KEY_LABELS[confirmingKey] ?? confirmingKey
+                }" cache. In-progress work in this section will be lost.`}
           </p>
         )}
       </CardContent>

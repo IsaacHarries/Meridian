@@ -18,7 +18,7 @@ export const Switch: React.FC<SwitchProps> = ({ checked, onCheckedChange, ...pro
       style={{
         width: 32,
         height: 18,
-        background: checked ? "#4f46e5" : "#d1d5db",
+        background: checked ? "hsl(var(--primary))" : "hsl(var(--input))",
         borderRadius: 9999,
         position: "relative",
         transition: "background 0.2s",
@@ -32,10 +32,10 @@ export const Switch: React.FC<SwitchProps> = ({ checked, onCheckedChange, ...pro
           top: 2,
           width: 14,
           height: 14,
-          background: "#fff",
+          background: checked ? "hsl(var(--primary-foreground))" : "hsl(var(--background))",
           borderRadius: "50%",
           boxShadow: "0 1px 2px rgba(0,0,0,0.1)",
-          transition: "left 0.2s"
+          transition: "left 0.2s, background 0.2s"
         }}
       />
     </span>
