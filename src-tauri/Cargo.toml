@@ -33,6 +33,10 @@ whisper-rs = { version = "0.13", default-features = false, features = ["metal"] 
 # Apple Silicon acceleration; the `online` default feature auto-downloads the
 # pyannote-compatible models from HuggingFace on first use.
 speakrs = { version = "0.4", features = ["coreml"] }
+# Time tracking — minimal core-foundation wrappers so we can read the macOS
+# session dictionary (lock state) and call CGEventSource* (idle time) without
+# hand-rolled FFI boilerplate.
+core-foundation = "0.10"
 
 [profile.release]
 codegen-units = 1

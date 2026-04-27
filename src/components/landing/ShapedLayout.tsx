@@ -46,6 +46,11 @@ const SHAPES: Record<WorkflowId, ShapeDef> = {
     d: "M 60 4 H 140 A 56 56 0 0 1 140 116 H 60 A 56 56 0 0 1 60 4 Z",
     inset: { left: 4, right: 4 },
   },
+  // Stopwatch — circular face with a small stem on top
+  "time-tracking": {
+    d: "M 90 4 H 110 V 12 A 54 54 0 0 1 100 116 A 54 54 0 0 1 100 12 V 12 Z",
+    inset: { top: 4, bottom: 4 },
+  },
 };
 
 function ShapedTile({

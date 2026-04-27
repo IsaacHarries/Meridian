@@ -14,6 +14,7 @@ pub mod skills;
 pub mod sprint_reports;
 pub mod store_cache;
 pub mod tasks;
+pub mod time_tracking;
 pub mod trend_analyses;
 pub mod validate;
 
@@ -69,6 +70,10 @@ pub use jira::{
     update_jira_issue,
 };
 pub use tasks::{create_task, delete_task, list_tasks, update_task};
+pub use time_tracking::{
+    get_system_activity_state, load_time_tracking_state, read_time_tracking_import_file,
+    save_time_tracking_state, start_time_tracking_poller,
+};
 pub use meetings::{
     active_meeting_id, create_notes_meeting, delete_meeting, diarize_meeting,
     download_whisper_model, get_meetings_dir, list_meetings, list_microphones, list_whisper_models,

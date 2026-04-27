@@ -5,6 +5,7 @@ import { cn } from "@/lib/utils";
 import { PipelineProgress } from "@/components/PipelineProgress";
 import { HeaderSettingsButton } from "@/components/HeaderSettingsButton";
 import { HeaderRecordButton } from "@/components/HeaderRecordButton";
+import { HeaderTimeTracker } from "@/components/HeaderTimeTracker";
 import { SlashCommandInput } from "@/components/SlashCommandInput";
 import { createGlobalCommands, type SlashCommand } from "@/lib/slashCommands";
 import {
@@ -3556,6 +3557,7 @@ export function ImplementTicketScreen({
           >
             <Search className="h-4 w-4" />
           </Button>
+          <HeaderTimeTracker className="relative z-30" />
           <HeaderRecordButton className="relative z-30" />
           <HeaderSettingsButton className="relative z-30 shrink-0" />
 

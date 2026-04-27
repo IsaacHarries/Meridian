@@ -92,28 +92,39 @@ export function SprintDashboardIcon({ strokeWidth: _strokeWidth, ...rest }: Icon
   );
 }
 
-// 4. Sprint Retrospectives — telescope pointed at the Big Dipper (looking back)
-export function RetrospectivesIcon(props: IconProps) {
+// 4. Sprint Retrospectives — telescope on a tripod, tube angled toward the sky.
+// Filled silhouette (departs from the line-art language); uses currentColor so
+// it inherits text colour from the surrounding card.
+export function RetrospectivesIcon({
+  strokeWidth: _strokeWidth,
+  ...rest
+}: IconProps) {
   return (
-    <IconBase {...props}>
-      {/* Big Dipper — handle (3 stars curving) + bowl (4-star parallelogram).
-          Stars spread further apart for legibility. */}
-      <path d="M3 4 L9 3 L15 5 L21 7 L22 13 L30 13 L29 7 L21 7" opacity="0.5" />
-      <circle cx="3" cy="4" r="1.3" fill="currentColor" />
-      <circle cx="9" cy="3" r="1.1" fill="currentColor" />
-      <circle cx="15" cy="5" r="1.1" fill="currentColor" />
-      <circle cx="21" cy="7" r="1.4" fill="currentColor" />
-      <circle cx="22" cy="13" r="1.2" fill="currentColor" />
-      <circle cx="30" cy="13" r="1.2" fill="currentColor" />
-      <circle cx="29" cy="7" r="1.2" fill="currentColor" />
-
+    <svg
+      viewBox="-90 -65 170 180"
+      fill="currentColor"
+      stroke="none"
+      {...rest}
+    >
       {/* Tripod legs */}
-      <path d="M9 24 L5 30 M9 24 L13 30" />
-      {/* Telescope tube — bigger, aimed upper-right toward the constellation */}
-      <g transform="rotate(-32 9 24)">
-        <rect x="1.5" y="22" width="16" height="4" rx="1" />
+      <g stroke="currentColor" strokeWidth="5" strokeLinecap="round" fill="none">
+        <line x1="0" y1="34" x2="-32" y2="100" />
+        <line x1="0" y1="34" x2="0" y2="106" />
+        <line x1="0" y1="34" x2="32" y2="100" />
       </g>
-    </IconBase>
+      {/* Mount block */}
+      <rect x="-14" y="18" width="28" height="14" rx="2.5" />
+      {/* Telescope tube tilted upward */}
+      <g transform="rotate(-32)">
+        <rect x="-62" y="-18" width="124" height="36" rx="5" />
+        {/* Objective lens cap */}
+        <rect x="59" y="-21" width="10" height="42" rx="2.5" />
+        {/* Eyepiece body */}
+        <rect x="-78" y="-10" width="17" height="20" rx="2" />
+        {/* Eyepiece tip */}
+        <rect x="-88" y="-7" width="10" height="14" rx="1.2" />
+      </g>
+    </svg>
   );
 }
 
@@ -150,6 +161,31 @@ export function AddressCommentsIcon(props: IconProps) {
   );
 }
 
+// 8. Time Tracking — analog stopwatch silhouette: round face, top stem +
+// crown, two clock hands and a tick mark at 12. Reads as a stopwatch even
+// at small sizes thanks to the stem.
+export function TimeTrackingIcon(props: IconProps) {
+  return (
+    <IconBase {...props}>
+      {/* Crown / stem on top */}
+      <line x1="14" y1="3" x2="18" y2="3" />
+      <line x1="16" y1="3" x2="16" y2="6" />
+      {/* Optional side button (gives it the stopwatch silhouette) */}
+      <line x1="22.5" y1="6" x2="24" y2="7.5" />
+      {/* Watch face */}
+      <circle cx="16" cy="18" r="10" />
+      {/* 12 o'clock tick */}
+      <line x1="16" y1="9" x2="16" y2="11" />
+      {/* Hour hand pointing to ~10 */}
+      <line x1="16" y1="18" x2="11.5" y2="14.5" />
+      {/* Minute hand pointing to 12 */}
+      <line x1="16" y1="18" x2="16" y2="11.5" />
+      {/* Center pin */}
+      <circle cx="16" cy="18" r="0.9" fill="currentColor" />
+    </IconBase>
+  );
+}
+
 // 7. Meetings — audio waveform (variable-height vertical strokes)
 export function MeetingsIcon(props: IconProps) {
   return (
@@ -179,4 +215,5 @@ export const WORKFLOW_ICONS: Record<WorkflowId, React.FC<IconProps>> = {
   "ticket-quality": TicketQualityIcon,
   "address-pr-comments": AddressCommentsIcon,
   meetings: MeetingsIcon,
+  "time-tracking": TimeTrackingIcon,
 };

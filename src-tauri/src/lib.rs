@@ -6,6 +6,7 @@ pub mod llms;
 pub mod storage;
 
 use commands::{
+    start_time_tracking_poller,
     active_meeting_id,
     add_custom_copilot_model,
     add_custom_gemini_model,
@@ -91,6 +92,10 @@ use commands::{
     get_sprint_issues_by_id,
     get_sprint_reports_dir,
     get_store_cache_info,
+    get_system_activity_state,
+    load_time_tracking_state,
+    read_time_tracking_import_file,
+    save_time_tracking_state,
     glob_grooming_files,
     glob_repo_files,
     grep_grooming_files,
@@ -225,6 +230,10 @@ pub fn run() {
         .setup(|app| {
             storage::credentials::init_store_path(app.handle());
             storage::preferences::init_prefs_path(app.handle());
+            // Start the macOS lock/idle poller. Emits `time-tracker:state`
+            // events that the frontend's time-tracking store consumes to
+            // open and close work segments.
+            start_time_tracking_poller(app.handle().clone());
             eprintln!("[MERIDIAN] setup hook complete");
             Ok(())
         })
@@ -429,6 +438,11 @@ pub fn run() {
             create_task,
             update_task,
             delete_task,
+            // Time tracking
+            get_system_activity_state,
+            save_time_tracking_state,
+            load_time_tracking_state,
+            read_time_tracking_import_file,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

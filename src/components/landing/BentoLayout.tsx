@@ -15,6 +15,7 @@ const ORDER: WorkflowId[] = [
   "sprint-dashboard",
   "address-pr-comments",
   "meetings",
+  "time-tracking",
 ];
 
 const SPAN: Record<WorkflowId, string> = {
@@ -25,6 +26,7 @@ const SPAN: Record<WorkflowId, string> = {
   "sprint-dashboard":     "col-span-2 row-span-2",
   "address-pr-comments":  "row-span-2",
   "meetings":             "",
+  "time-tracking":        "",
 };
 
 const HERO: Record<WorkflowId, boolean> = {
@@ -35,6 +37,7 @@ const HERO: Record<WorkflowId, boolean> = {
   "ticket-quality":       false,
   "address-pr-comments":  false,
   "meetings":             false,
+  "time-tracking":        false,
 };
 
 function BentoTile({

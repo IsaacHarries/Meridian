@@ -188,3 +188,17 @@
   text-underline-offset: 2px;
   cursor: text;
 }
+
+/* Number input spinners — WebKit's default arrows render as solid black
+   glyphs on the input's white background, which becomes invisible in our
+   dark theme. The app is consistently dark, so hide them everywhere; users
+   can still type or use ↑/↓ keys, which is how all our number inputs are
+   actually used. */
+input[type="number"]::-webkit-inner-spin-button,
+input[type="number"]::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+input[type="number"] {
+  -moz-appearance: textfield;
+}

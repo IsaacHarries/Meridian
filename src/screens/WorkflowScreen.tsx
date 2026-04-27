@@ -9,7 +9,8 @@ export type WorkflowId =
   | "retrospectives"
   | "ticket-quality"
   | "address-pr-comments"
-  | "meetings";
+  | "meetings"
+  | "time-tracking";
 
 const WORKFLOW_META: Record<WorkflowId, { title: string; description: string; step: number }> = {
   "implement-ticket": {
@@ -46,6 +47,11 @@ const WORKFLOW_META: Record<WorkflowId, { title: string; description: string; st
     title: "Meetings",
     description: "Record and transcribe meetings locally with whisper, or capture freeform notes — then ask an AI about past conversations.",
     step: 14,
+  },
+  "time-tracking": {
+    title: "Time Tracking",
+    description: "Automatic work-hours tracker with idle detection, midnight rollover, and weekly overtime balance.",
+    step: 15,
   },
 };
 

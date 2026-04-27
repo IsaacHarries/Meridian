@@ -42,9 +42,12 @@ import {
   Link2,
   X,
   Check,
+  ChevronDown,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
+import { useTheme } from "@/providers/ThemeProvider";
+import type { AccentColor } from "@/lib/theme";
 
 export type LineHeightMode = "compact" | "normal" | "relaxed";
 
@@ -144,7 +147,7 @@ export function RichNotesEditor({
       }),
       TaskList,
       TaskItem.configure({ nested: true }),
-      Highlight,
+      Highlight.configure({ multicolor: true }),
       Placeholder.configure({
         placeholder: placeholder ?? "Type your meeting notes here…",
       }),
@@ -423,13 +426,7 @@ function Toolbar({
       >
         <Code className="h-3.5 w-3.5" />
       </ToolButton>
-      <ToolButton
-        active={editor.isActive("highlight")}
-        onClick={() => editor.chain().focus().toggleHighlight().run()}
-        label="Highlight"
-      >
-        <Highlighter className="h-3.5 w-3.5" />
-      </ToolButton>
+      <HighlightButton editor={editor} />
       <ToolButton
         active={editor.isActive("link")}
         disabled={!linkActionable}
@@ -506,6 +503,180 @@ function Toolbar({
 
 function Divider() {
   return <span className="mx-1 h-5 w-px bg-border" />;
+}
+
+// Common highlighter colours, mirroring what desktop word processors and
+// note-taking apps offer. Stored with ~45% alpha so the underlying text stays
+// legible in both light and dark themes (the inline style set by TipTap
+// overrides the default `<mark>` rule in `index.css`).
+type HighlightColor = { name: string; value: string };
+
+const HIGHLIGHT_COLORS: HighlightColor[] = [
+  { name: "Yellow", value: "rgba(253, 224, 71, 0.45)" },
+  { name: "Green", value: "rgba(134, 239, 172, 0.5)" },
+  { name: "Blue", value: "rgba(147, 197, 253, 0.5)" },
+  { name: "Pink", value: "rgba(249, 168, 212, 0.5)" },
+  { name: "Orange", value: "rgba(253, 186, 116, 0.55)" },
+  { name: "Purple", value: "rgba(216, 180, 254, 0.55)" },
+  { name: "Red", value: "rgba(252, 165, 165, 0.55)" },
+];
+
+// Map each theme accent to the palette swatch with the closest hue. `slate`
+// is intentionally chromatic-neutral so it falls back to Yellow (the
+// canonical highlighter colour). When the user picks a different color from
+// the palette we still respect that — this only drives the *default* applied
+// by a plain click on the highlighter icon.
+const ACCENT_TO_HIGHLIGHT: Record<AccentColor, string> = {
+  slate: "Yellow",
+  blue: "Blue",
+  violet: "Purple",
+  green: "Green",
+  orange: "Orange",
+  rose: "Pink",
+};
+
+function getDefaultHighlight(accent: AccentColor): HighlightColor {
+  const name = ACCENT_TO_HIGHLIGHT[accent];
+  return HIGHLIGHT_COLORS.find((c) => c.name === name) ?? HIGHLIGHT_COLORS[0];
+}
+
+function HighlightButton({ editor }: { editor: Editor }) {
+  const { config } = useTheme();
+  const defaultColor = getDefaultHighlight(config.accent);
+  const [open, setOpen] = useState(false);
+  const wrapperRef = useRef<HTMLDivElement>(null);
+  const active = editor.isActive("highlight");
+
+  // Close on outside click / Esc so the palette behaves like a popover.
+  useEffect(() => {
+    if (!open) return;
+    function onPointerDown(e: MouseEvent) {
+      if (!wrapperRef.current) return;
+      if (!wrapperRef.current.contains(e.target as Node)) setOpen(false);
+    }
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") setOpen(false);
+    }
+    window.addEventListener("mousedown", onPointerDown);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("mousedown", onPointerDown);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  function toggleDefault() {
+    if (active) {
+      editor.chain().focus().unsetHighlight().run();
+    } else {
+      editor.chain().focus().setHighlight({ color: defaultColor.value }).run();
+    }
+  }
+
+  function applyColor(color: string) {
+    editor.chain().focus().setHighlight({ color }).run();
+    setOpen(false);
+  }
+
+  function removeHighlight() {
+    editor.chain().focus().unsetHighlight().run();
+    setOpen(false);
+  }
+
+  const currentColor = (editor.getAttributes("highlight").color as
+    | string
+    | undefined) ?? null;
+
+  return (
+    <div ref={wrapperRef} className="relative inline-flex items-center">
+      {/* Main icon: toggles highlight using the theme-matched default colour. */}
+      <button
+        type="button"
+        onMouseDown={(e) => e.preventDefault()}
+        onClick={toggleDefault}
+        title={`Highlight (${defaultColor.name})`}
+        aria-label={`Highlight with ${defaultColor.name}`}
+        aria-pressed={active}
+        className={cn(
+          "h-7 pl-1.5 pr-1 inline-flex items-center justify-center rounded-l transition-colors",
+          active
+            ? "bg-muted text-foreground"
+            : "text-muted-foreground hover:bg-muted hover:text-foreground",
+        )}
+      >
+        <Highlighter className="h-3.5 w-3.5" />
+        {/* Thin underline of the active default colour, à la Word/Notion, so
+            the user can see at a glance what a plain click will apply. */}
+        <span
+          className="ml-1 h-3.5 w-1 rounded-sm"
+          style={{ backgroundColor: defaultColor.value }}
+        />
+      </button>
+      {/* Caret: opens the palette for picking a different colour. */}
+      <button
+        type="button"
+        onMouseDown={(e) => e.preventDefault()}
+        onClick={() => setOpen((v) => !v)}
+        title="Highlight colour"
+        aria-label="Choose highlight colour"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        className={cn(
+          "h-7 w-4 inline-flex items-center justify-center rounded-r transition-colors text-muted-foreground hover:bg-muted hover:text-foreground",
+          open && "bg-muted text-foreground",
+        )}
+      >
+        <ChevronDown className="h-3 w-3" />
+      </button>
+      {open && (
+        <div
+          // Floats below the toolbar button. `z-50` keeps it above the editor
+          // content; the toolbar itself is not a stacking context root, so a
+          // plain absolute position is enough.
+          className="absolute top-full left-0 mt-1 z-50 flex items-center gap-1 rounded-md border bg-popover p-1.5 shadow-md"
+          role="menu"
+        >
+          {HIGHLIGHT_COLORS.map((c) => {
+            const isSelected = currentColor === c.value;
+            const isDefault = c.name === defaultColor.name;
+            return (
+              <button
+                key={c.value}
+                type="button"
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() => applyColor(c.value)}
+                title={isDefault ? `${c.name} (theme default)` : c.name}
+                aria-label={c.name}
+                className={cn(
+                  "h-5 w-5 rounded-sm border transition-transform hover:scale-110",
+                  isDefault ? "border-foreground/60" : "border-border/60",
+                  isSelected && "ring-2 ring-ring ring-offset-1 ring-offset-popover",
+                )}
+                style={{ backgroundColor: c.value }}
+              />
+            );
+          })}
+          <span className="mx-0.5 h-5 w-px bg-border" />
+          <button
+            type="button"
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={removeHighlight}
+            disabled={!active}
+            title="Remove highlight"
+            aria-label="Remove highlight"
+            className={cn(
+              "h-5 w-5 inline-flex items-center justify-center rounded-sm border border-border/60",
+              active
+                ? "text-muted-foreground hover:bg-muted hover:text-foreground"
+                : "text-muted-foreground/40 cursor-not-allowed",
+            )}
+          >
+            <X className="h-3 w-3" />
+          </button>
+        </div>
+      )}
+    </div>
+  );
 }
 
 function ToolButton({

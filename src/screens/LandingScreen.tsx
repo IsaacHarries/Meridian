@@ -3,6 +3,7 @@ import { AlertTriangle, TrendingUp, CheckSquare, GitPullRequest } from "lucide-r
 import { HeaderSettingsButton } from "@/components/HeaderSettingsButton";
 import { HeaderRecordButton } from "@/components/HeaderRecordButton";
 import { HeaderTasksButton } from "@/components/HeaderTasksButton";
+import { HeaderTimeTracker } from "@/components/HeaderTimeTracker";
 import { APP_HEADER_BAR } from "@/components/appHeaderLayout";
 import { useOpenSettings } from "@/context/OpenSettingsContext";
 import { useImplementTicketStore } from "@/stores/implementTicketStore";
@@ -283,6 +284,11 @@ const WORKFLOW_CARDS: {
     title: "Meetings",
     description: "Transcribe meetings locally with whisper or capture freeform notes — then ask an AI about past conversations",
   },
+  {
+    id: "time-tracking",
+    title: "Time Tracking",
+    description: "Automatic work-hours tracker — pauses on screen lock or idle, banks overtime for later in the week",
+  },
 ];
 
 
@@ -333,6 +339,7 @@ export function LandingScreen({ credStatus, onNavigate }: LandingScreenProps) {
             {quip}
           </h1>
           <div className="flex items-center gap-2 shrink-0">
+            <HeaderTimeTracker className="relative z-10" />
             <HeaderRecordButton className="relative z-10" />
             <HeaderTasksButton className="relative z-10" />
             <HeaderSettingsButton className="relative z-10 shrink-0" />

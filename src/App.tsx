@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { OpenSettingsProvider } from "@/context/OpenSettingsContext";
 import { OpenMeetingsProvider } from "@/context/OpenMeetingsContext";
+import { OpenTimeTrackingProvider } from "@/context/OpenTimeTrackingContext";
 import { RecordingContextTagsProvider } from "@/context/RecordingContextTagsContext";
 import { ThemeProvider } from "@/providers/ThemeProvider";
 import { Loader2 } from "lucide-react";
@@ -12,6 +13,7 @@ import { hydrateImplementStore } from "@/stores/implementTicketStore";
 import { hydratePrReviewStore } from "@/stores/prReviewStore";
 import { hydrateMeetingsStore } from "@/stores/meetingsStore";
 import { hydrateTasksStore, useTasksStore } from "@/stores/tasksStore";
+import { hydrateTimeTrackingStore } from "@/stores/timeTrackingStore";
 import { TasksPanel } from "@/components/TasksPanel";
 import {
   SpaceEffectsOverlay,
@@ -42,6 +44,7 @@ import { PrReviewScreen } from "@/screens/PrReviewScreen";
 import { ImplementTicketScreen } from "@/screens/ImplementTicketScreen";
 import { AddressPrCommentsScreen } from "@/screens/AddressPrCommentsScreen";
 import { MeetingsScreen } from "@/screens/MeetingsScreen";
+import { TimeTrackingScreen } from "@/screens/TimeTrackingScreen";
 import { AgentSkillsScreen } from "@/screens/AgentSkillsScreen";
 import { ToolSandboxScreen } from "@/screens/ToolSandboxScreen";
 
@@ -63,6 +66,7 @@ const WORKFLOW_IDS: WorkflowId[] = [
   "ticket-quality",
   "address-pr-comments",
   "meetings",
+  "time-tracking",
 ];
 
 function isWorkflowId(s: Screen): s is WorkflowId {
@@ -81,6 +85,7 @@ function AppInner() {
       hydratePrReviewStore(),
       hydrateMeetingsStore(),
       hydrateTasksStore(),
+      hydrateTimeTrackingStore(),
     ]);
 
     getCredentialStatus()
@@ -119,6 +124,10 @@ function AppInner() {
     setScreen("meetings");
   }, []);
 
+  const openTimeTracking = useCallback(() => {
+    setScreen("time-tracking");
+  }, []);
+
   function closeSettings() {
     getCredentialStatus()
       .then((status) => {
@@ -141,6 +150,7 @@ function AppInner() {
   return (
     <OpenSettingsProvider openSettings={openSettings}>
      <OpenMeetingsProvider openMeetings={openMeetings}>
+      <OpenTimeTrackingProvider openTimeTracking={openTimeTracking}>
       <RecordingContextTagsProvider tags={recordingContextTagsForScreen(screen)}>
       <ScreenWithTasksPanel>
       {screen === "loading" ? (
@@ -166,6 +176,8 @@ function AppInner() {
         <AddressPrCommentsScreen credStatus={credStatus} onBack={() => setScreen("landing")} />
       ) : screen === "meetings" ? (
         <MeetingsScreen onBack={() => setScreen("landing")} />
+      ) : screen === "time-tracking" ? (
+        <TimeTrackingScreen onBack={() => setScreen("landing")} />
       ) : screen === "agent-skills" ? (
         <AgentSkillsScreen onBack={() => setScreen("landing")} />
       ) : screen === "tool-sandbox" ? (
@@ -179,6 +191,7 @@ function AppInner() {
       )}
       </ScreenWithTasksPanel>
       </RecordingContextTagsProvider>
+      </OpenTimeTrackingProvider>
      </OpenMeetingsProvider>
     </OpenSettingsProvider>
   );

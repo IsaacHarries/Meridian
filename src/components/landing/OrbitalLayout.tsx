@@ -14,14 +14,16 @@ const CY = VBOX_H / 2;
 const PLANET_R = 240;       // wireframe sphere outer radius
 const ORBIT_R = 360;        // node-orbit radius — circular path around the planet
 
-const NODE_COUNT = 7;
-function nodeAngle(i: number): number {
-  return -Math.PI / 2 + (i * Math.PI * 2) / NODE_COUNT;
+// Node count is derived from the cards array at render time so adding a
+// workflow doesn't require touching this layout. Spacing simply tightens
+// as the count grows.
+function nodeAngle(i: number, total: number): number {
+  return -Math.PI / 2 + (i * Math.PI * 2) / total;
 }
 
 // Position on the orbital ring — a perfect circle of radius ORBIT_R.
-function nodePos(i: number): { x: number; y: number } {
-  const a = nodeAngle(i);
+function nodePos(i: number, total: number): { x: number; y: number } {
+  const a = nodeAngle(i, total);
   return {
     x: CX + ORBIT_R * Math.cos(a),
     y: CY + ORBIT_R * Math.sin(a),
@@ -195,7 +197,7 @@ export function OrbitalLayout({ cards, onNavigate }: LandingLayoutProps) {
             Positions expressed in viewBox-relative percentages so they line
             up with the SVG planet under preserveAspectRatio="xMidYMid meet". */}
         {cards.map((card, i) => {
-          const { x, y } = nodePos(i);
+          const { x, y } = nodePos(i, cards.length);
           const xPct = (x / VBOX_W) * 100;
           const yPct = (y / VBOX_H) * 100;
           // Label always renders directly above the halo, regardless of the
