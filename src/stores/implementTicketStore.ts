@@ -23,7 +23,6 @@ import {
   type TriageTurnOutput,
   type SuggestedEdit,
   type SuggestedEditStatus,
-  type RetroKbEntry,
   type WorktreeInfo,
   type SkillType,
   type BitbucketPr,
@@ -57,7 +56,6 @@ import {
   runPrDescriptionGen,
   runRetrospectiveAgent,
   updateJiraIssue,
-  saveKnowledgeEntry,
   parseAgentJson,
   readGroomingFile,
   grepGroomingFiles,
@@ -280,14 +278,6 @@ export function detectGroomingBlockers(
   return blockers;
 }
 
-function newId() {
-  return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-}
-
-function isoNow() {
-  return new Date().toISOString();
-}
-
 // ── Store state shape ──────────────────────────────────────────────────────────
 
 // ── Per-ticket cached pipeline session ────────────────────────────────────────
@@ -332,7 +322,6 @@ export type PipelineSession = Pick<
   | "groomingStreamText"
   | "checkpointChats"
   | "errors"
-  | "kbSaved"
   | "worktreeInfo"
   | "ticketText"
   | "skills"
@@ -420,7 +409,6 @@ interface ImplementTicketState {
   errors: Partial<Record<Stage, string>>;
 
   // ── Misc ─────────────────────────────────────────────────────────────────────
-  kbSaved: boolean;
   worktreeInfo: WorktreeInfo | null;
 
   // ── Internals (not derived from UI, survive navigation) ──────────────────────
@@ -472,7 +460,6 @@ interface ImplementTicketState {
   /** Flip the showHighlights toggle. */
   toggleHighlights: () => void;
   pushGroomingToJira: () => Promise<void>;
-  saveToKnowledgeBase: (entries: RetroKbEntry[]) => Promise<void>;
   markComplete: (stage: Stage) => void;
   setError: (stage: Stage, err: string) => void;
   clearError: (stage: Stage) => void;
@@ -510,7 +497,6 @@ export const INITIAL: Omit<
   | "clearAllGroomingHighlights"
   | "toggleHighlights"
   | "pushGroomingToJira"
-  | "saveToKnowledgeBase"
   | "markComplete"
   | "setError"
   | "clearError"
@@ -566,7 +552,6 @@ export const INITIAL: Omit<
   checkpointStreamText: "",
   checkpointChats: {},
   errors: {},
-  kbSaved: false,
   worktreeInfo: null,
   ticketText: "",
   skills: {},
@@ -620,7 +605,6 @@ export function snapshotSession(s: ImplementTicketState): PipelineSession {
     groomingStreamText: s.groomingStreamText,
     checkpointChats: s.checkpointChats,
     errors: s.errors,
-    kbSaved: s.kbSaved,
     worktreeInfo: s.worktreeInfo,
     ticketText: s.ticketText,
     skills: s.skills,
@@ -2052,26 +2036,6 @@ export const useImplementTicketStore = create<ImplementTicketState>()(
       } else if (s.currentStage === "triage") {
         await get().sendTriageMessage(input);
       }
-    },
-
-    // ── Save to Knowledge Base ─────────────────────────────────────────────────
-    saveToKnowledgeBase: async (entries) => {
-      const { selectedIssue } = get();
-      const now = isoNow();
-      for (const entry of entries) {
-        await saveKnowledgeEntry({
-          id: newId(),
-          entryType: entry.type,
-          title: entry.title,
-          body: entry.body,
-          tags: ["auto-generated", selectedIssue?.key ?? "unknown"],
-          createdAt: now,
-          updatedAt: now,
-          linkedJiraKey: selectedIssue?.key ?? null,
-          linkedPrId: null,
-        });
-      }
-      set({ kbSaved: true });
     },
   }),
 );

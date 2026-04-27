@@ -8,7 +8,12 @@ export default defineConfig({
     environment: "jsdom",
     globals: true,
     setupFiles: ["src/__tests__/setup.ts"],
-    exclude: ["**/node_modules/**", "**/src-tauri/**", "**/src-sidecar/**"],
+    exclude: [
+      "**/node_modules/**",
+      "**/src-tauri/**",
+      "**/src-sidecar/**",
+      "**/.claude/**",
+    ],
   },
   resolve: {
     alias: {

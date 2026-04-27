@@ -167,12 +167,9 @@ const retrospective: RetrospectiveOutput = {
       skill: "implementation",
       suggestion: "Document preferred Redis client and connection pooling defaults.",
     },
-  ],
-  knowledge_base_entries: [
     {
-      type: "learning",
-      title: "Rate limit fail-open policy",
-      body: "Chose fail-open with warning log to prioritise availability.",
+      skill: "patterns",
+      suggestion: "Rate limiting fails open with a warning log to prioritise availability.",
     },
   ],
   summary: "Mock retrospective agent output.",

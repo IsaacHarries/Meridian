@@ -5,7 +5,7 @@
 Meridian is a personal productivity desktop app for a senior engineer and scrum master.
 It combines AI-assisted feature delivery (8-agent implementation pipeline) with engineering
 leadership tooling (sprint dashboard, retrospectives, standup briefing, workload balancer,
-ticket quality checker, knowledge base). Built on Tauri + React + TypeScript + Claude Agent SDK.
+ticket quality checker, meeting transcription). Built on Tauri + React + TypeScript + Claude Agent SDK.
 Data sources: JIRA API and Bitbucket API. Built for individual use — not distributed.
 
 ---
@@ -42,9 +42,8 @@ Data sources: JIRA API and Bitbucket API. Built for individual use — not distr
 3. **Sprint Dashboard** — real-time sprint health, blockers, team performance, and team workload with AI rebalancing suggestions (also the launch point for standup recordings)
 4. **Sprint Retrospectives** — completed sprint analysis, trend charts, AI summary
 5. **Ticket Quality Checker** — readiness assessment against AC completeness, scope, dependencies
-6. **Knowledge Base / Decision Log** — searchable log of decisions, patterns, retro learnings
-7. **Address PR Comments** — AI reads reviewer comments, checks out branch in worktree, proposes and applies fixes
-8. **Meetings** — local whisper transcription _or_ freeform notes (when recording is not allowed); both are tagged, timestamped, and AI-summarisable, and feed into Sprint Retrospectives. Start a recording from any screen via the header record button (auto-tags "standup" from Sprint Dashboard, "retro" from Retrospectives); notes are created from the Meetings screen via the split-button dropdown, which remembers the last mode chosen.
+6. **Address PR Comments** — AI reads reviewer comments, checks out branch in worktree, proposes and applies fixes
+7. **Meetings** — local whisper transcription _or_ freeform notes (when recording is not allowed); both are tagged, timestamped, and AI-summarisable, and feed into Sprint Retrospectives. Start a recording from any screen via the header record button (auto-tags "standup" from Sprint Dashboard, "retro" from Retrospectives); notes are created from the Meetings screen via the split-button dropdown, which remembers the last mode chosen.
 
 ---
 
@@ -75,8 +74,8 @@ USER confirms → PR raised to Bitbucket
 (After merge)
     ↓
 [8. Retrospective/Learning Agent]
-    ↓ USER checkpoint: review retrospective, approve Skill updates
-Skills / Knowledge Base updated
+    ↓ USER checkpoint: review retrospective, apply skill updates one-by-one
+Agent Skills updated
 ```
 
 ### Key Behavioral Constraints

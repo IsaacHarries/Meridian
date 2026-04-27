@@ -32,7 +32,6 @@ use commands::{
     debug_jira_endpoints,
     delete_agent_skill,
     delete_credential,
-    delete_knowledge_entry,
     delete_meeting,
     delete_pr_comment,
     delete_task,
@@ -40,7 +39,6 @@ use commands::{
     rename_meeting_speaker,
     delete_preference,
     delete_store_cache,
-    export_knowledge_markdown,
     // URL fetch
     fetch_url_content,
     finalize_implementation_plan,
@@ -110,8 +108,6 @@ use commands::{
     save_grooming_template,
     get_grooming_template_path,
     reveal_grooming_templates_dir,
-    // Knowledge base
-    load_knowledge_entries,
     // Sprint reports (disk cache)
     list_cached_sprint_ids,
     list_meetings,
@@ -162,7 +158,6 @@ use commands::{
     run_triage_turn,
     save_agent_skill,
     save_credential,
-    save_knowledge_entry,
     save_meeting,
     save_sprint_report,
     save_trend_analysis,
@@ -341,11 +336,6 @@ pub fn run() {
             update_pr_task,
             delete_pr_comment,
             update_pr_comment,
-            // Knowledge base
-            load_knowledge_entries,
-            save_knowledge_entry,
-            delete_knowledge_entry,
-            export_knowledge_markdown,
             // Agent skills
             load_agent_skills,
             save_agent_skill,

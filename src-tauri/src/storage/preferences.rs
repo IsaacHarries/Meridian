@@ -69,7 +69,7 @@ pub fn get_pref(key: &str) -> Option<String> {
 // ── Data directory ────────────────────────────────────────────────────────────
 
 /// Returns the user-configured data directory, or the app data dir as fallback.
-/// All user-generated files (sprint reports, templates, skills, knowledge base)
+/// All user-generated files (sprint reports, templates, skills, meetings)
 /// are stored relative to this root.
 pub fn resolve_data_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     if let Some(custom) = get_pref("data_dir") {

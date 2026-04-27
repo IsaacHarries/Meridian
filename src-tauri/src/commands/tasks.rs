@@ -1,6 +1,6 @@
-// Tauri command surface for the manual-tasks store. Mirrors the knowledge
-// commands' pattern: read-modify-write the on-disk JSON each time, since the
-// list stays small and atomic writes keep the format simple.
+// Tauri command surface for the manual-tasks store. Read-modify-write the
+// on-disk JSON each time — the list stays small and atomic writes keep the
+// format simple.
 
 use crate::storage::tasks::{self, TaskRecord};
 

@@ -19,7 +19,6 @@ vi.mock("@/lib/tauri", () => ({
   runPrDescriptionGen: vi.fn().mockResolvedValue("{}"),
   runRetrospectiveAgent: vi.fn().mockResolvedValue("{}"),
   updateJiraIssue: vi.fn().mockResolvedValue(undefined),
-  saveKnowledgeEntry: vi.fn().mockResolvedValue(undefined),
   parseAgentJson: vi.fn().mockReturnValue(null),
   readRepoFile: vi.fn().mockResolvedValue(""),
   grepRepoFiles: vi.fn().mockResolvedValue([]),
@@ -276,9 +275,9 @@ describe("implementTicketStore", () => {
     });
 
     it("merges partial state without clobbering unrelated fields", () => {
-      useImplementTicketStore.setState({ kbSaved: true });
+      useImplementTicketStore.setState({ isSessionActive: true });
       useImplementTicketStore.getState()._set({ groomingProgress: "x" });
-      expect(useImplementTicketStore.getState().kbSaved).toBe(true);
+      expect(useImplementTicketStore.getState().isSessionActive).toBe(true);
     });
   });
 
@@ -291,7 +290,6 @@ describe("implementTicketStore", () => {
         currentStage: "impact",
         grooming: makeGroomingOutput(),
         isSessionActive: true,
-        kbSaved: true,
       });
 
       useImplementTicketStore.getState().resetSession();
@@ -301,7 +299,6 @@ describe("implementTicketStore", () => {
       expect(s.currentStage).toBe("select");
       expect(s.grooming).toBeNull();
       expect(s.isSessionActive).toBe(false);
-      expect(s.kbSaved).toBe(false);
     });
 
     it("preserves the sessions Map across a reset", () => {

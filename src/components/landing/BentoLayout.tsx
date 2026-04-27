@@ -13,7 +13,6 @@ const ORDER: WorkflowId[] = [
   "ticket-quality",
   "retrospectives",
   "sprint-dashboard",
-  "knowledge-base",
   "address-pr-comments",
   "meetings",
 ];
@@ -21,10 +20,9 @@ const ORDER: WorkflowId[] = [
 const SPAN: Record<WorkflowId, string> = {
   "implement-ticket":     "col-span-2 row-span-2",
   "review-pr":            "col-span-2",
-  "ticket-quality":       "",
+  "ticket-quality":       "col-span-2",
   "retrospectives":       "",
   "sprint-dashboard":     "col-span-2 row-span-2",
-  "knowledge-base":       "",
   "address-pr-comments":  "row-span-2",
   "meetings":             "",
 };
@@ -35,7 +33,6 @@ const HERO: Record<WorkflowId, boolean> = {
   "review-pr":            false,
   "retrospectives":       false,
   "ticket-quality":       false,
-  "knowledge-base":       false,
   "address-pr-comments":  false,
   "meetings":             false,
 };

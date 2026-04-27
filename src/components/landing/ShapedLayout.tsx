@@ -36,22 +36,6 @@ const SHAPES: Record<WorkflowId, ShapeDef> = {
   "ticket-quality": {
     d: "M 4 4 H 170 L 196 60 L 170 116 H 4 Z",
   },
-  // Book — asymmetric rounded rect with a spine line
-  "knowledge-base": {
-    d: "M 4 4 H 184 A 12 12 0 0 1 196 16 V 104 A 12 12 0 0 1 184 116 H 4 Z",
-    decoration: (
-      <line
-        x1="22"
-        y1="16"
-        x2="22"
-        y2="104"
-        stroke="currentColor"
-        strokeWidth="1.2"
-        opacity="0.4"
-      />
-    ),
-    inset: { left: 8 },
-  },
   // Speech bubble — tail at bottom-left
   "address-pr-comments": {
     d: "M 4 4 H 196 V 96 H 36 L 16 116 L 24 96 H 4 Z",

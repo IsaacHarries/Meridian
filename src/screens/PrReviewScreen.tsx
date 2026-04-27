@@ -2169,7 +2169,6 @@ export function PrReviewScreen({ credStatus, onBack }: PrReviewScreenProps) {
         whyNeeded: why_needed,
         exampleCall: example_call,
         dismissed: false,
-        saved: false,
       }]);
     });
     return () => { unlisten.then(f => f()); };
@@ -2177,9 +2176,6 @@ export function PrReviewScreen({ credStatus, onBack }: PrReviewScreenProps) {
 
   function dismissToolRequest(id: string) {
     setToolRequests(prev => prev.map(r => r.id === id ? { ...r, dismissed: true } : r));
-  }
-  function markToolRequestSaved(id: string) {
-    setToolRequests(prev => prev.map(r => r.id === id ? { ...r, saved: true } : r));
   }
 
   // ── Refresh PR lists every time this panel mounts ────────────────────────────
@@ -2870,7 +2866,6 @@ export function PrReviewScreen({ credStatus, onBack }: PrReviewScreenProps) {
                           key={r.id}
                           request={r}
                           onDismiss={dismissToolRequest}
-                          onSaved={markToolRequestSaved}
                         />
                       ))}
                       {reviewChatSending && (

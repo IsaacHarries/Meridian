@@ -45,6 +45,15 @@ import {
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogFooter,
+  DialogDescription,
+} from "@/components/ui/dialog";
 import {
   type JiraIssue,
   type DescriptionSection,
@@ -62,7 +71,10 @@ import {
   type RetrospectiveOutput,
   type TriageMessage,
   type TriageTurnOutput,
-  type RetroKbEntry,
+  type RetroSkillSuggestion,
+  type SkillType,
+  loadAgentSkills,
+  saveAgentSkill,
   aiProviderComplete,
   jiraComplete,
   isMockMode,
@@ -1723,11 +1735,63 @@ function PrPanel({
 
 interface RetroPanelProps {
   data: RetrospectiveOutput;
-  onSaveToKb: (entries: RetroKbEntry[]) => void;
-  kbSaved: boolean;
 }
 
-function RetroPanel({ data, onSaveToKb, kbSaved }: RetroPanelProps) {
+const SKILL_LABEL: Record<SkillType, string> = {
+  grooming: "Grooming Conventions",
+  patterns: "Codebase Patterns",
+  implementation: "Implementation Standards",
+  review: "Review Standards",
+};
+
+interface ActiveApply {
+  index: number;
+  skillType: SkillType;
+  draft: string;
+}
+
+function RetroPanel({ data }: RetroPanelProps) {
+  const [active, setActive] = useState<ActiveApply | null>(null);
+  const [applied, setApplied] = useState<Set<number>>(new Set());
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function openApply(index: number, suggestion: RetroSkillSuggestion) {
+    setError(null);
+    setBusy(true);
+    try {
+      const skills = await loadAgentSkills();
+      const existing = (skills[suggestion.skill] ?? "").trimEnd();
+      const draft = existing
+        ? `${existing}\n- ${suggestion.suggestion}`
+        : `- ${suggestion.suggestion}`;
+      setActive({ index, skillType: suggestion.skill, draft });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function saveApply() {
+    if (!active) return;
+    setError(null);
+    setBusy(true);
+    try {
+      await saveAgentSkill(active.skillType, active.draft);
+      setApplied((prev) => {
+        const next = new Set(prev);
+        next.add(active.index);
+        return next;
+      });
+      setActive(null);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <div className="space-y-3">
       <p className="text-sm leading-relaxed">{data.summary}</p>
@@ -1746,53 +1810,94 @@ function RetroPanel({ data, onSaveToKb, kbSaved }: RetroPanelProps) {
         items={data.patterns_identified}
       />
       {data.agent_skill_suggestions.length > 0 && (
-        <CollapsibleList
-          title="Agent Skill Suggestions"
-          items={data.agent_skill_suggestions.map(
-            (s) => `${s.skill}: ${s.suggestion}`,
-          )}
-          icon={<Sparkles className="h-4 w-4 text-purple-500" />}
-        />
-      )}
-      {data.knowledge_base_entries.length > 0 && (
         <div className="border rounded-md overflow-hidden">
-          <div className="px-3 py-2 bg-muted/30 flex items-center justify-between">
-            <div className="flex items-center gap-2 text-sm font-medium">
-              <BookOpen className="h-4 w-4 text-muted-foreground" />
-              Knowledge Base Entries ({data.knowledge_base_entries.length})
-            </div>
-            {!kbSaved ? (
-              <Button
-                size="sm"
-                variant="outline"
-                className="h-7 text-xs"
-                onClick={() => onSaveToKb(data.knowledge_base_entries)}
-              >
-                Save to KB
-              </Button>
-            ) : (
-              <span className="text-xs text-green-600 flex items-center gap-1">
-                <Check className="h-3 w-3" /> Saved
-              </span>
-            )}
+          <div className="px-3 py-2 bg-muted/30 flex items-center gap-2 text-sm font-medium">
+            <Sparkles className="h-4 w-4 text-purple-500" />
+            <span className="flex-1">
+              Agent Skill Suggestions ({data.agent_skill_suggestions.length})
+            </span>
           </div>
           <div className="divide-y">
-            {data.knowledge_base_entries.map((e, i) => (
-              <div key={i} className="px-3 py-2">
-                <div className="flex items-center gap-2 mb-0.5">
-                  <Badge variant="outline" className="text-xs">
-                    {e.type}
-                  </Badge>
-                  <span className="text-sm font-medium">{e.title}</span>
+            {data.agent_skill_suggestions.map((s, i) => {
+              const isApplied = applied.has(i);
+              return (
+                <div
+                  key={i}
+                  className="px-3 py-2 flex items-start gap-3"
+                >
+                  <div className="flex-1 min-w-0 space-y-1">
+                    <Badge variant="outline" className="text-xs">
+                      {SKILL_LABEL[s.skill] ?? s.skill}
+                    </Badge>
+                    <p className="text-sm text-muted-foreground leading-snug">
+                      {s.suggestion}
+                    </p>
+                  </div>
+                  {isApplied ? (
+                    <span className="text-xs text-green-600 flex items-center gap-1 shrink-0 mt-0.5">
+                      <Check className="h-3 w-3" /> Applied
+                    </span>
+                  ) : (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="h-7 text-xs shrink-0 mt-0.5"
+                      disabled={busy}
+                      onClick={() => openApply(i, s)}
+                    >
+                      Apply
+                    </Button>
+                  )}
                 </div>
-                <p className="text-sm text-muted-foreground line-clamp-2">
-                  {e.body}
-                </p>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </div>
       )}
+      {error && (
+        <p className="text-xs text-red-600 dark:text-red-400">{error}</p>
+      )}
+      <Dialog
+        open={active !== null}
+        onOpenChange={(open) => !open && setActive(null)}
+      >
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>
+              Apply to {active ? SKILL_LABEL[active.skillType] : ""}
+            </DialogTitle>
+            <DialogDescription>
+              Review the updated skill body before saving. The suggestion has
+              been appended as a bullet — edit freely.
+            </DialogDescription>
+          </DialogHeader>
+          <Textarea
+            value={active?.draft ?? ""}
+            onChange={(e) =>
+              setActive((prev) =>
+                prev ? { ...prev, draft: e.target.value } : prev,
+              )
+            }
+            className="font-mono text-xs min-h-[260px]"
+          />
+          {error && (
+            <p className="text-xs text-red-600 dark:text-red-400">{error}</p>
+          )}
+          <DialogFooter>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setActive(null)}
+              disabled={busy}
+            >
+              Cancel
+            </Button>
+            <Button size="sm" onClick={saveApply} disabled={busy}>
+              {busy ? "Saving…" : "Save to skill"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
@@ -2065,7 +2170,6 @@ interface PipelineChatPanelProps {
   pendingApproval: Stage | null;
   toolRequests: ToolRequest[];
   onDismissToolRequest: (id: string) => void;
-  onSavedToolRequest: (id: string) => void;
   chatInput: string;
   onChatInputChange: (v: string) => void;
   /** Send text through the unified pipeline send function. */
@@ -2101,7 +2205,6 @@ function PipelineChatPanel({
   pendingApproval,
   toolRequests,
   onDismissToolRequest,
-  onSavedToolRequest,
   chatInput,
   onChatInputChange,
   onSend,
@@ -2251,7 +2354,6 @@ function PipelineChatPanel({
               key={r.id}
               request={r}
               onDismiss={onDismissToolRequest}
-              onSaved={onSavedToolRequest}
             />
           ))}
 
@@ -2573,7 +2675,6 @@ export function ImplementTicketScreen({
     prSubmitStatus,
     prSubmitError,
     retrospective,
-    kbSaved,
     groomingBlockers,
 
     groomingEdits,
@@ -2882,7 +2983,6 @@ export function ImplementTicketScreen({
           whyNeeded: why_needed,
           exampleCall: example_call,
           dismissed: false,
-          saved: false,
         },
       ]);
     });
@@ -3141,11 +3241,6 @@ export function ImplementTicketScreen({
       prev.map((r) => (r.id === id ? { ...r, dismissed: true } : r)),
     );
   }
-  function markToolRequestSaved(id: string) {
-    setToolRequests((prev) =>
-      prev.map((r) => (r.id === id ? { ...r, saved: true } : r)),
-    );
-  }
 
   // ── Stage content renderer ──────────────────────────────────────────────────
 
@@ -3388,11 +3483,7 @@ export function ImplementTicketScreen({
         );
       return (
         <>
-          <RetroPanel
-            data={retrospective}
-            onSaveToKb={(entries) => store().saveToKnowledgeBase(entries)}
-            kbSaved={kbSaved}
-          />
+          <RetroPanel data={retrospective} />
           {currentStage !== "complete" && renderCheckpoint(stage)}
         </>
       );
@@ -3742,7 +3833,6 @@ export function ImplementTicketScreen({
                     pendingApproval={pendingApproval}
                     toolRequests={toolRequests}
                     onDismissToolRequest={dismissToolRequest}
-                    onSavedToolRequest={markToolRequestSaved}
                     chatInput={chatInput}
                     onChatInputChange={setChatInput}
                     onSend={sendChatMessage}

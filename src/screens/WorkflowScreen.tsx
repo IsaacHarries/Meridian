@@ -8,7 +8,6 @@ export type WorkflowId =
   | "sprint-dashboard"
   | "retrospectives"
   | "ticket-quality"
-  | "knowledge-base"
   | "address-pr-comments"
   | "meetings";
 
@@ -37,11 +36,6 @@ const WORKFLOW_META: Record<WorkflowId, { title: string; description: string; st
     title: "Groom Tickets",
     description: "Readiness assessment for backlog and sprint tickets.",
     step: 10,
-  },
-  "knowledge-base": {
-    title: "Knowledge Base",
-    description: "Searchable log of decisions, patterns, and retrospective learnings.",
-    step: 9,
   },
   "address-pr-comments": {
     title: "Address PR Comments",

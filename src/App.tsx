@@ -37,7 +37,6 @@ import { LandingScreen } from "@/screens/LandingScreen";
 import { WorkflowScreen, type WorkflowId } from "@/screens/WorkflowScreen";
 import { SprintDashboardScreen } from "@/screens/SprintDashboardScreen";
 import { RetrospectivesScreen } from "@/screens/RetrospectivesScreen";
-import { KnowledgeBaseScreen } from "@/screens/KnowledgeBaseScreen";
 import { TicketQualityScreen } from "@/screens/TicketQualityScreen";
 import { PrReviewScreen } from "@/screens/PrReviewScreen";
 import { ImplementTicketScreen } from "@/screens/ImplementTicketScreen";
@@ -62,7 +61,6 @@ const WORKFLOW_IDS: WorkflowId[] = [
   "sprint-dashboard",
   "retrospectives",
   "ticket-quality",
-  "knowledge-base",
   "address-pr-comments",
   "meetings",
 ];
@@ -158,8 +156,6 @@ function AppInner() {
         <SprintDashboardScreen credStatus={credStatus} onBack={() => setScreen("landing")} />
       ) : screen === "retrospectives" ? (
         <RetrospectivesScreen onBack={() => setScreen("landing")} />
-      ) : screen === "knowledge-base" ? (
-        <KnowledgeBaseScreen onBack={() => setScreen("landing")} />
       ) : screen === "ticket-quality" && credStatus ? (
         <TicketQualityScreen credStatus={credStatus} onBack={() => setScreen("landing")} />
       ) : screen === "review-pr" && credStatus ? (

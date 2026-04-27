@@ -1149,39 +1149,6 @@ export async function updatePrComment(
   });
 }
 
-// ── Knowledge base types ──────────────────────────────────────────────────────
-
-export interface KnowledgeEntry {
-  id: string;
-  /** "decision" | "pattern" | "learning" */
-  entryType: string;
-  title: string;
-  body: string;
-  tags: string[];
-  createdAt: string;
-  updatedAt: string;
-  linkedJiraKey: string | null;
-  linkedPrId: number | null;
-}
-
-// ── Knowledge base commands ───────────────────────────────────────────────────
-
-export async function loadKnowledgeEntries(): Promise<KnowledgeEntry[]> {
-  return invoke<KnowledgeEntry[]>("load_knowledge_entries");
-}
-
-export async function saveKnowledgeEntry(entry: KnowledgeEntry): Promise<void> {
-  return invoke("save_knowledge_entry", { entry });
-}
-
-export async function deleteKnowledgeEntry(id: string): Promise<void> {
-  return invoke("delete_knowledge_entry", { id });
-}
-
-export async function exportKnowledgeMarkdown(ids?: string[]): Promise<string> {
-  return invoke<string>("export_knowledge_markdown", { ids: ids ?? null });
-}
-
 // ── Agent pipeline types ──────────────────────────────────────────────────────
 
 export interface GroomingOutput {
@@ -1327,14 +1294,8 @@ export interface PrDescriptionOutput {
 }
 
 export interface RetroSkillSuggestion {
-  skill: string;
+  skill: SkillType;
   suggestion: string;
-}
-
-export interface RetroKbEntry {
-  type: "decision" | "pattern" | "learning";
-  title: string;
-  body: string;
 }
 
 export interface RetrospectiveOutput {
@@ -1342,7 +1303,6 @@ export interface RetrospectiveOutput {
   what_could_improve: string[];
   patterns_identified: string[];
   agent_skill_suggestions: RetroSkillSuggestion[];
-  knowledge_base_entries: RetroKbEntry[];
   summary: string;
 }
 

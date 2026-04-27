@@ -6,7 +6,6 @@ pub mod credentials;
 pub mod fetch_url;
 pub mod grooming_templates;
 pub mod jira;
-pub mod knowledge;
 pub mod meetings;
 pub mod preferences;
 pub mod pr_template;
@@ -68,9 +67,6 @@ pub use jira::{
     search_jira_issues,
     update_jira_fields,
     update_jira_issue,
-};
-pub use knowledge::{
-    delete_knowledge_entry, export_knowledge_markdown, load_knowledge_entries, save_knowledge_entry,
 };
 pub use tasks::{create_task, delete_task, list_tasks, update_task};
 pub use meetings::{

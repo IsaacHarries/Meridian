@@ -274,11 +274,6 @@ const WORKFLOW_CARDS: {
     description: "Readiness assessment for backlog and sprint tickets",
   },
   {
-    id: "knowledge-base",
-    title: "Knowledge Base",
-    description: "Searchable log of decisions, patterns, and learnings",
-  },
-  {
     id: "address-pr-comments",
     title: "Address PR Tasks & Comments",
     description: "AI reviews your PR's tasks and comments and applies fixes in a worktree",

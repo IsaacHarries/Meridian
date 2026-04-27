@@ -693,16 +693,25 @@ pub async fn run_retrospective_agent(
     let (client, api_key) = dispatch::llm_client().await?;
     let system = "You are a retrospective agent. Review the full implementation session and capture learnings. \
         Pay particular attention to any deviations from the plan and what caused them. \
+        \n\n\
+        Any durable insight worth retaining — a decision, a codebase pattern, or a learning — \
+        must be expressed as an entry in `agent_skill_suggestions`. Each suggestion targets \
+        exactly one of these four skills, which feed back into future pipeline runs:\n\
+          - \"grooming\"        — how to read tickets, AC conventions, scope clues, ambiguity signals\n\
+          - \"patterns\"        — architectural patterns and codebase conventions\n\
+          - \"implementation\"  — coding style, naming, dos and don'ts when writing changes\n\
+          - \"review\"          — what good looks like when reviewing diffs in this codebase\n\
+        \n\
+        The `suggestion` field should be a self-contained sentence or short paragraph that \
+        could be appended verbatim to the chosen skill's body and still make sense out of context.\n\
+        \n\
         Return ONLY valid JSON (no markdown fences):\n\
         {\n\
           \"what_went_well\": [\"<positive observation>\", ...],\n\
           \"what_could_improve\": [\"<area for improvement>\", ...],\n\
           \"patterns_identified\": [\"<reusable pattern or convention observed>\", ...],\n\
           \"agent_skill_suggestions\": [\n\
-            {\"skill\": \"<skill name>\", \"suggestion\": \"<what to add/update>\"}\n\
-          ],\n\
-          \"knowledge_base_entries\": [\n\
-            {\"type\": \"decision|pattern|learning\", \"title\": \"<title>\", \"body\": \"<content>\"}\n\
+            {\"skill\": \"grooming|patterns|implementation|review\", \"suggestion\": \"<self-contained text to append to the skill>\"}\n\
           ],\n\
           \"summary\": \"<one paragraph retrospective summary>\"\n\
         }";

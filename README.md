@@ -4,7 +4,7 @@
 
 # Meridian
 
-A personal productivity desktop application for a senior engineer and scrum master. Meridian combines an AI-assisted ticket implementation pipeline with engineering leadership tooling — sprint dashboard, retrospectives, PR review, ticket quality checks, meeting transcription, and a searchable knowledge base — all drawing from JIRA and Bitbucket as the single source of truth.
+A personal productivity desktop application for a senior engineer and scrum master. Meridian combines an AI-assisted ticket implementation pipeline with engineering leadership tooling — sprint dashboard, retrospectives, PR review, ticket quality checks, and meeting transcription — all drawing from JIRA and Bitbucket as the single source of truth.
 
 ---
 
@@ -62,9 +62,6 @@ Runs any backlog ticket through a readiness assessment — acceptance criteria c
 
 ### Meetings
 Two ways to capture meetings: local Whisper transcription (one-click via the header record button on any screen — auto-tagged "standup" from Sprint Dashboard, "retro" from Retrospectives, with speaker diarization and rename), or freeform written notes for meetings where recording is not permitted. Either mode is taggable, timestamped, and summarisable on demand by the AI; meeting summaries also feed into Sprint Retrospectives.
-
-### Knowledge Base / Decision Log
-Searchable, persistent log of architectural decisions, codebase patterns, and retrospective learnings. Entries can be promoted into Agent Skills that subsequent pipeline runs will load automatically.
 
 ---
 
@@ -171,7 +168,7 @@ meridian/
 │       ├── commands/            # Tauri commands exposed to the frontend
 │       ├── integrations/        # JIRA, Bitbucket, sidecar process management
 │       ├── llms/                # Claude / Gemini / Copilot / local-LLM clients
-│       └── storage/             # Credentials, preferences, knowledge base, store cache
+│       └── storage/             # Credentials, preferences, store cache
 ├── docs/                        # Internal design notes
 ├── scripts/                     # Debug helpers (JIRA, Bitbucket)
 └── public/                      # Static assets

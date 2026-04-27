@@ -5,7 +5,7 @@ import { CardBadge } from "./CardBadge";
 
 // Geometry — viewBox is locked to the same 3:2 aspect as the container so
 // SVG units = rendered pixels under preserveAspectRatio "xMidYMid meet". The
-// 8 workflow nodes orbit a wireframe planet on a single ring at NODE_R.
+// workflow nodes orbit a wireframe planet on a single ring at NODE_R.
 
 const VBOX_W = 1200;
 const VBOX_H = 960;          // 5:4 — more vertical room than the previous 3:2
@@ -14,7 +14,7 @@ const CY = VBOX_H / 2;
 const PLANET_R = 240;       // wireframe sphere outer radius
 const ORBIT_R = 360;        // node-orbit radius — circular path around the planet
 
-const NODE_COUNT = 8;
+const NODE_COUNT = 7;
 function nodeAngle(i: number): number {
   return -Math.PI / 2 + (i * Math.PI * 2) / NODE_COUNT;
 }
@@ -191,9 +191,9 @@ export function OrbitalLayout({ cards, onNavigate }: LandingLayoutProps) {
           </div>
         </div>
 
-        {/* Eight nodes on the outer orbital ring. Positions expressed in
-            viewBox-relative percentages so they line up with the SVG planet
-            under preserveAspectRatio="xMidYMid meet". */}
+        {/* Workflow nodes evenly distributed on the outer orbital ring.
+            Positions expressed in viewBox-relative percentages so they line
+            up with the SVG planet under preserveAspectRatio="xMidYMid meet". */}
         {cards.map((card, i) => {
           const { x, y } = nodePos(i);
           const xPct = (x / VBOX_W) * 100;
