@@ -706,6 +706,7 @@ export function AddressPrCommentsScreen({ credStatus, onBack }: Props) {
   return (
     <div className="min-h-screen flex flex-col">
       <WorkflowPanelHeader
+        panel="address_pr_comments"
         leading={
           <>
             <Button variant="ghost" size="icon" onClick={onBack}>

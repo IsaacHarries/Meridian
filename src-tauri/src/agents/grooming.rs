@@ -1,4 +1,5 @@
 use super::dispatch;
+use super::dispatch::AiContext;
 use crate::commands::grooming_templates::read_grooming_template;
 use tauri::Emitter;
 
@@ -70,6 +71,7 @@ pub async fn run_grooming_file_probe(
         &user,
         600,
         "grooming-stream",
+        &AiContext::stage("implement_ticket", "grooming"),
     )
     .await
 }
@@ -168,6 +170,7 @@ pub async fn run_grooming_agent(
         &user,
         8000,
         "grooming-stream",
+        &AiContext::stage("implement_ticket", "grooming"),
     )
     .await;
 
@@ -242,6 +245,7 @@ pub async fn run_grooming_chat_turn(
         &history_json,
         4096,
         "grooming-chat-stream",
+        &AiContext::stage("implement_ticket", "grooming"),
     )
     .await
 }
@@ -275,5 +279,14 @@ pub async fn assess_ticket_quality(
 
     let user = format!("Assess this ticket for sprint readiness:\n\n{ticket_text}");
 
-    dispatch::dispatch(&app, &client, &api_key, system, &user, 1500).await
+    dispatch::dispatch(
+        &app,
+        &client,
+        &api_key,
+        system,
+        &user,
+        1500,
+        &AiContext::panel("ticket_quality"),
+    )
+    .await
 }

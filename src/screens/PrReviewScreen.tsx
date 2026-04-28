@@ -38,6 +38,7 @@ import {
   Play,
   Square,
   Download,
+  Image as ImageIcon,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -63,10 +64,18 @@ import {
   runInTerminal,
   checkoutPrReviewBranch,
   getPrFileContent,
+  uploadPrAttachment,
 } from "@/lib/tauri";
 import { JiraTicketLink } from "@/components/JiraTicketLink";
 import { usePrReviewStore } from "@/stores/prReviewStore";
 import { enrichMessageWithUrls } from "@/lib/urlFetch";
+import {
+  getPrismLanguageForPath,
+  highlightDiffLine,
+} from "@/lib/syntaxHighlight";
+import { BitbucketImage } from "@/components/BitbucketImage";
+import { MarkdownBlock } from "@/components/MarkdownBlock";
+import { cn } from "@/lib/utils";
 import { ToolRequestCard, type ToolRequest } from "@/components/ToolRequestCard";
 
 interface PrReviewScreenProps {
@@ -131,6 +140,56 @@ function prAge(iso: string): string {
 
 function sanitizeId(path: string): string {
   return path.replace(/[^a-zA-Z0-9]/g, "-");
+}
+
+// ── PR description panel (above the diff) ─────────────────────────────────────
+//
+// Bitbucket returns the description as raw markdown. We feed it through the
+// same `renderCommentContent` used for inline comments, so embedded images
+// (via Bitbucket attachment URLs or data URIs) flow through `BitbucketImage`
+// — Bitbucket-hosted ones get auth-proxied, data URIs render inline, public
+// URLs load directly. Long descriptions collapse to a clamped preview with
+// a "Show more" toggle so the diff isn't pushed below the fold on PRs with
+// detailed write-ups.
+
+function PrDescriptionPanel({ description }: { description: string }) {
+  const [expanded, setExpanded] = useState(false);
+  // Heuristic: descriptions over ~6 lines or 600 chars get the collapsible
+  // treatment. Anything shorter renders fully without the toggle so short
+  // PRs don't carry unnecessary chrome.
+  const isLong =
+    description.split("\n").length > 6 || description.length > 600;
+  return (
+    <section className="pt-4 space-y-2">
+      <div className="flex items-center justify-between">
+        <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+          Description
+        </p>
+        {isLong && (
+          <button
+            type="button"
+            onClick={() => setExpanded((v) => !v)}
+            className="text-xs text-muted-foreground hover:text-foreground transition-colors"
+          >
+            {expanded ? "Show less" : "Show more"}
+          </button>
+        )}
+      </div>
+      <div
+        className={cn(
+          "rounded-md border border-border/60 bg-muted/20 px-3 py-2",
+          // When clamped, cap the height with a soft fade at the bottom so
+          // the truncation is obvious and the user knows there's more.
+          isLong && !expanded && "max-h-48 overflow-hidden relative",
+        )}
+      >
+        <MarkdownBlock text={description} />
+        {isLong && !expanded && (
+          <div className="pointer-events-none absolute inset-x-0 bottom-0 h-12 bg-gradient-to-t from-background/80 to-transparent" />
+        )}
+      </div>
+    </section>
+  );
 }
 
 // ── Diff viewer (with inline comment anchoring + click-to-comment) ─────────────
@@ -252,7 +311,7 @@ function renderWithHighlights(raw: string, matches: MatchRange[]): React.ReactNo
 }
 
 function DiffLineRow({
-  line, clickable, onClick, hasComments, isPendingComment, matches,
+  line, clickable, onClick, hasComments, isPendingComment, matches, language,
 }: {
   line: AnnotatedLine;
   clickable?: boolean;
@@ -260,6 +319,9 @@ function DiffLineRow({
   hasComments?: boolean;
   isPendingComment?: boolean;
   matches?: MatchRange[];
+  /** Prism language id, derived from the section's file path. When null
+   *  (unknown extension / no path), the line renders as plain text. */
+  language?: string | null;
 }) {
   const [rowHovered, setRowHovered] = useState(false);
   const { raw, oldNum, newNum } = line;
@@ -314,19 +376,82 @@ function DiffLineRow({
           </button>
         ) : null}
       </span>
-      <span className={`select-text cursor-text font-mono text-xs leading-5 pl-2 pr-4 whitespace-pre min-w-0 flex-1 ${textCls}`}>
-        {matches && matches.length > 0 ? renderWithHighlights(raw, matches) : (raw || " ")}
-      </span>
+      <DiffLineCode
+        raw={raw}
+        textCls={textCls}
+        matches={matches}
+        language={language}
+      />
     </div>
   );
 }
 
+// ── Diff line code cell ───────────────────────────────────────────────────────
+//
+// Owns the right-hand "code" portion of a diff row. Three rendering modes,
+// in priority order:
+//   1. Active search match → render with <mark>-style highlights so the user
+//      can read the match in context. Syntax highlighting is suppressed
+//      because mixing the two would obscure which spans are matches.
+//   2. Prism syntax highlighting available (known language, code line) →
+//      render the prism HTML via dangerouslySetInnerHTML; a `.diff-token`
+//      wrapper class scopes the colour rules in index.css.
+//   3. Fallback → plain text with the row's added/removed/context colour.
+
+function DiffLineCode({
+  raw,
+  textCls,
+  matches,
+  language,
+}: {
+  raw: string;
+  textCls: string;
+  matches?: MatchRange[];
+  language?: string | null;
+}) {
+  const baseCls =
+    "select-text cursor-text font-mono text-xs leading-5 pl-2 pr-4 whitespace-pre min-w-0 flex-1";
+
+  if (matches && matches.length > 0) {
+    return (
+      <span className={`${baseCls} ${textCls}`}>
+        {renderWithHighlights(raw, matches)}
+      </span>
+    );
+  }
+
+  const html = highlightDiffLine(raw, language ?? null);
+  if (html !== null) {
+    return (
+      <span
+        className={`${baseCls} diff-token ${textCls}`}
+        dangerouslySetInnerHTML={{ __html: html }}
+      />
+    );
+  }
+
+  return <span className={`${baseCls} ${textCls}`}>{raw || " "}</span>;
+}
+
 // ── Inline comment compose box ────────────────────────────────────────────────
 
-function InlineCommentBox({ onSubmit, onCancel }: { onSubmit: (c: string) => Promise<void>; onCancel: () => void }) {
+function InlineCommentBox({
+  onSubmit,
+  onCancel,
+  onAttachImage,
+}: {
+  onSubmit: (c: string) => Promise<void>;
+  onCancel: () => void;
+  /** Resolve a picked / pasted image into the URL to embed in markdown.
+   *  Parent decides whether to return a data URI (offline-ish embed) or
+   *  upload to Bitbucket and return an attachment URL (visible to
+   *  teammates on the Bitbucket web UI). */
+  onAttachImage: (file: File) => Promise<string>;
+}) {
   const [text, setText] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [err, setErr] = useState("");
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   async function handleSubmit() {
     if (!text.trim() || submitting) return;
@@ -342,13 +467,81 @@ function InlineCommentBox({ onSubmit, onCancel }: { onSubmit: (c: string) => Pro
     }
   }
 
+  // Track an in-flight image attach so the user gets a visual cue while a
+  // Bitbucket upload is happening (data-URI mode is fast enough that the
+  // spinner barely flashes; that's fine).
+  const [attaching, setAttaching] = useState(false);
+
+  // Insert markdown image syntax at the current selection in the textarea,
+  // preserving the user's caret position so they can keep typing.
+  function insertImageMarkdown(alt: string, url: string) {
+    const md = `![${alt}](${url})`;
+    const ta = textareaRef.current;
+    if (!ta) {
+      setText((t) => `${t}${t && !t.endsWith("\n") ? "\n" : ""}${md}\n`);
+      return;
+    }
+    const start = ta.selectionStart ?? text.length;
+    const end = ta.selectionEnd ?? text.length;
+    const before = text.slice(0, start);
+    const after = text.slice(end);
+    const next = before + md + after;
+    setText(next);
+    // Restore caret to immediately after the inserted markdown.
+    requestAnimationFrame(() => {
+      const pos = before.length + md.length;
+      ta.focus();
+      ta.setSelectionRange(pos, pos);
+    });
+  }
+
+  async function attachAndInsert(file: File) {
+    setAttaching(true);
+    setErr("");
+    try {
+      const url = await onAttachImage(file);
+      insertImageMarkdown(file.name || "image", url);
+    } catch (e) {
+      setErr(`Could not attach image: ${String(e)}`);
+    } finally {
+      setAttaching(false);
+    }
+  }
+
+  function handlePaste(e: React.ClipboardEvent<HTMLTextAreaElement>) {
+    const items = Array.from(e.clipboardData?.items ?? []);
+    const imageItem = items.find((it) => it.type.startsWith("image/"));
+    if (!imageItem) return;
+    e.preventDefault();
+    const file = imageItem.getAsFile();
+    if (!file) return;
+    void attachAndInsert(file);
+  }
+
+  async function pickImage() {
+    // Native file input — Tauri's plugin-dialog could also work, but the
+    // browser-style picker keeps the read flow simple and works identically
+    // on all platforms.
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = "image/*";
+    input.onchange = async () => {
+      const file = input.files?.[0];
+      if (!file) return;
+      await attachAndInsert(file);
+    };
+    input.click();
+  }
+
   return (
     <div className="border-l-2 border-primary/40 ml-[88px] mr-4 my-1 bg-muted/30 rounded-r-md p-2 space-y-2">
       <Textarea
+        ref={textareaRef}
         autoFocus
         value={text}
         onChange={(e) => setText(e.target.value)}
-        placeholder="Leave a comment on this line…"
+        onPaste={handlePaste}
+        placeholder="Leave a comment on this line… (paste a screenshot to attach)"
         className="min-h-[64px] resize-none text-xs"
         disabled={submitting}
         onKeyDown={(e) => {
@@ -359,7 +552,7 @@ function InlineCommentBox({ onSubmit, onCancel }: { onSubmit: (c: string) => Pro
         }}
       />
       {err && <p className="text-xs text-destructive">{err}</p>}
-      <div className="flex gap-2">
+      <div className="flex gap-2 items-center">
         <Button size="sm" onClick={handleSubmit} disabled={!text.trim() || submitting} className="h-7 text-xs gap-1">
           {submitting ? <Loader2 className="h-3 w-3 animate-spin" /> : <Send className="h-3 w-3" />}
           Comment
@@ -367,16 +560,45 @@ function InlineCommentBox({ onSubmit, onCancel }: { onSubmit: (c: string) => Pro
         <Button size="sm" variant="ghost" onClick={onCancel} disabled={submitting} className="h-7 text-xs">
           Cancel
         </Button>
+        <Button
+          size="sm"
+          variant="ghost"
+          onClick={() => void pickImage()}
+          disabled={submitting || attaching}
+          className="h-7 text-xs gap-1"
+          title="Insert an image (also: paste a screenshot directly into the box)"
+        >
+          {attaching ? (
+            <Loader2 className="h-3 w-3 animate-spin" />
+          ) : (
+            <ImageIcon className="h-3 w-3" />
+          )}
+          {attaching ? "Uploading…" : "Image"}
+        </Button>
         <span className="text-[10px] text-muted-foreground self-center">⌘↵</span>
       </div>
     </div>
   );
 }
 
+/** Read a Blob/File and resolve to a `data:` URI string. */
+function readFileAsDataUri(file: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = reader.result;
+      if (typeof result === "string") resolve(result);
+      else reject(new Error("Unexpected reader result type"));
+    };
+    reader.onerror = () => reject(reader.error ?? new Error("read failed"));
+    reader.readAsDataURL(file);
+  });
+}
+
 // ── Inline comment thread (anchored under a diff line) ─────────────────────────
 
 function InlineCommentThread({
-  comment, replies, tasks, myAccountId, myPostedCommentIds, onReply, onCreateTask, onResolveTask, onEditTask, onDeleteComment, onEditComment,
+  comment, replies, tasks, myAccountId, myPostedCommentIds, onReply, onCreateTask, onResolveTask, onEditTask, onDeleteComment, onEditComment, onAttachImage,
 }: {
   comment: BitbucketComment;
   replies: BitbucketComment[];
@@ -389,6 +611,7 @@ function InlineCommentThread({
   onEditTask: (taskId: number, content: string) => Promise<void>;
   onDeleteComment: (commentId: number) => Promise<void>;
   onEditComment: (commentId: number, newContent: string) => Promise<void>;
+  onAttachImage: (file: File) => Promise<string>;
 }) {
   const [showReply, setShowReply] = useState(false);
   const [showTask, setShowTask] = useState<number | "root" | null>(null);
@@ -587,6 +810,7 @@ function InlineCommentThread({
           <QuickReplyBox
             onSubmit={async (c) => { await onReply(c); setShowReply(false); }}
             onCancel={() => setShowReply(false)}
+            onAttachImage={onAttachImage}
           />
         </div>
       )}
@@ -646,17 +870,17 @@ function renderInlineSegment(segment: string, keyBase: number): React.ReactNode[
     }
 
     if (m[1] !== undefined) {
-      // Markdown image: ![alt](url){...} → show as a clickable URL
+      // Markdown image: ![alt](url){...} → render inline. BitbucketImage
+      // handles data URIs, Bitbucket-hosted (auth-required) URLs, and
+      // arbitrary public URLs uniformly.
       const url = m[2];
+      const alt = m[1];
       nodes.push(
-        <button
+        <BitbucketImage
           key={`${keyBase}-img${idx++}`}
-          onClick={() => openUrl(url)}
-          className="inline-flex items-center gap-1 text-primary hover:underline break-all text-left font-mono text-[11px]"
-          title={url}
-        >
-          <span className="opacity-60">[image]</span> {url}
-        </button>
+          src={url}
+          alt={alt}
+        />,
       );
     } else if (m[3] !== undefined) {
       // Markdown link: [text](url)
@@ -769,23 +993,111 @@ function CommentRow({
 
 // ── Quick reply / task boxes ───────────────────────────────────────────────────
 
-function QuickReplyBox({ onSubmit, onCancel }: { onSubmit: (c: string) => Promise<void>; onCancel: () => void }) {
+function QuickReplyBox({
+  onSubmit,
+  onCancel,
+  onAttachImage,
+}: {
+  onSubmit: (c: string) => Promise<void>;
+  onCancel: () => void;
+  /** Same contract as InlineCommentBox.onAttachImage — see that prop's docstring. */
+  onAttachImage: (file: File) => Promise<string>;
+}) {
   const [text, setText] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const [attaching, setAttaching] = useState(false);
+  const [err, setErr] = useState("");
+  const taRef = useRef<HTMLTextAreaElement>(null);
+
   async function go() {
     if (!text.trim() || submitting) return;
     setSubmitting(true);
     try { await onSubmit(text.trim()); } finally { setSubmitting(false); }
   }
+
+  function insertAt(md: string) {
+    const ta = taRef.current;
+    if (!ta) {
+      setText((t) => `${t}${t && !t.endsWith("\n") ? "\n" : ""}${md}\n`);
+      return;
+    }
+    const start = ta.selectionStart ?? text.length;
+    const end = ta.selectionEnd ?? text.length;
+    const before = text.slice(0, start);
+    const after = text.slice(end);
+    const next = before + md + after;
+    setText(next);
+    requestAnimationFrame(() => {
+      const pos = before.length + md.length;
+      ta.focus();
+      ta.setSelectionRange(pos, pos);
+    });
+  }
+
+  async function attachAndInsert(file: File) {
+    setAttaching(true);
+    setErr("");
+    try {
+      const url = await onAttachImage(file);
+      insertAt(`![${file.name || "image"}](${url})`);
+    } catch (e) {
+      setErr(`Could not attach image: ${String(e)}`);
+    } finally {
+      setAttaching(false);
+    }
+  }
+
+  function handlePaste(e: React.ClipboardEvent<HTMLTextAreaElement>) {
+    const items = Array.from(e.clipboardData?.items ?? []);
+    const imageItem = items.find((it) => it.type.startsWith("image/"));
+    if (!imageItem) return;
+    e.preventDefault();
+    const file = imageItem.getAsFile();
+    if (!file) return;
+    void attachAndInsert(file);
+  }
+
+  function pickImage() {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = "image/*";
+    input.onchange = async () => {
+      const file = input.files?.[0];
+      if (file) await attachAndInsert(file);
+    };
+    input.click();
+  }
+
   return (
     <div className="space-y-1.5">
-      <Textarea autoFocus value={text} onChange={e => setText(e.target.value)} placeholder="Reply…" className="min-h-[48px] resize-none text-xs" disabled={submitting}
-        onKeyDown={e => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && text.trim()) { e.preventDefault(); go(); } }} />
-      <div className="flex gap-1.5">
+      <Textarea
+        ref={taRef}
+        autoFocus
+        value={text}
+        onChange={e => setText(e.target.value)}
+        onPaste={handlePaste}
+        placeholder="Reply… (paste a screenshot to attach)"
+        className="min-h-[48px] resize-none text-xs"
+        disabled={submitting}
+        onKeyDown={e => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && text.trim()) { e.preventDefault(); go(); } }}
+      />
+      {err && <p className="text-[11px] text-destructive">{err}</p>}
+      <div className="flex gap-1.5 items-center">
         <Button size="sm" onClick={go} disabled={!text.trim() || submitting} className="h-6 text-[11px] px-2 gap-1">
           {submitting ? <Loader2 className="h-2.5 w-2.5 animate-spin" /> : <Send className="h-2.5 w-2.5" />} Reply
         </Button>
         <Button size="sm" variant="ghost" onClick={onCancel} className="h-6 text-[11px] px-2">Cancel</Button>
+        <Button
+          size="sm"
+          variant="ghost"
+          onClick={pickImage}
+          disabled={submitting || attaching}
+          className="h-6 text-[11px] px-2 gap-1"
+          title="Insert an image (or paste a screenshot)"
+        >
+          {attaching ? <Loader2 className="h-2.5 w-2.5 animate-spin" /> : <ImageIcon className="h-2.5 w-2.5" />}
+          {attaching ? "Uploading…" : "Image"}
+        </Button>
       </div>
     </div>
   );
@@ -899,6 +1211,8 @@ interface DiffViewerProps {
   onEditTask: (taskId: number, content: string) => Promise<void>;
   onDeleteComment: (commentId: number) => Promise<void>;
   onEditComment: (commentId: number, newContent: string) => Promise<void>;
+  /** Resolve an inline-comment image attachment to the URL to embed. */
+  onAttachImage: (file: File) => Promise<string>;
 }
 
 interface SearchMatch {
@@ -908,7 +1222,7 @@ interface SearchMatch {
   end: number;
 }
 
-function DiffViewer({ diff, highlightTarget, scrollContainerRef, comments, tasks, myAccountId, myPostedCommentIds, onFetchFileContent, onPostInlineComment, onReply, onCreateTask, onResolveTask, onEditTask, onDeleteComment, onEditComment }: DiffViewerProps) {
+function DiffViewer({ diff, highlightTarget, scrollContainerRef, comments, tasks, myAccountId, myPostedCommentIds, onFetchFileContent, onPostInlineComment, onReply, onCreateTask, onResolveTask, onEditTask, onDeleteComment, onEditComment, onAttachImage }: DiffViewerProps) {
   const sections = useMemo(() => parseDiffSections(diff), [diff]);
   const annotatedBySection = useMemo(() => {
     const m = new Map<string, AnnotatedLine[]>();
@@ -1152,6 +1466,7 @@ function DiffViewer({ diff, highlightTarget, scrollContainerRef, comments, tasks
           onEditTask={onEditTask}
           onDeleteComment={onDeleteComment}
           onEditComment={onEditComment}
+          onAttachImage={onAttachImage}
         />
       ))}
     </div>
@@ -1321,12 +1636,14 @@ interface DiffSectionCardProps {
   onEditTask: (taskId: number, content: string) => Promise<void>;
   onDeleteComment: (commentId: number) => Promise<void>;
   onEditComment: (commentId: number, newContent: string) => Promise<void>;
+  onAttachImage: (file: File) => Promise<string>;
 }
 
 function DiffSectionCard({
   section, annotated, expanded, onToggleExpand, sectionRef,
   inlineComments, tasks, myAccountId, myPostedCommentIds, matchesByLineIdx, stickyTopOffset, onFetchFileContent,
   onPostInlineComment, onReply, onCreateTask, onResolveTask, onEditTask, onDeleteComment, onEditComment,
+  onAttachImage,
 }: DiffSectionCardProps) {
   const [pendingLine, setPendingLine] = useState<number | null>(null);
 
@@ -1343,6 +1660,12 @@ function DiffSectionCard({
   const renderItems = useMemo(
     () => buildRenderItems(annotated, hunks, fileLines, expandedGaps),
     [annotated, hunks, fileLines, expandedGaps],
+  );
+  // Resolve the Prism language once per section — DiffLineRow uses this to
+  // decide whether to syntax-highlight the line's code portion.
+  const language = useMemo(
+    () => getPrismLanguageForPath(section.path),
+    [section.path],
   );
 
   const ensureFileLoaded = useCallback(async () => {
@@ -1446,7 +1769,7 @@ function DiffSectionCard({
             if (item.kind === "context") {
               return (
                 <div key={`ctx-${itemIdx}`} className="bg-blue-50/30 dark:bg-blue-950/10">
-                  <DiffLineRow line={item.line} />
+                  <DiffLineRow line={item.line} language={language} />
                 </div>
               );
             }
@@ -1467,11 +1790,13 @@ function DiffSectionCard({
                   hasComments={lineComments.length > 0}
                   isPendingComment={lineNum != null && pendingLine === lineNum}
                   matches={matchesByLineIdx.get(annotatedIdx)}
+                  language={language}
                 />
                 {pendingLine === lineNum && lineNum != null && (
                   <InlineCommentBox
                     onSubmit={async (content) => { await onPostInlineComment(section.path, lineNum, content); setPendingLine(null); }}
                     onCancel={() => setPendingLine(null)}
+                    onAttachImage={onAttachImage}
                   />
                 )}
                 {lineComments.map((c) => (
@@ -1488,6 +1813,7 @@ function DiffSectionCard({
                     onEditTask={onEditTask}
                     onDeleteComment={onDeleteComment}
                     onEditComment={onEditComment}
+                    onAttachImage={onAttachImage}
                   />
                 ))}
               </div>
@@ -2434,12 +2760,34 @@ export function PrReviewScreen({ credStatus, onBack }: PrReviewScreenProps) {
     );
   };
 
+  // Image attach handler — used by InlineCommentBox / QuickReplyBox.
+  // POSTs the picked / pasted file to Bitbucket's PR attachments endpoint
+  // and returns the auth-required URL that the consumer embeds as
+  // `![filename](url)` in the comment markdown. We rely on Bitbucket's
+  // attachment URLs because data: URIs would only render inside Meridian —
+  // teammates viewing the comment on Bitbucket's web UI would see broken
+  // images.
+  const onAttachImage = useCallback(
+    async (file: File): Promise<string> => {
+      if (!selectedPr) {
+        throw new Error("No PR selected");
+      }
+      const dataUri = await readFileAsDataUri(file);
+      const m = dataUri.match(/^data:([^;]+);base64,(.+)$/);
+      if (!m) throw new Error("Could not encode image");
+      const [, contentType, base64] = m;
+      return uploadPrAttachment(selectedPr.id, file.name, base64, contentType);
+    },
+    [selectedPr],
+  );
+
   // ── Render ────────────────────────────────────────────────────────────────
 
   return (
     <div className="h-screen flex flex-col overflow-hidden">
       {/* Header */}
       <WorkflowPanelHeader
+        panel="pr_review"
         barClassName="z-20"
         leading={
           <>
@@ -2525,6 +2873,9 @@ export function PrReviewScreen({ credStatus, onBack }: PrReviewScreenProps) {
           <div ref={splitContainerRef} className="flex flex-1 min-h-0">
             {/* Left: diff viewer */}
             <div ref={diffPaneRef} style={{ width: `${splitPct}%` }} className="flex-none h-full overflow-y-auto border-r px-4 pb-4 space-y-3">
+              {selectedPr?.description && selectedPr.description.trim() && (
+                <PrDescriptionPanel description={selectedPr.description} />
+              )}
               <div className="flex items-center justify-between pt-4">
                 <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Diff</p>
                 {loadingDetails && (
@@ -2554,6 +2905,7 @@ export function PrReviewScreen({ credStatus, onBack }: PrReviewScreenProps) {
                   onEditTask={async (taskId, content) => store().updateTask(taskId, content)}
                   onDeleteComment={async (commentId) => store().deleteComment(commentId)}
                   onEditComment={async (commentId, newContent) => store().editComment(commentId, newContent)}
+                  onAttachImage={onAttachImage}
                 />
               ) : loadingDetails ? null : (
                 <div className="flex items-center justify-center h-48 text-sm text-muted-foreground border rounded-md border-dashed">

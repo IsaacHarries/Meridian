@@ -1133,6 +1133,7 @@ pub async fn complete_multi_text_tool_loop(
     history_json: &str,
     max_tokens: u32,
     stream_event: &str,
+    ctx: &crate::agents::dispatch::AiContext,
 ) -> Result<String, String> {
     use crate::agents::dispatch::try_provider_multi;
     use crate::agents::tools::{
@@ -1158,6 +1159,7 @@ pub async fn complete_multi_text_tool_loop(
             &history_str,
             max_tokens,
             stream_event,
+            ctx,
         )
         .await?;
 

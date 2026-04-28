@@ -180,6 +180,7 @@ export function MeetingsScreen({ onBack }: MeetingsScreenProps) {
   return (
     <div className="h-screen flex flex-col overflow-hidden">
       <WorkflowPanelHeader
+        panel="meetings"
         leading={
           <>
             <Button variant="ghost" size="icon" onClick={onBack}>

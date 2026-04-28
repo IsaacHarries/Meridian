@@ -1,4 +1,5 @@
 use super::dispatch;
+use super::dispatch::AiContext;
 
 /// Agent 2 — Impact Analysis: assess the blast radius of the planned change.
 #[tauri::command]
@@ -28,6 +29,7 @@ pub async fn run_impact_analysis(
         &user,
         4000,
         "impact-stream",
+        &AiContext::stage("implement_ticket", "impact"),
     )
     .await
 }
@@ -94,6 +96,7 @@ pub async fn run_triage_turn(
         &history_json,
         8000,
         "triage-stream",
+        &AiContext::stage("implement_ticket", "triage"),
     )
     .await
 }
@@ -168,6 +171,7 @@ pub async fn run_checkpoint_action(
         &history_json,
         if is_impl { 16000 } else { 4000 },
         "checkpoint-chat-stream",
+        &AiContext::stage("implement_ticket", &stage),
     )
     .await
 }
@@ -209,7 +213,17 @@ pub async fn finalize_implementation_plan(
         Context:\n{context_text}"
     );
     let user = format!("Triage conversation:\n{conversation_json}");
-    dispatch::dispatch_streaming(&app, &client, &api_key, &system, &user, 6000, "plan-stream").await
+    dispatch::dispatch_streaming(
+        &app,
+        &client,
+        &api_key,
+        &system,
+        &user,
+        6000,
+        "plan-stream",
+        &AiContext::stage("implement_ticket", "plan"),
+    )
+    .await
 }
 
 /// Dev sandbox — invoke a single agent tool by name and return the raw result.
@@ -279,6 +293,7 @@ pub async fn run_tool_test_with_llm(
                 &history_str,
                 4096,
                 "tool-sandbox-stream",
+                &AiContext::default(),
             )
             .await
         }

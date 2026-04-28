@@ -1,4 +1,5 @@
 use super::dispatch;
+use super::dispatch::AiContext;
 use crate::llms::claude;
 use tauri::Emitter;
 
@@ -418,8 +419,9 @@ pub async fn review_pr(app: tauri::AppHandle, review_text: String) -> Result<Str
                 &api_key,
                 CHUNK_SYSTEM,
                 &user,
-                2000,
+                4096,
                 "pr-review-stream",
+                &AiContext::panel("pr_review"),
             )
             .await
             {
@@ -526,8 +528,9 @@ pub async fn review_pr(app: tauri::AppHandle, review_text: String) -> Result<Str
         &api_key,
         &build_review_system_prompt(&app),
         &synthesis_user,
-        4000,
+        4096,
         "pr-review-stream",
+        &AiContext::panel("pr_review"),
     )
     .await;
 
@@ -612,6 +615,7 @@ pub async fn chat_pr_review(
         &history_json,
         4096,
         "pr-review-chat-stream",
+        &AiContext::panel("pr_review"),
     )
     .await
 }
@@ -660,6 +664,7 @@ pub async fn analyze_pr_comments(
         &review_text,
         4096,
         "address-pr-stream",
+        &AiContext::panel("address_pr_comments"),
     )
     .await
 }
@@ -690,6 +695,7 @@ pub async fn chat_address_pr(
         &history_json,
         4096,
         "address-pr-chat-stream",
+        &AiContext::panel("address_pr_comments"),
     )
     .await
 }

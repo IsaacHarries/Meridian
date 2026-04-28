@@ -805,6 +805,7 @@ export function RetrospectivesScreen({ onBack }: RetrospectivesScreenProps) {
   return (
     <div className="min-h-screen">
       <WorkflowPanelHeader
+        panel="retrospectives"
         leading={
           <>
             <Button variant="ghost" size="icon" onClick={onBack}>

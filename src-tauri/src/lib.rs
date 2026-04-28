@@ -57,6 +57,7 @@ use commands::{
     get_custom_copilot_models,
     get_custom_gemini_models,
     get_file_history,
+    fetch_jira_image,
     get_future_sprints,
     get_gemini_models,
     get_issue,
@@ -79,6 +80,8 @@ use commands::{
     get_pr_diff,
     get_pr_file_content,
     get_pr_tasks,
+    fetch_bitbucket_image,
+    upload_pr_attachment,
     get_pr_template_path,
     // Preferences (plain JSON, survives cache clears)
     get_preferences,
@@ -94,7 +97,6 @@ use commands::{
     get_store_cache_info,
     get_system_activity_state,
     load_time_tracking_state,
-    read_time_tracking_import_file,
     save_time_tracking_state,
     glob_grooming_files,
     glob_repo_files,
@@ -334,6 +336,8 @@ pub fn run() {
             get_pr_file_content,
             get_pr_comments,
             get_pr_tasks,
+            fetch_bitbucket_image,
+            upload_pr_attachment,
             approve_pr,
             unapprove_pr,
             request_changes_pr,
@@ -442,7 +446,6 @@ pub fn run() {
             get_system_activity_state,
             save_time_tracking_state,
             load_time_tracking_state,
-            read_time_tracking_import_file,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

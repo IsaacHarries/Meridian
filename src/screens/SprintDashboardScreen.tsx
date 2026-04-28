@@ -1598,6 +1598,7 @@ export function SprintDashboardScreen({ credStatus, onBack }: SprintDashboardScr
   return (
     <div className="h-screen flex flex-col overflow-hidden">
       <WorkflowPanelHeader
+        panel="sprint_dashboard"
         leading={
           <>
             <Button variant="ghost" size="icon" onClick={onBack}>

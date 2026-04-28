@@ -1,4 +1,5 @@
 use super::dispatch;
+use super::dispatch::AiContext;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
@@ -430,6 +431,15 @@ pub async fn generate_multi_sprint_trends(
         2–3 sentences the scrum master can read verbatim to open the retrospective."
     );
 
-    let markdown = dispatch::dispatch(&app, &client, &api_key, system, &user, 4096).await?;
+    let markdown = dispatch::dispatch(
+        &app,
+        &client,
+        &api_key,
+        system,
+        &user,
+        4096,
+        &AiContext::panel("retrospectives"),
+    )
+    .await?;
     Ok(TrendAnalysisResult { markdown, stats })
 }

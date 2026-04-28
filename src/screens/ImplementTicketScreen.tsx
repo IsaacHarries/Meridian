@@ -6,6 +6,8 @@ import { PipelineProgress } from "@/components/PipelineProgress";
 import { HeaderSettingsButton } from "@/components/HeaderSettingsButton";
 import { HeaderRecordButton } from "@/components/HeaderRecordButton";
 import { HeaderTimeTracker } from "@/components/HeaderTimeTracker";
+import { HeaderModelPicker } from "@/components/HeaderModelPicker";
+import type { StageId as ImplementStageId } from "@/stores/aiSelectionStore";
 import { SlashCommandInput } from "@/components/SlashCommandInput";
 import { createGlobalCommands, type SlashCommand } from "@/lib/slashCommands";
 import {
@@ -403,14 +405,12 @@ function CollapsibleSection({
 }) {
   const [open, setOpen] = useState(true);
   if (!heading) {
-    // Preamble prose (before first heading) — always shown inline without toggle
+    // Preamble prose (before first heading) — always shown inline without toggle.
     const trimmed = content.trim();
     if (!trimmed) return null;
     return (
       <div className="px-3 py-2">
-        <pre className="text-sm text-muted-foreground whitespace-pre-wrap font-sans leading-relaxed">
-          {trimmed}
-        </pre>
+        <MarkdownBlock text={trimmed} />
       </div>
     );
   }
@@ -429,9 +429,10 @@ function CollapsibleSection({
       </button>
       {open && (
         <div className="px-3 pb-3">
-          <pre className="text-sm text-muted-foreground whitespace-pre-wrap font-sans leading-relaxed">
-            {content.trim()}
-          </pre>
+          {/* Rendered through MarkdownBlock so embedded JIRA-attachment
+              images surface (the Rust ADF→markdown pass emits `![alt](url)`
+              for media nodes; everything else round-trips as plain prose). */}
+          <MarkdownBlock text={content.trim()} />
         </div>
       )}
     </div>
@@ -3557,6 +3558,15 @@ export function ImplementTicketScreen({
           >
             <Search className="h-4 w-4" />
           </Button>
+          <HeaderModelPicker
+            panel="implement_ticket"
+            stage={
+              currentStage === "select" || viewingStage === "complete"
+                ? null
+                : (viewingStage as ImplementStageId)
+            }
+            className="relative z-30"
+          />
           <HeaderTimeTracker className="relative z-30" />
           <HeaderRecordButton className="relative z-30" />
           <HeaderSettingsButton className="relative z-30 shrink-0" />

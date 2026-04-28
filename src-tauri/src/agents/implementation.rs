@@ -1,4 +1,5 @@
 use super::dispatch;
+use super::dispatch::AiContext;
 use super::tools::all_tools_def;
 
 /// Agent 4 — Implementation Guidance: step-by-step guide for executing the plan.
@@ -31,6 +32,7 @@ pub async fn run_implementation_guidance(
         &user,
         6000,
         "guidance-stream",
+        &AiContext::stage("implement_ticket", "implementation"),
     )
     .await
 }
@@ -153,6 +155,7 @@ pub async fn run_implementation_agent(
             system,
             &user,
             8000,
+            &AiContext::stage("implement_ticket", "implementation"),
         )
         .await
         {
@@ -326,7 +329,16 @@ async fn discover_build_command(
         Files changed:\n{impl_json}"
     );
 
-    let raw = dispatch::dispatch(app, &client, &api_key, system, &user, 512).await?;
+    let raw = dispatch::dispatch(
+        app,
+        &client,
+        &api_key,
+        system,
+        &user,
+        512,
+        &AiContext::stage("implement_ticket", "implementation"),
+    )
+    .await?;
 
     // Extract command from JSON
     let start = raw.find('{').unwrap_or(0);
@@ -559,6 +571,7 @@ pub async fn run_build_check(
                         claude::complete_multi_text_tool_loop(
                             &app, &client, &api_key, other,
                             &system, &history_str, 16000, "build-check-stream",
+                            &AiContext::stage("implement_ticket", "implementation"),
                         ).await
                     }
                 };
@@ -675,10 +688,16 @@ pub async fn run_test_agent(
     let history_json = serde_json::json!([{ "role": "user", "content": user_msg }]).to_string();
 
     dispatch::dispatch_multi_streaming_with_tools(
-        &app, &client, &api_key,
-        system, &history_json,
-        8000, "tests-stream",
-    ).await
+        &app,
+        &client,
+        &api_key,
+        system,
+        &history_json,
+        8000,
+        "tests-stream",
+        &AiContext::stage("implement_ticket", "tests"),
+    )
+    .await
 }
 
 /// Agent 8 — Retrospective: capture learnings from the implementation session.
@@ -718,7 +737,17 @@ pub async fn run_retrospective_agent(
     let user = format!(
         "Ticket:\n{ticket_text}\n\nImplementation plan:\n{plan_json}\n\nImplementation result:\n{impl_json}\n\nReview:\n{review_json}"
     );
-    dispatch::dispatch_streaming(&app, &client, &api_key, system, &user, 4000, "retro-stream").await
+    dispatch::dispatch_streaming(
+        &app,
+        &client,
+        &api_key,
+        system,
+        &user,
+        4000,
+        "retro-stream",
+        &AiContext::stage("implement_ticket", "retro"),
+    )
+    .await
 }
 
 /// Agent 6 — Code Review: review the actual diff produced by the implementation agent.
@@ -764,6 +793,7 @@ pub async fn run_plan_review(
         &user,
         6000,
         "review-stream",
+        &AiContext::stage("implement_ticket", "review"),
     )
     .await
 }
@@ -823,5 +853,15 @@ pub async fn run_pr_description_gen(
     let user = format!(
         "Ticket:\n{ticket_text}\n\nImplementation plan:\n{plan_json}\n\nImplementation result:\n{impl_json}\n\nReview notes:\n{review_json}"
     );
-    dispatch::dispatch_streaming(&app, &client, &api_key, &system, &user, 4000, "pr-stream").await
+    dispatch::dispatch_streaming(
+        &app,
+        &client,
+        &api_key,
+        &system,
+        &user,
+        4000,
+        "pr-stream",
+        &AiContext::stage("implement_ticket", "pr"),
+    )
+    .await
 }

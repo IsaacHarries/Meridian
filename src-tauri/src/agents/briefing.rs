@@ -1,4 +1,5 @@
 use super::dispatch;
+use super::dispatch::AiContext;
 
 /// Generate workload rebalancing suggestions from pre-compiled capacity text.
 #[tauri::command]
@@ -26,7 +27,16 @@ pub async fn generate_workload_suggestions(
         If the workload is already well balanced, say so clearly. Do not invent problems."
     );
 
-    dispatch::dispatch(&app, &client, &api_key, system, &user, 1024).await
+    dispatch::dispatch(
+        &app,
+        &client,
+        &api_key,
+        system,
+        &user,
+        1024,
+        &AiContext::panel("sprint_dashboard"),
+    )
+    .await
 }
 
 /// Multi-turn Q&A over the current sprint dashboard state. Caller sends a
@@ -62,6 +72,7 @@ pub async fn chat_sprint_dashboard(
         &history_json,
         2048,
         "sprint-chat-stream",
+        &AiContext::panel("sprint_dashboard"),
     )
     .await
 }
@@ -98,6 +109,15 @@ pub async fn generate_sprint_retrospective(
         End with a one-paragraph **Summary** the scrum master can use to open the meeting."
     );
 
-    dispatch::dispatch(&app, &client, &api_key, system, &user, 1024).await
+    dispatch::dispatch(
+        &app,
+        &client,
+        &api_key,
+        system,
+        &user,
+        1024,
+        &AiContext::panel("retrospectives"),
+    )
+    .await
 }
 

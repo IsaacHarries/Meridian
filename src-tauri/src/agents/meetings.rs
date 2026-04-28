@@ -3,6 +3,7 @@
 // active in Settings is the one that runs.
 
 use super::dispatch;
+use super::dispatch::AiContext;
 
 /// Produce a structured analysis of a completed meeting.
 ///
@@ -48,7 +49,16 @@ pub async fn summarize_meeting(
         Return the JSON object now."
     );
 
-    dispatch::dispatch(&app, &client, &api_key, system, &user, 2048).await
+    dispatch::dispatch(
+        &app,
+        &client,
+        &api_key,
+        system,
+        &user,
+        2048,
+        &AiContext::panel("meetings"),
+    )
+    .await
 }
 
 /// Multi-turn Q&A over a completed meeting's transcript. The caller sends the
@@ -86,6 +96,7 @@ pub async fn chat_meeting(
         &history_json,
         2048,
         "meetings-chat-stream",
+        &AiContext::panel("meetings"),
     )
     .await
 }

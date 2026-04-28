@@ -60,6 +60,8 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { RichNotesEditor } from "@/components/RichNotesEditor";
+import { extractTiptapPlainText } from "@/lib/tiptapText";
 import {
   Card,
   CardContent,
@@ -156,6 +158,13 @@ import {
   type MicrophoneInfo,
 } from "@/lib/tauri";
 import { useMeetingsStore } from "@/stores/meetingsStore";
+import {
+  useAiSelectionStore,
+  PANEL_LABELS,
+  STAGE_LABELS,
+  PROVIDER_LABELS,
+} from "@/stores/aiSelectionStore";
+import type { PanelId as AiPanelId, StageId as AiStageId, AiProvider } from "@/stores/aiSelectionStore";
 
 // ── Theme section ─────────────────────────────────────────────────────────────
 
@@ -858,6 +867,8 @@ function AiProviderSection() {
     setMode(value);
     try {
       await setPreference("ai_provider", value);
+      // Keep PerPanelAiSection's lock state in sync.
+      void useAiSelectionStore.getState().refreshFromPrefs();
     } catch {
       /* non-critical */
     }
@@ -1075,6 +1086,223 @@ function AiProviderSection() {
           <span className="flex-1 font-medium">{ghostMeta.label}</span>
         </div>
       )}
+    </Card>
+  );
+}
+
+// ── Per-panel AI section ───────────────────────────────────────────────────────
+
+function PerPanelAiSection() {
+  type PanelId = AiPanelId;
+  type StageId = AiStageId;
+
+  const hydrated = useAiSelectionStore((s) => s.hydrated);
+  const hydrate = useAiSelectionStore((s) => s.hydrate);
+  const refresh = useAiSelectionStore((s) => s.refreshFromPrefs);
+  const loadModels = useAiSelectionStore((s) => s.loadModels);
+  const priority = useAiSelectionStore((s) => s.priority);
+  const order = useAiSelectionStore((s) => s.order);
+  const panelOverrides = useAiSelectionStore((s) => s.panelOverrides);
+  const stageOverrides = useAiSelectionStore((s) => s.stageOverrides);
+  const modelsByProvider = useAiSelectionStore((s) => s.modelsByProvider);
+  const providerDefaultModel = useAiSelectionStore((s) => s.providerDefaultModel);
+  const setPanelOverride = useAiSelectionStore((s) => s.setPanelOverride);
+  const setStageOverride = useAiSelectionStore((s) => s.setStageOverride);
+
+  const PANELS: PanelId[] = [
+    "implement_ticket", "pr_review", "ticket_quality",
+    "address_pr_comments", "sprint_dashboard", "retrospectives", "meetings",
+  ];
+  const IMPL_STAGES: StageId[] = [
+    "grooming", "impact", "triage", "plan",
+    "implementation", "tests", "review", "pr", "retro",
+  ];
+  const PROVIDERS: AiProvider[] = ["claude", "gemini", "copilot", "local"];
+
+  useEffect(() => {
+    if (!hydrated) void hydrate();
+    else void refresh();
+    for (const p of PROVIDERS) void loadModels(p);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hydrated]);
+
+  const locked = priority !== "auto";
+  const lockedProvider = locked ? (priority as AiProvider) : null;
+  // First provider in the fallback order — shown as the "Default" label when in Auto mode.
+  const defaultProvider: AiProvider = (order[0] ?? "claude") as AiProvider;
+
+  function getModels(provider: AiProvider): [string, string][] {
+    return modelsByProvider[provider] ?? [];
+  }
+
+  // Build a model list that always includes the currently stored value even if
+  // it hasn't yet appeared in the fetched list (e.g. a custom model ID).
+  function modelsWithCurrent(provider: AiProvider, currentModel: string): [string, string][] {
+    const list = getModels(provider);
+    if (!currentModel || list.some(([id]) => id === currentModel)) return list;
+    return [[currentModel, currentModel], ...list];
+  }
+
+  function savePanel(panel: PanelId, prov: AiProvider, model: string) {
+    const m = model || getModels(prov)[0]?.[0] || providerDefaultModel[prov] || "";
+    void setPanelOverride(panel, { provider: prov, model: m });
+  }
+  function clearPanel(panel: PanelId) { void setPanelOverride(panel, null); }
+
+  function saveStage(stage: StageId, prov: AiProvider, model: string) {
+    const m = model || getModels(prov)[0]?.[0] || providerDefaultModel[prov] || "";
+    void setStageOverride(stage, { provider: prov, model: m });
+  }
+  function clearStage(stage: StageId) { void setStageOverride(stage, null); }
+
+  // Unified row renderer used for both panels and stages.
+  function OverrideRow({
+    label,
+    indent,
+    hint,
+    overrideProvider,
+    overrideModel,
+    onSet,
+    onClear,
+  }: {
+    label: string;
+    indent?: boolean;
+    hint?: string | null;
+    overrideProvider: AiProvider | "";
+    overrideModel: string;
+    onSet: (provider: AiProvider, model: string) => void;
+    onClear: () => void;
+  }) {
+    const rowClass = indent
+      ? "flex items-center gap-2 py-1 pl-6 border-l-2 border-muted ml-2"
+      : "flex items-center gap-2 py-1.5";
+    const labelClass = indent ? "flex-1 text-xs text-muted-foreground" : "flex-1 text-sm";
+
+    if (locked && lockedProvider) {
+      // Provider is forced; show a label + model picker. "— Default —" clears the
+      // model override so the global default for that provider is used.
+      const models = modelsWithCurrent(lockedProvider, overrideModel);
+      return (
+        <div className={rowClass}>
+          <div className={labelClass}>
+            {label}
+            {hint && <span className="ml-1.5 text-[10px] uppercase tracking-wide opacity-60">{hint}</span>}
+          </div>
+          <span className="text-xs border rounded px-2 py-1 bg-muted/40 text-muted-foreground shrink-0">
+            {PROVIDER_LABELS[lockedProvider]}
+          </span>
+          <select
+            className="text-xs border rounded px-2 py-1 bg-background min-w-[180px]"
+            value={overrideModel}
+            onChange={(e) => {
+              const v = e.target.value;
+              if (v === "") onClear();
+              else onSet(lockedProvider, v);
+            }}
+          >
+            <option value="">— Default —</option>
+            {models.length === 0
+              ? <option value="" disabled>Loading…</option>
+              : models.map(([id, lbl]) => <option key={id} value={id}>{lbl}</option>)
+            }
+          </select>
+        </div>
+      );
+    }
+
+    // Unlocked: provider dropdown + model dropdown (when a provider is chosen).
+    const models = overrideProvider ? modelsWithCurrent(overrideProvider as AiProvider, overrideModel) : [];
+    return (
+      <div className={rowClass}>
+        <div className={labelClass}>
+          {label}
+          {hint && <span className="ml-1.5 text-[10px] uppercase tracking-wide opacity-60">{hint}</span>}
+        </div>
+        <select
+          className="text-xs border rounded px-2 py-1 bg-background"
+          value={overrideProvider}
+          onChange={(e) => {
+            const v = e.target.value as AiProvider | "";
+            if (v === "") onClear();
+            else onSet(v, "");
+          }}
+        >
+          <option value="">— Default ({PROVIDER_LABELS[defaultProvider]}) —</option>
+          {PROVIDERS.map((p) => (
+            <option key={p} value={p}>{PROVIDER_LABELS[p]}</option>
+          ))}
+        </select>
+        {overrideProvider && (
+          <select
+            className="text-xs border rounded px-2 py-1 bg-background min-w-[180px]"
+            value={overrideModel}
+            onChange={(e) => onSet(overrideProvider as AiProvider, e.target.value)}
+          >
+            {models.length === 0
+              ? <option value="">Loading…</option>
+              : models.map(([id, lbl]) => <option key={id} value={id}>{lbl}</option>)
+            }
+          </select>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <CardTitle className="text-base">Per-panel AI</CardTitle>
+        <CardDescription className="text-xs mt-0.5">
+          {locked ? (
+            <>
+              Provider is locked to{" "}
+              <strong>{PROVIDER_LABELS[lockedProvider!]}</strong> by the priority
+              setting above. Optionally choose a different model per panel or stage.
+            </>
+          ) : (
+            <>
+              Override the AI provider and model for any panel. Stage overrides
+              under <strong>Implement a Ticket</strong> win over the panel setting.
+            </>
+          )}
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-1">
+        {PANELS.map((p) => {
+          const panelOv = panelOverrides[p];
+          return (
+            <div key={p}>
+              <OverrideRow
+                label={PANEL_LABELS[p]}
+                overrideProvider={panelOv?.provider ?? ""}
+                overrideModel={panelOv?.model ?? ""}
+                onSet={(prov, model) => savePanel(p, prov, model)}
+                onClear={() => clearPanel(p)}
+              />
+              {p === "implement_ticket" && (
+                <div className="mt-1">
+                  {IMPL_STAGES.map((s) => {
+                    const stageOv = stageOverrides[s];
+                    const hint = !stageOv ? (panelOv ? "(panel)" : "(default)") : null;
+                    return (
+                      <OverrideRow
+                        key={s}
+                        label={STAGE_LABELS[s]}
+                        indent
+                        hint={hint}
+                        overrideProvider={stageOv?.provider ?? ""}
+                        overrideModel={stageOv?.model ?? ""}
+                        onSet={(prov, model) => saveStage(s, prov, model)}
+                        onClear={() => clearStage(s)}
+                      />
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </CardContent>
     </Card>
   );
 }
@@ -4278,6 +4506,159 @@ function MeetingsSection() {
   );
 }
 
+// ── Per-tag note template section ────────────────────────────────────────────
+//
+// Templates are TipTap JSON strings keyed by tag name. The store applies the
+// first selected tag's template to a notes-mode meeting whose body is empty
+// (see meetingsStore.setMeetingTags). The editor here is the same one users
+// type meeting notes with, so the formatting they author is exactly what gets
+// pasted in.
+
+function NoteTemplatesSection() {
+  const tagVocab = useMeetingsStore((s) => s.tagVocab);
+  const tagTemplates = useMeetingsStore((s) => s.tagTemplates);
+  const setTagTemplate = useMeetingsStore((s) => s.setTagTemplate);
+
+  const [selectedTag, setSelectedTag] = useState<string>(
+    () => tagVocab[0] ?? "",
+  );
+
+  // Keep the selected tag valid as the vocabulary changes (tag deleted from
+  // the Meetings panel, or the first tag added on a fresh setup).
+  useEffect(() => {
+    if (selectedTag && !tagVocab.includes(selectedTag)) {
+      setSelectedTag(tagVocab[0] ?? "");
+    } else if (!selectedTag && tagVocab.length > 0) {
+      setSelectedTag(tagVocab[0]);
+    }
+  }, [selectedTag, tagVocab]);
+
+  const hasTemplate = (t: string) =>
+    extractTiptapPlainText(tagTemplates[t] ?? "").length > 0;
+
+  if (tagVocab.length === 0) {
+    return (
+      <Card>
+        <CardHeader className="pb-3">
+          <CardTitle className="text-base flex items-center gap-2">
+            <NotebookPen className="h-4 w-4 text-muted-foreground" />
+            Tag note templates
+          </CardTitle>
+          <CardDescription>
+            Pre-fills a notes-mode meeting's body when its first tag is selected.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <p className="text-sm text-muted-foreground">
+            No tags yet. Add tags from the Meetings panel to associate templates here.
+          </p>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <CardTitle className="text-base flex items-center gap-2">
+          <NotebookPen className="h-4 w-4 text-muted-foreground" />
+          Tag note templates
+        </CardTitle>
+        <CardDescription>
+          When you select a tag for a notes-mode meeting and its body is empty,
+          that tag's template is dropped in automatically. Only the first tag
+          selected applies a template — adding more tags later won't replace
+          existing notes.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <div className="space-y-1.5">
+          <Label htmlFor="note-template-tag">Tag</Label>
+          <select
+            id="note-template-tag"
+            value={selectedTag}
+            onChange={(e) => setSelectedTag(e.target.value)}
+            className="w-full rounded-md border border-input bg-background px-3 py-1.5 text-xs text-foreground shadow-sm focus:outline-none focus:ring-1 focus:ring-ring"
+          >
+            {tagVocab.map((t) => (
+              <option key={t} value={t}>
+                {t}
+                {hasTemplate(t) ? " · template set" : ""}
+              </option>
+            ))}
+          </select>
+        </div>
+        {selectedTag && (
+          <TagTemplateEditor
+            key={selectedTag}
+            tag={selectedTag}
+            initialTemplate={tagTemplates[selectedTag] ?? ""}
+            onSave={(content) => setTagTemplate(selectedTag, content)}
+          />
+        )}
+        <p className="text-xs text-muted-foreground">
+          Saves automatically when you click outside the editor or switch tags.
+          Leave empty to skip the template for this tag.
+        </p>
+      </CardContent>
+    </Card>
+  );
+}
+
+// Why a separate component keyed on `tag`? The RichNotesEditor is uncontrolled
+// after mount, so swapping its `value` mid-life only sometimes propagates (the
+// editor bails when the new value is null/empty). Remounting on tag change is
+// the simplest way to guarantee each tag's template loads cleanly.
+function TagTemplateEditor({
+  tag,
+  initialTemplate,
+  onSave,
+}: {
+  tag: string;
+  initialTemplate: string;
+  onSave: (content: string) => void;
+}) {
+  const notesLineHeight = useMeetingsStore((s) => s.notesLineHeight);
+  const [draft, setDraft] = useState(initialTemplate);
+
+  // Refs so the unmount cleanup sees the latest values without rerunning the
+  // effect on every keystroke (which would also rerun the cleanup, causing
+  // every keystroke to write to disk).
+  const draftRef = useRef(draft);
+  draftRef.current = draft;
+  const lastSavedRef = useRef(initialTemplate);
+  const onSaveRef = useRef(onSave);
+  onSaveRef.current = onSave;
+
+  function flush() {
+    if (draftRef.current === lastSavedRef.current) return;
+    lastSavedRef.current = draftRef.current;
+    onSaveRef.current(draftRef.current);
+  }
+
+  // Save on unmount — covers the user switching tags (this component remounts
+  // on key change), navigating away from Settings, or closing the panel.
+  useEffect(() => {
+    return () => {
+      if (draftRef.current !== lastSavedRef.current) {
+        onSaveRef.current(draftRef.current);
+      }
+    };
+  }, []);
+
+  return (
+    <div className="rounded-md border h-[280px] flex flex-col overflow-hidden">
+      <RichNotesEditor
+        value={initialTemplate || null}
+        onChange={setDraft}
+        onBlur={flush}
+        lineHeight={notesLineHeight}
+        placeholder={`Template for "${tag}" notes. Use the toolbar for headings, lists, and checkboxes.`}
+      />
+    </div>
+  );
+}
+
 // ── PR Description template section ──────────────────────────────────────────
 
 const PR_TEMPLATE_PLACEHOLDER = `## Summary
@@ -4863,6 +5244,7 @@ export function SettingsScreen({ onClose, onNavigate }: SettingsScreenProps) {
   type NavItem = { id: string; label: string; icon: React.ElementType };
   const navItems: NavItem[] = [
     { id: "ai",           label: "AI",           icon: Sparkles     },
+    ...(onNavigate ? [{ id: "agents", label: "Agents", icon: Bot } as NavItem] : []),
     { id: "integrations", label: "Integrations", icon: Link2        },
     { id: "appearance",   label: "Appearance",   icon: Palette      },
     { id: "storage",      label: "Storage",      icon: HardDrive    },
@@ -4870,7 +5252,6 @@ export function SettingsScreen({ onClose, onNavigate }: SettingsScreenProps) {
     { id: "meetings",     label: "Meetings",     icon: NotebookPen },
     { id: "templates",    label: "Templates",    icon: FileText     },
     { id: "development",  label: "Development",  icon: FlaskConical },
-    ...(onNavigate ? [{ id: "agents", label: "Agents", icon: Bot } as NavItem] : []),
   ];
 
   // Scroll-spy: update active nav item as user scrolls
@@ -4962,55 +5343,11 @@ export function SettingsScreen({ onClose, onNavigate }: SettingsScreenProps) {
                 <CopilotSection isConfigured={credStatus.copilotApiKey} onSaved={refresh} />
                 <LocalLlmSection isConfigured={credStatus.localLlmUrl} onSaved={refresh} />
                 <AiProviderSection />
+                <PerPanelAiSection />
                 <p className="text-xs text-muted-foreground pt-1">
                   All credentials are stored in your macOS Keychain and never leave your machine.
                   They are used exclusively in the Tauri backend layer and never exposed to the UI.
                 </p>
-              </section>
-
-              <section ref={sectionRef("integrations")} className="space-y-4 border-t pt-8">
-                <h2 className="text-xl font-semibold text-foreground">Integrations</h2>
-                <JiraSection isConfigured={jiraCredentialsSet(credStatus)} onSaved={refresh} />
-                <BitbucketSection isConfigured={bitbucketCredentialsSet(credStatus)} onSaved={refresh} />
-                <ConfigSection
-                  jiraBoardId={credStatus.jiraBoardId}
-                  bitbucketRepoSlug={credStatus.bitbucketRepoSlug}
-                  onSaved={refresh}
-                />
-                <DataTestSection fullyConfigured={fullyConfigured} />
-              </section>
-
-              <section ref={sectionRef("appearance")} className="space-y-4 border-t pt-8">
-                <h2 className="text-xl font-semibold text-foreground">Appearance</h2>
-                <ThemeSection />
-              </section>
-
-              <section ref={sectionRef("storage")} className="space-y-4 border-t pt-8">
-                <h2 className="text-xl font-semibold text-foreground">Storage</h2>
-                <DataDirectorySection />
-                <CacheSection />
-              </section>
-
-              <section ref={sectionRef("time-tracking")} className="space-y-4 border-t pt-8">
-                <h2 className="text-xl font-semibold text-foreground">Time Tracking</h2>
-                <TimeTrackingSection />
-              </section>
-
-              <section ref={sectionRef("meetings")} className="space-y-4 border-t pt-8">
-                <h2 className="text-xl font-semibold text-foreground">Meetings</h2>
-                <MeetingsSection />
-              </section>
-
-              <section ref={sectionRef("templates")} className="space-y-4 border-t pt-8">
-                <h2 className="text-xl font-semibold text-foreground">Templates</h2>
-                <PrTemplateSection />
-                <GroomingTemplatesSection />
-              </section>
-
-              <section ref={sectionRef("development")} className="space-y-4 border-t pt-8">
-                <h2 className="text-xl font-semibold text-foreground">Development</h2>
-                <MockModeSection onToggle={handleMockToggle} />
-                <MockClaudeModeSection onToggle={handleMockToggle} />
               </section>
 
               {onNavigate && (
@@ -5054,6 +5391,52 @@ export function SettingsScreen({ onClose, onNavigate }: SettingsScreenProps) {
                   </Card>
                 </section>
               )}
+
+              <section ref={sectionRef("integrations")} className="space-y-4 border-t pt-8">
+                <h2 className="text-xl font-semibold text-foreground">Integrations</h2>
+                <JiraSection isConfigured={jiraCredentialsSet(credStatus)} onSaved={refresh} />
+                <BitbucketSection isConfigured={bitbucketCredentialsSet(credStatus)} onSaved={refresh} />
+                <ConfigSection
+                  jiraBoardId={credStatus.jiraBoardId}
+                  bitbucketRepoSlug={credStatus.bitbucketRepoSlug}
+                  onSaved={refresh}
+                />
+                <DataTestSection fullyConfigured={fullyConfigured} />
+              </section>
+
+              <section ref={sectionRef("appearance")} className="space-y-4 border-t pt-8">
+                <h2 className="text-xl font-semibold text-foreground">Appearance</h2>
+                <ThemeSection />
+              </section>
+
+              <section ref={sectionRef("storage")} className="space-y-4 border-t pt-8">
+                <h2 className="text-xl font-semibold text-foreground">Storage</h2>
+                <DataDirectorySection />
+                <CacheSection />
+              </section>
+
+              <section ref={sectionRef("time-tracking")} className="space-y-4 border-t pt-8">
+                <h2 className="text-xl font-semibold text-foreground">Time Tracking</h2>
+                <TimeTrackingSection />
+              </section>
+
+              <section ref={sectionRef("meetings")} className="space-y-4 border-t pt-8">
+                <h2 className="text-xl font-semibold text-foreground">Meetings</h2>
+                <MeetingsSection />
+                <NoteTemplatesSection />
+              </section>
+
+              <section ref={sectionRef("templates")} className="space-y-4 border-t pt-8">
+                <h2 className="text-xl font-semibold text-foreground">Templates</h2>
+                <PrTemplateSection />
+                <GroomingTemplatesSection />
+              </section>
+
+              <section ref={sectionRef("development")} className="space-y-4 border-t pt-8">
+                <h2 className="text-xl font-semibold text-foreground">Development</h2>
+                <MockModeSection onToggle={handleMockToggle} />
+                <MockClaudeModeSection onToggle={handleMockToggle} />
+              </section>
 
             </div>
           )}
