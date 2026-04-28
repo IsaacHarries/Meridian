@@ -80,6 +80,70 @@ pub async fn get_pr_file_content(pr_id: i64, path: String) -> Result<String, Str
     client.get_pr_file_content(pr_id, &path).await
 }
 
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProxiedImage {
+    /// MIME type as reported by Bitbucket. Defaults to `application/octet-stream`
+    /// when the header was missing — the frontend uses this to construct a
+    /// `data:` URI, so a missing type still produces a valid (if generic) URI.
+    pub content_type: String,
+    /// Base64-encoded image bytes.
+    pub data_base64: String,
+}
+
+/// Fetch a Bitbucket-hosted image with the configured Basic auth and return
+/// its bytes base64-encoded. The Tauri webview can't supply per-request auth
+/// for `<img src>`, so this command stands in: the frontend turns the result
+/// into a `data:` URI and renders it directly. Refuses any URL not pointing
+/// at `bitbucket.org` or `api.bitbucket.org` so this can't be abused as a
+/// general-purpose authenticated fetch primitive.
+#[tauri::command]
+pub async fn fetch_bitbucket_image(url: String) -> Result<ProxiedImage, String> {
+    use base64::Engine;
+    if !is_bitbucket_url(&url) {
+        return Err(
+            "Refusing to proxy non-Bitbucket URL — only bitbucket.org and api.bitbucket.org are allowed.".to_string(),
+        );
+    }
+    let client = bitbucket_client()?;
+    let (bytes, content_type) = client.fetch_authed_bytes(&url).await?;
+    Ok(ProxiedImage {
+        content_type: content_type
+            .unwrap_or_else(|| "application/octet-stream".to_string()),
+        data_base64: base64::engine::general_purpose::STANDARD.encode(&bytes),
+    })
+}
+
+/// Strict allow-list check for the proxy. Matches the schemes and hosts
+/// Bitbucket actually serves user content from, with a trailing-slash anchor
+/// so `bitbucket.org.evil.example/` can't sneak past a naive prefix match.
+fn is_bitbucket_url(url: &str) -> bool {
+    url.starts_with("https://bitbucket.org/")
+        || url.starts_with("https://api.bitbucket.org/")
+}
+
+/// Upload an image to Bitbucket as a PR attachment via the undocumented
+/// `/pullrequests/{id}/attachments` endpoint. The frontend hands us the bytes
+/// base64-encoded (so the JS bridge stays string-typed); we decode here and
+/// stream a multipart form to Bitbucket. Returns the attachment URL which
+/// the frontend embeds as `![filename](url)` in the comment markdown.
+#[tauri::command]
+pub async fn upload_pr_attachment(
+    pr_id: i64,
+    filename: String,
+    data_base64: String,
+    content_type: Option<String>,
+) -> Result<String, String> {
+    use base64::Engine;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(&data_base64)
+        .map_err(|e| format!("Invalid base64 in upload payload: {e}"))?;
+    let client = bitbucket_client()?;
+    client
+        .upload_pr_attachment(pr_id, &filename, bytes, content_type.as_deref())
+        .await
+}
+
 /// Merged PRs, optionally filtered to those updated on or after `since_iso` (sprint start date).
 #[tauri::command]
 pub async fn get_merged_prs(since_iso: Option<String>) -> Result<Vec<BitbucketPr>, String> {

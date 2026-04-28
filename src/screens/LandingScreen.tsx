@@ -356,7 +356,7 @@ export function LandingScreen({ credStatus, onNavigate }: LandingScreenProps) {
         </div>
       </div>
 
-      <main className={`flex-1 flex ${isOrbital ? "flex-col" : "items-center"}`}>
+      <main className={`flex-1 flex ${isOrbital ? "flex-col min-h-0" : "items-center"}`}>
           <div
             className={
               isOrbital

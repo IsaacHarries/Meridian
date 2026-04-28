@@ -15,6 +15,13 @@ pub struct TaskRecord {
     pub created_at: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub completed_at: Option<String>,
+    /// Optional grouping label (e.g. "Work", "Personal"). `None` means
+    /// uncategorised. We derive the picker's vocabulary from whatever
+    /// strings appear here across all tasks (including completed ones), so
+    /// categorising the last task in a group then completing it doesn't
+    /// erase the category from the dropdown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub category: Option<String>,
 }
 
 pub fn data_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {

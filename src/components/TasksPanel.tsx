@@ -12,8 +12,8 @@
  * completed" toggle later; meeting: open the meeting and uncheck inline).
  */
 
-import { useMemo, useState } from "react";
-import { Plus, X, ListTodo, Trash2 } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Plus, X, ListTodo, Trash2, Tag, ChevronDown } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
@@ -25,6 +25,7 @@ import {
   setTaskCheckedAtPath,
   type NotesTaskItem,
 } from "@/lib/tiptapTasks";
+import type { TaskRecord } from "@/lib/tauri";
 import { toast } from "sonner";
 
 interface MeetingGroup {
@@ -43,6 +44,7 @@ export function TasksPanel() {
   const loaded = useTasksStore((s) => s.loaded);
   const addTask = useTasksStore((s) => s.addTask);
   const setTaskCompleted = useTasksStore((s) => s.setTaskCompleted);
+  const setTaskCategory = useTasksStore((s) => s.setTaskCategory);
   const removeTask = useTasksStore((s) => s.removeTask);
   const setPanelOpen = useTasksStore((s) => s.setPanelOpen);
 
@@ -53,11 +55,59 @@ export function TasksPanel() {
   const openMeetings = useOpenMeetings();
 
   const [draft, setDraft] = useState("");
+  // Sticky category for the input — once picked, subsequent tasks default to
+  // the same category until the user changes it. `null` = uncategorised.
+  const [draftCategory, setDraftCategory] = useState<string | null>(null);
 
   const outstandingManual = useMemo(
     () => tasks.filter((t) => !t.completed),
     [tasks],
   );
+
+  // Categories vocabulary, derived from EVERY task (not just outstanding) so
+  // completing the last task in a category doesn't make the category vanish
+  // from the dropdown — the user can still file a new task under it.
+  const allCategories = useMemo(() => {
+    const set = new Set<string>();
+    for (const t of tasks) {
+      const c = t.category?.trim();
+      if (c) set.add(c);
+    }
+    return [...set].sort((a, b) => a.localeCompare(b));
+  }, [tasks]);
+
+  // Group outstanding manual tasks into per-category sections. Named
+  // categories appear alphabetically; the "Uncategorised" bucket renders
+  // last so user-curated groups stay top-of-list.
+  const manualSections = useMemo<{ title: string | null; tasks: TaskRecord[] }[]>(
+    () => {
+      if (outstandingManual.length === 0) return [];
+      const buckets = new Map<string, TaskRecord[]>();
+      for (const t of outstandingManual) {
+        const key = t.category?.trim() ?? "";
+        if (!buckets.has(key)) buckets.set(key, []);
+        buckets.get(key)!.push(t);
+      }
+      const named = [...buckets.entries()]
+        .filter(([k]) => k !== "")
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([title, list]) => ({ title, tasks: list }));
+      const uncat = buckets.get("") ?? [];
+      return uncat.length > 0
+        ? [...named, { title: null, tasks: uncat }]
+        : named;
+    },
+    [outstandingManual],
+  );
+
+  // If the sticky draft category gets removed from the vocabulary (e.g. the
+  // user just deleted the only task carrying it), drop it back to null so
+  // the picker doesn't show a stale choice.
+  useEffect(() => {
+    if (draftCategory && !allCategories.includes(draftCategory)) {
+      setDraftCategory(null);
+    }
+  }, [draftCategory, allCategories]);
 
   // Build per-meeting groups of unchecked taskItems. Sorted by the meeting's
   // start time descending so the most recent meeting's tasks appear first
@@ -91,7 +141,7 @@ export function TasksPanel() {
     if (!text) return;
     setDraft("");
     try {
-      await addTask(text);
+      await addTask(text, draftCategory);
     } catch (e) {
       toast.error("Failed to add task", { description: String(e) });
     }
@@ -151,7 +201,7 @@ export function TasksPanel() {
         </Button>
       </header>
 
-      <div className="px-3 py-2 border-b">
+      <div className="px-3 py-2 border-b space-y-1.5">
         <form
           onSubmit={(e) => {
             e.preventDefault();
@@ -167,6 +217,14 @@ export function TasksPanel() {
             className="h-8 text-sm border-0 shadow-none focus-visible:ring-0 focus-visible:ring-offset-0 px-1"
           />
         </form>
+        <div className="flex items-center pl-1">
+          <CategoryPicker
+            categories={allCategories}
+            value={draftCategory}
+            onChange={setDraftCategory}
+            triggerLabel={draftCategory ?? "No category"}
+          />
+        </div>
       </div>
 
       <div className="flex-1 overflow-y-auto">
@@ -176,18 +234,25 @@ export function TasksPanel() {
           <EmptyState />
         ) : (
           <div className="py-2">
-            {outstandingManual.length > 0 && (
-              <Section title="Manual">
-                {outstandingManual.map((t) => (
+            {manualSections.map((sec) => (
+              <Section
+                key={sec.title ?? "__uncat__"}
+                title={sec.title ?? "Uncategorised"}
+              >
+                {sec.tasks.map((t) => (
                   <ManualTaskRow
                     key={t.id}
-                    text={t.text}
+                    task={t}
+                    categories={allCategories}
                     onCheck={() => void setTaskCompleted(t.id, true)}
                     onDelete={() => void removeTask(t.id)}
+                    onChangeCategory={(cat) =>
+                      void setTaskCategory(t.id, cat)
+                    }
                   />
                 ))}
               </Section>
-            )}
+            ))}
 
             {meetingGroups.length > 0 && (
               <Section title="From meetings">
@@ -300,18 +365,40 @@ function Section({
 }
 
 function ManualTaskRow({
-  text,
+  task,
+  categories,
   onCheck,
   onDelete,
+  onChangeCategory,
 }: {
-  text: string;
+  task: TaskRecord;
+  categories: string[];
   onCheck: () => void;
   onDelete: () => void;
+  onChangeCategory: (cat: string | null) => void;
 }) {
   return (
     <div className="group flex items-start gap-2 px-3 py-1.5 hover:bg-muted/40">
       <Checkbox onCheck={onCheck} />
-      <span className="flex-1 text-sm leading-tight">{text}</span>
+      <div className="flex-1 min-w-0 space-y-1">
+        <span className="block text-sm leading-tight break-words">{task.text}</span>
+        {/* Category chip — visible on row hover (or always when set), so the
+            user can recategorise without retyping the task. */}
+        <div
+          className={cn(
+            "transition-opacity",
+            task.category ? "opacity-100" : "opacity-0 group-hover:opacity-100",
+          )}
+        >
+          <CategoryPicker
+            categories={categories}
+            value={task.category ?? null}
+            onChange={onChangeCategory}
+            triggerLabel={task.category ?? "Set category"}
+            compact
+          />
+        </div>
+      </div>
       <button
         onClick={onDelete}
         title="Delete task"
@@ -320,6 +407,157 @@ function ManualTaskRow({
       >
         <Trash2 className="h-3.5 w-3.5" />
       </button>
+    </div>
+  );
+}
+
+// ── Category picker ─────────────────────────────────────────────────────────
+//
+// Used in two places: above the "Add a task…" input (sticky default for new
+// tasks) and inline on each task row (recategorise existing). Same component
+// handles both — `compact` shrinks the trigger for the per-row variant.
+//
+// "Create new category" path: the picker stays open while the inline input
+// is active, commits on Enter, and threads the new name straight back via
+// `onChange` — it doesn't try to "register" the category anywhere because
+// the vocabulary is derived from existing tasks, so the moment any task
+// carries the new name the dropdown picks it up.
+
+function CategoryPicker({
+  categories,
+  value,
+  onChange,
+  triggerLabel,
+  compact,
+}: {
+  categories: string[];
+  value: string | null;
+  onChange: (cat: string | null) => void;
+  triggerLabel: string;
+  compact?: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const [creating, setCreating] = useState(false);
+  const [newName, setNewName] = useState("");
+  const wrapperRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    function onDocClick(e: MouseEvent) {
+      if (!wrapperRef.current?.contains(e.target as Node)) {
+        setOpen(false);
+        setCreating(false);
+        setNewName("");
+      }
+    }
+    document.addEventListener("mousedown", onDocClick);
+    return () => document.removeEventListener("mousedown", onDocClick);
+  }, [open]);
+
+  function commitNew() {
+    const trimmed = newName.trim();
+    if (!trimmed) {
+      setCreating(false);
+      return;
+    }
+    onChange(trimmed);
+    setNewName("");
+    setCreating(false);
+    setOpen(false);
+  }
+
+  function pick(cat: string | null) {
+    onChange(cat);
+    setOpen(false);
+    setCreating(false);
+    setNewName("");
+  }
+
+  return (
+    <div ref={wrapperRef} className="relative inline-block">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className={cn(
+          "inline-flex items-center gap-1 rounded-md border bg-background hover:bg-muted text-muted-foreground transition-colors",
+          compact ? "h-5 text-[10px] px-1.5" : "h-6 text-[11px] px-2",
+          value && !compact && "text-foreground border-primary/30 bg-primary/5",
+        )}
+        title="Set category"
+        aria-haspopup="menu"
+        aria-expanded={open}
+      >
+        <Tag className={compact ? "h-2.5 w-2.5" : "h-3 w-3"} />
+        <span className="max-w-[120px] truncate">{triggerLabel}</span>
+        <ChevronDown className={compact ? "h-2.5 w-2.5" : "h-3 w-3"} />
+      </button>
+      {open && (
+        <div
+          role="menu"
+          className="absolute z-30 mt-1 left-0 min-w-[160px] rounded-md border bg-popover shadow-md py-1"
+        >
+          <button
+            type="button"
+            role="menuitem"
+            className={cn(
+              "w-full text-left text-xs px-3 py-1.5 hover:bg-accent",
+              value === null && "font-medium text-foreground",
+            )}
+            onClick={() => pick(null)}
+          >
+            No category
+          </button>
+          {categories.length > 0 && (
+            <div className="my-0.5 border-t" />
+          )}
+          {categories.map((c) => (
+            <button
+              key={c}
+              type="button"
+              role="menuitem"
+              className={cn(
+                "w-full text-left text-xs px-3 py-1.5 hover:bg-accent truncate",
+                value === c && "font-medium text-foreground",
+              )}
+              onClick={() => pick(c)}
+            >
+              {c}
+            </button>
+          ))}
+          <div className="my-0.5 border-t" />
+          {creating ? (
+            <div className="px-2 py-1.5">
+              <Input
+                autoFocus
+                value={newName}
+                onChange={(e) => setNewName(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    commitNew();
+                  } else if (e.key === "Escape") {
+                    e.preventDefault();
+                    setCreating(false);
+                    setNewName("");
+                  }
+                }}
+                onBlur={commitNew}
+                placeholder="New category"
+                className="h-7 text-xs"
+              />
+            </div>
+          ) : (
+            <button
+              type="button"
+              role="menuitem"
+              className="w-full text-left text-xs px-3 py-1.5 hover:bg-accent text-primary"
+              onClick={() => setCreating(true)}
+            >
+              + New category…
+            </button>
+          )}
+        </div>
+      )}
     </div>
   );
 }

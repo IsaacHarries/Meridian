@@ -104,32 +104,6 @@ pub fn load_time_tracking_state(app: tauri::AppHandle) -> Result<Option<String>,
     crate::storage::time_tracking::load(&app)
 }
 
-/// Read an arbitrary file path the user picked through the import dialog.
-/// Capped at 10 MB so a misclick on a giant file can't pin the renderer
-/// while it serializes back over the bridge. The cap is well above any
-/// realistic time-tracking export — years of daily entries are kilobytes,
-/// not megabytes.
-#[tauri::command]
-pub fn read_time_tracking_import_file(path: String) -> Result<String, String> {
-    use std::fs;
-    use std::path::Path;
-
-    const MAX_BYTES: u64 = 10 * 1024 * 1024;
-
-    let p = Path::new(&path);
-    let meta = fs::metadata(p).map_err(|e| format!("Cannot stat {path}: {e}"))?;
-    if !meta.is_file() {
-        return Err(format!("{path} is not a regular file."));
-    }
-    if meta.len() > MAX_BYTES {
-        return Err(format!(
-            "File is too large ({} bytes; max is {MAX_BYTES}).",
-            meta.len()
-        ));
-    }
-    fs::read_to_string(p).map_err(|e| format!("Cannot read {path}: {e}"))
-}
-
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SystemActivitySnapshot {

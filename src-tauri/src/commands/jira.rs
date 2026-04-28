@@ -89,6 +89,39 @@ pub async fn get_issue(issue_key: String) -> Result<JiraIssue, String> {
     client.get_issue(&issue_key, &cfg).await
 }
 
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProxiedJiraImage {
+    pub content_type: String,
+    pub data_base64: String,
+}
+
+/// Fetch a JIRA-hosted image (typically an attachment content URL) with the
+/// configured Basic auth and return its bytes base64-encoded. Mirrors the
+/// Bitbucket image proxy: the Tauri webview can't supply per-request auth
+/// for `<img src>`, so this stands in. The URL is validated against the
+/// configured JIRA base URL to refuse arbitrary fetches.
+#[tauri::command]
+pub async fn fetch_jira_image(url: String) -> Result<ProxiedJiraImage, String> {
+    use base64::Engine;
+    let (client, _) = jira_client()?;
+    // Strict allow-list: URL must start with the configured JIRA base URL.
+    // We trim any trailing slash on the base before comparison so trivial
+    // formatting differences don't lock out valid attachment URLs.
+    let base = client.base_url.trim_end_matches('/');
+    if !url.starts_with(base) {
+        return Err(format!(
+            "Refusing to proxy URL outside the configured JIRA host. Expected prefix '{base}'.",
+        ));
+    }
+    let (bytes, content_type) = client.fetch_authed_bytes(&url).await?;
+    Ok(ProxiedJiraImage {
+        content_type: content_type
+            .unwrap_or_else(|| "application/octet-stream".to_string()),
+        data_base64: base64::engine::general_purpose::STANDARD.encode(&bytes),
+    })
+}
+
 /// Most-recent closed sprints, newest first.
 #[tauri::command]
 pub async fn get_completed_sprints(limit: u32) -> Result<Vec<JiraSprint>, String> {

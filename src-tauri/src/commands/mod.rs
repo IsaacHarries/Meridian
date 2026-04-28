@@ -42,16 +42,18 @@ pub use agents::review::{
 };
 pub use agents::trends::generate_multi_sprint_trends;
 pub use bitbucket::{
-    approve_pr, create_pr_task, create_pull_request, delete_pr_comment, get_merged_prs,
-    get_my_open_prs, get_open_prs, get_pr, get_pr_comments, get_pr_diff, get_pr_file_content, get_pr_tasks,
-    get_prs_for_review, post_pr_comment, request_changes_pr, resolve_pr_task, unapprove_pr,
-    unrequest_changes_pr, update_pr_comment, update_pr_task,
+    approve_pr, create_pr_task, create_pull_request, delete_pr_comment, fetch_bitbucket_image,
+    get_merged_prs, get_my_open_prs, get_open_prs, get_pr, get_pr_comments, get_pr_diff,
+    get_pr_file_content, get_pr_tasks, get_prs_for_review, post_pr_comment, request_changes_pr,
+    resolve_pr_task, unapprove_pr, unrequest_changes_pr, update_pr_comment, update_pr_task,
+    upload_pr_attachment,
 };
 pub use credentials::{
     credential_status, delete_credential, get_non_secret_config, save_credential,
 };
 pub use fetch_url::fetch_url_content;
 pub use jira::{
+    fetch_jira_image,
     get_active_sprint,
     get_active_sprint_issues,
     get_all_active_sprint_issues,
@@ -71,8 +73,8 @@ pub use jira::{
 };
 pub use tasks::{create_task, delete_task, list_tasks, update_task};
 pub use time_tracking::{
-    get_system_activity_state, load_time_tracking_state, read_time_tracking_import_file,
-    save_time_tracking_state, start_time_tracking_poller,
+    get_system_activity_state, load_time_tracking_state, save_time_tracking_state,
+    start_time_tracking_poller,
 };
 pub use meetings::{
     active_meeting_id, create_notes_meeting, delete_meeting, diarize_meeting,

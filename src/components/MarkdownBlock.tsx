@@ -1,17 +1,42 @@
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { BitbucketImage } from "@/components/BitbucketImage";
 
 /**
  * Shared renderer for AI-generated markdown (retro summaries, trend analyses,
- * etc.). Uses react-markdown + remark-gfm so inline formatting, lists, and
- * tables render correctly. Styling tuned to match the surrounding prose.
+ * etc.) and PR descriptions. Uses react-markdown + remark-gfm so inline
+ * formatting, lists, and tables render correctly. Styling tuned to match
+ * the surrounding prose. Images route through BitbucketImage so PR-comment
+ * attachments (auth-required Bitbucket URLs) load via the Tauri proxy
+ * instead of failing silently in the webview.
  */
 export function MarkdownBlock({ text }: { text: string }) {
   return (
     <div className="prose prose-sm dark:prose-invert max-w-none text-sm leading-relaxed">
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
+        // The default urlTransform strips `data:` URIs as a sanitization
+        // measure. We want them through (so `<img>` placeholders coming from
+        // pre-attachment-mode comments still render), alongside http(s) and
+        // mailto. Anything else is dropped.
+        urlTransform={(url) => {
+          if (
+            url.startsWith("https://") ||
+            url.startsWith("http://") ||
+            url.startsWith("data:") ||
+            url.startsWith("mailto:")
+          ) {
+            return url;
+          }
+          return "";
+        }}
         components={{
+          img: ({ src, alt }) => (
+            <BitbucketImage
+              src={typeof src === "string" ? src : ""}
+              alt={alt}
+            />
+          ),
           h1: (props) => <h3 className="font-semibold text-foreground mt-4 mb-2 text-base" {...props} />,
           h2: (props) => <h3 className="font-semibold text-foreground mt-4 mb-2 text-base" {...props} />,
           h3: (props) => <h4 className="font-semibold text-foreground mt-3 mb-1 text-sm" {...props} />,

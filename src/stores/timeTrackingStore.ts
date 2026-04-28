@@ -33,6 +33,12 @@ import {
   saveTimeTrackingState,
 } from "@/lib/timeTracking";
 
+// Persisted heartbeat. The poller updates `lastTickMs` every ~5s; we write it
+// to disk so a hard kill (force-quit, crash, OS reboot) can be recovered from
+// by closing any still-open segment at the last-known-alive time, instead of
+// throwing away the entire unbroken work block since segment-open.
+const HEARTBEAT_INTERVAL_MS = 5_000;
+
 /** If we go this long without a poll tick, we assume the system slept and
  *  retroactively close any open segment at the last-known-good time. */
 const STALE_GAP_MS = 30_000;
@@ -90,12 +96,6 @@ interface TimeTrackingState {
   deleteSegment: (day: string, idx: number) => void;
   /** Insert a manual closed segment, sorted by startMs. */
   addManualSegment: (day: string, startMs: number, endMs: number) => void;
-  /** One-shot bulk import. Returns counts so the caller can toast a
-   *  summary. Days that already have segments are skipped — the importer
-   *  is idempotent so re-running it is safe. */
-  importHistory: (
-    entries: Array<{ dayKey: string; segments: { startMs: number; endMs: number }[] }>,
-  ) => { added: number; skipped: number };
   /** Force-pause: close any open segment with reason "manual". */
   pauseNow: () => void;
   /** Force-resume: open a new segment now (used when the user wants to
@@ -155,6 +155,7 @@ export const useTimeTrackingStore = create<TimeTrackingState>()((set, get) => ({
     // intervening time for a system-sleep gap.
     if (!state.settings.trackingEnabled) {
       set({ lastSnapshot: snapshot, lastTickMs: now });
+      maybePersistHeartbeat(get(), now);
       return;
     }
 
@@ -233,7 +234,14 @@ export const useTimeTrackingStore = create<TimeTrackingState>()((set, get) => ({
       pauseReason: nextPauseReason,
     });
 
-    if (mutated) persist(get());
+    if (mutated) {
+      // A mutation always also re-persists the latest lastTickMs.
+      persist(get());
+    } else {
+      // No segment churn this tick, but we still want the on-disk lastTickMs
+      // to advance so a subsequent hard-kill recovery has a recent anchor.
+      maybePersistHeartbeat(get(), now);
+    }
   },
 
   rolloverTick: () => {
@@ -387,34 +395,6 @@ export const useTimeTrackingStore = create<TimeTrackingState>()((set, get) => ({
     persist(get());
   },
 
-  importHistory: (entries) => {
-    let added = 0;
-    let skipped = 0;
-    set((s) => {
-      const next = { ...s.segmentsByDay };
-      for (const entry of entries) {
-        const existing = next[entry.dayKey] ?? [];
-        if (existing.length > 0) {
-          // Don't merge — re-import shouldn't double-count days the user
-          // already has data for. They can delete a day's segments first
-          // if they really want to overwrite.
-          skipped += 1;
-          continue;
-        }
-        const segs: WorkSegment[] = entry.segments.map((seg) => ({
-          startMs: seg.startMs,
-          endMs: seg.endMs,
-          endReason: "manual",
-        }));
-        next[entry.dayKey] = segs;
-        added += 1;
-      }
-      return { segmentsByDay: next };
-    });
-    persist(get());
-    return { added, skipped };
-  },
-
   pauseNow: () => {
     const now = Date.now();
     const state = get();
@@ -460,6 +440,10 @@ export async function hydrateTimeTrackingStore(): Promise<void> {
       segmentsByDay: Record<string, WorkSegment[]>;
       adjustmentMsByDay: Record<string, number>;
       settings: TimeTrackingSettings;
+      // Optional — older persisted blobs predate the heartbeat. Treat absence
+      // as "no recovery anchor available", which falls back to the legacy
+      // close-at-startMs behaviour for that one transition.
+      lastTickMs?: number;
     }>();
     if (cached) {
       const settings = {
@@ -468,22 +452,46 @@ export async function hydrateTimeTrackingStore(): Promise<void> {
       };
       const segs = cached.segmentsByDay ?? {};
       const adjustments = cached.adjustmentMsByDay ?? {};
-      // Clean up any segment that was open at the time of the previous
-      // shutdown — we cannot trust the user was at the keyboard for any
-      // span beyond the last-tick checkpoint, so close it at startMs (zero
-      // duration is the safest default).
+      const lastTickMs =
+        typeof cached.lastTickMs === "number" && cached.lastTickMs > 0
+          ? cached.lastTickMs
+          : 0;
+      // Close any segment that was open at the time of the previous shutdown.
+      // We cap the close-time at:
+      //   • the persisted heartbeat (lastTickMs) — the last instant we know
+      //     the app was alive and the user wasn't paused; and
+      //   • the segment's day boundary — so a session that died after the
+      //     user worked past midnight doesn't produce a cross-midnight
+      //     segment. The next-day portion is lost, but the user wasn't
+      //     working through it anyway (we lost the heartbeat at the kill).
+      // Without a heartbeat (legacy), we fall back to startMs — zero
+      // duration is safer than guessing.
       const cleaned: Record<string, WorkSegment[]> = {};
       for (const [day, list] of Object.entries(segs)) {
-        cleaned[day] = list.map((seg) =>
-          seg.endMs === null
-            ? { ...seg, endMs: seg.startMs, endReason: "shutdown" as const }
-            : seg,
-        );
+        cleaned[day] = list.map((seg) => {
+          if (seg.endMs !== null) return seg;
+          if (lastTickMs <= 0) {
+            return {
+              ...seg,
+              endMs: seg.startMs,
+              endReason: "shutdown" as const,
+            };
+          }
+          const dayBoundary = nextLocalMidnightMs(new Date(seg.startMs));
+          const cap = Math.min(lastTickMs, dayBoundary);
+          const endMs = Math.max(seg.startMs, cap);
+          const endReason: WorkSegmentEndReason =
+            endMs >= dayBoundary ? "midnight" : "shutdown";
+          return { ...seg, endMs, endReason };
+        });
       }
       useTimeTrackingStore.setState({
         segmentsByDay: cleaned,
         adjustmentMsByDay: adjustments,
         settings,
+        // Don't restore lastTickMs into runtime state — that would suppress
+        // the next-tick stale-gap detection. The disk record exists purely
+        // to recover open segments at hydration time.
         hydrated: true,
       });
     } else {
@@ -506,7 +514,21 @@ function persist(state: TimeTrackingState): void {
     segmentsByDay: state.segmentsByDay,
     adjustmentMsByDay: state.adjustmentMsByDay,
     settings: state.settings,
+    // Persist the last-known-alive timestamp so a crash / force-quit can
+    // recover the open segment up to that point. Hydration reads this and
+    // closes any open segment at min(lastTickMs, nextMidnight).
+    lastTickMs: state.lastTickMs,
   });
+}
+
+// Throttle heartbeat-only writes (no segment churn) so we don't churn the
+// disk file every tick. The library-level save is debounced too, but coalesce
+// here as well so settings-update + heartbeat ticks don't compete.
+let _lastHeartbeatPersistMs = 0;
+function maybePersistHeartbeat(state: TimeTrackingState, nowMs: number): void {
+  if (nowMs - _lastHeartbeatPersistMs < HEARTBEAT_INTERVAL_MS) return;
+  _lastHeartbeatPersistMs = nowMs;
+  persist(state);
 }
 
 function pauseReasonFor(

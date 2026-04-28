@@ -10,11 +10,21 @@ pub fn list_tasks(app: tauri::AppHandle) -> Result<Vec<TaskRecord>, String> {
 }
 
 #[tauri::command]
-pub fn create_task(app: tauri::AppHandle, text: String) -> Result<TaskRecord, String> {
+pub fn create_task(
+    app: tauri::AppHandle,
+    text: String,
+    category: Option<String>,
+) -> Result<TaskRecord, String> {
     let trimmed = text.trim();
     if trimmed.is_empty() {
         return Err("Task text cannot be empty".into());
     }
+    // Normalise the category: trim, drop empties, collapse to None so the
+    // on-disk shape is canonical. The frontend mirrors the same rules so
+    // round-tripping never produces "" vs None drift.
+    let category = category
+        .map(|c| c.trim().to_string())
+        .filter(|c| !c.is_empty());
     let mut entries = tasks::read_tasks(&app)?;
     let record = TaskRecord {
         id: new_task_id(),
@@ -22,6 +32,7 @@ pub fn create_task(app: tauri::AppHandle, text: String) -> Result<TaskRecord, St
         completed: false,
         created_at: now_iso(),
         completed_at: None,
+        category,
     };
     entries.push(record.clone());
     tasks::write_tasks(&app, &entries)?;

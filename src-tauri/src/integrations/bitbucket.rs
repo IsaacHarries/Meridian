@@ -485,6 +485,128 @@ impl BitbucketClient {
         self.get_text(&file_url).await
     }
 
+    /// Fetch arbitrary bytes from Bitbucket with this client's Basic auth
+    /// applied. Used to proxy `<img>` requests in PR descriptions / comments,
+    /// since the Tauri webview can't supply per-request auth headers and
+    /// Bitbucket-hosted images (attachments, user-content URLs) all sit
+    /// behind auth.
+    ///
+    /// Caller must have already validated that `url` points at a Bitbucket
+    /// host — this method does not re-check; it just trusts and forwards.
+    pub async fn fetch_authed_bytes(
+        &self,
+        url: &str,
+    ) -> Result<(Vec<u8>, Option<String>), String> {
+        let resp = self
+            .client
+            .get(url)
+            .basic_auth(&self.username, Some(&self.access_token))
+            .send()
+            .await
+            .map_err(|e| {
+                if e.is_connect() || e.is_timeout() {
+                    "Could not reach Bitbucket. Check your internet connection.".to_string()
+                } else {
+                    format!("Request failed: {e}")
+                }
+            })?;
+
+        let status = resp.status();
+        if !status.is_success() {
+            return Err(format!(
+                "Bitbucket returned {status} fetching {url}",
+            ));
+        }
+        let content_type = resp
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_string());
+        let bytes = resp
+            .bytes()
+            .await
+            .map_err(|e| format!("Failed to read image bytes: {e}"))?;
+        Ok((bytes.to_vec(), content_type))
+    }
+
+    /// Upload an image as a PR-level attachment via Bitbucket's undocumented
+    /// `/pullrequests/{id}/attachments` endpoint. Mirrors the behaviour of
+    /// the web UI's "paste an image" flow: we POST a multipart form with the
+    /// file under field `files`, and Bitbucket returns a JSON document
+    /// listing the uploaded files with reference URLs.
+    ///
+    /// This endpoint is undocumented — it may change shape, or be locked
+    /// down to session auth (vs. App Password) at any time. The caller is
+    /// expected to surface failures clearly so the user can switch back to
+    /// the data-URI fallback in Settings.
+    pub async fn upload_pr_attachment(
+        &self,
+        pr_id: i64,
+        filename: &str,
+        bytes: Vec<u8>,
+        content_type: Option<&str>,
+    ) -> Result<String, String> {
+        let url = self.repo_url(&format!("/pullrequests/{pr_id}/attachments"));
+        let mut part = reqwest::multipart::Part::bytes(bytes).file_name(filename.to_string());
+        if let Some(ct) = content_type {
+            part = part.mime_str(ct).map_err(|e| format!("Invalid content-type '{ct}': {e}"))?;
+        }
+        let form = reqwest::multipart::Form::new().part("files", part);
+
+        let resp = self
+            .client
+            .post(&url)
+            .basic_auth(&self.username, Some(&self.access_token))
+            .multipart(form)
+            .send()
+            .await
+            .map_err(|e| {
+                if e.is_connect() || e.is_timeout() {
+                    "Could not reach Bitbucket. Check your internet connection.".to_string()
+                } else {
+                    format!("Upload failed: {e}")
+                }
+            })?;
+
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            return Err(format!(
+                "Bitbucket returned {status} uploading attachment to {url}. Body: {body}",
+            ));
+        }
+
+        // Bitbucket's documented response for issue attachments returns a
+        // `values` array with `links.self.href`. We try that first, and fall
+        // back to scanning the entire response for any plausible URL — the
+        // PR-attachment endpoint isn't documented, so its exact shape is
+        // observed empirically.
+        let body: Value = resp
+            .json()
+            .await
+            .map_err(|e| format!("Could not parse upload response: {e}"))?;
+
+        if let Some(values) = body["values"].as_array() {
+            if let Some(first) = values.first() {
+                if let Some(href) = first["links"]["self"]["href"].as_str() {
+                    return Ok(href.to_string());
+                }
+                if let Some(name) = first["name"].as_str() {
+                    // Some shape variants return only a name; reconstruct the
+                    // canonical attachment URL from it. The browser proxy
+                    // (`fetch_bitbucket_image`) handles auth on retrieval.
+                    return Ok(self.repo_url(&format!(
+                        "/pullrequests/{pr_id}/attachments/{name}",
+                    )));
+                }
+            }
+        }
+
+        Err(format!(
+            "Upload succeeded but Bitbucket's response shape was unexpected — could not locate the attachment URL. Raw response: {body}",
+        ))
+    }
+
     pub async fn get_pr_comments(&self, pr_id: i64) -> Result<Vec<BitbucketComment>, String> {
         let url = self.repo_url(&format!("/pullrequests/{pr_id}/comments?pagelen=100"));
         let body = self.get_json(&url).await?;

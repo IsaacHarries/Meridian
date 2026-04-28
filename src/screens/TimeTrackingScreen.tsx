@@ -12,7 +12,7 @@
  * screen rather than in the store, since the store would otherwise notify
  * every other subscriber every second too.
  */
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowLeft,
   Pause,
@@ -35,12 +35,7 @@ import {
   ChevronRight,
   ChevronDown,
   CalendarDays,
-  Upload,
 } from "lucide-react";
-import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import { invoke } from "@tauri-apps/api/core";
-import { toast } from "sonner";
-import { parseImportJson } from "@/lib/timeTrackingImport";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -87,74 +82,7 @@ export function TimeTrackingScreen({ onBack }: { onBack: () => void }) {
   const setChipHiddenInHeader = useTimeTrackingStore(
     (s) => s.setChipHiddenInHeader,
   );
-  const importHistory = useTimeTrackingStore((s) => s.importHistory);
   const setTrackingEnabled = useTimeTrackingStore((s) => s.setTrackingEnabled);
-
-  // Run the file picker → Rust read → parse pipeline. Kept inside the
-  // screen so we can toast progress / errors without threading callbacks
-  // through the HistoryPanel.
-  async function handleImportClick() {
-    let picked: string | null = null;
-    try {
-      const result = await openDialog({
-        multiple: false,
-        directory: false,
-        title: "Import time tracking history",
-        filters: [{ name: "JSON", extensions: ["json"] }],
-      });
-      if (typeof result === "string") picked = result;
-    } catch (e) {
-      toast.error("Could not open file picker", { description: String(e) });
-      return;
-    }
-    if (!picked) return; // user cancelled
-
-    let raw: string;
-    try {
-      raw = await invoke<string>("read_time_tracking_import_file", { path: picked });
-    } catch (e) {
-      toast.error("Could not read file", { description: String(e) });
-      return;
-    }
-
-    const { days, errors } = parseImportJson(raw);
-    if (days.length === 0) {
-      toast.error(
-        errors[0]?.message ?? "No valid entries found in the file.",
-        {
-          description:
-            errors.length > 1
-              ? `${errors.length} entries failed validation.`
-              : undefined,
-        },
-      );
-      return;
-    }
-
-    const { added, skipped } = importHistory(
-      days.map((d) => ({ dayKey: d.dayKey, segments: d.segments })),
-    );
-
-    const parts = [
-      `${added} ${added === 1 ? "day" : "days"} added`,
-      skipped > 0
-        ? `${skipped} skipped (already had segments)`
-        : null,
-      errors.length > 0
-        ? `${errors.length} ${errors.length === 1 ? "entry" : "entries"} failed`
-        : null,
-    ].filter(Boolean);
-
-    const description = errors.length
-      ? errors
-          .slice(0, 3)
-          .map((e) => `Day ${e.dayIndex}${e.date ? ` (${e.date})` : ""}: ${e.message}`)
-          .join("\n") +
-        (errors.length > 3 ? `\n…and ${errors.length - 3} more` : "")
-      : undefined;
-
-    toast.success(`Import: ${parts.join(", ")}`, { description });
-  }
 
   // Local 1s tick so the running segment's display advances. Keeping this
   // local (vs. in the store) means we don't notify every store consumer
@@ -224,20 +152,15 @@ export function TimeTrackingScreen({ onBack }: { onBack: () => void }) {
     return out;
   }, [weekKeys, segmentsByDay, adjustmentMsByDay, now]);
 
-  // Overtime balance across the entire history, not just this week. Lets
-  // users "cash in" hours from earlier in the month if they want.
-  const allBalanceMs = useMemo(() => {
-    const totals: Record<string, number> = {};
-    for (const [key, segs] of Object.entries(segmentsByDay)) {
-      const adj = adjustmentMsByDay[key] ?? 0;
-      totals[key] = totalMsForDayWithAdjustment(segs, adj, now);
-    }
-    // Days that only have an adjustment (no auto segments) still count.
-    for (const [key, adj] of Object.entries(adjustmentMsByDay)) {
-      if (!(key in totals)) totals[key] = Math.max(0, adj);
-    }
-    return overtimeBalanceMs(totals, todayKey, settings.dailyTargetHours);
-  }, [segmentsByDay, adjustmentMsByDay, todayKey, settings.dailyTargetHours, now]);
+  // Overtime balance scoped to the displayed week. When the user navigates
+  // to a previous week, the pill reflects that week's surplus / deficit
+  // rather than a running all-time total — which made it impossible to read
+  // "how was last week" from a glance. `overtimeBalanceMs` already skips
+  // future-dated days within the week (e.g. Wed when today is Mon) and
+  // refuses to debit today's incomplete day.
+  const weekBalanceMs = useMemo(() => {
+    return overtimeBalanceMs(weekTotals, todayKey, settings.dailyTargetHours);
+  }, [weekTotals, todayKey, settings.dailyTargetHours]);
 
   return (
     <div className="min-h-screen">
@@ -460,7 +383,7 @@ export function TimeTrackingScreen({ onBack }: { onBack: () => void }) {
                   </Button>
                 )}
               </div>
-              <BalancePill ms={allBalanceMs} />
+              <BalancePill ms={weekBalanceMs} />
             </div>
             {viewedWeekOffset !== 0 && (
               <p className="text-xs text-muted-foreground">
@@ -521,7 +444,6 @@ export function TimeTrackingScreen({ onBack }: { onBack: () => void }) {
           onJumpToWeek={(date) =>
             jumpToWeekOffset(weekOffsetFromReference(date, new Date(now)))
           }
-          onImport={handleImportClick}
         />
 
         {/* Chip visibility — exposed here as well as in Settings so the
@@ -891,14 +813,12 @@ function HistoryPanel({
   now,
   dailyTargetHours,
   onJumpToWeek,
-  onImport,
 }: {
   segmentsByDay: Record<string, WorkSegment[]>;
   adjustmentMsByDay: Record<string, number>;
   now: number;
   dailyTargetHours: number;
   onJumpToWeek: (date: Date) => void;
-  onImport: () => void;
 }) {
   const summaries = useMemo<WeekSummary[]>(() => {
     const targetMs = dailyTargetHours * MS_PER_HOUR;
@@ -941,28 +861,81 @@ function HistoryPanel({
     return `${start.getFullYear()}-${String(start.getMonth() + 1).padStart(2, "0")}-${String(start.getDate()).padStart(2, "0")}`;
   }, [now]);
 
+  // Cap the History card so the page exactly fills the viewport — History
+  // scrolls internally, and the window scrollbar only appears once the
+  // viewport is shorter than the absolute floor we set below. We compute the
+  // available height by subtracting:
+  //   • the card's viewport-top (everything above it in `<main>`)
+  //   • the height of anything that renders AFTER the card inside `<main>`
+  //     (the "Header chip" card + main's bottom-padding)
+  //   • a small padding for sub-pixel rounding so the window scrollbar
+  //     doesn't flicker on certain zoom levels.
+  // ResizeObserver on `<main>` re-runs on layout shifts above OR below the
+  // card; the setState bail-out (prev === next) breaks the recompute loop
+  // that capping the card itself would otherwise trigger.
+  const cardRef = useRef<HTMLDivElement>(null);
+  const [maxHeight, setMaxHeight] = useState<number | null>(null);
+  useLayoutEffect(() => {
+    function recompute() {
+      const node = cardRef.current;
+      if (!node) return;
+      const cardRect = node.getBoundingClientRect();
+      const main = node.closest("main") ?? document.body;
+      const mainRect = main.getBoundingClientRect();
+      const afterCard = Math.max(0, mainRect.bottom - cardRect.bottom);
+      const BOTTOM_PADDING = 8;
+      const next = Math.max(
+        200,
+        window.innerHeight - cardRect.top - afterCard - BOTTOM_PADDING,
+      );
+      setMaxHeight((prev) => (prev === next ? prev : next));
+    }
+    recompute();
+    window.addEventListener("resize", recompute);
+    const ro = new ResizeObserver(recompute);
+    const main = cardRef.current?.closest("main") ?? document.body;
+    ro.observe(main);
+    return () => {
+      window.removeEventListener("resize", recompute);
+      ro.disconnect();
+    };
+  }, []);
+
+  // Cumulative net balance across every recorded day. Mirrors the rules of
+  // the per-week pill (today only credits overtime, never debits) but
+  // aggregated all-time, so the user can see how much overtime is "banked"
+  // overall while still reading the visible week's surplus from the Week
+  // panel pill.
+  const totalBalanceMs = useMemo(() => {
+    const today = dayKey(new Date(now));
+    const totals: Record<string, number> = {};
+    for (const [key, segs] of Object.entries(segmentsByDay)) {
+      const adj = adjustmentMsByDay[key] ?? 0;
+      totals[key] = totalMsForDayWithAdjustment(segs, adj, now);
+    }
+    for (const [key, adj] of Object.entries(adjustmentMsByDay)) {
+      if (!(key in totals)) totals[key] = Math.max(0, adj);
+    }
+    return overtimeBalanceMs(totals, today, dailyTargetHours);
+  }, [segmentsByDay, adjustmentMsByDay, dailyTargetHours, now]);
+
   return (
-    <Card>
-      <CardHeader className="pb-3">
+    <Card
+      ref={cardRef}
+      className="flex flex-col"
+      style={maxHeight !== null ? { maxHeight: `${maxHeight}px` } : undefined}
+    >
+      <CardHeader className="pb-3 shrink-0">
         <div className="flex items-center justify-between gap-3">
           <CardTitle className="text-base">History</CardTitle>
-          <Button
-            size="sm"
-            variant="outline"
-            onClick={onImport}
-            title="Import time tracking history from a JSON file"
-          >
-            <Upload className="h-3.5 w-3.5 mr-1.5" />
-            Import
-          </Button>
+          {summaries.length > 0 && <BalancePill ms={totalBalanceMs} />}
         </div>
       </CardHeader>
-      <CardContent>
+      <CardContent className="flex-1 min-h-0 overflow-y-auto">
         {summaries.length === 0 ? (
           <p className="text-sm text-muted-foreground italic">
             No tracked weeks yet — your first week will show up here once you've
-            logged some time, or click Import to bring in years of history from
-            a JSON file.
+            logged some time.
           </p>
         ) : (
           <ul className="divide-y rounded-md border">

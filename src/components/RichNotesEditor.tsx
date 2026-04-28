@@ -14,6 +14,7 @@
 import { useEffect, useRef, useState } from "react";
 import {
   useEditor,
+  useEditorState,
   EditorContent,
   type Editor,
   type JSONContent,
@@ -349,13 +350,35 @@ function Toolbar({
   lineHeight: LineHeightMode;
   onLineHeightChange?: (mode: LineHeightMode) => void;
 }) {
-  const headingValue = editor.isActive("heading", { level: 1 })
-    ? "h1"
-    : editor.isActive("heading", { level: 2 })
-      ? "h2"
-      : editor.isActive("heading", { level: 3 })
-        ? "h3"
-        : "paragraph";
+  // TipTap 3's useEditor defaults shouldRerenderOnTransaction to false, so
+  // selection-only changes (clicking through text of varying styles) don't
+  // re-render this component. Subscribe via useEditorState so the toolbar's
+  // active states update when the caret moves between an H2 line and a body
+  // line, etc.
+  const state = useEditorState({
+    editor,
+    selector: ({ editor }) => ({
+      headingValue: editor.isActive("heading", { level: 1 })
+        ? "h1"
+        : editor.isActive("heading", { level: 2 })
+          ? "h2"
+          : editor.isActive("heading", { level: 3 })
+            ? "h3"
+            : "paragraph",
+      isBold: editor.isActive("bold"),
+      isItalic: editor.isActive("italic"),
+      isUnderline: editor.isActive("underline"),
+      isStrike: editor.isActive("strike"),
+      isCode: editor.isActive("code"),
+      isLink: editor.isActive("link"),
+      isBulletList: editor.isActive("bulletList"),
+      isOrderedList: editor.isActive("orderedList"),
+      isTaskList: editor.isActive("taskList"),
+      isBlockquote: editor.isActive("blockquote"),
+      isCodeBlock: editor.isActive("codeBlock"),
+      selectionEmpty: editor.state.selection.empty,
+    }),
+  });
 
   function onHeadingChange(value: string) {
     if (value === "paragraph") {
@@ -370,13 +393,12 @@ function Toolbar({
   // when the cursor is already inside a link (to remove it). Without that
   // guard, clicking with an empty selection would do nothing visible and
   // feel broken.
-  const linkActionable =
-    editor.isActive("link") || !editor.state.selection.empty;
+  const linkActionable = state.isLink || !state.selectionEmpty;
 
   return (
     <div className="flex flex-wrap items-center gap-0.5 px-1 py-1 border-b">
       <select
-        value={headingValue}
+        value={state.headingValue}
         onChange={(e) => onHeadingChange(e.target.value)}
         // Native select keeps things consistent with the rest of the app
         // (mic / model selectors use plain selects too) and gives us reliable
@@ -391,28 +413,28 @@ function Toolbar({
       </select>
       <Divider />
       <ToolButton
-        active={editor.isActive("bold")}
+        active={state.isBold}
         onClick={() => editor.chain().focus().toggleBold().run()}
         label="Bold (⌘B)"
       >
         <Bold className="h-3.5 w-3.5" />
       </ToolButton>
       <ToolButton
-        active={editor.isActive("italic")}
+        active={state.isItalic}
         onClick={() => editor.chain().focus().toggleItalic().run()}
         label="Italic (⌘I)"
       >
         <Italic className="h-3.5 w-3.5" />
       </ToolButton>
       <ToolButton
-        active={editor.isActive("underline")}
+        active={state.isUnderline}
         onClick={() => editor.chain().focus().toggleUnderline().run()}
         label="Underline (⌘U)"
       >
         <UnderlineIcon className="h-3.5 w-3.5" />
       </ToolButton>
       <ToolButton
-        active={editor.isActive("strike")}
+        active={state.isStrike}
         onClick={() => editor.chain().focus().toggleStrike().run()}
         label="Strikethrough"
       >
@@ -420,7 +442,7 @@ function Toolbar({
       </ToolButton>
       <Divider />
       <ToolButton
-        active={editor.isActive("code")}
+        active={state.isCode}
         onClick={() => editor.chain().focus().toggleCode().run()}
         label="Inline code"
       >
@@ -428,16 +450,16 @@ function Toolbar({
       </ToolButton>
       <HighlightButton editor={editor} />
       <ToolButton
-        active={editor.isActive("link")}
+        active={state.isLink}
         disabled={!linkActionable}
         onClick={onLinkClick}
-        label={editor.isActive("link") ? "Remove link" : "Add link"}
+        label={state.isLink ? "Remove link" : "Add link"}
       >
         <Link2 className="h-3.5 w-3.5" />
       </ToolButton>
       <Divider />
       <ToolButton
-        active={editor.isActive("bulletList")}
+        active={state.isBulletList}
         // toggleBulletList wraps the current line — empty or not — so clicking
         // on a blank line still produces a fresh "- " bullet, matching the
         // user's expectation that list buttons always insert a marker.
@@ -447,14 +469,14 @@ function Toolbar({
         <List className="h-3.5 w-3.5" />
       </ToolButton>
       <ToolButton
-        active={editor.isActive("orderedList")}
+        active={state.isOrderedList}
         onClick={() => editor.chain().focus().toggleOrderedList().run()}
         label="Numbered list"
       >
         <ListOrdered className="h-3.5 w-3.5" />
       </ToolButton>
       <ToolButton
-        active={editor.isActive("taskList")}
+        active={state.isTaskList}
         onClick={() => editor.chain().focus().toggleTaskList().run()}
         label="Checklist"
       >
@@ -462,14 +484,14 @@ function Toolbar({
       </ToolButton>
       <Divider />
       <ToolButton
-        active={editor.isActive("blockquote")}
+        active={state.isBlockquote}
         onClick={() => editor.chain().focus().toggleBlockquote().run()}
         label="Block quote"
       >
         <Quote className="h-3.5 w-3.5" />
       </ToolButton>
       <ToolButton
-        active={editor.isActive("codeBlock")}
+        active={state.isCodeBlock}
         onClick={() => editor.chain().focus().toggleCodeBlock().run()}
         label="Code block"
       >
@@ -545,7 +567,18 @@ function HighlightButton({ editor }: { editor: Editor }) {
   const defaultColor = getDefaultHighlight(config.accent);
   const [open, setOpen] = useState(false);
   const wrapperRef = useRef<HTMLDivElement>(null);
-  const active = editor.isActive("highlight");
+  // Subscribe so the active state and current colour swatch update when the
+  // caret moves into / out of highlighted text (TipTap 3 doesn't re-render
+  // on selection-only transactions by default).
+  const { active, currentColor } = useEditorState({
+    editor,
+    selector: ({ editor }) => ({
+      active: editor.isActive("highlight"),
+      currentColor:
+        (editor.getAttributes("highlight").color as string | undefined) ??
+        null,
+    }),
+  });
 
   // Close on outside click / Esc so the palette behaves like a popover.
   useEffect(() => {
@@ -582,10 +615,6 @@ function HighlightButton({ editor }: { editor: Editor }) {
     editor.chain().focus().unsetHighlight().run();
     setOpen(false);
   }
-
-  const currentColor = (editor.getAttributes("highlight").color as
-    | string
-    | undefined) ?? null;
 
   return (
     <div ref={wrapperRef} className="relative inline-flex items-center">

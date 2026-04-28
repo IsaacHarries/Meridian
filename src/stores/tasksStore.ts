@@ -45,8 +45,10 @@ interface TasksState {
   panelWidth: number;
 
   loadTasks: () => Promise<void>;
-  addTask: (text: string) => Promise<void>;
+  addTask: (text: string, category?: string | null) => Promise<void>;
   setTaskCompleted: (id: string, completed: boolean) => Promise<void>;
+  /** Change (or clear with `null`) the category of an existing task. */
+  setTaskCategory: (id: string, category: string | null) => Promise<void>;
   removeTask: (id: string) => Promise<void>;
   togglePanel: () => void;
   setPanelOpen: (open: boolean) => void;
@@ -73,10 +75,10 @@ export const useTasksStore = create<TasksState>()((set, get) => ({
     }
   },
 
-  addTask: async (text) => {
+  addTask: async (text, category) => {
     const trimmed = text.trim();
     if (!trimmed) return;
-    const record = await createTaskCmd(trimmed);
+    const record = await createTaskCmd(trimmed, category ?? null);
     set((s) => ({ tasks: [...s.tasks, record] }));
   },
 
@@ -88,6 +90,19 @@ export const useTasksStore = create<TasksState>()((set, get) => ({
       completed,
       completedAt: completed ? new Date().toISOString() : undefined,
     };
+    await updateTaskCmd(updated);
+    set((s) => ({
+      tasks: s.tasks.map((t) => (t.id === id ? updated : t)),
+    }));
+  },
+
+  setTaskCategory: async (id, category) => {
+    const current = get().tasks.find((t) => t.id === id);
+    if (!current) return;
+    const trimmed = category?.trim();
+    const next = trimmed ? trimmed : undefined;
+    if ((current.category ?? undefined) === next) return;
+    const updated: TaskRecord = { ...current, category: next };
     await updateTaskCmd(updated);
     set((s) => ({
       tasks: s.tasks.map((t) => (t.id === id ? updated : t)),

@@ -105,10 +105,31 @@ pub fn data_directory_has_content(path: String) -> bool {
         .unwrap_or(false)
 }
 
-/// Tauri command: recursively move every file and directory from `from`
-/// into `to`. Files that already exist at the destination are left in place
-/// (the user's existing files win). Best-effort cleanup of empty source
-/// directories at the end.
+/// User-data items rooted at `resolve_data_dir`. Anything outside this list
+/// — `preferences.json`, `credentials.bin`, `store_cache/` — is rooted at
+/// `app_data_dir` directly and must NOT migrate, otherwise the next launch
+/// finds an empty preferences file (and an empty credential store) and
+/// re-initialises as if the app had never been opened. The previous
+/// implementation moved every entry in the source folder, then removed the
+/// folder itself, which deleted those files. Keep this list in sync with
+/// every `resolve_data_dir(app)?.join(...)` call site in the backend.
+const MIGRATABLE_ITEMS: &[&str] = &[
+    "time_tracking.json",
+    "tasks.json",
+    "skills.json",
+    "templates",
+    "sprint_reports",
+    "trend_analyses",
+    "meetings",
+    "models",
+    "speakers",
+];
+
+/// Tauri command: move only the user-data items in `MIGRATABLE_ITEMS` from
+/// `from` into `to`. Files that already exist at the destination are left in
+/// place (the user's existing files win). The source folder itself is left
+/// behind — it is the OS app-data directory, which still hosts the app's
+/// preferences and credentials.
 #[tauri::command]
 pub fn move_data_directory(from: String, to: String) -> Result<(), String> {
     let from = PathBuf::from(from);
@@ -120,8 +141,35 @@ pub fn move_data_directory(from: String, to: String) -> Result<(), String> {
         return Ok(());
     }
     fs::create_dir_all(&to).map_err(|e| format!("Create {}: {e}", to.display()))?;
-    move_dir_contents(&from, &to)?;
-    let _ = fs::remove_dir(&from);
+    for name in MIGRATABLE_ITEMS {
+        let src = from.join(name);
+        if !src.exists() {
+            continue;
+        }
+        let dst = to.join(name);
+        let ft = fs::symlink_metadata(&src)
+            .map_err(|e| format!("metadata {}: {e}", src.display()))?
+            .file_type();
+        if ft.is_dir() {
+            fs::create_dir_all(&dst)
+                .map_err(|e| format!("Create {}: {e}", dst.display()))?;
+            move_dir_contents(&src, &dst)?;
+            // Best-effort: remove the now-empty subdir. Failure here just
+            // means the user has stray empty folders in the old location;
+            // not worth surfacing as an error.
+            let _ = fs::remove_dir(&src);
+        } else if !dst.exists() {
+            // Fast rename, falling back to copy+remove for cross-volume moves.
+            if fs::rename(&src, &dst).is_err() {
+                fs::copy(&src, &dst)
+                    .map_err(|e| format!("Copy {} → {}: {e}", src.display(), dst.display()))?;
+                let _ = fs::remove_file(&src);
+            }
+        }
+        // If `dst` exists for a file, we leave both copies in place —
+        // overwriting silently could destroy data the user actively wanted
+        // in the new location.
+    }
     Ok(())
 }
 

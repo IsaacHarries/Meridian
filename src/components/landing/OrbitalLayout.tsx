@@ -157,10 +157,13 @@ export function OrbitalLayout({ cards, onNavigate }: LandingLayoutProps) {
   const hovered = cards.find((c) => c.id === hoveredId) ?? null;
 
   return (
-    <div className="max-w-7xl w-full mx-auto p-4 sm:p-6">
+    <div
+      className="max-w-7xl w-full mx-auto p-4 sm:p-6 flex-1 min-h-0 flex items-center justify-center"
+      style={{ containerType: "size" }}
+    >
       <div
-        className="relative w-full aspect-[5/4] mx-auto"
-        style={{ maxHeight: "calc(100vh - 170px)" }}
+        className="relative aspect-[5/4]"
+        style={{ width: "min(100cqw, calc(100cqh * 5 / 4))" }}
       >
         <svg
           viewBox={`0 0 ${VBOX_W} ${VBOX_H}`}

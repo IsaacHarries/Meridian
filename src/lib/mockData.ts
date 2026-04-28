@@ -185,6 +185,12 @@ export const DEMO_ISSUE_1: JiraIssue = {
         "Structure: `src/cli.ts` (entry point + arg parsing), `src/parser.ts` (heading extraction + slug), " +
         "`src/toc.ts` (TOC string assembly + in-place rewrite), `tests/parser.test.ts`, `tests/toc.test.ts`.",
     },
+    {
+      heading: "Reference Layout",
+      content:
+        "The expected TOC output structure should look like this:\n\n" +
+        "![TOC layout reference](https://placehold.co/640x320/1e293b/cbd5e1?text=Generated+TOC+%E2%80%94+nested+list+with+anchor+links)",
+    },
   ],
   status: "To Do",
   statusCategory: "new",
@@ -359,29 +365,37 @@ Apply via CSS variables on the root element. Use localStorage for persistence.`,
     "PROJ-130",
     "Settings Overhaul"
   ),
-  makeIssue(
-    "PROJ-145",
-    "Fix pagination bug: search results skip page 2 under high load",
-    "Done",
-    "Done",
-    ME,
-    3,
-    "Bug",
-    "High",
-    `h2. Bug Report
-When the search index has >1000 results, navigating to page 2 returns page 1 results again. Reproducible consistently in staging with the full dataset loaded.
+  {
+    ...makeIssue(
+      "PROJ-145",
+      "Fix pagination bug: search results skip page 2 under high load",
+      "Done",
+      "Done",
+      ME,
+      3,
+      "Bug",
+      "High",
+      `When the search index has >1000 results, navigating to page 2 returns page 1 results again. Reproducible consistently in staging with the full dataset loaded.
 
-h2. Root Cause (suspected)
-The offset parameter is not being passed correctly to the search backend when results are cached. The cache key ignores the offset.
-
-h2. Acceptance Criteria
-- Page 2 through N all return the correct, distinct result sets
-- Regression test covers paginated search with >1000 results
-- Fix does not degrade search performance`,
-    ["bug", "search"],
-    null,
-    null
-  ),
+The offset parameter appears not to be passed correctly to the search backend when results are cached — the cache key ignores the offset.`,
+      ["bug", "search"],
+      null,
+      null,
+    ),
+    acceptanceCriteria:
+      "- Page 2 through N all return the correct, distinct result sets\n" +
+      "- Regression test covers paginated search with >1000 results\n" +
+      "- Fix does not degrade search baseline performance (p95 ≤ pre-fix)",
+    stepsToReproduce:
+      "1. Seed the staging search index with the 1,500-result fixture (`make seed-search-large`).\n" +
+      "2. Navigate to `/search?q=invoice` and load page 1.\n" +
+      "3. Click the page-2 pagination link.\n" +
+      "4. Inspect the rendered result IDs and the `X-Search-Offset` response header.",
+    observedBehavior:
+      "Page 2 returns the same first-50 result IDs as page 1. `X-Search-Offset` header reads `0` despite the URL carrying `page=2`. Cache hit — server-side log shows `cache=HIT key=q:invoice` with no offset segment.",
+    expectedBehavior:
+      "Page 2 returns results 51-100 with `X-Search-Offset: 50`. Cache key includes the offset segment so each page is cached independently.",
+  },
   makeIssue(
     "PROJ-148",
     "Implement file upload size and MIME type validation",
@@ -569,20 +583,36 @@ const ALL_SPRINT_ISSUES: JiraIssue[] = [
     null,
     null
   ),
-  makeIssue(
-    "PROJ-155",
-    "Fix login redirect loop on SSO",
-    "Needs Verification",
-    "In Progress",
-    DAN,
-    2,
-    "Bug",
-    "High",
-    `SSO users were being redirected back to the login page after successful auth. Root cause: session cookie's SameSite attribute. Fix merged; QA to verify across IdPs.`,
-    ["bug", "auth"],
-    "PROJ-139",
-    "Auth Hardening"
-  ),
+  {
+    ...makeIssue(
+      "PROJ-155",
+      "Fix login redirect loop on SSO",
+      "Needs Verification",
+      "In Progress",
+      DAN,
+      2,
+      "Bug",
+      "High",
+      `SSO users are being redirected back to the login page after successful auth. Suspected root cause: the session cookie's SameSite attribute is set to "Strict", which drops the cookie on the cross-site redirect from the IdP back to our app.`,
+      ["bug", "auth"],
+      "PROJ-139",
+      "Auth Hardening",
+    ),
+    acceptanceCriteria:
+      "- SSO sign-in completes in a single round-trip from each supported IdP (Okta, Azure AD, Google Workspace).\n" +
+      "- Session cookie is `SameSite=Lax` and survives the IdP-→-app redirect.\n" +
+      "- E2E test covers a fresh browser session for each IdP.\n" +
+      "- No regressions for password-flow login.",
+    stepsToReproduce:
+      "1. Open an incognito window in Chrome 122+.\n" +
+      "2. Visit https://app.example.com/login and click \"Sign in with Okta\".\n" +
+      "3. Authenticate with a valid Okta test account.\n" +
+      "4. Observe the redirect chain back to the app.",
+    observedBehavior:
+      "After successful Okta auth, the browser is redirected to `/login` again instead of `/dashboard`. The session cookie set by the callback handler is not present on the next request — `document.cookie` is empty for the app domain. DevTools shows the cookie was set with `SameSite=Strict`.",
+    expectedBehavior:
+      "User lands on `/dashboard` immediately after IdP auth. The session cookie is preserved across the IdP redirect and present on every subsequent request.",
+  },
 ];
 
 // ── Completed sprints ─────────────────────────────────────────────────────────
@@ -686,20 +716,35 @@ const SPRINT_24_ISSUES: JiraIssue[] = [
     "PROJ-190",
     "Observability Track"
   ),
-  makeIssue(
-    "PROJ-203",
-    "Fix N+1 query in user profile endpoint",
-    "Done",
-    "Done",
-    GRACE,
-    3,
-    "Bug",
-    "High",
-    `GET /users/:id currently fires one SQL query per role association. Replace with a single JOIN. p99 for this endpoint is 420ms; target is under 80ms.`,
-    ["performance", "database"],
-    null,
-    null
-  ),
+  {
+    ...makeIssue(
+      "PROJ-203",
+      "Fix N+1 query in user profile endpoint",
+      "Done",
+      "Done",
+      GRACE,
+      3,
+      "Bug",
+      "High",
+      `GET /users/:id currently fires one SQL query per role association. The endpoint should be served by a single JOIN. Production p99 for this endpoint is 420ms; target is under 80ms.`,
+      ["performance", "database"],
+      null,
+      null,
+    ),
+    acceptanceCriteria:
+      "- GET /users/:id issues at most 2 queries (user + roles JOIN), regardless of role count.\n" +
+      "- p99 latency under load drops below 80ms (verified in the perf test suite).\n" +
+      "- Integration test asserts the query count via the existing `expectQueries(n)` helper.\n" +
+      "- No change to the response shape — JSON payload identical.",
+    stepsToReproduce:
+      "1. Seed a user with 10 role associations: `npm run seed:user-with-roles 10`.\n" +
+      "2. Curl `GET /users/<id>` while tailing the SQL log: `tail -f logs/sql.log`.\n" +
+      "3. Run `npm run perf -- --route=/users/:id --concurrency=50 --duration=60s`.",
+    observedBehavior:
+      "SQL log shows `SELECT * FROM users WHERE id = ?` followed by 10 separate `SELECT * FROM roles WHERE user_id = ?` queries. Perf run reports p99 = 420ms (target 80ms).",
+    expectedBehavior:
+      "Single JOIN query: `SELECT users.*, roles.* FROM users LEFT JOIN user_roles … WHERE users.id = ?`. p99 < 80ms under the same load.",
+  },
   makeIssue(
     "PROJ-204",
     "Standardise structured logging format across all services",
@@ -742,20 +787,35 @@ const SPRINT_24_ISSUES: JiraIssue[] = [
     null,
     null
   ),
-  makeIssue(
-    "PROJ-207",
-    "Reduce connection pool contention in reporting service",
-    "In Progress",
-    "In Progress",
-    GRACE,
-    5,
-    "Bug",
-    "High",
-    `The reporting service exhausts its Postgres pool under moderate load, causing 503s for other consumers. Investigate query duration and pool sizing. Add connection wait-time metrics.`,
-    ["performance", "database"],
-    null,
-    null
-  ),
+  {
+    ...makeIssue(
+      "PROJ-207",
+      "Reduce connection pool contention in reporting service",
+      "In Progress",
+      "In Progress",
+      GRACE,
+      5,
+      "Bug",
+      "High",
+      `The reporting service exhausts its Postgres connection pool under moderate load, causing 503s for downstream consumers that share the same database. Suspect a combination of long-running aggregation queries and an undersized pool.`,
+      ["performance", "database"],
+      null,
+      null,
+    ),
+    acceptanceCriteria:
+      "- Reporting service no longer exhausts its pool under the standard 100 RPS soak test.\n" +
+      "- New metrics: `db_pool_wait_seconds` histogram and `db_pool_in_use` gauge, scraped by Prometheus.\n" +
+      "- Long-running aggregation queries (>500ms) are identified and either optimised or moved to a read replica.\n" +
+      "- Runbook updated with pool sizing guidance and the new dashboard panels.",
+    stepsToReproduce:
+      "1. Deploy reporting service to staging with `pool_size=10` (current production setting).\n" +
+      "2. Run the standard soak test: `npm run soak -- --service=reporting --rps=100 --duration=10m`.\n" +
+      "3. Monitor the Postgres `pg_stat_activity` view and the staging service logs.",
+    observedBehavior:
+      "Within 60s the reporting pool is fully checked out. Subsequent requests block on `Pool::acquire()` and time out after 30s, returning HTTP 503 to callers. Other services sharing the database (billing, search) see their query times balloon as they compete for connections.",
+    expectedBehavior:
+      "Pool stays below 80% utilisation under the soak test. Queries complete within their per-route SLO. No 503s; no contention bleed-through to neighbouring services.",
+  },
   makeIssue(
     "PROJ-208",
     "Define and document SLOs for all public API endpoints",
@@ -866,6 +926,16 @@ export const OPEN_PRS: BitbucketPr[] = [
     description: `## Summary
 Implements per-IP and per-user rate limiting using a Redis-backed sliding window algorithm.
 
+## Before / After
+
+Latency under load before the change:
+
+![p99 before](https://placehold.co/640x240/1f2937/f87171?text=p99%3A+1.8s+%E2%80%94+spikes+at+overload)
+
+After the change, p99 stays flat as load climbs:
+
+![p99 after](https://placehold.co/640x240/1f2937/4ade80?text=p99%3A+220ms+%E2%80%94+steady)
+
 ## Changes
 - New \`RateLimiter\` middleware in \`src/middleware/rate_limit.rs\`
 - Configurable limits via environment variables (\`RATE_LIMIT_REQUESTS\`, \`RATE_LIMIT_WINDOW_SECS\`)
@@ -927,6 +997,12 @@ Uses a test double for the payment provider's webhook signature verification.`,
     title: "PROJ-148: File upload size and MIME type validation",
     description: `## Summary
 Validates uploaded files on both frontend (before upload) and backend (before processing).
+
+## UI
+
+Inline error state when the user picks a file that's too large:
+
+![Upload validation UI](https://placehold.co/720x320/1f2937/fbbf24?text=%E2%9A%A0+File+exceeds+10+MB+limit)
 
 ## Changes
 - Frontend: validates size and MIME type, shows inline error
@@ -1280,7 +1356,9 @@ export const PR_87_COMMENTS: BitbucketComment[] = [
   {
     id: 1003,
     content:
-      "Should the rate limit key include the user ID for authenticated requests, not just the IP? An IP could be shared by a whole office behind NAT.",
+      "Should the rate limit key include the user ID for authenticated requests, not just the IP? An IP could be shared by a whole office behind NAT.\n\n" +
+      "Quick sketch of the scenario I'm worried about — twelve users sharing one egress IP all hitting the limit together:\n\n" +
+      "![Office NAT scenario](https://placehold.co/520x180/1f2937/93c5fd?text=12+users+%E2%86%92+1+IP+%E2%86%92+rate+limited)",
     author: BB_ME,
     createdOn: "2026-04-09T09:45:00.000Z",
     updatedOn: "2026-04-09T09:45:00.000Z",

@@ -131,6 +131,43 @@ impl JiraClient {
         format!("{}{}", self.base_url, path)
     }
 
+    /// Fetch arbitrary bytes from this JIRA instance with the client's Basic
+    /// auth applied. Used by the image-proxy command so `<img>` tags pointing
+    /// at attachment URLs can render in the webview (which can't supply
+    /// per-request auth headers on its own).
+    pub async fn fetch_authed_bytes(
+        &self,
+        url: &str,
+    ) -> Result<(Vec<u8>, Option<String>), String> {
+        let resp = self
+            .client
+            .get(url)
+            .basic_auth(&self.email, Some(&self.api_token))
+            .send()
+            .await
+            .map_err(|e| {
+                if e.is_connect() || e.is_timeout() {
+                    "Could not reach JIRA. Check your internet connection.".to_string()
+                } else {
+                    format!("Request failed: {e}")
+                }
+            })?;
+        let status = resp.status();
+        if !status.is_success() {
+            return Err(format!("JIRA returned {status} fetching {url}"));
+        }
+        let content_type = resp
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_string());
+        let bytes = resp
+            .bytes()
+            .await
+            .map_err(|e| format!("Failed to read image bytes: {e}"))?;
+        Ok((bytes.to_vec(), content_type))
+    }
+
     async fn get_json(&self, url: &str) -> Result<Value, String> {
         let resp = self
             .client
@@ -623,7 +660,7 @@ fn parse_issue(v: &Value, base_url: &str, cfg: &CustomFieldConfig, sprint_comple
         }
     };
 
-    let description_sections = parse_adf_description(&fields["description"]);
+    let description_sections = parse_adf_description(&fields["description"], base_url);
 
     let issue_type_name = fields["issuetype"]["name"]
         .as_str()
@@ -910,6 +947,55 @@ fn collect_adf_text(node: &Value) -> String {
     String::new()
 }
 
+/// Walk an ADF tree like `collect_adf_text`, but emit a markdown image
+/// `![alt](url)` for any `media` / `mediaInline` node so the frontend can
+/// render attachment thumbnails inline. All other text, headings, lists,
+/// etc. fall through as plain text exactly like `collect_adf_text` would
+/// — JIRA's rich-text formatting isn't markdown, so we don't try to
+/// reconstruct it. Only used for description sections, where image embed
+/// is the main reason to walk to ADF instead of stringifying to plain
+/// text.
+fn collect_adf_markdown(node: &Value, base_url: &str) -> String {
+    if let Some(text) = node.get("text").and_then(|t| t.as_str()) {
+        return text.to_string();
+    }
+
+    let node_type = node.get("type").and_then(|t| t.as_str()).unwrap_or("");
+
+    if node_type == "media" || node_type == "mediaInline" {
+        if let Some(attrs) = node.get("attrs") {
+            let id = attrs.get("id").and_then(|v| v.as_str()).unwrap_or("");
+            if !id.is_empty() {
+                let alt = attrs
+                    .get("alt")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or("image");
+                let trimmed_base = base_url.trim_end_matches('/');
+                return format!(
+                    "![{alt}]({trimmed_base}/rest/api/3/attachment/content/{id})",
+                );
+            }
+        }
+        return String::new();
+    }
+
+    if let Some(content) = node.get("content").and_then(|c| c.as_array()) {
+        let separator = match node_type {
+            "paragraph" | "heading" | "bulletList" | "orderedList" | "listItem"
+            | "blockquote" | "codeBlock" | "rule" | "tableCell" | "tableHeader"
+            | "tableRow" | "table" | "mediaSingle" | "mediaGroup" => "\n",
+            _ => " ",
+        };
+        return content
+            .iter()
+            .map(|n| collect_adf_markdown(n, base_url))
+            .collect::<Vec<_>>()
+            .join(separator);
+    }
+    String::new()
+}
+
 /// For Story-type issues: scan the top-level ADF `doc` node for a `table` whose
 /// headers indicate a user-story / requirements layout.
 ///
@@ -1022,7 +1108,7 @@ fn extract_story_ac_from_description_table(description_adf: &Value) -> Option<St
     None
 }
 
-fn parse_adf_description(v: &Value) -> Vec<DescriptionSection> {
+fn parse_adf_description(v: &Value, base_url: &str) -> Vec<DescriptionSection> {
     let mut sections = Vec::new();
     if let Some(content) = v.get("content").and_then(|c| c.as_array()) {
         let mut current_section = DescriptionSection {
@@ -1043,7 +1129,8 @@ fn parse_adf_description(v: &Value) -> Vec<DescriptionSection> {
                             });
                         }
                     }
-                    // Collect all text from the heading node's children.
+                    // Headings stay plain text — they're rendered by the UI as
+                    // a labelled section title, not interpreted as markdown.
                     let heading_text = collect_adf_text(node).trim().to_string();
                     current_section = DescriptionSection {
                         heading: if heading_text.is_empty() { None } else { Some(heading_text) },
@@ -1051,7 +1138,11 @@ fn parse_adf_description(v: &Value) -> Vec<DescriptionSection> {
                     };
                 }
                 _ => {
-                    let text = collect_adf_text(node);
+                    // Body content emits markdown so the frontend can render
+                    // images (and any future inline-media kinds) — the same
+                    // string still reads cleanly as plain text for non-image
+                    // content because plain prose round-trips identically.
+                    let text = collect_adf_markdown(node, base_url);
                     if !text.trim().is_empty() {
                         if !current_section.content.is_empty() {
                             current_section.content.push('\n');

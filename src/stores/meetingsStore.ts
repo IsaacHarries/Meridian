@@ -53,6 +53,12 @@ export const MEETINGS_STORE_KEY = "meridian-meetings-store";
 const DEFAULT_TAG_VOCAB = ["standup", "planning", "retro", "1:1", "other"];
 const TAG_VOCAB_PREF_KEY = "meeting_tag_vocab";
 
+// Per-tag note template: a TipTap JSON string that gets dropped into a
+// notes-mode meeting's body the first time the user selects a tag, provided
+// the body is still empty. Stored as a JSON-encoded `{ tag: jsonString }`
+// map under this preference key.
+const TAG_TEMPLATES_PREF_KEY = "meeting_tag_templates";
+
 // Remembers which "new meeting" mode the user picked last from the split-button
 // dropdown so reopening the panel defaults to the same option.
 export type NewMeetingMode = "record" | "notes";
@@ -130,6 +136,11 @@ interface MeetingsState {
   // ── Tag vocabulary (persisted to preferences) ─────────────────────────────
   tagVocab: string[];
 
+  // ── Per-tag note templates (persisted to preferences) ─────────────────────
+  // Map of tag → TipTap JSON string. Used to seed the body of an empty
+  // notes-mode meeting when its first tag is selected.
+  tagTemplates: Record<string, string>;
+
   // ── Last-chosen "New meeting" mode (persisted to preferences) ─────────────
   // Drives the default for the split-button dropdown in MeetingsScreen.
   newMeetingMode: NewMeetingMode;
@@ -152,6 +163,11 @@ interface MeetingsState {
 
   addTagToVocab: (tag: string) => void;
   removeTagFromVocab: (tag: string) => void;
+  /**
+   * Set or clear the note template associated with a tag. Pass an empty
+   * string (or a TipTap doc whose plain-text projection is empty) to clear.
+   */
+  setTagTemplate: (tag: string, template: string) => void;
 
   loadMeetingsList: () => Promise<void>;
   selectMeeting: (id: string | null) => Promise<void>;
@@ -272,6 +288,8 @@ export const useMeetingsStore = create<MeetingsState>()((set, get) => ({
 
   tagVocab: DEFAULT_TAG_VOCAB,
 
+  tagTemplates: {},
+
   newMeetingMode: DEFAULT_NEW_MEETING_MODE,
 
   transcriptionDisabled: false,
@@ -317,9 +335,40 @@ export const useMeetingsStore = create<MeetingsState>()((set, get) => ({
   removeTagFromVocab: (tag) => {
     set((s) => {
       if (!s.tagVocab.includes(tag)) return s;
-      const next = s.tagVocab.filter((t) => t !== tag);
-      void setPreference(TAG_VOCAB_PREF_KEY, JSON.stringify(next));
-      return { tagVocab: next };
+      const nextVocab = s.tagVocab.filter((t) => t !== tag);
+      void setPreference(TAG_VOCAB_PREF_KEY, JSON.stringify(nextVocab));
+      // Drop any associated template — keeping it would resurrect on re-add,
+      // which would be surprising after the user explicitly deleted the tag.
+      let nextTemplates = s.tagTemplates;
+      if (tag in s.tagTemplates) {
+        nextTemplates = { ...s.tagTemplates };
+        delete nextTemplates[tag];
+        void setPreference(
+          TAG_TEMPLATES_PREF_KEY,
+          JSON.stringify(nextTemplates),
+        );
+      }
+      return { tagVocab: nextVocab, tagTemplates: nextTemplates };
+    });
+  },
+
+  setTagTemplate: (tag, template) => {
+    const normalized = tag.trim().toLowerCase();
+    if (!normalized) return;
+    set((s) => {
+      // Treat a doc whose plain-text projection is empty as "no template" so
+      // an editor showing only the empty placeholder doc doesn't count.
+      const isEmpty = extractTiptapPlainText(template).length === 0;
+      const next = { ...s.tagTemplates };
+      if (isEmpty) {
+        if (!(normalized in next)) return s;
+        delete next[normalized];
+      } else {
+        if (next[normalized] === template) return s;
+        next[normalized] = template;
+      }
+      void setPreference(TAG_TEMPLATES_PREF_KEY, JSON.stringify(next));
+      return { tagTemplates: next };
     });
   },
 
@@ -367,9 +416,29 @@ export const useMeetingsStore = create<MeetingsState>()((set, get) => ({
   },
 
   setMeetingTags: async (id, tags) => {
-    const record = get().meetings.find((m) => m.id === id);
+    const { meetings, tagTemplates } = get();
+    const record = meetings.find((m) => m.id === id);
     if (!record) return;
-    const updated = { ...record, tags };
+    // Apply a per-tag note template the FIRST time a notes-mode meeting goes
+    // from "no tags" to "≥ 1 tag" with an empty body. Only the first tag in
+    // the new selection counts — adding later tags doesn't replace an
+    // already-templated (or already-edited) body. If the first tag has no
+    // template configured, nothing is inserted (we don't fall through to the
+    // second tag's template — that would violate "first selected tag" only).
+    let nextNotes = record.notes;
+    const wasEmptyTagSet = record.tags.length === 0;
+    const isNotesMode = record.kind === "notes";
+    if (wasEmptyTagSet && isNotesMode && tags.length > 0) {
+      const bodyEmpty =
+        extractTiptapPlainText(record.notes ?? "").length === 0;
+      if (bodyEmpty) {
+        const firstTagTemplate = tagTemplates[tags[0]];
+        if (firstTagTemplate && firstTagTemplate.trim() !== "") {
+          nextNotes = firstTagTemplate;
+        }
+      }
+    }
+    const updated = { ...record, tags, notes: nextNotes };
     await saveMeeting(updated);
     set((s) => ({ meetings: replaceOrInsert(s.meetings, updated) }));
   },
@@ -780,6 +849,21 @@ export async function hydrateMeetingsStore(): Promise<void> {
         }
       } catch {
         /* fall back to DEFAULT_TAG_VOCAB already in state */
+      }
+    }
+    const rawTemplates = prefs[TAG_TEMPLATES_PREF_KEY];
+    if (rawTemplates) {
+      try {
+        const parsed = JSON.parse(rawTemplates);
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+          const filtered: Record<string, string> = {};
+          for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
+            if (typeof v === "string") filtered[k] = v;
+          }
+          useMeetingsStore.setState({ tagTemplates: filtered });
+        }
+      } catch {
+        /* malformed JSON — leave the empty default in place */
       }
     }
     const rawMode = prefs[NEW_MEETING_MODE_PREF_KEY];

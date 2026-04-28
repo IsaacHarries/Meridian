@@ -202,3 +202,69 @@ input[type="number"]::-webkit-outer-spin-button {
 input[type="number"] {
   -moz-appearance: textfield;
 }
+
+/* Prism syntax-highlighting tokens for the unified diff in PR Review.
+   Calibrated to remain readable over both the green (added) and red
+   (removed) row tints in light and dark themes. We deliberately keep the
+   palette muted — diff colour cues come from the row backgrounds, so we
+   don't need bold token colours fighting for attention. */
+.diff-token .token.comment,
+.diff-token .token.prolog,
+.diff-token .token.doctype,
+.diff-token .token.cdata {
+  color: #6b7280; /* slate-500 */
+  font-style: italic;
+}
+.diff-token .token.punctuation { color: inherit; opacity: 0.7; }
+.diff-token .token.namespace { opacity: 0.7; }
+.diff-token .token.string,
+.diff-token .token.attr-value,
+.diff-token .token.char,
+.diff-token .token.regex { color: #b45309; /* amber-700 */ }
+.diff-token .token.number,
+.diff-token .token.boolean,
+.diff-token .token.constant { color: #1d4ed8; /* blue-700 */ }
+.diff-token .token.keyword,
+.diff-token .token.atrule,
+.diff-token .token.builtin { color: #7c3aed; /* violet-600 */ }
+.diff-token .token.tag,
+.diff-token .token.selector,
+.diff-token .token.symbol,
+.diff-token .token.deleted { color: #be123c; /* rose-700 */ }
+.diff-token .token.attr-name,
+.diff-token .token.property,
+.diff-token .token.variable,
+.diff-token .token.inserted { color: #047857; /* emerald-700 */ }
+.diff-token .token.function,
+.diff-token .token.class-name { color: #4338ca; /* indigo-700 */ }
+.diff-token .token.operator,
+.diff-token .token.entity,
+.diff-token .token.url { color: inherit; }
+.diff-token .token.important,
+.diff-token .token.bold { font-weight: 600; }
+.diff-token .token.italic { font-style: italic; }
+
+.dark .diff-token .token.comment,
+.dark .diff-token .token.prolog,
+.dark .diff-token .token.doctype,
+.dark .diff-token .token.cdata { color: #94a3b8; /* slate-400 */ }
+.dark .diff-token .token.string,
+.dark .diff-token .token.attr-value,
+.dark .diff-token .token.char,
+.dark .diff-token .token.regex { color: #fbbf24; /* amber-400 */ }
+.dark .diff-token .token.number,
+.dark .diff-token .token.boolean,
+.dark .diff-token .token.constant { color: #93c5fd; /* blue-300 */ }
+.dark .diff-token .token.keyword,
+.dark .diff-token .token.atrule,
+.dark .diff-token .token.builtin { color: #c4b5fd; /* violet-300 */ }
+.dark .diff-token .token.tag,
+.dark .diff-token .token.selector,
+.dark .diff-token .token.symbol,
+.dark .diff-token .token.deleted { color: #fda4af; /* rose-300 */ }
+.dark .diff-token .token.attr-name,
+.dark .diff-token .token.property,
+.dark .diff-token .token.variable,
+.dark .diff-token .token.inserted { color: #6ee7b7; /* emerald-300 */ }
+.dark .diff-token .token.function,
+.dark .diff-token .token.class-name { color: #a5b4fc; /* indigo-300 */ }
