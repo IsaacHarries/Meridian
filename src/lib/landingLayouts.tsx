@@ -214,6 +214,12 @@ export interface LandingLayoutDef {
 
 export const LANDING_LAYOUTS: LandingLayoutDef[] = [
   {
+    id: "orbital",
+    name: "Orbital",
+    description: "Workflows orbit a central Meridian glyph.",
+    Wireframe: OrbitalWireframe,
+  },
+  {
     id: "constellation",
     name: "Constellation",
     description: "The original grid with custom line-art icons.",
@@ -230,11 +236,5 @@ export const LANDING_LAYOUTS: LandingLayoutDef[] = [
     name: "Shaped",
     description: "Each card has its own SVG silhouette.",
     Wireframe: ShapedWireframe,
-  },
-  {
-    id: "orbital",
-    name: "Orbital",
-    description: "Workflows orbit a central Meridian glyph.",
-    Wireframe: OrbitalWireframe,
   },
 ];

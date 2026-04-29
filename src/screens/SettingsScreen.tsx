@@ -1,6 +1,9 @@
 import { useState, useEffect, useRef, useMemo } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { open as openDialog, ask as askDialog } from "@tauri-apps/plugin-dialog";
+import {
+  open as openDialog,
+  ask as askDialog,
+} from "@tauri-apps/plugin-dialog";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { useTheme } from "@/providers/ThemeProvider";
 import { type AccentColor, ACCENT_LABELS, ACCENT_SWATCH } from "@/lib/theme";
@@ -164,7 +167,11 @@ import {
   STAGE_LABELS,
   PROVIDER_LABELS,
 } from "@/stores/aiSelectionStore";
-import type { PanelId as AiPanelId, StageId as AiStageId, AiProvider } from "@/stores/aiSelectionStore";
+import type {
+  PanelId as AiPanelId,
+  StageId as AiStageId,
+  AiProvider,
+} from "@/stores/aiSelectionStore";
 
 // ── Theme section ─────────────────────────────────────────────────────────────
 
@@ -189,7 +196,9 @@ const BG_CATEGORIES: BgCategory[] = [
 function ThemeSection() {
   const { config, setAccent } = useTheme();
   const [selectedBg, setSelectedBg] = useState(() => getBackgroundId());
-  const [selectedLayout, setSelectedLayout] = useState<LandingLayoutId>(() => getLandingLayoutId());
+  const [selectedLayout, setSelectedLayout] = useState<LandingLayoutId>(() =>
+    getLandingLayoutId(),
+  );
 
   function pickBackground(id: string) {
     setSelectedBg(id);
@@ -304,7 +313,9 @@ function ThemeSection() {
                     <layout.Wireframe />
                   </div>
                   <div>
-                    <p className="text-xs font-medium leading-tight">{layout.name}</p>
+                    <p className="text-xs font-medium leading-tight">
+                      {layout.name}
+                    </p>
                     <p className="text-[10px] text-muted-foreground leading-snug mt-0.5 line-clamp-2">
                       {layout.description}
                     </p>
@@ -439,6 +450,7 @@ function AnthropicSection({
     setSelectedModel(modelId);
     try {
       await setPreference("claude_model", modelId);
+      void useAiSelectionStore.getState().refreshFromPrefs();
     } catch {
       /* non-critical */
     }
@@ -761,7 +773,7 @@ function AnthropicSection({
         {isConfigured && models.length > 0 && (
           <div className="space-y-1.5 pt-2 border-t">
             <label className="text-xs font-medium text-muted-foreground">
-              Claude Model
+              Default Claude Model
             </label>
             <select
               value={selectedModel}
@@ -1105,17 +1117,31 @@ function PerPanelAiSection() {
   const panelOverrides = useAiSelectionStore((s) => s.panelOverrides);
   const stageOverrides = useAiSelectionStore((s) => s.stageOverrides);
   const modelsByProvider = useAiSelectionStore((s) => s.modelsByProvider);
-  const providerDefaultModel = useAiSelectionStore((s) => s.providerDefaultModel);
+  const providerDefaultModel = useAiSelectionStore(
+    (s) => s.providerDefaultModel,
+  );
   const setPanelOverride = useAiSelectionStore((s) => s.setPanelOverride);
   const setStageOverride = useAiSelectionStore((s) => s.setStageOverride);
 
   const PANELS: PanelId[] = [
-    "implement_ticket", "pr_review", "ticket_quality",
-    "address_pr_comments", "sprint_dashboard", "retrospectives", "meetings",
+    "implement_ticket",
+    "pr_review",
+    "ticket_quality",
+    "address_pr_comments",
+    "sprint_dashboard",
+    "retrospectives",
+    "meetings",
   ];
   const IMPL_STAGES: StageId[] = [
-    "grooming", "impact", "triage", "plan",
-    "implementation", "tests", "review", "pr", "retro",
+    "grooming",
+    "impact",
+    "triage",
+    "plan",
+    "implementation",
+    "tests",
+    "review",
+    "pr",
+    "retro",
   ];
   const PROVIDERS: AiProvider[] = ["claude", "gemini", "copilot", "local"];
 
@@ -1137,23 +1163,43 @@ function PerPanelAiSection() {
 
   // Build a model list that always includes the currently stored value even if
   // it hasn't yet appeared in the fetched list (e.g. a custom model ID).
-  function modelsWithCurrent(provider: AiProvider, currentModel: string): [string, string][] {
+  function modelsWithCurrent(
+    provider: AiProvider,
+    currentModel: string,
+  ): [string, string][] {
     const list = getModels(provider);
     if (!currentModel || list.some(([id]) => id === currentModel)) return list;
     return [[currentModel, currentModel], ...list];
   }
 
+  function modelLabel(provider: AiProvider, modelId: string): string {
+    if (!modelId) return "";
+    const found = getModels(provider).find(([id]) => id === modelId);
+    return found ? found[1] : modelId;
+  }
+
+  function defaultModelOptionLabel(provider: AiProvider): string {
+    const def = providerDefaultModel[provider];
+    return def ? `Default: (${modelLabel(provider, def)})` : "— Default —";
+  }
+
   function savePanel(panel: PanelId, prov: AiProvider, model: string) {
-    const m = model || getModels(prov)[0]?.[0] || providerDefaultModel[prov] || "";
+    const m =
+      model || getModels(prov)[0]?.[0] || providerDefaultModel[prov] || "";
     void setPanelOverride(panel, { provider: prov, model: m });
   }
-  function clearPanel(panel: PanelId) { void setPanelOverride(panel, null); }
+  function clearPanel(panel: PanelId) {
+    void setPanelOverride(panel, null);
+  }
 
   function saveStage(stage: StageId, prov: AiProvider, model: string) {
-    const m = model || getModels(prov)[0]?.[0] || providerDefaultModel[prov] || "";
+    const m =
+      model || getModels(prov)[0]?.[0] || providerDefaultModel[prov] || "";
     void setStageOverride(stage, { provider: prov, model: m });
   }
-  function clearStage(stage: StageId) { void setStageOverride(stage, null); }
+  function clearStage(stage: StageId) {
+    void setStageOverride(stage, null);
+  }
 
   // Unified row renderer used for both panels and stages.
   function OverrideRow({
@@ -1176,7 +1222,9 @@ function PerPanelAiSection() {
     const rowClass = indent
       ? "flex items-center gap-2 py-1 pl-6 border-l-2 border-muted ml-2"
       : "flex items-center gap-2 py-1.5";
-    const labelClass = indent ? "flex-1 text-xs text-muted-foreground" : "flex-1 text-sm";
+    const labelClass = indent
+      ? "flex-1 text-xs text-muted-foreground"
+      : "flex-1 text-sm";
 
     if (locked && lockedProvider) {
       // Provider is forced; show a label + model picker. "— Default —" clears the
@@ -1186,13 +1234,19 @@ function PerPanelAiSection() {
         <div className={rowClass}>
           <div className={labelClass}>
             {label}
-            {hint && <span className="ml-1.5 text-[10px] uppercase tracking-wide opacity-60">{hint}</span>}
+            {hint && (
+              <span className="ml-1.5 text-[10px] uppercase tracking-wide opacity-60">
+                {hint}
+              </span>
+            )}
           </div>
           <span className="text-xs border rounded px-2 py-1 bg-muted/40 text-muted-foreground shrink-0">
             {PROVIDER_LABELS[lockedProvider]}
           </span>
           <select
-            className="text-xs border rounded px-2 py-1 bg-background min-w-[180px]"
+            className={`text-xs border rounded px-2 py-1 bg-background min-w-[180px] ${
+              overrideModel === "" ? "text-muted-foreground" : ""
+            }`}
             value={overrideModel}
             onChange={(e) => {
               const v = e.target.value;
@@ -1200,26 +1254,43 @@ function PerPanelAiSection() {
               else onSet(lockedProvider, v);
             }}
           >
-            <option value="">— Default —</option>
-            {models.length === 0
-              ? <option value="" disabled>Loading…</option>
-              : models.map(([id, lbl]) => <option key={id} value={id}>{lbl}</option>)
-            }
+            <option value="">
+              {defaultModelOptionLabel(lockedProvider)}
+            </option>
+            {models.length === 0 ? (
+              <option value="" disabled>
+                Loading…
+              </option>
+            ) : (
+              models.map(([id, lbl]) => (
+                <option key={id} value={id}>
+                  {lbl}
+                </option>
+              ))
+            )}
           </select>
         </div>
       );
     }
 
     // Unlocked: provider dropdown + model dropdown (when a provider is chosen).
-    const models = overrideProvider ? modelsWithCurrent(overrideProvider as AiProvider, overrideModel) : [];
+    const models = overrideProvider
+      ? modelsWithCurrent(overrideProvider as AiProvider, overrideModel)
+      : [];
     return (
       <div className={rowClass}>
         <div className={labelClass}>
           {label}
-          {hint && <span className="ml-1.5 text-[10px] uppercase tracking-wide opacity-60">{hint}</span>}
+          {hint && (
+            <span className="ml-1.5 text-[10px] uppercase tracking-wide opacity-60">
+              {hint}
+            </span>
+          )}
         </div>
         <select
-          className="text-xs border rounded px-2 py-1 bg-background"
+          className={`text-xs border rounded px-2 py-1 bg-background ${
+            overrideProvider === "" ? "text-muted-foreground" : ""
+          }`}
           value={overrideProvider}
           onChange={(e) => {
             const v = e.target.value as AiProvider | "";
@@ -1227,21 +1298,32 @@ function PerPanelAiSection() {
             else onSet(v, "");
           }}
         >
-          <option value="">— Default ({PROVIDER_LABELS[defaultProvider]}) —</option>
+          <option value="">
+            — Default ({PROVIDER_LABELS[defaultProvider]}) —
+          </option>
           {PROVIDERS.map((p) => (
-            <option key={p} value={p}>{PROVIDER_LABELS[p]}</option>
+            <option key={p} value={p}>
+              {PROVIDER_LABELS[p]}
+            </option>
           ))}
         </select>
         {overrideProvider && (
           <select
             className="text-xs border rounded px-2 py-1 bg-background min-w-[180px]"
             value={overrideModel}
-            onChange={(e) => onSet(overrideProvider as AiProvider, e.target.value)}
-          >
-            {models.length === 0
-              ? <option value="">Loading…</option>
-              : models.map(([id, lbl]) => <option key={id} value={id}>{lbl}</option>)
+            onChange={(e) =>
+              onSet(overrideProvider as AiProvider, e.target.value)
             }
+          >
+            {models.length === 0 ? (
+              <option value="">Loading…</option>
+            ) : (
+              models.map(([id, lbl]) => (
+                <option key={id} value={id}>
+                  {lbl}
+                </option>
+              ))
+            )}
           </select>
         )}
       </div>
@@ -1256,13 +1338,15 @@ function PerPanelAiSection() {
           {locked ? (
             <>
               Provider is locked to{" "}
-              <strong>{PROVIDER_LABELS[lockedProvider!]}</strong> by the priority
-              setting above. Optionally choose a different model per panel or stage.
+              <strong>{PROVIDER_LABELS[lockedProvider!]}</strong> by the
+              priority setting above. Optionally choose a different model per
+              panel or stage.
             </>
           ) : (
             <>
               Override the AI provider and model for any panel. Stage overrides
-              under <strong>Implement a Ticket</strong> win over the panel setting.
+              under <strong>Implement a Ticket</strong> win over the panel
+              setting.
             </>
           )}
         </CardDescription>
@@ -1283,7 +1367,11 @@ function PerPanelAiSection() {
                 <div className="mt-1">
                   {IMPL_STAGES.map((s) => {
                     const stageOv = stageOverrides[s];
-                    const hint = !stageOv ? (panelOv ? "(panel)" : "(default)") : null;
+                    const hint = !stageOv
+                      ? panelOv
+                        ? "(panel)"
+                        : "(default)"
+                      : null;
                     return (
                       <OverrideRow
                         key={s}
@@ -1391,6 +1479,7 @@ function GeminiSection({
     setSelectedModel(modelId);
     try {
       await setPreference("gemini_model", modelId);
+      void useAiSelectionStore.getState().refreshFromPrefs();
     } catch {
       /* non-critical */
     }
@@ -1740,7 +1829,7 @@ function GeminiSection({
         {isConfigured && (
           <div className="space-y-1.5 pt-2 border-t">
             <label className="text-xs font-medium text-muted-foreground">
-              Gemini Model
+              Default Gemini Model
             </label>
             <select
               value={selectedModel}
@@ -1919,6 +2008,7 @@ function CopilotSection({
     setSelectedModel(modelId);
     try {
       await setPreference("copilot_model", modelId);
+      void useAiSelectionStore.getState().refreshFromPrefs();
     } catch {
       /* non-critical */
     }
@@ -2292,7 +2382,7 @@ function CopilotSection({
         {isConfigured && models.length > 0 && (
           <div className="space-y-1.5 pt-2 border-t">
             <label className="text-xs font-medium text-muted-foreground">
-              Copilot Model
+              Default Copilot Model
             </label>
             <select
               value={selectedModel}
@@ -2429,6 +2519,7 @@ function LocalLlmSection({
     setSelectedModel(value);
     try {
       await saveCredential("local_llm_model", value);
+      void useAiSelectionStore.getState().refreshFromPrefs();
     } catch {
       /* non-critical */
     }
@@ -3032,7 +3123,10 @@ function BitbucketSection({
   // Save preference when toggled
   async function handleSslVerifyToggle(checked: boolean) {
     setDisableSslVerify(checked);
-    await setPreference("bitbucket_disable_ssl_verify", checked ? "true" : "false");
+    await setPreference(
+      "bitbucket_disable_ssl_verify",
+      checked ? "true" : "false",
+    );
   }
 
   return (
@@ -3162,8 +3256,15 @@ function BitbucketSection({
 
         {/* SSL Verification toggle is always visible */}
         <div className="flex items-center gap-2 pt-2">
-          <Switch id="s-bb-disable-ssl-verify" checked={disableSslVerify} onCheckedChange={handleSslVerifyToggle} />
-          <label htmlFor="s-bb-disable-ssl-verify" className="text-xs select-none">
+          <Switch
+            id="s-bb-disable-ssl-verify"
+            checked={disableSslVerify}
+            onCheckedChange={handleSslVerifyToggle}
+          />
+          <label
+            htmlFor="s-bb-disable-ssl-verify"
+            className="text-xs select-none"
+          >
             Disable SSL Verification (insecure)
           </label>
         </div>
@@ -3300,12 +3401,18 @@ function ConfigSection({
         await setPreference("pr_address_worktree_path", "");
       }
       if (groomingWorktreePath.trim()) {
-        await setPreference("grooming_worktree_path", groomingWorktreePath.trim());
+        await setPreference(
+          "grooming_worktree_path",
+          groomingWorktreePath.trim(),
+        );
       } else {
         await setPreference("grooming_worktree_path", "");
       }
       await setPreference("pr_review_terminal", prTerminal.trim() || "iTerm2");
-      await setPreference("build_verify_enabled", buildVerifyEnabled ? "true" : "false");
+      await setPreference(
+        "build_verify_enabled",
+        buildVerifyEnabled ? "true" : "false",
+      );
       setStatus({ state: "success", message: "Configuration saved." });
       setEditing(false);
       onSaved();
@@ -3808,7 +3915,9 @@ function CacheSection() {
                       variant={isConfirming ? "destructive" : "ghost"}
                       size="sm"
                       onClick={() => handleClear(key)}
-                      disabled={isClearing || (clearingKey !== null && !isClearing)}
+                      disabled={
+                        isClearing || (clearingKey !== null && !isClearing)
+                      }
                       className="h-7 gap-1.5 px-2"
                     >
                       {isClearing ? (
@@ -3906,11 +4015,16 @@ function CacheSection() {
 function DataDirectorySection() {
   const [dir, setDir] = useState("");
   const [resolvedDir, setResolvedDir] = useState("");
-  const [status, setStatus] = useState<SectionStatus>({ state: "idle", message: "" });
+  const [status, setStatus] = useState<SectionStatus>({
+    state: "idle",
+    message: "",
+  });
 
   useEffect(() => {
     getPreferences().then((prefs) => setDir(prefs["data_dir"] ?? ""));
-    getDataDir().then(setResolvedDir).catch(() => {});
+    getDataDir()
+      .then(setResolvedDir)
+      .catch(() => {});
   }, []);
 
   async function persist(next: string): Promise<string> {
@@ -3920,7 +4034,10 @@ function DataDirectorySection() {
       setDir(next);
       const resolved = await getDataDir();
       setResolvedDir(resolved);
-      setStatus({ state: "success", message: next ? "Saved" : "Reset to default" });
+      setStatus({
+        state: "success",
+        message: next ? "Saved" : "Reset to default",
+      });
       return resolved;
     } catch (e) {
       setStatus({ state: "error", message: String(e) });
@@ -4002,8 +4119,9 @@ function DataDirectorySection() {
       <CardHeader className="pb-3">
         <CardTitle className="text-base">Data Directory</CardTitle>
         <CardDescription>
-          Root folder for all files generated by Meridian — sprint reports, templates, skills, and
-          meetings. Defaults to the app data location if unset.
+          Root folder for all files generated by Meridian — sprint reports,
+          templates, skills, and meetings. Defaults to the app data location if
+          unset.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-3">
@@ -4050,7 +4168,12 @@ function DataDirectorySection() {
             <p className="text-xs text-muted-foreground font-mono break-all flex-1">
               Active: {resolvedDir}
             </p>
-            <Button onClick={reveal} size="sm" variant="ghost" className="shrink-0">
+            <Button
+              onClick={reveal}
+              size="sm"
+              variant="ghost"
+              className="shrink-0"
+            >
               <FolderOpen className="h-4 w-4 mr-1.5" />
               Open in Finder
             </Button>
@@ -4073,11 +4196,30 @@ function DataDirectorySection() {
 
 // ── Meetings section ─────────────────────────────────────────────────────────
 
-const WHISPER_MODEL_META: Record<string, { label: string; sizeHuman: string; note: string }> = {
-  "tiny.en": { label: "tiny.en", sizeHuman: "~75 MB", note: "Fastest, lowest accuracy" },
-  "base.en": { label: "base.en", sizeHuman: "~140 MB", note: "Recommended default" },
-  "small.en": { label: "small.en", sizeHuman: "~470 MB", note: "Better accuracy" },
-  "medium.en": { label: "medium.en", sizeHuman: "~1.5 GB", note: "Highest accuracy, slow on CPU" },
+const WHISPER_MODEL_META: Record<
+  string,
+  { label: string; sizeHuman: string; note: string }
+> = {
+  "tiny.en": {
+    label: "tiny.en",
+    sizeHuman: "~75 MB",
+    note: "Fastest, lowest accuracy",
+  },
+  "base.en": {
+    label: "base.en",
+    sizeHuman: "~140 MB",
+    note: "Recommended default",
+  },
+  "small.en": {
+    label: "small.en",
+    sizeHuman: "~470 MB",
+    note: "Better accuracy",
+  },
+  "medium.en": {
+    label: "medium.en",
+    sizeHuman: "~1.5 GB",
+    note: "Highest accuracy, slow on CPU",
+  },
 };
 
 function humanBytes(bytes: number): string {
@@ -4097,8 +4239,12 @@ function TimeTrackingSection() {
   const setIdleFallbackEnabled = useTimeTrackingStore(
     (s) => s.setIdleFallbackEnabled,
   );
-  const setIdleThresholdMin = useTimeTrackingStore((s) => s.setIdleThresholdMin);
-  const setDailyTargetHours = useTimeTrackingStore((s) => s.setDailyTargetHours);
+  const setIdleThresholdMin = useTimeTrackingStore(
+    (s) => s.setIdleThresholdMin,
+  );
+  const setDailyTargetHours = useTimeTrackingStore(
+    (s) => s.setDailyTargetHours,
+  );
   const setChipHiddenInHeader = useTimeTrackingStore(
     (s) => s.setChipHiddenInHeader,
   );
@@ -4140,8 +4286,8 @@ function TimeTrackingSection() {
         <CardTitle className="text-base">Work Hours Tracking</CardTitle>
         <CardDescription>
           Tracks how long you've worked today by listening for screen lock,
-          sleep, and idle. Anything beyond your daily target is banked toward
-          a running overtime balance you can cash in later in the week.
+          sleep, and idle. Anything beyond your daily target is banked toward a
+          running overtime balance you can cash in later in the week.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-5">
@@ -4170,93 +4316,93 @@ function TimeTrackingSection() {
           }`}
           aria-disabled={!settings.trackingEnabled}
         >
-        <div className="flex items-center justify-between gap-4">
-          <div className="min-w-0">
-            <Label htmlFor="time-tracking-target" className="font-normal">
-              Daily target (hours)
-            </Label>
-            <p className="text-xs text-muted-foreground mt-0.5">
-              How long counts as a full day's work.
-            </p>
-          </div>
-          <Input
-            id="time-tracking-target"
-            type="number"
-            min={0.5}
-            max={24}
-            step={0.5}
-            value={targetDraft}
-            onChange={(e) => setTargetDraft(e.target.value)}
-            onBlur={commitTarget}
-            className="w-24 text-right"
-          />
-        </div>
-        <div className="flex items-center justify-between gap-4 border-t pt-4">
-          <div className="min-w-0">
-            <Label
-              htmlFor="time-tracking-chip-visible"
-              className="font-normal"
-            >
-              Show stopwatch in header
-            </Label>
-            <p className="text-xs text-muted-foreground mt-0.5">
-              The compact "today / target" chip in the top bar. Hide it from
-              its own popover; flip back on here or in the Time Tracking
-              workflow.
-            </p>
-          </div>
-          <Switch
-            id="time-tracking-chip-visible"
-            checked={!settings.chipHiddenInHeader}
-            onCheckedChange={(checked) => setChipHiddenInHeader(!checked)}
-          />
-        </div>
-        <div className="flex items-center justify-between gap-4 border-t pt-4">
-          <div className="min-w-0">
-            <Label
-              htmlFor="time-tracking-idle-enabled"
-              className="font-normal"
-            >
-              Pause on idle
-            </Label>
-            <p className="text-xs text-muted-foreground mt-0.5">
-              Stop tracking when there's been no keyboard or mouse activity
-              for the threshold below. Disable if long builds frequently
-              keep you at your desk without input.
-            </p>
-          </div>
-          <Switch
-            id="time-tracking-idle-enabled"
-            checked={settings.idleFallbackEnabled}
-            onCheckedChange={setIdleFallbackEnabled}
-          />
-        </div>
-        {settings.idleFallbackEnabled && (
           <div className="flex items-center justify-between gap-4">
             <div className="min-w-0">
-              <Label
-                htmlFor="time-tracking-idle-threshold"
-                className="font-normal"
-              >
-                Idle threshold (minutes)
+              <Label htmlFor="time-tracking-target" className="font-normal">
+                Daily target (hours)
               </Label>
               <p className="text-xs text-muted-foreground mt-0.5">
-                Between {MIN_IDLE_THRESHOLD_MIN} and {MAX_IDLE_THRESHOLD_MIN}.
+                How long counts as a full day's work.
               </p>
             </div>
             <Input
-              id="time-tracking-idle-threshold"
+              id="time-tracking-target"
               type="number"
-              min={MIN_IDLE_THRESHOLD_MIN}
-              max={MAX_IDLE_THRESHOLD_MIN}
-              step={1}
-              value={thresholdDraft}
-              onChange={(e) => setThresholdDraft(e.target.value)}
-              onBlur={commitThreshold}
+              min={0.5}
+              max={24}
+              step={0.5}
+              value={targetDraft}
+              onChange={(e) => setTargetDraft(e.target.value)}
+              onBlur={commitTarget}
               className="w-24 text-right"
             />
           </div>
-        )}
+          <div className="flex items-center justify-between gap-4 border-t pt-4">
+            <div className="min-w-0">
+              <Label
+                htmlFor="time-tracking-chip-visible"
+                className="font-normal"
+              >
+                Show stopwatch in header
+              </Label>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                The compact "today / target" chip in the top bar. Hide it from
+                its own popover; flip back on here or in the Time Tracking
+                workflow.
+              </p>
+            </div>
+            <Switch
+              id="time-tracking-chip-visible"
+              checked={!settings.chipHiddenInHeader}
+              onCheckedChange={(checked) => setChipHiddenInHeader(!checked)}
+            />
+          </div>
+          <div className="flex items-center justify-between gap-4 border-t pt-4">
+            <div className="min-w-0">
+              <Label
+                htmlFor="time-tracking-idle-enabled"
+                className="font-normal"
+              >
+                Pause on idle
+              </Label>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                Stop tracking when there's been no keyboard or mouse activity
+                for the threshold below. Disable if long builds frequently keep
+                you at your desk without input.
+              </p>
+            </div>
+            <Switch
+              id="time-tracking-idle-enabled"
+              checked={settings.idleFallbackEnabled}
+              onCheckedChange={setIdleFallbackEnabled}
+            />
+          </div>
+          {settings.idleFallbackEnabled && (
+            <div className="flex items-center justify-between gap-4">
+              <div className="min-w-0">
+                <Label
+                  htmlFor="time-tracking-idle-threshold"
+                  className="font-normal"
+                >
+                  Idle threshold (minutes)
+                </Label>
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  Between {MIN_IDLE_THRESHOLD_MIN} and {MAX_IDLE_THRESHOLD_MIN}.
+                </p>
+              </div>
+              <Input
+                id="time-tracking-idle-threshold"
+                type="number"
+                min={MIN_IDLE_THRESHOLD_MIN}
+                max={MAX_IDLE_THRESHOLD_MIN}
+                step={1}
+                value={thresholdDraft}
+                onChange={(e) => setThresholdDraft(e.target.value)}
+                onBlur={commitThreshold}
+                className="w-24 text-right"
+              />
+            </div>
+          )}
         </div>
       </CardContent>
     </Card>
@@ -4267,15 +4413,25 @@ function MeetingsSection() {
   const [mics, setMics] = useState<MicrophoneInfo[]>([]);
   const [selectedMic, setSelectedMic] = useState<string>("");
   const [selectedModel, setSelectedModel] = useState<string>("base.en");
-  const [micStatus, setMicStatus] = useState<SectionStatus>({ state: "idle", message: "" });
-  const [modelStatus, setModelStatus] = useState<SectionStatus>({ state: "idle", message: "" });
+  const [micStatus, setMicStatus] = useState<SectionStatus>({
+    state: "idle",
+    message: "",
+  });
+  const [modelStatus, setModelStatus] = useState<SectionStatus>({
+    state: "idle",
+    message: "",
+  });
 
   const whisperModels = useMeetingsStore((s) => s.whisperModels);
   const modelProgress = useMeetingsStore((s) => s.modelProgress);
   const refreshWhisperModels = useMeetingsStore((s) => s.refreshWhisperModels);
   const startModelDownload = useMeetingsStore((s) => s.startModelDownload);
-  const transcriptionDisabled = useMeetingsStore((s) => s.transcriptionDisabled);
-  const setTranscriptionDisabled = useMeetingsStore((s) => s.setTranscriptionDisabled);
+  const transcriptionDisabled = useMeetingsStore(
+    (s) => s.transcriptionDisabled,
+  );
+  const setTranscriptionDisabled = useMeetingsStore(
+    (s) => s.setTranscriptionDisabled,
+  );
 
   useEffect(() => {
     // Skip mic enumeration entirely while transcription is disabled — even
@@ -4284,7 +4440,8 @@ function MeetingsSection() {
     if (transcriptionDisabled) return;
     getPreferences().then((prefs) => {
       if (prefs["meeting_mic"]) setSelectedMic(prefs["meeting_mic"]);
-      if (prefs["meeting_whisper_model"]) setSelectedModel(prefs["meeting_whisper_model"]);
+      if (prefs["meeting_whisper_model"])
+        setSelectedModel(prefs["meeting_whisper_model"]);
     });
     listMicrophones()
       .then((list) => setMics(list))
@@ -4341,14 +4498,18 @@ function MeetingsSection() {
         <CardHeader className="pb-3">
           <CardTitle className="text-base">Transcription</CardTitle>
           <CardDescription>
-            Disable to hide all audio-recording entry points across the app — useful when company
-            policy forbids recording meetings. You can still create freeform notes meetings from
-            the Meetings panel and run AI summaries on them.
+            Disable to hide all audio-recording entry points across the app —
+            useful when company policy forbids recording meetings. You can still
+            create freeform notes meetings from the Meetings panel and run AI
+            summaries on them.
           </CardDescription>
         </CardHeader>
         <CardContent>
           <div className="flex items-center justify-between gap-4">
-            <Label htmlFor="meeting-transcription-disabled" className="font-normal">
+            <Label
+              htmlFor="meeting-transcription-disabled"
+              className="font-normal"
+            >
               Disable meeting transcription
             </Label>
             <Switch
@@ -4361,146 +4522,163 @@ function MeetingsSection() {
       </Card>
 
       {transcriptionDisabled ? null : (
-      <>
-      <Card>
-        <CardHeader className="pb-3">
-          <CardTitle className="text-base flex items-center gap-2">
-            <Mic className="h-4 w-4" /> Microphone
-          </CardTitle>
-          <CardDescription>
-            Default input device for live meeting transcription. You can override this per
-            meeting from the Meetings screen.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-3">
-          <div className="space-y-1.5">
-            <Label htmlFor="meeting-mic">Input device</Label>
-            <div className="flex gap-2">
-              <select
-                id="meeting-mic"
-                value={selectedMic}
-                onChange={(e) => saveMic(e.target.value)}
-                className="w-full rounded-md border border-input bg-background px-3 py-1.5 text-xs text-foreground shadow-sm focus:outline-none focus:ring-1 focus:ring-ring"
-              >
-                <option value="">— System default —</option>
-                {mics.map((m) => (
-                  <option key={m.name} value={m.name}>
-                    {m.name}
-                    {m.is_default ? " (default)" : ""} — {m.sampleRate}Hz
-                    {m.channels > 1 ? ` / ${m.channels}ch` : ""}
-                  </option>
-                ))}
-              </select>
-              <Button variant="outline" size="sm" onClick={refreshMics} title="Re-enumerate devices">
-                <RotateCcw className="h-3.5 w-3.5" />
-              </Button>
-            </div>
-          </div>
-          {mics.length === 0 && (
-            <p className="text-xs text-muted-foreground">
-              No input devices found. If this is your first use, macOS will prompt for microphone
-              permission when you start a meeting.
-            </p>
-          )}
-          {micStatus.state === "success" && (
-            <p className="text-xs text-emerald-600 flex items-center gap-1">
-              <CheckCircle className="h-3 w-3" /> {micStatus.message}
-            </p>
-          )}
-          {micStatus.state === "error" && (
-            <p className="text-xs text-destructive flex items-center gap-1">
-              <AlertCircle className="h-3 w-3" /> {micStatus.message}
-            </p>
-          )}
-        </CardContent>
-      </Card>
+        <>
+          <Card>
+            <CardHeader className="pb-3">
+              <CardTitle className="text-base flex items-center gap-2">
+                <Mic className="h-4 w-4" /> Microphone
+              </CardTitle>
+              <CardDescription>
+                Default input device for live meeting transcription. You can
+                override this per meeting from the Meetings screen.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <div className="space-y-1.5">
+                <Label htmlFor="meeting-mic">Input device</Label>
+                <div className="flex gap-2">
+                  <select
+                    id="meeting-mic"
+                    value={selectedMic}
+                    onChange={(e) => saveMic(e.target.value)}
+                    className="w-full rounded-md border border-input bg-background px-3 py-1.5 text-xs text-foreground shadow-sm focus:outline-none focus:ring-1 focus:ring-ring"
+                  >
+                    <option value="">— System default —</option>
+                    {mics.map((m) => (
+                      <option key={m.name} value={m.name}>
+                        {m.name}
+                        {m.is_default ? " (default)" : ""} — {m.sampleRate}Hz
+                        {m.channels > 1 ? ` / ${m.channels}ch` : ""}
+                      </option>
+                    ))}
+                  </select>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={refreshMics}
+                    title="Re-enumerate devices"
+                  >
+                    <RotateCcw className="h-3.5 w-3.5" />
+                  </Button>
+                </div>
+              </div>
+              {mics.length === 0 && (
+                <p className="text-xs text-muted-foreground">
+                  No input devices found. If this is your first use, macOS will
+                  prompt for microphone permission when you start a meeting.
+                </p>
+              )}
+              {micStatus.state === "success" && (
+                <p className="text-xs text-emerald-600 flex items-center gap-1">
+                  <CheckCircle className="h-3 w-3" /> {micStatus.message}
+                </p>
+              )}
+              {micStatus.state === "error" && (
+                <p className="text-xs text-destructive flex items-center gap-1">
+                  <AlertCircle className="h-3 w-3" /> {micStatus.message}
+                </p>
+              )}
+            </CardContent>
+          </Card>
 
-      <Card>
-        <CardHeader className="pb-3">
-          <CardTitle className="text-base">Whisper Model</CardTitle>
-          <CardDescription>
-            Local speech-to-text model. Downloaded from HuggingFace and stored under{" "}
-            <span className="font-mono">models/whisper/</span> in your data directory. Audio
-            is never written to disk — only the transcription is saved.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-3">
-          <div className="space-y-1.5">
-            <Label htmlFor="whisper-model">Active model</Label>
-            <select
-              id="whisper-model"
-              value={selectedModel}
-              onChange={(e) => saveModel(e.target.value)}
-              className="w-full rounded-md border border-input bg-background px-3 py-1.5 text-xs text-foreground shadow-sm focus:outline-none focus:ring-1 focus:ring-ring"
-            >
-              {Object.entries(WHISPER_MODEL_META).map(([id, meta]) => (
-                <option key={id} value={id}>
-                  {meta.label} — {meta.sizeHuman} — {meta.note}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          <div className="space-y-2">
-            {whisperModels.map((m) => {
-              const meta = WHISPER_MODEL_META[m.id];
-              const progress = modelProgress[m.id];
-              const downloading = !!progress && !progress.done;
-              const pct = progress && progress.total > 0
-                ? Math.min(100, Math.floor((progress.downloaded / progress.total) * 100))
-                : 0;
-              return (
-                <div
-                  key={m.id}
-                  className="flex items-center justify-between gap-3 rounded-md border px-3 py-2 text-xs"
+          <Card>
+            <CardHeader className="pb-3">
+              <CardTitle className="text-base">Whisper Model</CardTitle>
+              <CardDescription>
+                Local speech-to-text model. Downloaded from HuggingFace and
+                stored under <span className="font-mono">models/whisper/</span>{" "}
+                in your data directory. Audio is never written to disk — only
+                the transcription is saved.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <div className="space-y-1.5">
+                <Label htmlFor="whisper-model">Active model</Label>
+                <select
+                  id="whisper-model"
+                  value={selectedModel}
+                  onChange={(e) => saveModel(e.target.value)}
+                  className="w-full rounded-md border border-input bg-background px-3 py-1.5 text-xs text-foreground shadow-sm focus:outline-none focus:ring-1 focus:ring-ring"
                 >
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-2">
-                      <span className="font-medium">{meta?.label ?? m.id}</span>
-                      {m.downloaded && (
-                        <Badge variant="secondary" className="text-[10px] py-0 px-1.5">
-                          Downloaded
-                        </Badge>
+                  {Object.entries(WHISPER_MODEL_META).map(([id, meta]) => (
+                    <option key={id} value={id}>
+                      {meta.label} — {meta.sizeHuman} — {meta.note}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="space-y-2">
+                {whisperModels.map((m) => {
+                  const meta = WHISPER_MODEL_META[m.id];
+                  const progress = modelProgress[m.id];
+                  const downloading = !!progress && !progress.done;
+                  const pct =
+                    progress && progress.total > 0
+                      ? Math.min(
+                          100,
+                          Math.floor(
+                            (progress.downloaded / progress.total) * 100,
+                          ),
+                        )
+                      : 0;
+                  return (
+                    <div
+                      key={m.id}
+                      className="flex items-center justify-between gap-3 rounded-md border px-3 py-2 text-xs"
+                    >
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-2">
+                          <span className="font-medium">
+                            {meta?.label ?? m.id}
+                          </span>
+                          {m.downloaded && (
+                            <Badge
+                              variant="secondary"
+                              className="text-[10px] py-0 px-1.5"
+                            >
+                              Downloaded
+                            </Badge>
+                          )}
+                        </div>
+                        <p className="text-muted-foreground">
+                          {m.downloaded
+                            ? humanBytes(m.sizeBytes)
+                            : downloading
+                              ? `${pct}% — ${humanBytes(progress.downloaded)} / ${humanBytes(progress.total)}`
+                              : (meta?.sizeHuman ?? "")}
+                        </p>
+                      </div>
+                      {!m.downloaded && !downloading && (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => handleDownload(m.id)}
+                        >
+                          <Download className="h-3.5 w-3.5 mr-1.5" />
+                          Download
+                        </Button>
+                      )}
+                      {downloading && (
+                        <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
                       )}
                     </div>
-                    <p className="text-muted-foreground">
-                      {m.downloaded
-                        ? humanBytes(m.sizeBytes)
-                        : downloading
-                        ? `${pct}% — ${humanBytes(progress.downloaded)} / ${humanBytes(progress.total)}`
-                        : meta?.sizeHuman ?? ""}
-                    </p>
-                  </div>
-                  {!m.downloaded && !downloading && (
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={() => handleDownload(m.id)}
-                    >
-                      <Download className="h-3.5 w-3.5 mr-1.5" />
-                      Download
-                    </Button>
-                  )}
-                  {downloading && (
-                    <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
-                  )}
-                </div>
-              );
-            })}
-          </div>
-          {modelStatus.state === "success" && (
-            <p className="text-xs text-emerald-600 flex items-center gap-1">
-              <CheckCircle className="h-3 w-3" /> {modelStatus.message}
-            </p>
-          )}
-          {modelStatus.state === "error" && (
-            <p className="text-xs text-destructive flex items-center gap-1">
-              <AlertCircle className="h-3 w-3" /> {modelStatus.message}
-            </p>
-          )}
-        </CardContent>
-      </Card>
-      </>
+                  );
+                })}
+              </div>
+              {modelStatus.state === "success" && (
+                <p className="text-xs text-emerald-600 flex items-center gap-1">
+                  <CheckCircle className="h-3 w-3" /> {modelStatus.message}
+                </p>
+              )}
+              {modelStatus.state === "error" && (
+                <p className="text-xs text-destructive flex items-center gap-1">
+                  <AlertCircle className="h-3 w-3" /> {modelStatus.message}
+                </p>
+              )}
+            </CardContent>
+          </Card>
+        </>
       )}
     </>
   );
@@ -4545,12 +4723,14 @@ function NoteTemplatesSection() {
             Tag note templates
           </CardTitle>
           <CardDescription>
-            Pre-fills a notes-mode meeting's body when its first tag is selected.
+            Pre-fills a notes-mode meeting's body when its first tag is
+            selected.
           </CardDescription>
         </CardHeader>
         <CardContent>
           <p className="text-sm text-muted-foreground">
-            No tags yet. Add tags from the Meetings panel to associate templates here.
+            No tags yet. Add tags from the Meetings panel to associate templates
+            here.
           </p>
         </CardContent>
       </Card>
@@ -4685,15 +4865,19 @@ function PrTemplateSection() {
   });
 
   useEffect(() => {
-    loadPrTemplate().then((c) => {
-      setContent(c);
-      setBaseline(c);
-    }).catch(() => {});
+    loadPrTemplate()
+      .then((c) => {
+        setContent(c);
+        setBaseline(c);
+      })
+      .catch(() => {});
     getPreferences().then((prefs) => {
       const m = prefs["pr_template_mode"];
       setMode(m === "strict" ? "strict" : "guide");
     });
-    getPrTemplatePath().then(setPath).catch(() => {});
+    getPrTemplatePath()
+      .then(setPath)
+      .catch(() => {});
   }, []);
 
   const dirty = content !== baseline;
@@ -4851,7 +5035,9 @@ function GroomingTemplateEditor({
         setBaseline(c);
       })
       .catch(() => {});
-    getGroomingTemplatePath(kind).then(setPath).catch(() => {});
+    getGroomingTemplatePath(kind)
+      .then(setPath)
+      .catch(() => {});
   }, [kind]);
 
   const dirty = content !== baseline;
@@ -4870,7 +5056,10 @@ function GroomingTemplateEditor({
   return (
     <div className="space-y-2">
       <div>
-        <Label htmlFor={`grooming-template-${kind}`} className="text-sm font-medium">
+        <Label
+          htmlFor={`grooming-template-${kind}`}
+          className="text-sm font-medium"
+        >
           {label}
         </Label>
         <p className="text-xs text-muted-foreground">{description}</p>
@@ -4932,8 +5121,8 @@ function GroomingTemplatesSection() {
         </CardTitle>
         <CardDescription>
           Formatting rules the Grooming agent follows when drafting ticket
-          fields. Leave a template blank to let the agent choose its own
-          format for that field.
+          fields. Leave a template blank to let the agent choose its own format
+          for that field.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-6">
@@ -5058,9 +5247,9 @@ function MockClaudeModeSection({ onToggle }: { onToggle: () => void }) {
             </div>
             <p className="text-xs text-muted-foreground leading-relaxed">
               Return pre-recorded agent responses for pipelines, retros,
-              workload, ticket quality, and PR review — no Anthropic API
-              calls made. JIRA and Bitbucket are unaffected (enable Mock Data
-              Mode for those).
+              workload, ticket quality, and PR review — no Anthropic API calls
+              made. JIRA and Bitbucket are unaffected (enable Mock Data Mode for
+              those).
             </p>
           </div>
           <Button
@@ -5243,15 +5432,17 @@ export function SettingsScreen({ onClose, onNavigate }: SettingsScreenProps) {
 
   type NavItem = { id: string; label: string; icon: React.ElementType };
   const navItems: NavItem[] = [
-    { id: "ai",           label: "AI",           icon: Sparkles     },
-    ...(onNavigate ? [{ id: "agents", label: "Agents", icon: Bot } as NavItem] : []),
-    { id: "integrations", label: "Integrations", icon: Link2        },
-    { id: "appearance",   label: "Appearance",   icon: Palette      },
-    { id: "storage",      label: "Storage",      icon: HardDrive    },
-    { id: "time-tracking", label: "Time",        icon: Clock        },
-    { id: "meetings",     label: "Meetings",     icon: NotebookPen },
-    { id: "templates",    label: "Templates",    icon: FileText     },
-    { id: "development",  label: "Development",  icon: FlaskConical },
+    { id: "ai", label: "AI", icon: Sparkles },
+    ...(onNavigate
+      ? [{ id: "agents", label: "Agents", icon: Bot } as NavItem]
+      : []),
+    { id: "integrations", label: "Integrations", icon: Link2 },
+    { id: "appearance", label: "Appearance", icon: Palette },
+    { id: "storage", label: "Storage", icon: HardDrive },
+    { id: "time-tracking", label: "Time", icon: Clock },
+    { id: "meetings", label: "Meetings", icon: NotebookPen },
+    { id: "templates", label: "Templates", icon: FileText },
+    { id: "development", label: "Development", icon: FlaskConical },
   ];
 
   // Scroll-spy: update active nav item as user scrolls
@@ -5274,8 +5465,8 @@ export function SettingsScreen({ onClose, onNavigate }: SettingsScreenProps) {
 
     container.addEventListener("scroll", onScroll, { passive: true });
     return () => container.removeEventListener("scroll", onScroll);
-  // navItems is derived from props/state that don't change after mount
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // navItems is derived from props/state that don't change after mount
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   function scrollToSection(id: string) {
@@ -5287,7 +5478,9 @@ export function SettingsScreen({ onClose, onNavigate }: SettingsScreenProps) {
   }
 
   function sectionRef(id: string) {
-    return (el: HTMLElement | null) => { sectionRefs.current[id] = el; };
+    return (el: HTMLElement | null) => {
+      sectionRefs.current[id] = el;
+    };
   }
 
   return (
@@ -5300,7 +5493,12 @@ export function SettingsScreen({ onClose, onNavigate }: SettingsScreenProps) {
             <HeaderTimeTracker />
             <HeaderRecordButton />
             <HeaderSettingsButton />
-            <Button variant="ghost" size="icon" onClick={onClose} aria-label="Close settings">
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={onClose}
+              aria-label="Close settings"
+            >
               <X className="h-4 w-4" />
             </Button>
           </div>
@@ -5335,24 +5533,41 @@ export function SettingsScreen({ onClose, onNavigate }: SettingsScreenProps) {
             </div>
           ) : (
             <div className="max-w-3xl mx-auto px-10 py-8 space-y-8">
-
               <section ref={sectionRef("ai")} className="space-y-4 pt-2">
                 <h2 className="text-xl font-semibold text-foreground">AI</h2>
-                <AnthropicSection isConfigured={anthropicComplete(credStatus)} onSaved={refresh} />
-                <GeminiSection isConfigured={credStatus.geminiApiKey} onSaved={refresh} />
-                <CopilotSection isConfigured={credStatus.copilotApiKey} onSaved={refresh} />
-                <LocalLlmSection isConfigured={credStatus.localLlmUrl} onSaved={refresh} />
+                <AnthropicSection
+                  isConfigured={anthropicComplete(credStatus)}
+                  onSaved={refresh}
+                />
+                <GeminiSection
+                  isConfigured={credStatus.geminiApiKey}
+                  onSaved={refresh}
+                />
+                <CopilotSection
+                  isConfigured={credStatus.copilotApiKey}
+                  onSaved={refresh}
+                />
+                <LocalLlmSection
+                  isConfigured={credStatus.localLlmUrl}
+                  onSaved={refresh}
+                />
                 <AiProviderSection />
                 <PerPanelAiSection />
                 <p className="text-xs text-muted-foreground pt-1">
-                  All credentials are stored in your macOS Keychain and never leave your machine.
-                  They are used exclusively in the Tauri backend layer and never exposed to the UI.
+                  All credentials are stored in your macOS Keychain and never
+                  leave your machine. They are used exclusively in the Tauri
+                  backend layer and never exposed to the UI.
                 </p>
               </section>
 
               {onNavigate && (
-                <section ref={sectionRef("agents")} className="space-y-4 border-t pt-8">
-                  <h2 className="text-xl font-semibold text-foreground">Agents</h2>
+                <section
+                  ref={sectionRef("agents")}
+                  className="space-y-4 border-t pt-8"
+                >
+                  <h2 className="text-xl font-semibold text-foreground">
+                    Agents
+                  </h2>
                   <Card
                     className="cursor-pointer hover:bg-muted/40 transition-colors"
                     onClick={() => onNavigate("agent-skills")}
@@ -5364,8 +5579,9 @@ export function SettingsScreen({ onClose, onNavigate }: SettingsScreenProps) {
                       <div className="flex-1">
                         <p className="text-sm font-medium">Agent Skills</p>
                         <p className="text-xs text-muted-foreground">
-                          Configure domain knowledge injected into AI agents — grooming conventions,
-                          codebase patterns, implementation standards, review criteria
+                          Configure domain knowledge injected into AI agents —
+                          grooming conventions, codebase patterns,
+                          implementation standards, review criteria
                         </p>
                       </div>
                       <ChevronRight className="h-4 w-4 text-muted-foreground" />
@@ -5382,8 +5598,9 @@ export function SettingsScreen({ onClose, onNavigate }: SettingsScreenProps) {
                       <div className="flex-1">
                         <p className="text-sm font-medium">Tool Sandbox</p>
                         <p className="text-xs text-muted-foreground">
-                          Invoke any agent tool directly — read/write repo files, search JIRA, grep the
-                          codebase, fetch URLs — and inspect the raw output to verify each tool works
+                          Invoke any agent tool directly — read/write repo
+                          files, search JIRA, grep the codebase, fetch URLs —
+                          and inspect the raw output to verify each tool works
                         </p>
                       </div>
                       <ChevronRight className="h-4 w-4 text-muted-foreground" />
@@ -5392,10 +5609,21 @@ export function SettingsScreen({ onClose, onNavigate }: SettingsScreenProps) {
                 </section>
               )}
 
-              <section ref={sectionRef("integrations")} className="space-y-4 border-t pt-8">
-                <h2 className="text-xl font-semibold text-foreground">Integrations</h2>
-                <JiraSection isConfigured={jiraCredentialsSet(credStatus)} onSaved={refresh} />
-                <BitbucketSection isConfigured={bitbucketCredentialsSet(credStatus)} onSaved={refresh} />
+              <section
+                ref={sectionRef("integrations")}
+                className="space-y-4 border-t pt-8"
+              >
+                <h2 className="text-xl font-semibold text-foreground">
+                  Integrations
+                </h2>
+                <JiraSection
+                  isConfigured={jiraCredentialsSet(credStatus)}
+                  onSaved={refresh}
+                />
+                <BitbucketSection
+                  isConfigured={bitbucketCredentialsSet(credStatus)}
+                  onSaved={refresh}
+                />
                 <ConfigSection
                   jiraBoardId={credStatus.jiraBoardId}
                   bitbucketRepoSlug={credStatus.bitbucketRepoSlug}
@@ -5404,40 +5632,69 @@ export function SettingsScreen({ onClose, onNavigate }: SettingsScreenProps) {
                 <DataTestSection fullyConfigured={fullyConfigured} />
               </section>
 
-              <section ref={sectionRef("appearance")} className="space-y-4 border-t pt-8">
-                <h2 className="text-xl font-semibold text-foreground">Appearance</h2>
+              <section
+                ref={sectionRef("appearance")}
+                className="space-y-4 border-t pt-8"
+              >
+                <h2 className="text-xl font-semibold text-foreground">
+                  Appearance
+                </h2>
                 <ThemeSection />
               </section>
 
-              <section ref={sectionRef("storage")} className="space-y-4 border-t pt-8">
-                <h2 className="text-xl font-semibold text-foreground">Storage</h2>
+              <section
+                ref={sectionRef("storage")}
+                className="space-y-4 border-t pt-8"
+              >
+                <h2 className="text-xl font-semibold text-foreground">
+                  Storage
+                </h2>
                 <DataDirectorySection />
                 <CacheSection />
               </section>
 
-              <section ref={sectionRef("time-tracking")} className="space-y-4 border-t pt-8">
-                <h2 className="text-xl font-semibold text-foreground">Time Tracking</h2>
+              <section
+                ref={sectionRef("time-tracking")}
+                className="space-y-4 border-t pt-8"
+              >
+                <h2 className="text-xl font-semibold text-foreground">
+                  Time Tracking
+                </h2>
                 <TimeTrackingSection />
               </section>
 
-              <section ref={sectionRef("meetings")} className="space-y-4 border-t pt-8">
-                <h2 className="text-xl font-semibold text-foreground">Meetings</h2>
+              <section
+                ref={sectionRef("meetings")}
+                className="space-y-4 border-t pt-8"
+              >
+                <h2 className="text-xl font-semibold text-foreground">
+                  Meetings
+                </h2>
                 <MeetingsSection />
                 <NoteTemplatesSection />
               </section>
 
-              <section ref={sectionRef("templates")} className="space-y-4 border-t pt-8">
-                <h2 className="text-xl font-semibold text-foreground">Templates</h2>
+              <section
+                ref={sectionRef("templates")}
+                className="space-y-4 border-t pt-8"
+              >
+                <h2 className="text-xl font-semibold text-foreground">
+                  Templates
+                </h2>
                 <PrTemplateSection />
                 <GroomingTemplatesSection />
               </section>
 
-              <section ref={sectionRef("development")} className="space-y-4 border-t pt-8">
-                <h2 className="text-xl font-semibold text-foreground">Development</h2>
+              <section
+                ref={sectionRef("development")}
+                className="space-y-4 border-t pt-8"
+              >
+                <h2 className="text-xl font-semibold text-foreground">
+                  Development
+                </h2>
                 <MockModeSection onToggle={handleMockToggle} />
                 <MockClaudeModeSection onToggle={handleMockToggle} />
               </section>
-
             </div>
           )}
         </main>
@@ -5445,4 +5702,3 @@ export function SettingsScreen({ onClose, onNavigate }: SettingsScreenProps) {
     </div>
   );
 }
-
