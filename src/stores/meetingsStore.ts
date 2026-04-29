@@ -575,6 +575,7 @@ export const useMeetingsStore = create<MeetingsState>()((set, get) => ({
         summary: parsed.summary ?? null,
         actionItems: parsed.actionItems ?? [],
         decisions: parsed.decisions ?? [],
+        perPerson: parsed.perPerson ?? [],
         suggestedTitle: parsed.suggestedTitle ?? null,
         suggestedTags: parsed.suggestedTags ?? [],
       };

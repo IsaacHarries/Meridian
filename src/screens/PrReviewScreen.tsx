@@ -2212,6 +2212,8 @@ function PrSelector({ prsForReview, allOpenPrs, loading, onSelect, onRefresh, ji
     const iApproved = isApproved(pr);
     const hasCache = cachedPrIds.has(pr.id);
     const isStale = stalePrIds.has(pr.id);
+    const approvalCount = pr.reviewers.filter((r) => r.approved).length;
+    const reviewerCount = pr.reviewers.length;
 
     return (
       <button
@@ -2256,6 +2258,15 @@ function PrSelector({ prsForReview, allOpenPrs, loading, onSelect, onRefresh, ji
             <>
               <span>·</span>
               <span>{pr.commentCount} comments</span>
+            </>
+          )}
+          {reviewerCount > 0 && (
+            <>
+              <span>·</span>
+              <span className="inline-flex items-center gap-1">
+                <ThumbsUp className="h-3 w-3" />
+                {approvalCount}/{reviewerCount} approvals
+              </span>
             </>
           )}
         </div>

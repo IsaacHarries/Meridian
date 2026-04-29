@@ -2093,6 +2093,12 @@ export interface MeetingSpeaker {
 
 export type MeetingKind = "transcript" | "notes";
 
+export interface PersonSummary {
+  name: string;
+  summary: string;
+  actionItems: string[];
+}
+
 export interface MeetingRecord {
   id: string;
   title: string;
@@ -2106,6 +2112,7 @@ export interface MeetingRecord {
   summary: string | null;
   actionItems: string[];
   decisions: string[];
+  perPerson: PersonSummary[];
   suggestedTitle: string | null;
   suggestedTags: string[];
   chatHistory: MeetingChatMessage[];
@@ -2137,6 +2144,7 @@ export interface MeetingSummaryJson {
   summary: string;
   actionItems: string[];
   decisions: string[];
+  perPerson: PersonSummary[];
   suggestedTitle: string | null;
   suggestedTags: string[];
 }

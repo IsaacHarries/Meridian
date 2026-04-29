@@ -100,6 +100,8 @@ pub struct MeetingRecord {
     pub action_items: Vec<String>,
     #[serde(default)]
     pub decisions: Vec<String>,
+    #[serde(default, rename = "perPerson")]
+    pub per_person: Vec<PersonSummary>,
     #[serde(default, rename = "suggestedTitle")]
     pub suggested_title: Option<String>,
     #[serde(default, rename = "suggestedTags")]
@@ -118,6 +120,18 @@ pub struct MeetingRecord {
 pub struct ChatMessage {
     pub role: String,
     pub content: String,
+}
+
+// One entry per person who spoke (or whose update was captured in notes-mode).
+// Populated by the summarize agent for standup meetings, optional otherwise.
+// `name` mirrors whatever appeared in the input — a real name when speakers
+// were diarized + renamed, the raw cluster label otherwise.
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+pub struct PersonSummary {
+    pub name: String,
+    pub summary: String,
+    #[serde(default, rename = "actionItems")]
+    pub action_items: Vec<String>,
 }
 
 // One entry per distinct voice detected by the diarization pass. The embedding
@@ -774,6 +788,7 @@ pub fn stop_meeting_recording(app: tauri::AppHandle) -> Result<MeetingRecord, St
         summary: None,
         action_items: Vec::new(),
         decisions: Vec::new(),
+        per_person: Vec::new(),
         suggested_title: None,
         suggested_tags: Vec::new(),
         chat_history: Vec::new(),
@@ -1137,6 +1152,7 @@ pub fn create_notes_meeting(
         summary: None,
         action_items: Vec::new(),
         decisions: Vec::new(),
+        per_person: Vec::new(),
         suggested_title: None,
         suggested_tags: Vec::new(),
         chat_history: Vec::new(),

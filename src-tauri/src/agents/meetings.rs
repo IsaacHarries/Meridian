@@ -35,11 +35,24 @@ pub async fn summarize_meeting(
           \"summary\": \"<2–4 sentence overview of what the meeting was about and what was concluded>\",\n\
           \"actionItems\": [\"<one concrete action item per string: who/what/when where mentioned>\", ...],\n\
           \"decisions\": [\"<one decision per string, stated plainly>\", ...],\n\
+          \"perPerson\": [\n\
+            {\n\
+              \"name\": \"<speaker's name or label as it appears in the input>\",\n\
+              \"summary\": \"<1–3 sentences covering what this person said: progress, plans, blockers, opinions>\",\n\
+              \"actionItems\": [\"<concrete action item owned by or assigned to this person>\", ...]\n\
+            }, ...\n\
+          ],\n\
           \"suggestedTitle\": \"<a short descriptive title (≤ 8 words), or null to keep current>\",\n\
           \"suggestedTags\": [\"standup\"|\"planning\"|\"retro\"|\"1:1\"|\"other\", ...]\n\
         }\n\
         Leave an array empty if the input contains nothing of that kind. \
-        Prefer `suggestedTags` from the enum above; only add a new tag if absolutely necessary.";
+        Prefer `suggestedTags` from the enum above; only add a new tag if absolutely necessary.\n\n\
+        Rules for `perPerson`:\n\
+        - REQUIRED when the current tags include \"standup\" — produce one entry per person who spoke or whose update is captured in the notes, in the order they spoke.\n\
+        - For other tags it is optional: include it only when individual contributions can be clearly attributed (named speaker labels, or a notes section where each person's update is clearly delimited). Otherwise leave it as [].\n\
+        - Use the speaker's real name when given (\"Alice: …\" → \"Alice\"). For unnamed diarization clusters (\"SPEAKER_00: …\"), use that label verbatim. Do not invent names.\n\
+        - Each person's `actionItems` must also appear in the top-level `actionItems` array — `perPerson` is a per-attendee view of the same items, not a separate list.\n\
+        - If a person spoke but had no action items, set their `actionItems` to [].";
 
     let user = format!(
         "Current title: {current_title}\n\

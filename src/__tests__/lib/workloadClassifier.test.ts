@@ -92,6 +92,47 @@ describe("classifyWorkloads", () => {
     expect(result[0].remainingTickets).toBe(1);
   });
 
+  it("Needs Review issues are excluded from remainingTickets count", () => {
+    const issues = [
+      makeIssue({ key: "P-1", assigneeName: "Alice", status: "Needs Review", statusCategory: "In Progress" }),
+      makeIssue({ key: "P-2", assigneeName: "Alice", status: "In Progress", statusCategory: "In Progress" }),
+    ];
+    const result = classifyWorkloads(issues, []);
+    expect(result[0].remainingTickets).toBe(1);
+  });
+
+  it("Needs Review tickets do not push a developer into overloaded", () => {
+    // Without the exclusion, Alice would have 10 remaining vs Bob's 1 → overloaded.
+    // With the exclusion, Alice has 1 active + 9 in review → counts as 1 → balanced.
+    const issues = [
+      ...Array.from({ length: 9 }, (_, i) =>
+        makeIssue({
+          key: `P-A${i}`,
+          assigneeName: "Alice",
+          storyPoints: 2,
+          status: "Needs Review",
+          statusCategory: "In Progress",
+        })
+      ),
+      makeIssue({
+        key: "P-A9",
+        assigneeName: "Alice",
+        storyPoints: 2,
+        status: "In Progress",
+        statusCategory: "In Progress",
+      }),
+      makeIssue({
+        key: "P-B1",
+        assigneeName: "Bob",
+        storyPoints: 2,
+        status: "In Progress",
+        statusCategory: "In Progress",
+      }),
+    ];
+    const result = classifyWorkloads(issues, []);
+    expect(result.find((d) => d.name === "Alice")?.loadStatus).toBe("balanced");
+  });
+
   it("all-zero story points — nobody classified as overloaded or underutilised", () => {
     const issues = [
       makeIssue({ key: "P-1", assigneeName: "Alice", storyPoints: 0, statusCategory: "In Progress" }),

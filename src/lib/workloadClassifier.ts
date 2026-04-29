@@ -22,6 +22,10 @@ function isDone(issue: JiraIssue): boolean {
   return issue.statusCategory === "Done";
 }
 
+function isNeedsReview(issue: JiraIssue): boolean {
+  return issue.status === "Needs Review";
+}
+
 /**
  * Classify every developer's load status from a flat list of sprint issues
  * and the current open PRs.
@@ -29,6 +33,8 @@ function isDone(issue: JiraIssue): boolean {
  * Rules (identical to WorkloadBalancerScreen.buildWorkloads):
  * - Average is computed from developers who have at least 1 story point
  *   assigned (so zero-point-only developers don't skew the baseline).
+ * - "Needs Review" tickets are excluded from the count — work in review is
+ *   waiting on someone else and shouldn't push a dev over capacity.
  * - Every developer (including zero-point ones) is then classified against
  *   that average:
  *     > 140% → overloaded
@@ -48,7 +54,7 @@ export function classifyWorkloads(
 
   const raw: DevWorkload[] = Array.from(map.entries()).map(([name, devIssues]) => ({
     name,
-    remainingTickets: devIssues.filter((i) => !isDone(i)).length,
+    remainingTickets: devIssues.filter((i) => !isDone(i) && !isNeedsReview(i)).length,
     totalPts: devIssues.reduce((s, i) => s + (i.storyPoints ?? 0), 0),
     reviewCount: openPrs.filter((pr) =>
       pr.reviewers.some((r) => r.user.displayName === name)

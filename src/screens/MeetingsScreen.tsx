@@ -1098,7 +1098,11 @@ function MeetingDetailView({ record }: { record: MeetingRecord }) {
     }
   }
 
-  const hasSummary = !!record.summary || record.actionItems.length > 0 || record.decisions.length > 0;
+  const hasSummary =
+    !!record.summary ||
+    record.actionItems.length > 0 ||
+    record.decisions.length > 0 ||
+    (record.perPerson?.length ?? 0) > 0;
   // For notes-mode the buffer holds a serialised TipTap document; an "empty"
   // doc is `{"type":"doc","content":[{"type":"paragraph"}]}`, which still has
   // length > 0. Strip down to plain text before judging emptiness.
@@ -1281,6 +1285,30 @@ function MeetingDetailView({ record }: { record: MeetingRecord }) {
                           <li key={i}>{a}</li>
                         ))}
                       </ul>
+                    </CardContent>
+                  </Card>
+                )}
+                {(record.perPerson?.length ?? 0) > 0 && (
+                  <Card>
+                    <CardContent className="p-4 space-y-3">
+                      <p className="text-xs font-medium text-muted-foreground">Per person</p>
+                      <div className="space-y-3">
+                        {record.perPerson.map((p, i) => (
+                          <div key={i} className="space-y-1">
+                            <p className="text-sm font-medium">{p.name}</p>
+                            {p.summary && (
+                              <p className="text-sm whitespace-pre-wrap">{p.summary}</p>
+                            )}
+                            {p.actionItems.length > 0 && (
+                              <ul className="list-disc list-inside space-y-0.5 text-sm">
+                                {p.actionItems.map((a, j) => (
+                                  <li key={j}>{a}</li>
+                                ))}
+                              </ul>
+                            )}
+                          </div>
+                        ))}
+                      </div>
                     </CardContent>
                   </Card>
                 )}
