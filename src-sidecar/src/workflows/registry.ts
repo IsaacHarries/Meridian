@@ -68,10 +68,13 @@ import {
   buildGroomingChatSystemPrompt,
 } from "./grooming-chat.js";
 import {
-  CheckpointChatInputSchema,
-  CheckpointChatHistorySchema,
-  buildCheckpointChatSystemPrompt,
-} from "./checkpoint-chat.js";
+  OrchestratorInputSchema,
+  buildOrchestratorGraph,
+  maybeCompressStageOnTransition,
+  applyPlanEdits,
+  ApplyPlanEditsInputSchema,
+  type OrchestratorMessage,
+} from "./orchestrator.js";
 import {
   runGroomingFileProbe,
   GroomingFileProbeInputSchema,
@@ -105,7 +108,8 @@ const workflows: Record<string, WorkflowRunner> = {
   pr_review_chat: runPrReviewChatWorkflow,
   address_pr_chat: runAddressPrChatWorkflow,
   grooming_chat: runGroomingChatWorkflow,
-  checkpoint_chat: runCheckpointChatWorkflow,
+  implement_ticket_orchestrator: runImplementTicketOrchestrator,
+  apply_plan_edits: runApplyPlanEditsWorkflow,
   grooming_file_probe: runGroomingFileProbeWorkflow,
 };
 
@@ -810,74 +814,6 @@ async function runGroomingChatWorkflow(args: {
   });
 }
 
-// ── Checkpoint Chat runner ───────────────────────────────────────────────────
-
-async function runCheckpointChatWorkflow(args: {
-  workflowId: string;
-  input: unknown;
-  model: ModelSelection;
-  emit: Emitter;
-  signal: AbortSignal;
-}): Promise<void> {
-  const { workflowId, input, model, emit } = args;
-
-  const parsed = CheckpointChatInputSchema.safeParse(input);
-  if (!parsed.success) {
-    emit({
-      id: workflowId,
-      type: "error",
-      message: `Invalid checkpoint_chat input: ${parsed.error.message}`,
-    });
-    return;
-  }
-  const historyParsed = CheckpointChatHistorySchema.safeParse(
-    JSON.parse(parsed.data.historyJson || "[]"),
-  );
-  if (!historyParsed.success) {
-    emit({
-      id: workflowId,
-      type: "error",
-      message: `Invalid checkpoint_chat history: ${historyParsed.error.message}`,
-    });
-    return;
-  }
-
-  emit({ id: workflowId, type: "progress", node: "reply", status: "started" });
-
-  const tools = makeRepoTools({ workflowId, emit });
-  let result: { reply: string; usage: { inputTokens: number; outputTokens: number } };
-  try {
-    result = await runStreamingChatWithTools({
-      workflowId,
-      model,
-      tools,
-      systemPrompt: buildCheckpointChatSystemPrompt(parsed.data),
-      history: historyParsed.data,
-      emit,
-      nodeName: "reply",
-    });
-  } catch (err) {
-    emit({
-      id: workflowId,
-      type: "error",
-      message: err instanceof Error ? err.message : String(err),
-    });
-    return;
-  }
-
-  emit({ id: workflowId, type: "progress", node: "reply", status: "completed" });
-
-  emit({
-    id: workflowId,
-    type: "result",
-    output: { reply: result.reply },
-    usage: {
-      inputTokens: result.usage.inputTokens,
-      outputTokens: result.usage.outputTokens,
-    },
-  });
-}
-
 // ── Address PR Chat runner ───────────────────────────────────────────────────
 
 async function runAddressPrChatWorkflow(args: {
@@ -1156,3 +1092,222 @@ async function runPrReview(args: {
     },
   });
 }
+
+// ── Implement-Ticket Orchestrator runner ─────────────────────────────────────
+//
+// Each call corresponds to ONE user chat turn. The orchestrator's persistent
+// state (thread, stage summaries, user notes) lives in the SQLite checkpointer
+// keyed by `input.threadId`. We invoke the compiled graph with the new
+// pendingUserMessage; the chat node consumes it, runs the tool loop, and
+// appends both turns to `thread`. Streaming deltas flow live to the frontend
+// during the tool loop; the result event fires once the model returns
+// without further tool calls.
+
+async function runImplementTicketOrchestrator(args: {
+  workflowId: string;
+  input: unknown;
+  model: ModelSelection;
+  emit: Emitter;
+  signal: AbortSignal;
+}): Promise<void> {
+  const { workflowId, input, model, emit } = args;
+
+  const parsed = OrchestratorInputSchema.safeParse(input);
+  if (!parsed.success) {
+    emit({
+      id: workflowId,
+      type: "error",
+      message: `Invalid implement_ticket_orchestrator input: ${parsed.error.message}`,
+    });
+    return;
+  }
+
+  emit({ id: workflowId, type: "progress", node: "orchestrator", status: "started" });
+
+  const tools = makeRepoTools({ workflowId, emit });
+  const graph = buildOrchestratorGraph({ workflowId, model, tools, emit });
+  const config = { configurable: { thread_id: parsed.data.threadId } };
+
+  // Detect pipeline-stage transitions and compress the prior stage's chat
+  // turns into a summary BEFORE the new turn runs. This bounds prompt
+  // growth as the conversation spans many stages: raw turns from a
+  // summarised stage are filtered out of the model's context (the chat
+  // node reads `stageSummaries` and the tool-loop builder skips matching
+  // entries). The persisted `thread` stays lossless — UI still renders
+  // every original message.
+  let prior:
+    | {
+        currentStage?: string;
+        thread?: OrchestratorMessage[];
+        stageSummaries?: Record<string, string>;
+      }
+    | undefined;
+  try {
+    const snapshot = await graph.getState(config);
+    if (snapshot?.values && Object.keys(snapshot.values).length > 0) {
+      prior = snapshot.values as typeof prior;
+    }
+  } catch {
+    // No prior state — first turn on this thread. Nothing to compress.
+  }
+
+  if (prior) {
+    const compressionUpdate = await maybeCompressStageOnTransition({
+      model,
+      priorStage: prior.currentStage,
+      incomingStage: parsed.data.currentStage,
+      thread: prior.thread ?? [],
+      existingSummaries: prior.stageSummaries ?? {},
+    });
+    if (compressionUpdate) {
+      emit({
+        id: workflowId,
+        type: "progress",
+        node: "orchestrator",
+        status: "started",
+        data: {
+          phase: "stage_summary",
+          stage: prior.currentStage,
+        },
+      });
+      try {
+        await graph.updateState(config, compressionUpdate);
+      } catch (err) {
+        console.error(
+          `[orchestrator] failed to write stage summary: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+  }
+
+  // If the frontend resolved an outstanding proposal (user accepted or
+  // rejected the confirm card), clear it BEFORE invoking the graph so the
+  // chat node's system prompt doesn't show a stale "outstanding proposal"
+  // entry. We do this via updateState because pendingProposal isn't in the
+  // turn input shape and its reducer wouldn't accept undefined as a "clear"
+  // signal.
+  if (parsed.data.clearPendingProposal) {
+    try {
+      await graph.updateState(config, { pendingProposal: undefined });
+    } catch {
+      // updateState can fail on a brand-new thread that has no prior state;
+      // safe to ignore — the channel default is already undefined.
+    }
+  }
+
+  // Drop stage summaries the frontend has flagged as stale (typically
+  // after a rewind). Writes `undefined` for each key — the orchestrator's
+  // stageSummaries reducer treats undefined as a delete signal so the
+  // entries are actually removed rather than left behind.
+  if (parsed.data.dropSummariesForStages.length > 0) {
+    const drop: Record<string, string | undefined> = {};
+    for (const stage of parsed.data.dropSummariesForStages) {
+      drop[stage] = undefined;
+    }
+    try {
+      await graph.updateState(config, { stageSummaries: drop });
+    } catch {
+      // Tolerate missing prior state — nothing to drop on a brand-new thread.
+    }
+  }
+
+  // Per-turn channel updates. Reducers handle the merge:
+  //   - thread: append new turns (the chat node returns the new entries)
+  //   - pendingUserMessage / pendingContextText / pendingMessageKind: replace
+  //   - currentStage / pipelineThreadId: replace if provided
+  const turnInput = {
+    pendingUserMessage: parsed.data.message,
+    pendingMessageKind: parsed.data.messageKind ?? "user",
+    pendingContextText: parsed.data.contextText,
+    currentStage: parsed.data.currentStage,
+    pipelineThreadId: parsed.data.pipelineThreadId,
+  };
+
+  try {
+    const finalState = await graph.invoke(turnInput, config);
+    emit({
+      id: workflowId,
+      type: "progress",
+      node: "orchestrator",
+      status: "completed",
+    });
+    emit({
+      id: workflowId,
+      type: "result",
+      output: {
+        threadId: parsed.data.threadId,
+        thread: finalState.thread,
+        stageSummaries: finalState.stageSummaries,
+        userNotes: finalState.userNotes,
+        currentStage: finalState.currentStage,
+        pipelineThreadId: finalState.pipelineThreadId,
+        pendingProposal: finalState.pendingProposal,
+      },
+      usage: {
+        inputTokens: finalState.usage?.inputTokens ?? 0,
+        outputTokens: finalState.usage?.outputTokens ?? 0,
+      },
+    });
+  } catch (err) {
+    emit({
+      id: workflowId,
+      type: "error",
+      message: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
+
+// ── Apply Plan Edits runner ──────────────────────────────────────────────────
+//
+// One-shot mutation workflow. The frontend invokes this when the user
+// accepts an orchestrator-proposed plan-edit batch. We apply the ops to the
+// pipeline thread's plan via graph.updateState (in orchestrator.ts) and
+// emit a single result event with the new plan file count for telemetry.
+
+async function runApplyPlanEditsWorkflow(args: {
+  workflowId: string;
+  input: unknown;
+  model: ModelSelection;
+  emit: Emitter;
+  signal: AbortSignal;
+}): Promise<void> {
+  const { workflowId, input, emit } = args;
+
+  const parsed = ApplyPlanEditsInputSchema.safeParse(input);
+  if (!parsed.success) {
+    emit({
+      id: workflowId,
+      type: "error",
+      message: `Invalid apply_plan_edits input: ${parsed.error.message}`,
+    });
+    return;
+  }
+
+  emit({
+    id: workflowId,
+    type: "progress",
+    node: "apply_plan_edits",
+    status: "started",
+  });
+
+  try {
+    const out = await applyPlanEdits({
+      workflowId,
+      emit,
+      input: parsed.data,
+    });
+    emit({
+      id: workflowId,
+      type: "result",
+      output: { planFileCount: out.planFileCount },
+      usage: { inputTokens: 0, outputTokens: 0 },
+    });
+  } catch (err) {
+    emit({
+      id: workflowId,
+      type: "error",
+      message: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
+

@@ -3,8 +3,6 @@ use serde::Serialize;
 use serde_json::Value;
 use std::time::Duration;
 
-use crate::http::make_corporate_client;
-
 // ── Output types ──────────────────────────────────────────────────────────────
 
 #[derive(Debug, Serialize, Clone)]

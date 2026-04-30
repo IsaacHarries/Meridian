@@ -622,28 +622,81 @@ pub async fn run_grooming_chat_workflow(
     .await
 }
 
+/// Apply a batch of plan-edit ops the user just accepted from an
+/// orchestrator-proposed `edit_plan`. Mutates `state.plan` on the pipeline
+/// thread via the sidecar's `apply_plan_edits` workflow. Each op is
+/// re-validated by Zod in the sidecar at the trust boundary.
 #[tauri::command]
-pub async fn run_checkpoint_chat_workflow(
+pub async fn apply_plan_edits(
     app: tauri::AppHandle,
     state: tauri::State<'_, SidecarState>,
-    stage: String,
-    context_text: String,
-    history_json: String,
+    pipeline_thread_id: String,
+    edits: serde_json::Value,
 ) -> Result<WorkflowResult, String> {
-    let ctx = AiContext::stage("implement_ticket", &stage);
+    // Model isn't actually used by this workflow (no LLM call) but the
+    // sidecar's run_workflow contract requires one. Resolve the panel
+    // default; if no model is configured we fall back to a placeholder
+    // since this workflow is purely state-mutating.
+    let ctx = AiContext::panel("implement_ticket");
     let model = resolve_model_for_context(&ctx).await?;
 
     let input = serde_json::json!({
-        "stage": stage,
-        "contextText": context_text,
-        "historyJson": history_json,
+        "pipelineThreadId": pipeline_thread_id,
+        "edits": edits,
     });
 
     crate::integrations::sidecar::run_workflow(
         &app,
         &state,
-        "checkpoint-chat-workflow-event",
-        "checkpoint_chat",
+        "apply-plan-edits-workflow-event",
+        "apply_plan_edits",
+        input,
+        model,
+        None,
+    )
+    .await
+}
+
+/// Orchestrator chat — one user turn against the long-lived implement-ticket
+/// orchestrator workflow. The sidecar persists per-ticket state (thread,
+/// stage summaries, user notes, pending proposal) keyed by `thread_id`, so
+/// each call only ships the new message + per-turn context. The orchestrator
+/// is allowed to propose pipeline actions; the result includes any
+/// `pendingProposal` the frontend should render as a confirm card.
+#[tauri::command]
+pub async fn chat_with_orchestrator(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, SidecarState>,
+    thread_id: String,
+    pipeline_thread_id: Option<String>,
+    message: String,
+    message_kind: Option<String>,
+    current_stage: Option<String>,
+    context_text: Option<String>,
+    clear_pending_proposal: Option<bool>,
+    drop_summaries_for_stages: Option<Vec<String>>,
+) -> Result<WorkflowResult, String> {
+    // The orchestrator is panel-scoped (not stage-scoped) — it spans every
+    // stage. Fetch the configured model for the implement-ticket panel.
+    let ctx = AiContext::panel("implement_ticket");
+    let model = resolve_model_for_context(&ctx).await?;
+
+    let input = serde_json::json!({
+        "threadId": thread_id,
+        "pipelineThreadId": pipeline_thread_id,
+        "message": message,
+        "messageKind": message_kind.unwrap_or_else(|| "user".to_string()),
+        "currentStage": current_stage,
+        "contextText": context_text,
+        "clearPendingProposal": clear_pending_proposal.unwrap_or(false),
+        "dropSummariesForStages": drop_summaries_for_stages.unwrap_or_default(),
+    });
+
+    crate::integrations::sidecar::run_workflow(
+        &app,
+        &state,
+        "orchestrator-workflow-event",
+        "implement_ticket_orchestrator",
         input,
         model,
         None,

@@ -323,6 +323,56 @@ pub fn read_repo_file_internal(path: &str) -> Result<String, String> {
     std::fs::read_to_string(&full).map_err(|_| String::new()) // empty on missing file
 }
 
+/// Lightweight file existence + size check used by the implementation node
+/// to verify what the agent actually did on disk after a per-file iteration.
+/// Crucially distinguishes "missing" from "empty" — `read_repo_file_internal`
+/// can't, since it returns empty string for both.
+///
+/// Performs the same path-resolution trick as `write_repo_file`: canonicalise
+/// the worktree root, then component-walk the relative path so we don't fail
+/// on files that don't exist yet (the `create` case wants to confirm absence
+/// pre-write).
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StatResult {
+    pub exists: bool,
+    pub size_bytes: u64,
+}
+
+pub fn stat_repo_file_internal(path: &str) -> Result<StatResult, String> {
+    let root = worktree_path()?;
+    let canonical_root = root
+        .canonicalize()
+        .map_err(|e| format!("Cannot resolve worktree root: {e}"))?;
+    let mut resolved = canonical_root.clone();
+    for component in std::path::Path::new(path).components() {
+        use std::path::Component;
+        match component {
+            Component::Normal(c) => resolved.push(c),
+            Component::ParentDir => {
+                if !resolved.pop() {
+                    return Err(format!("Path '{}' escapes the worktree root", path));
+                }
+            }
+            Component::CurDir | Component::RootDir | Component::Prefix(_) => {}
+        }
+    }
+    if !resolved.starts_with(&canonical_root) {
+        return Err(format!("Path '{}' is outside the worktree root", path));
+    }
+    match std::fs::metadata(&resolved) {
+        Ok(md) => Ok(StatResult {
+            exists: md.is_file(),
+            size_bytes: md.len(),
+        }),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(StatResult {
+            exists: false,
+            size_bytes: 0,
+        }),
+        Err(e) => Err(format!("Could not stat '{}': {e}", path)),
+    }
+}
+
 /// Non-command helper used by the implementation agent in claude.rs.
 /// Writes a file to the main implementation worktree, creating parent dirs as needed.
 pub fn write_repo_file_internal(path: &str, content: &str) -> Result<(), String> {

@@ -109,9 +109,9 @@ pub use store_cache::{
     save_store_cache,
 };
 pub use workflows::{
-    resume_implementation_pipeline_workflow, rewind_implementation_pipeline_workflow,
-    run_address_pr_chat_workflow, run_analyze_pr_comments_workflow,
-    run_checkpoint_chat_workflow, run_grooming_chat_workflow,
+    apply_plan_edits, chat_with_orchestrator, resume_implementation_pipeline_workflow,
+    rewind_implementation_pipeline_workflow, run_address_pr_chat_workflow,
+    run_analyze_pr_comments_workflow, run_grooming_chat_workflow,
     run_grooming_file_probe_workflow, run_grooming_workflow,
     run_implementation_pipeline_workflow, run_meeting_chat_workflow,
     run_meeting_summary_workflow, run_meeting_title_workflow, run_pr_review_chat_workflow,

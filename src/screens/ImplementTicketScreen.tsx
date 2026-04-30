@@ -18,6 +18,11 @@ import {
 import { JiraTicketLink } from "@/components/JiraTicketLink";
 import { MarkdownBlock } from "@/components/MarkdownBlock";
 import {
+  OrchestratorEntry,
+  ProposalCard,
+  groupOrchestratorThreadByStage,
+} from "@/components/OrchestratorPanel";
+import {
   ArrowLeft,
   Loader2,
   CheckCircle2,
@@ -90,6 +95,9 @@ import {
   writeRepoFile,
   getFileAtBase,
   type BuildCheckResult,
+  type ReplanCheckpointPayload,
+  type OrchestratorMessage,
+  type OrchestratorPendingProposal,
 } from "@/lib/tauri";
 import {
   useImplementTicketStore,
@@ -122,6 +130,7 @@ const STAGE_LABELS: Record<Exclude<Stage, "select">, string> = {
   triage: "Triage",
   plan: "Implementation Plan",
   implementation: "Implementation",
+  replan: "Plan Revision",
   tests_plan: "Test Plan",
   tests: "Tests",
   review: "Code Review",
@@ -1242,6 +1251,170 @@ function PlanPanel({ data }: { data: ImplementationPlan }) {
   );
 }
 
+/** Surfaces the `replan` checkpoint payload — verification failures, exhausted
+ *  build attempts, prior plan, and the partial files already on disk. The
+ *  three-button approval row (Revise / Accept partial / Abort) is rendered by
+ *  the screen, not this panel. */
+function ReplanPanel({ data }: { data: ReplanCheckpointPayload }) {
+  const reasonLabel: Record<ReplanCheckpointPayload["reason"], string> = {
+    verification_failed:
+      "One or more files didn't end up in the expected state on disk after the implementation pass.",
+    build_failed:
+      "The build verification sub-loop exhausted its retry budget without a passing build.",
+    user_requested: "Plan revision requested.",
+  };
+  return (
+    <div className="space-y-4">
+      <div className="rounded-md border border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/30 p-4 space-y-2">
+        <div className="flex items-center gap-2">
+          <AlertTriangle className="h-4 w-4 text-amber-600 dark:text-amber-400 shrink-0" />
+          <p className="text-sm font-medium text-amber-900 dark:text-amber-100">
+            Plan revision suggested
+          </p>
+        </div>
+        <p className="text-sm text-amber-900/90 dark:text-amber-100/90">
+          {reasonLabel[data.reason]}
+        </p>
+        <p className="text-xs text-muted-foreground">
+          {data.revisions_remaining > 0
+            ? `Revisions remaining: ${data.revisions_remaining} (used ${data.revisions_used}).`
+            : `Revision budget exhausted — accept the partial work or abort.`}
+        </p>
+      </div>
+
+      {data.verification_failures.length > 0 && (
+        <div className="border rounded-md overflow-hidden">
+          <div className="px-3 py-2 bg-muted/30 text-sm font-medium flex items-center gap-2">
+            <FileCode className="h-4 w-4 text-muted-foreground" />
+            Verification failures ({data.verification_failures.length})
+          </div>
+          <div className="divide-y">
+            {data.verification_failures.map((f, i) => (
+              <div key={i} className="px-3 py-2 space-y-1">
+                <div className="flex items-center gap-2">
+                  <code className="text-xs font-mono">{f.path}</code>
+                  <span className="text-xs px-1.5 py-0.5 rounded font-medium bg-red-100 text-red-700 dark:bg-red-900 dark:text-red-300">
+                    {f.outcome}
+                  </span>
+                  <span className="text-xs text-muted-foreground">
+                    expected: {f.expected_action}
+                  </span>
+                </div>
+                {f.detail && (
+                  <p className="text-xs text-muted-foreground">{f.detail}</p>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {data.build_attempts.length > 0 && (
+        <div className="border rounded-md overflow-hidden">
+          <div className="px-3 py-2 bg-muted/30 text-sm font-medium flex items-center gap-2">
+            <Bug className="h-4 w-4 text-muted-foreground" />
+            Build attempts ({data.build_attempts.length})
+          </div>
+          <div className="divide-y">
+            {data.build_attempts.map((a, i) => (
+              <div key={i} className="px-3 py-2 space-y-1">
+                <div className="flex items-center gap-2">
+                  <span className="text-sm font-medium">Attempt {a.attempt}</span>
+                  <span
+                    className={`text-xs px-1.5 py-0.5 rounded font-medium ${
+                      a.exit_code === 0
+                        ? "bg-green-100 text-green-700 dark:bg-green-900 dark:text-green-300"
+                        : "bg-red-100 text-red-700 dark:bg-red-900 dark:text-red-300"
+                    }`}
+                  >
+                    exit {a.exit_code}
+                  </span>
+                  {a.fixed && (
+                    <span className="text-xs text-muted-foreground">
+                      fix wrote {a.files_written.length} file(s)
+                    </span>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {data.previously_written_files.length > 0 && (
+        <div className="rounded-md border bg-muted/20 p-3 space-y-1">
+          <p className="text-xs font-medium">
+            Files written by the prior plan (still on disk):
+          </p>
+          <ul className="text-xs text-muted-foreground font-mono space-y-0.5">
+            {data.previously_written_files.map((f, i) => (
+              <li key={i}>{f}</li>
+            ))}
+          </ul>
+          <p className="text-xs text-muted-foreground">
+            A revised plan can address these files explicitly. Nothing is
+            reverted automatically.
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Three-button approval row used by the `replan` checkpoint. */
+function ReplanApprovalRow({
+  onRevise,
+  onAccept,
+  onAbort,
+  proceeding,
+  canRevise,
+}: {
+  onRevise: () => void;
+  onAccept: () => void;
+  onAbort: () => void;
+  proceeding: boolean;
+  canRevise: boolean;
+}) {
+  return (
+    <div className="mt-5 border-t pt-4 flex items-center gap-3">
+      <Button
+        onClick={onAbort}
+        disabled={proceeding}
+        variant="ghost"
+        size="sm"
+        className="gap-2"
+      >
+        <X className="h-4 w-4" />
+        Abort
+      </Button>
+      <div className="ml-auto flex items-center gap-3">
+        <Button
+          onClick={onAccept}
+          disabled={proceeding}
+          variant="outline"
+          className="gap-2"
+        >
+          <ChevronRight className="h-4 w-4" />
+          Accept partial
+        </Button>
+        <Button
+          onClick={onRevise}
+          disabled={proceeding || !canRevise}
+          className="gap-2"
+          title={canRevise ? undefined : "Revision budget exhausted"}
+        >
+          {proceeding ? (
+            <Loader2 className="h-4 w-4 animate-spin" />
+          ) : (
+            <RefreshCw className="h-4 w-4" />
+          )}
+          Revise plan
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 function BuildVerificationPanel({ result }: { result: BuildCheckResult }) {
   const [expanded, setExpanded] = useState<number | null>(null);
   return (
@@ -2217,7 +2390,14 @@ interface PipelineChatPanelProps {
   grooming: GroomingOutput | null;
   groomingChat: TriageMessage[];
   triageHistory: TriageMessage[];
-  checkpointChats: Partial<Record<Stage, TriageMessage[]>>;
+  /** Long-lived orchestrator thread that spans every post-triage stage.
+   *  Each entry is one user/assistant/tool/system_note. */
+  orchestratorThread: OrchestratorMessage[];
+  /** Outstanding proposal awaiting user accept/reject (renders as a confirm
+   *  card at the bottom of the thread). */
+  orchestratorPendingProposal: OrchestratorPendingProposal | null;
+  onAcceptProposal: () => void;
+  onRejectProposal: () => void;
   currentStage: Stage;
   pendingApproval: Stage | null;
   toolRequests: ToolRequest[];
@@ -2242,6 +2422,7 @@ const CHAT_STAGE_LABEL: Partial<Record<Stage, string>> = {
   impact: "Impact Analysis",
   plan: "Implementation Plan",
   implementation: "Implementation",
+  replan: "Plan Revision",
   tests_plan: "Test Plan",
   tests: "Tests",
   review: "Code Review",
@@ -2253,7 +2434,10 @@ function PipelineChatPanel({
   grooming,
   groomingChat,
   triageHistory,
-  checkpointChats,
+  orchestratorThread,
+  orchestratorPendingProposal,
+  onAcceptProposal,
+  onRejectProposal,
   currentStage,
   pendingApproval,
   toolRequests,
@@ -2273,7 +2457,7 @@ function PipelineChatPanel({
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [groomingChat, triageHistory, checkpointChats, sending]);
+  }, [groomingChat, triageHistory, orchestratorThread, sending]);
 
   useEffect(() => {
     if (!sending) return;
@@ -2287,34 +2471,39 @@ function PipelineChatPanel({
     return () => window.removeEventListener("keydown", onKey);
   }, [sending, onCancel]);
 
-  // Build unified message thread with stage dividers
-  const sections: Array<{ stage: Stage; messages: TriageMessage[] }> = [];
+  // Build the unified message thread.
+  //   - Grooming chat: dedicated TriageMessage[] (sub-agent state).
+  //   - Triage history: dedicated TriageMessage[] (sub-agent state),
+  //     dropping the seeded "please analyse" user prompt that leaks
+  //     sub-agent plumbing.
+  //   - Everything past triage: one continuous orchestrator thread the
+  //     orchestrator persists across stages. We slice it by `stage` field
+  //     so the UI can still draw stage dividers.
+  type LegacySection = { kind: "legacy"; stage: Stage; messages: TriageMessage[] };
+  type OrchSection = { kind: "orchestrator"; stage: Stage; messages: OrchestratorMessage[] };
+  const sections: Array<LegacySection | OrchSection> = [];
   if (groomingChat.length > 0)
-    sections.push({ stage: "grooming", messages: groomingChat });
+    sections.push({ kind: "legacy", stage: "grooming", messages: groomingChat });
   if (triageHistory.length > 0) {
-    // Drop only the seeded "Please analyse this ticket…" user prompt — the
-    // assistant turns now contain just the chat-friendly message + enumerated
-    // questions (the full proposal lives in the middle panel), so they belong
-    // in the chat thread.
     const turnsForChat = triageHistory.slice(
       triageHistory[0]?.role === "user" ? 1 : 0,
     );
     if (turnsForChat.length > 0) {
-      sections.push({ stage: "triage", messages: turnsForChat });
+      sections.push({ kind: "legacy", stage: "triage", messages: turnsForChat });
     }
   }
-  for (const stage of [
-    "impact",
-    "plan",
-    "implementation",
-    "tests_plan",
-    "tests",
-    "review",
-    "pr",
-    "retro",
-  ] as Stage[]) {
-    const msgs = checkpointChats[stage];
-    if (msgs && msgs.length > 0) sections.push({ stage, messages: msgs });
+  // Group orchestrator entries by `stage` (preserving order) so the UI can
+  // draw stage dividers between switches. Entries with no stage tag fall
+  // back to "implementation" for the divider label only — the underlying
+  // entry still renders untagged.
+  if (orchestratorThread.length > 0) {
+    for (const g of groupOrchestratorThreadByStage(orchestratorThread)) {
+      sections.push({
+        kind: "orchestrator",
+        stage: (g.stage ?? "implementation") as Stage,
+        messages: g.entries,
+      });
+    }
   }
 
   // Determine if input is active
@@ -2363,48 +2552,64 @@ function PipelineChatPanel({
           </p>
         )}
 
-        {sections.map(({ stage, messages }) => (
-          <div key={stage}>
+        {sections.map((section, sectionIdx) => (
+          <div key={`${section.kind}-${section.stage}-${sectionIdx}`}>
             {/* Stage divider */}
             <div className="flex items-center gap-2 py-2">
               <div className="flex-1 h-px bg-border" />
               <span className="text-xs text-muted-foreground px-1">
-                {CHAT_STAGE_LABEL[stage] ?? stage}
+                {CHAT_STAGE_LABEL[section.stage] ?? section.stage}
               </span>
               <div className="flex-1 h-px bg-border" />
             </div>
             <div className="space-y-2">
-              {messages.map((msg, i) => (
-                <div
-                  key={i}
-                  className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}
-                >
-                  <div
-                    className={`max-w-[90%] rounded-lg px-3 py-2 text-sm leading-relaxed ${
-                      msg.role === "user"
-                        ? "bg-primary text-primary-foreground"
-                        : "bg-muted text-foreground"
-                    }`}
-                  >
-                    {msg.role === "assistant" ? (
-                      <MarkdownBlock
-                        text={
-                          stage === "grooming"
-                            ? msg.content
-                                .replace(/```json[\s\S]*?```/g, "")
-                                .trim() || msg.content
-                            : msg.content
-                        }
-                      />
-                    ) : (
-                      <p className="whitespace-pre-wrap">{msg.content}</p>
-                    )}
-                  </div>
-                </div>
-              ))}
+              {section.kind === "legacy"
+                ? section.messages.map((msg, i) => (
+                    <div
+                      key={i}
+                      className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}
+                    >
+                      <div
+                        className={`max-w-[90%] rounded-lg px-3 py-2 text-sm leading-relaxed ${
+                          msg.role === "user"
+                            ? "bg-primary text-primary-foreground"
+                            : "bg-muted text-foreground"
+                        }`}
+                      >
+                        {msg.role === "assistant" ? (
+                          <MarkdownBlock
+                            text={
+                              section.stage === "grooming"
+                                ? msg.content
+                                    .replace(/```json[\s\S]*?```/g, "")
+                                    .trim() || msg.content
+                                : msg.content
+                            }
+                          />
+                        ) : (
+                          <p className="whitespace-pre-wrap">{msg.content}</p>
+                        )}
+                      </div>
+                    </div>
+                  ))
+                : section.messages.map((m, i) => (
+                    <OrchestratorEntry key={i} entry={m} />
+                  ))}
             </div>
           </div>
         ))}
+
+        {/* Live confirm card for any outstanding orchestrator proposal —
+            sits at the very bottom of the thread so the user always sees it
+            after scrolling to the latest turn. */}
+        {orchestratorPendingProposal && (
+          <ProposalCard
+            proposal={orchestratorPendingProposal}
+            onAccept={onAcceptProposal}
+            onReject={onRejectProposal}
+            disabled={sending || proceeding}
+          />
+        )}
 
         {/* Tool requests */}
         {toolRequests
@@ -2693,6 +2898,10 @@ function stageToStep(stage: Stage): number | undefined {
     triage: 2,
     plan: 2,
     implementation: 3,
+    // Plan revision is a sub-state of the implementation step in the
+    // PipelineProgress visualisation — keep the same step index so the
+    // progress bar doesn't visibly jump backward.
+    replan: 3,
     // Test plan and final tests both fall under the "tests" pipeline-step.
     tests_plan: 4,
     tests: 4,
@@ -2731,6 +2940,7 @@ export function ImplementTicketScreen({
     implementationProgress,
     buildVerification,
     buildCheckStreamText,
+    replanCheckpoint,
     testPlan,
     tests,
     review,
@@ -2761,8 +2971,10 @@ export function ImplementTicketScreen({
     reviewStreamText,
     prStreamText,
     retroStreamText,
-    checkpointStreamText,
-    checkpointChats,
+    orchestratorThread,
+    orchestratorPendingProposal,
+    orchestratorStreamText,
+    orchestratorSending,
     errors,
     sessions: implementSessions,
   } = useImplementTicketStore();
@@ -2986,12 +3198,13 @@ export function ImplementTicketScreen({
       | "reviewStreamText"
       | "prStreamText"
       | "retroStreamText"
-      | "checkpointStreamText"
+      | "groomingStreamText"
+      | "orchestratorStreamText"
       | "buildCheckStreamText";
     // Workflow event channels: deltas arrive as `{kind: "stream", node, delta}`
     // (sidecar bridge format). Filter for stream events and accumulate.
     const workflowStreams: Array<[string, StreamKey]> = [
-      ["checkpoint-chat-workflow-event", "checkpointStreamText"],
+      ["orchestrator-workflow-event", "orchestratorStreamText"],
       ["grooming-chat-workflow-event", "groomingStreamText"],
     ];
     const cleanups = workflowStreams.map(([event, key]) => {
@@ -3118,24 +3331,43 @@ export function ImplementTicketScreen({
         : currentStage === "grooming" || pendingApproval === "grooming"
           ? "grooming"
           : "triage";
+    // The orchestrator thread is the source of truth for every stage past
+    // grooming/triage. Adapt its richer entry shape to the {role,content}
+    // pair the slash-command helpers expect; tool-call entries don't map to
+    // a chat role, so they're skipped here.
+    const orchestratorAsTriage: TriageMessage[] = orchestratorThread
+      .map((m): TriageMessage | null => {
+        if (m.kind === "user") return { role: "user", content: m.content };
+        if (m.kind === "assistant")
+          return { role: "assistant", content: m.content };
+        if (m.kind === "system_note")
+          return { role: "assistant", content: `[${m.content}]` };
+        return null; // tool_call — not part of the slash-command history
+      })
+      .filter((m): m is TriageMessage => m !== null);
+
     const history: TriageMessage[] =
       activeStage === "triage"
         ? triageHistory
         : activeStage === "grooming"
           ? groomingChat
-          : (checkpointChats[activeStage as Stage] ?? []);
+          : orchestratorAsTriage;
 
     const clearActive = () => {
-      // The chat panel is unified — it shows the grooming, triage, and every
-      // checkpoint-chat section in one scroll. "/clear" matches that mental
+      // The chat panel is unified — it shows the grooming, triage, and the
+      // orchestrator thread in one scroll. "/clear" matches that mental
       // model and wipes them all so the user actually sees the chat empty.
       // Stage outputs (grooming, plan, impact, etc.) are preserved; only the
-      // back-and-forth conversations are cleared.
+      // back-and-forth conversations are cleared. The orchestrator's
+      // persisted thread on the sidecar isn't reset — that requires a new
+      // session — but the local mirror is so the UI matches expectation.
       useImplementTicketStore.setState({
         groomingChat: [],
         triageHistory: [],
         triageTurns: [],
-        checkpointChats: {},
+        orchestratorThread: [],
+        orchestratorPendingProposal: null,
+        orchestratorStreamText: "",
       });
     };
 
@@ -3151,16 +3383,15 @@ export function ImplementTicketScreen({
           if (h.length === 0 || h[h.length - 1].role !== "assistant") return s;
           return { ...s, groomingChat: h.slice(0, -1) };
         }
-        const stage = activeStage as Stage;
-        const h = s.checkpointChats[stage] ?? [];
-        if (h.length === 0 || h[h.length - 1].role !== "assistant") return s;
-        return {
-          ...s,
-          checkpointChats: {
-            ...s.checkpointChats,
-            [stage]: h.slice(0, -1),
-          },
-        };
+        // Orchestrator: drop trailing assistant entry (and any tool_call
+        // entries immediately preceding it) so the user can re-prompt.
+        const t = s.orchestratorThread;
+        let cut = t.length;
+        while (cut > 0 && t[cut - 1].kind === "assistant") cut--;
+        // Also drop trailing tool_call entries that belonged to that turn.
+        while (cut > 0 && t[cut - 1].kind === "tool_call") cut--;
+        if (cut === t.length) return s;
+        return { ...s, orchestratorThread: t.slice(0, cut) };
       });
     };
 
@@ -3293,7 +3524,7 @@ export function ImplementTicketScreen({
     pendingApproval,
     triageHistory,
     groomingChat,
-    checkpointChats,
+    orchestratorThread,
   ]);
 
   function dismissToolRequest(id: string) {
@@ -3482,6 +3713,36 @@ export function ImplementTicketScreen({
             buildVerification={buildVerification}
           />
           {renderCheckpoint(stage)}
+        </>
+      );
+    }
+    if (stage === "replan") {
+      if (!replanCheckpoint) {
+        return (
+          <div className="rounded-md border bg-muted/20 p-4 text-sm text-muted-foreground">
+            Waiting for plan-revision checkpoint payload…
+          </div>
+        );
+      }
+      return (
+        <>
+          <ReplanPanel data={replanCheckpoint} />
+          <ReplanApprovalRow
+            onRevise={() =>
+              store().proceedFromStage("replan", { action: "revise" })
+            }
+            onAccept={() =>
+              store().proceedFromStage("replan", { action: "approve" })
+            }
+            onAbort={() =>
+              store().proceedFromStage("replan", {
+                action: "abort",
+                reason: "user aborted at plan-revision checkpoint",
+              })
+            }
+            proceeding={proceeding}
+            canRevise={replanCheckpoint.revisions_remaining > 0}
+          />
         </>
       );
     }
@@ -3916,7 +4177,14 @@ export function ImplementTicketScreen({
                     grooming={grooming}
                     groomingChat={groomingChat}
                     triageHistory={triageHistory}
-                    checkpointChats={checkpointChats}
+                    orchestratorThread={orchestratorThread}
+                    orchestratorPendingProposal={orchestratorPendingProposal}
+                    onAcceptProposal={() =>
+                      store().resolveOrchestratorProposal("accepted")
+                    }
+                    onRejectProposal={() =>
+                      store().resolveOrchestratorProposal("rejected")
+                    }
                     currentStage={currentStage}
                     pendingApproval={pendingApproval}
                     toolRequests={toolRequests}
@@ -3926,13 +4194,13 @@ export function ImplementTicketScreen({
                     onSend={sendChatMessage}
                     onCancel={cancelChat}
                     onFinalizePlan={handleFinalizePlan}
-                    sending={chatSending}
+                    sending={chatSending || orchestratorSending}
                     finalizing={planFinalizing}
                     proceeding={proceeding}
                     streamingText={
                       currentStage === "triage"
                         ? triageStreamText
-                        : checkpointStreamText
+                        : orchestratorStreamText
                     }
                     commands={pipelineChatCommands}
                   />

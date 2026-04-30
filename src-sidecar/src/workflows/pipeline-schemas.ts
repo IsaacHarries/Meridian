@@ -224,6 +224,53 @@ export const BuildCheckResultSchema = z.object({
 export type BuildAttempt = z.infer<typeof BuildAttemptSchema>;
 export type BuildCheckResult = z.infer<typeof BuildCheckResultSchema>;
 
+// ── Per-file verification (post-write check) ─────────────────────────────────
+//
+// After the implementation agent finishes a per-file iteration, the node
+// stat()s the file on disk and compares the post-state to the action it was
+// supposed to perform. This is the source of truth for "did the agent
+// actually do the thing it claimed to do" — `writtenPaths` from the tool loop
+// is not enough because the model can lie / fail mid-tool-call without the
+// loop noticing.
+export const FileVerificationOutcomeSchema = z.enum([
+  "ok",
+  "missing",
+  "empty",
+  "unchanged",
+  "still_present",
+  "read_error",
+]);
+
+export const FileVerificationSchema = z.object({
+  path: z.string(),
+  expected_action: z.enum(["create", "modify", "delete"]),
+  outcome: FileVerificationOutcomeSchema,
+  detail: z.string().optional(),
+});
+
+export type FileVerification = z.infer<typeof FileVerificationSchema>;
+
+// ── Plan revision context (build/verify failure → do_plan loop) ──────────────
+//
+// Populated by the `replan_check` checkpoint when the user opts to revise
+// the plan after verification or build failures. `planNode` reads this on its
+// next run and prepends a "REVISE" preamble to its prompt; it then clears
+// this field in its return so a fresh plan run starts clean.
+export const PlanRevisionReasonSchema = z.enum([
+  "verification_failed",
+  "build_failed",
+  "user_requested",
+]);
+
+export const PlanRevisionContextSchema = z.object({
+  prior_plan: ImplementationPlanSchema,
+  verification_failures: z.array(FileVerificationSchema).default([]),
+  build_attempts: z.array(BuildAttemptSchema).default([]),
+  reason: PlanRevisionReasonSchema,
+});
+
+export type PlanRevisionContext = z.infer<typeof PlanRevisionContextSchema>;
+
 // ── Pipeline stage names ──────────────────────────────────────────────────────
 
 export const PIPELINE_STAGES = [
@@ -231,6 +278,7 @@ export const PIPELINE_STAGES = [
   "impact",
   "triage",
   "implementation",
+  "replan",
   "test_plan",
   "test_gen",
   "code_review",

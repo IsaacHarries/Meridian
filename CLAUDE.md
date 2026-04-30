@@ -70,7 +70,7 @@ docs/                   supplementary architecture docs
 ## Dev Workflow
 
 - **Run the app**: `pnpm tauri dev` (from repo root). Vite serves the frontend with HMR; Tauri rebuilds Rust on file change and restarts the app, which kills the supervised sidecar so the next IPC request spawns a fresh one.
-- **Run tests**: `pnpm test` at repo root for the React layer, `pnpm test` inside `src-sidecar/` for sidecar units. The project is light on unit tests by design — most validation is by running workflows in dev. Don't bolt on a test suite where one isn't expected.
+- **Run tests**: `pnpm test` at repo root for the React layer, `pnpm test` inside `src-sidecar/` for sidecar units. **New code should land with tests.** Default to writing unit tests for: pure functions (op application, classifiers, reducers), schema validators (Zod parsing edge cases including rejection paths), routing logic (LangGraph conditional edges), and any code with non-obvious branching. Tests live next to the source as `*.test.ts` / `*.test.tsx`. End-to-end validation by running workflows in dev is still useful, but it's a complement to unit tests, not a substitute.
 - **Sidecar bundling — important**: when you edit `src-sidecar/` source, `pnpm tauri dev` does **not** rebuild the sidecar bundle automatically. The flow:
 
   ```sh

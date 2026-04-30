@@ -482,14 +482,42 @@ export const usePrReviewStore = create<PrReviewState>()(
         };
         const unlistenPartial = await listen<{
           kind?: string;
-          data?: { partialReport?: Partial<ReviewReport> };
+          node?: string;
+          status?: "started" | "completed";
+          data?: {
+            partialReport?: Partial<ReviewReport>;
+            done?: number;
+            total?: number;
+          };
         }>("pr-review-workflow-event", (event) => {
           if (event.payload.kind !== "progress") return;
+
           const partial = event.payload.data?.partialReport;
-          if (!partial || typeof partial !== "object") return;
-          pendingPartial = partial;
-          if (partialFlushTimer === null) {
-            partialFlushTimer = setTimeout(flushPartial, 80);
+          if (partial && typeof partial === "object") {
+            pendingPartial = partial;
+            if (partialFlushTimer === null) {
+              partialFlushTimer = setTimeout(flushPartial, 80);
+            }
+            return;
+          }
+
+          // Surface chunk-review progress so the UI doesn't sit on the
+          // "Reading changed files…" message for the whole multi-chunk run.
+          const { node, status, data } = event.payload;
+          if (node === "chunk_review" && typeof data?.total === "number") {
+            const done = typeof data.done === "number" ? data.done : 0;
+            const total = data.total;
+            const message = done >= total
+              ? `Synthesising findings from ${total} chunk${total === 1 ? "" : "s"}…`
+              : `Reviewing diff chunk ${Math.min(done + 1, total)}/${total}…`;
+            usePrReviewStore.getState()._patchSession(prId, { reviewProgress: message });
+          } else if (
+            (node === "single_pass" || node === "synthesis") &&
+            status === "started"
+          ) {
+            usePrReviewStore.getState()._patchSession(prId, {
+              reviewProgress: "Synthesising review…",
+            });
           }
         });
 

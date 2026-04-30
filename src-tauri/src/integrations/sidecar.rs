@@ -490,6 +490,14 @@ async fn execute_tool_callback(
             let contents = read_repo_file(path).await?;
             Ok(serde_json::json!({ "contents": contents }))
         }
+        "stat_repo_file" => {
+            let path = take_str(&input, "path")?;
+            let stat = crate::commands::repo::stat_repo_file_internal(&path)?;
+            Ok(serde_json::json!({
+                "exists": stat.exists,
+                "sizeBytes": stat.size_bytes,
+            }))
+        }
         "write_repo_file" => {
             let path = take_str(&input, "path")?;
             let content = take_str(&input, "content")?;

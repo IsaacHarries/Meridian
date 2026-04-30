@@ -2443,18 +2443,6 @@ export function PrReviewScreen({ credStatus, onBack }: PrReviewScreenProps) {
   }, []);
 
   // ── Backend event listeners — patch the active PR's session ──────────────────
-  useEffect(() => {
-    const unlisten = listen<{ phase: string; message: string }>("pr-review-progress", (event) => {
-      const prId = usePrReviewStore.getState().selectedPr?.id;
-      if (!prId) return;
-      if (event.payload.phase === "done") {
-        setTimeout(() => usePrReviewStore.getState()._patchSession(prId, { reviewProgress: "" }), 1200);
-      } else {
-        usePrReviewStore.getState()._patchSession(prId, { reviewProgress: event.payload.message });
-      }
-    });
-    return () => { unlisten.then(f => f()); };
-  }, []);
 
   useEffect(() => {
     // Accumulate deltas in a plain object (not a React ref) so we never read

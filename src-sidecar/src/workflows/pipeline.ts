@@ -62,12 +62,14 @@ import {
   type BuildAttempt,
   type BuildCheckResult,
   type BuildStatus,
+  type FileVerification,
   type GuidanceOutput,
   type ImpactOutput,
   type ImplementationFileResult,
   type ImplementationOutput,
   type ImplementationPlan,
   type PipelineStage,
+  type PlanRevisionContext,
   type PlanReviewOutput,
   type PrDescriptionOutput,
   type RetrospectiveOutput,
@@ -88,7 +90,7 @@ import {
   TEST_PLAN_SYSTEM,
   BUILD_FIX_SYSTEM,
 } from "./pipeline-prompts.js";
-import { execInWorktree } from "../tools/repo-tools.js";
+import { execInWorktree, readRepoFileDirect, statRepoFile } from "../tools/repo-tools.js";
 
 // ── Input schema ──────────────────────────────────────────────────────────────
 
@@ -164,6 +166,22 @@ const PipelineStateAnnotation = Annotation.Root({
 
   buildStatus: Annotation<BuildStatus | undefined>(),
   buildAttempts: Annotation<number>({
+    reducer: (_current, update) => update,
+    default: () => 0,
+  }),
+
+  // Per-file post-write verification failures from the implementation node.
+  // Cleared when `do_plan` runs a revision so a fresh implementation pass
+  // starts with a clean slate.
+  verificationFailures: Annotation<FileVerification[]>({
+    reducer: (_current, update) => update,
+    default: () => [],
+  }),
+  // Populated by `replan_check` when the user opts to revise the plan; read
+  // (and cleared) by `do_plan` on its next run.
+  planRevisionContext: Annotation<PlanRevisionContext | undefined>(),
+  // How many times the plan has been revised. Capped to bound runaway loops.
+  planRevisions: Annotation<number>({
     reducer: (_current, update) => update,
     default: () => 0,
   }),
@@ -372,12 +390,7 @@ function buildContextText(state: PipelineState): string {
 
 const MAX_TOOL_LOOP_ITERATIONS = 15;
 
-async function runToolLoop(
-  model: BaseChatModel,
-  tools: RepoTools,
-  system: string,
-  user: string,
-): Promise<{
+interface ToolLoopResult {
   finalMessage: AIMessage;
   usage: { inputTokens: number; outputTokens: number };
   /** Paths the model successfully wrote during this loop. Used by the
@@ -385,7 +398,23 @@ async function runToolLoop(
    *  file was written, we can synthesise a success summary instead of
    *  declaring the file skipped. */
   writtenPaths: string[];
-}> {
+  /** The full conversation including the final response. Returned so callers
+   *  (e.g. the implementation node's verify-after-write re-prompt) can append
+   *  follow-up messages and continue the same conversation rather than
+   *  starting a fresh tool loop with no context. */
+  messages: BaseMessage[];
+}
+
+/** Run a tool-calling loop continuing an existing conversation. The caller
+ *  owns the message list — they can pre-populate it with system + user, or
+ *  pass back a list returned from a prior `runToolLoopFrom` call to extend
+ *  the same conversation (used by the implementation node's verification
+ *  re-prompt path). */
+async function runToolLoopFrom(
+  model: BaseChatModel,
+  tools: RepoTools,
+  messages: BaseMessage[],
+): Promise<ToolLoopResult> {
   // Standard adapters (ChatAnthropic, ChatGoogleGenerativeAI, ChatOllama)
   // implement bindTools natively; the custom Claude OAuth adapter inherits
   // it from ChatAnthropic. Custom adapters that don't support bindTools
@@ -398,7 +427,6 @@ async function runToolLoop(
   }
 
   const modelWithTools = model.bindTools(tools);
-  const messages: BaseMessage[] = [new SystemMessage(system), new HumanMessage(user)];
   const usage = { inputTokens: 0, outputTokens: 0 };
   const writtenPaths: string[] = [];
 
@@ -411,7 +439,7 @@ async function runToolLoop(
 
     const calls = response.tool_calls;
     if (!calls || calls.length === 0) {
-      return { finalMessage: response, usage, writtenPaths };
+      return { finalMessage: response, usage, writtenPaths, messages };
     }
 
     for (const call of calls) {
@@ -457,9 +485,18 @@ async function runToolLoop(
   );
 }
 
+async function runToolLoop(
+  model: BaseChatModel,
+  tools: RepoTools,
+  system: string,
+  user: string,
+): Promise<ToolLoopResult> {
+  return runToolLoopFrom(model, tools, [new SystemMessage(system), new HumanMessage(user)]);
+}
+
 /** Errors that are worth retrying once because they're transient model-quality
  *  or quota failures rather than logic bugs in our prompt or schema. */
-function isTransientModelError(err: unknown): boolean {
+export function isTransientModelError(err: unknown): boolean {
   const msg = err instanceof Error ? err.message : String(err);
   return (
     msg.includes("MALFORMED_FUNCTION_CALL") ||
@@ -565,9 +602,45 @@ async function planNode(state: PipelineState): Promise<Partial<PipelineState>> {
   const contextText = buildContextText(state);
   const system = buildPlanSystem(contextText);
   const conversation = JSON.stringify(state.triageHistory, null, 2);
-  const user = `Triage conversation:\n${conversation}`;
+
+  // When `planRevisionContext` is populated, this is a re-plan triggered by
+  // `replan_check` after the prior plan failed verification or build. Prepend
+  // a REVISE preamble so the model produces a *revised* plan rather than
+  // regenerating from scratch with no awareness of what already failed.
+  const revision = state.planRevisionContext;
+  const revisionPreamble = revision
+    ? `=== PLAN REVISION REQUIRED (revision #${state.planRevisions + 1}) ===\n` +
+      `Reason: ${revision.reason}\n\n` +
+      `Prior plan that failed:\n${JSON.stringify(revision.prior_plan, null, 2)}\n\n` +
+      (revision.verification_failures.length
+        ? `Per-file verification failures (these files did not end up in the expected state on disk):\n${JSON.stringify(revision.verification_failures, null, 2)}\n\n`
+        : "") +
+      (revision.build_attempts.length
+        ? `Build attempt history (most recent last):\n${JSON.stringify(revision.build_attempts, null, 2)}\n\n`
+        : "") +
+      `Produce a REVISED plan that addresses the failure mode above. ` +
+      `If a different file set or different approach is needed, say so. ` +
+      `Note: any partially-written files from the prior plan are still on disk — call out files that should be reverted in the plan summary.\n\n`
+    : "";
+
+  const user = `${revisionPreamble}Triage conversation:\n${conversation}`;
   const { parsed, usage } = await invokeAndParse(model, system, user, ImplementationPlanSchema);
-  return { plan: parsed, currentStage: "implementation" as PipelineStage, usage };
+
+  // Clear revision context + prior failure state so the next implementation
+  // pass starts clean. `planRevisions` is incremented so the routing edges
+  // can cap runaway loops.
+  const updates: Partial<PipelineState> = {
+    plan: parsed,
+    currentStage: "implementation" as PipelineStage,
+    usage,
+  };
+  if (revision) {
+    updates.planRevisions = state.planRevisions + 1;
+    updates.planRevisionContext = undefined;
+    updates.verificationFailures = [];
+    updates.buildVerification = undefined;
+  }
+  return updates;
 }
 
 async function guidanceNode(state: PipelineState): Promise<Partial<PipelineState>> {
@@ -587,11 +660,65 @@ async function guidanceNode(state: PipelineState): Promise<Partial<PipelineState
 // as optional at the schema level because Gemini Flash frequently omits it
 // even when the prompt mandates it; the implementation node synthesises a
 // fallback summary when the file was actually written via write_repo_file.
-const PerFileResponseSchema = z.object({
+export const PerFileResponseSchema = z.object({
   summary: z.string().optional().default(""),
   deviations: z.array(z.string()).optional().default([]),
   skipped: z.boolean().optional().default(false),
 });
+
+type FileVerificationOutcome = FileVerification["outcome"];
+
+interface VerifyResult {
+  outcome: FileVerificationOutcome;
+  detail?: string;
+}
+
+/** Compare pre/post on-disk state to the planned action. Returns "ok" only
+ *  when the disk truly reflects the planned change. The `unchanged` case is
+ *  only detectable when we successfully snapshotted pre-content; without a
+ *  snapshot we err on the side of trusting the size+exists signal. */
+export function classifyVerification(
+  action: "create" | "modify" | "delete",
+  post: { exists: boolean; sizeBytes: number },
+  preContent: string | undefined,
+  postContent: string | undefined,
+): VerifyResult {
+  if (action === "delete") {
+    return post.exists
+      ? { outcome: "still_present", detail: `file still on disk (${post.sizeBytes} bytes)` }
+      : { outcome: "ok" };
+  }
+  if (!post.exists) {
+    return { outcome: "missing", detail: "file not found on disk after iteration" };
+  }
+  if (post.sizeBytes === 0) {
+    return { outcome: "empty", detail: "file is empty after iteration" };
+  }
+  if (action === "modify" && preContent !== undefined && postContent !== undefined) {
+    if (postContent === preContent) {
+      return {
+        outcome: "unchanged",
+        detail: "file contents are byte-for-byte identical to before the iteration",
+      };
+    }
+  }
+  return { outcome: "ok" };
+}
+
+function buildVerificationReprompt(
+  file: { path: string; action: "create" | "modify" | "delete" },
+  result: VerifyResult,
+): string {
+  return (
+    `Verification failed for ${file.path} (planned action: ${file.action}). ` +
+    `On-disk check reports: ${result.outcome}` +
+    `${result.detail ? ` — ${result.detail}` : ""}. ` +
+    (file.action === "delete"
+      ? `The file should NOT be on disk. Remove it (the worktree write tool can't delete; if you can't satisfy this, return the JSON with skipped:true and explain).`
+      : `Call write_repo_file with the COMPLETE new content, then return the JSON summary again.`) +
+    ` This is the final retry — if the file is still not correct after this turn, the iteration will be marked as a verification failure.`
+  );
+}
 
 function makeImplementationNode(ctx: PipelineGraphContext) {
   const { tools, workflowId, emit } = ctx;
@@ -609,6 +736,7 @@ function makeImplementationNode(ctx: PipelineGraphContext) {
     const filesChanged: ImplementationFileResult[] = [];
     const deviations: string[] = [];
     const skipped: string[] = [];
+    const verificationFailures: FileVerification[] = [];
     const usage = { inputTokens: 0, outputTokens: 0 };
 
     // Re-resolve the full ModelSelection before each file. This both keeps
@@ -651,6 +779,30 @@ function makeImplementationNode(ctx: PipelineGraphContext) {
         );
       }
 
+      // Snapshot pre-state so we can verify what actually changed on disk.
+      // For modify-actions we also snapshot prior content so we can detect
+      // the "model wrote the same bytes back" case (which the size+exists
+      // signal alone misses).
+      let preContent: string | undefined;
+      try {
+        const pre = await statRepoFile({ workflowId, emit, path: file.path });
+        if (file.action === "modify" && pre.exists) {
+          try {
+            preContent = await readRepoFileDirect({
+              workflowId,
+              emit,
+              path: file.path,
+            });
+          } catch {
+            // Pre-content snapshot is best-effort; we'll still verify exists+size.
+          }
+        }
+      } catch (err) {
+        console.error(
+          `[implementation] pre-stat failed for ${file.path}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+
       const guidanceSteps = state.guidance?.steps?.filter((s) => s.file === file.path) ?? [];
       const guidanceText = guidanceSteps.length
         ? `\n\nGuidance for this file:\n${JSON.stringify(guidanceSteps, null, 2)}`
@@ -667,7 +819,7 @@ function makeImplementationNode(ctx: PipelineGraphContext) {
       // Try the file once; on a transient model-quality / quota error
       // (Gemini MALFORMED_FUNCTION_CALL, 429, etc.) retry once with a fresh
       // model build before giving up.
-      let attempt: { finalMessage: AIMessage; usage: { inputTokens: number; outputTokens: number }; writtenPaths: string[] } | undefined;
+      let attempt: ToolLoopResult | undefined;
       let lastErr: unknown;
       for (let tries = 0; tries < 2; tries++) {
         try {
@@ -689,14 +841,85 @@ function makeImplementationNode(ctx: PipelineGraphContext) {
       if (!attempt) {
         const msg = lastErr instanceof Error ? lastErr.message : String(lastErr);
         skipped.push(`${file.path}: tool-loop failed (${msg})`);
+        verificationFailures.push({
+          path: file.path,
+          expected_action: file.action,
+          outcome: "read_error",
+          detail: `tool loop failed: ${msg}`,
+        });
         continue;
       }
 
-      const { finalMessage, usage: u, writtenPaths } = attempt;
-      usage.inputTokens += u.inputTokens;
-      usage.outputTokens += u.outputTokens;
+      // Verify what actually happened on disk. This is the source of truth —
+      // not `writtenPaths` (which the model can lie about) and not the JSON
+      // final response (which can claim success without a real write_repo_file
+      // call). On verification failure, give the model ONE re-prompt to fix
+      // it within the same conversation so it has full context.
+      const verify = async (): Promise<VerifyResult> => {
+        let post: { exists: boolean; sizeBytes: number };
+        try {
+          post = await statRepoFile({ workflowId, emit, path: file.path });
+        } catch (err) {
+          return {
+            outcome: "read_error",
+            detail: err instanceof Error ? err.message : String(err),
+          };
+        }
+        let postContent: string | undefined;
+        if (
+          file.action === "modify" &&
+          preContent !== undefined &&
+          post.exists &&
+          post.sizeBytes > 0
+        ) {
+          try {
+            postContent = await readRepoFileDirect({
+              workflowId,
+              emit,
+              path: file.path,
+            });
+          } catch {
+            // Be lenient if we can't read post-content — exists+size is enough.
+          }
+        }
+        return classifyVerification(file.action, post, preContent, postContent);
+      };
 
-      const fileWasWritten = writtenPaths.includes(file.path);
+      let outcome = await verify();
+
+      if (outcome.outcome !== "ok") {
+        emit({
+          id: workflowId,
+          type: "progress",
+          node: "implementation",
+          status: "started",
+          data: {
+            phase: "verification_retry",
+            file: file.path,
+            outcome: outcome.outcome,
+            detail: outcome.detail,
+          },
+        });
+        attempt.messages.push(new HumanMessage(buildVerificationReprompt(file, outcome)));
+        try {
+          const model = buildModel(currentSelection);
+          const retry = await runToolLoopFrom(model, tools, attempt.messages);
+          attempt.usage.inputTokens += retry.usage.inputTokens;
+          attempt.usage.outputTokens += retry.usage.outputTokens;
+          attempt.writtenPaths.push(...retry.writtenPaths);
+          attempt.finalMessage = retry.finalMessage;
+          attempt.messages = retry.messages;
+          outcome = await verify();
+        } catch (err) {
+          console.error(
+            `[implementation] verification re-prompt failed for ${file.path}: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+      }
+
+      usage.inputTokens += attempt.usage.inputTokens;
+      usage.outputTokens += attempt.usage.outputTokens;
+
       const action: ImplementationFileResult["action"] =
         file.action === "delete"
           ? "deleted"
@@ -704,71 +927,90 @@ function makeImplementationNode(ctx: PipelineGraphContext) {
             ? "created"
             : "modified";
 
+      // Parse the structured summary for descriptive text + deviations. The
+      // verification result, not this parse, decides success/failure now.
+      let parsedSummary = "";
+      let parsedDeviations: string[] = [];
+      let modelDeclaredSkip = false;
       try {
-        const raw = extractText(finalMessage.content) || finalMessage.text;
+        const raw =
+          extractText(attempt.finalMessage.content) || attempt.finalMessage.text;
         const parsed = PerFileResponseSchema.parse(parseStructuredResponse(raw));
+        parsedSummary = parsed.summary;
+        parsedDeviations = parsed.deviations;
+        modelDeclaredSkip = parsed.skipped;
+      } catch {
+        // Tolerate malformed structured output — disk truth is what matters.
+      }
 
-        if (parsed.skipped) {
+      if (outcome.outcome === "ok") {
+        filesChanged.push({
+          path: file.path,
+          action,
+          summary:
+            parsedSummary ||
+            `Implementation ${action}; structured summary not provided.`,
+        });
+      } else {
+        emit({
+          id: workflowId,
+          type: "progress",
+          node: "implementation",
+          status: "completed",
+          data: {
+            phase: "verification_failed",
+            file: file.path,
+            outcome: outcome.outcome,
+            detail: outcome.detail,
+          },
+        });
+        verificationFailures.push({
+          path: file.path,
+          expected_action: file.action,
+          outcome: outcome.outcome,
+          detail: outcome.detail,
+        });
+        if (modelDeclaredSkip) {
           skipped.push(
-            `${file.path}: ${parsed.summary || "model declined to implement"}`,
+            `${file.path}: ${parsedSummary || "model declined to implement"}`,
           );
-        } else if (fileWasWritten) {
-          filesChanged.push({
-            path: file.path,
-            action,
-            summary:
-              parsed.summary ||
-              "Implementation written (model omitted summary in final response).",
-          });
         } else {
-          // Final response parsed cleanly but the model never called
-          // write_repo_file. Treat as skipped — nothing was actually written.
           skipped.push(
-            `${file.path}: model returned a final response without writing the file`,
+            `${file.path}: verification failed (${outcome.outcome}${outcome.detail ? ` — ${outcome.detail}` : ""})`,
           );
         }
-        if (parsed.deviations.length) {
-          deviations.push(...parsed.deviations.map((d) => `${file.path}: ${d}`));
-        }
-      } catch (parseErr) {
-        // Final-response parse failure (malformed JSON, missing summary, etc.).
-        // If the model actually wrote the file via write_repo_file during the
-        // loop, count it as success with a synthesised summary — losing the
-        // structured summary is far less bad than throwing away a real change.
-        if (fileWasWritten) {
-          filesChanged.push({
-            path: file.path,
-            action,
-            summary:
-              "Implementation written; final structured summary was malformed and could not be parsed.",
-          });
-        } else {
-          const msg = parseErr instanceof Error ? parseErr.message : String(parseErr);
-          skipped.push(`${file.path}: tool-loop failed (${msg})`);
-        }
+      }
+      if (parsedDeviations.length) {
+        deviations.push(...parsedDeviations.map((d) => `${file.path}: ${d}`));
       }
     }
 
     const output: ImplementationOutput = {
-      summary: `Implemented ${filesChanged.length} of ${state.plan.files.length} planned file(s)${skipped.length ? `, skipped ${skipped.length}` : ""}.`,
+      summary: `Implemented ${filesChanged.length} of ${state.plan.files.length} planned file(s)${skipped.length ? `, skipped ${skipped.length}` : ""}${verificationFailures.length ? `, ${verificationFailures.length} verification failure(s)` : ""}.`,
       files_changed: filesChanged,
       deviations,
       skipped,
     };
     // Persist the most recently-refreshed credentials so downstream nodes
-    // (test_gen, code_review) see them too.
-    return { implementationOutput: output, usage, model: currentSelection };
+    // (test_gen, code_review) see them too. `verificationFailures` is read by
+    // the upcoming `replan_check` routing edge.
+    return {
+      implementationOutput: output,
+      verificationFailures,
+      usage,
+      model: currentSelection,
+    };
   };
 }
 
 // ── Build-check sub-loop (Phase 3c) ──────────────────────────────────────────
 
-const BUILD_CHECK_MAX_ATTEMPTS = 3;
+export const BUILD_CHECK_MAX_ATTEMPTS = 3;
 /** Cap on stdout/stderr forwarded to the fix agent — long build outputs
  *  drown the model in noise. The tail is the most useful part. */
-const BUILD_OUTPUT_TAIL_CHARS = 12_000;
+export const BUILD_OUTPUT_TAIL_CHARS = 12_000;
 
-function tailBuildOutput(output: string): string {
+export function tailBuildOutput(output: string): string {
   if (output.length <= BUILD_OUTPUT_TAIL_CHARS) return output;
   return (
     `…(truncated; showing last ${BUILD_OUTPUT_TAIL_CHARS} chars)…\n\n` +
@@ -894,25 +1136,44 @@ function makeBuildFixNode(ctx: PipelineGraphContext) {
   };
 }
 
-/** Conditional edge after `implementation`. Skips the build sub-loop entirely
- *  unless the user has both opted in AND configured a command. */
-function routeAfterImplementation(state: PipelineState): "build_check" | "checkpoint_implementation" {
+/** Cap on automatic plan revisions. After this many revisions, the routing
+ *  edges stop redirecting back to `do_plan` and let the user decide via the
+ *  normal implementation checkpoint. */
+export const PLAN_REVISION_MAX = 2;
+
+/** Conditional edge after `implementation`. Three branches:
+ *  - per-file verification flagged unrecoverable failures → `replan_check`
+ *  - build-verify enabled and command set → `build_check`
+ *  - otherwise → `checkpoint_implementation`
+ *  The replan branch is gated by `PLAN_REVISION_MAX` so we can't ping-pong
+ *  forever; once the cap is hit, we fall through to the normal checkpoint
+ *  and let the user decide. */
+export function routeAfterImplementation(
+  state: PipelineState,
+): "build_check" | "replan_check" | "checkpoint_implementation" {
+  const hasVerificationFailures = (state.verificationFailures ?? []).length > 0;
+  const canReplan = state.planRevisions < PLAN_REVISION_MAX;
+  if (hasVerificationFailures && canReplan) return "replan_check";
   const enabled = state.input.buildVerifyEnabled === true;
   const hasCommand = (state.input.buildCheckCommand ?? "").trim().length > 0;
   return enabled && hasCommand ? "build_check" : "checkpoint_implementation";
 }
 
-/** Conditional edge after `build_check`. Either the build passed (continue),
- *  the attempt budget is exhausted (continue and let the user decide), or we
- *  loop into the fix node. */
-function routeAfterBuildCheck(
+/** Conditional edge after `build_check`. Build passed → continue. Build
+ *  failed and we still have fix-loop budget → `build_fix`. Build failed and
+ *  the fix-loop is exhausted → `replan_check` so the user can revise the
+ *  plan (capped by `PLAN_REVISION_MAX`); after that cap, fall through to the
+ *  implementation checkpoint and surface the failure. */
+export function routeAfterBuildCheck(
   state: PipelineState,
-): "checkpoint_implementation" | "build_fix" {
+): "checkpoint_implementation" | "build_fix" | "replan_check" {
   const v = state.buildVerification;
   if (!v) return "checkpoint_implementation";
   if (v.build_passed) return "checkpoint_implementation";
-  if (v.attempts.length >= BUILD_CHECK_MAX_ATTEMPTS) return "checkpoint_implementation";
-  return "build_fix";
+  if (v.attempts.length < BUILD_CHECK_MAX_ATTEMPTS) return "build_fix";
+  return state.planRevisions < PLAN_REVISION_MAX
+    ? "replan_check"
+    : "checkpoint_implementation";
 }
 
 function makeTestPlanNode(tools: RepoTools) {
@@ -1038,7 +1299,10 @@ async function retrospectiveNode(state: PipelineState): Promise<Partial<Pipeline
 type CheckpointResume =
   | { action: "approve" }
   | { action: "abort"; reason?: string }
-  | { action: "reply"; message: string };
+  | { action: "reply"; message: string }
+  // Only used by the `replan_check` node — the user opted to revise the plan
+  // after verification or build failures rather than accept the partial work.
+  | { action: "revise" };
 
 function checkpointNode(stage: PipelineStage, payloadSelector: (s: PipelineState) => unknown) {
   return async function (state: PipelineState): Promise<Partial<PipelineState>> {
@@ -1056,6 +1320,66 @@ function checkpointNode(stage: PipelineStage, payloadSelector: (s: PipelineState
     }
     return {};
   };
+}
+
+/** Checkpoint surfaced when implementation verification or build verification
+ *  has exhausted its in-stage budget and the user must decide whether to
+ *  revise the plan or accept the partial work. Resume actions:
+ *   - `revise` → loop back to `do_plan` with `planRevisionContext` populated
+ *   - `approve` → continue to `checkpoint_implementation` (accept as-is)
+ *   - `abort` → throw
+ *  Capped by `PLAN_REVISION_MAX`; the routing edges already gate entry. */
+async function replanCheckpointNode(state: PipelineState): Promise<Command> {
+  const buildAttempts = state.buildVerification?.attempts ?? [];
+  const buildExhausted =
+    buildAttempts.length >= BUILD_CHECK_MAX_ATTEMPTS && !state.buildVerification?.build_passed;
+  const verificationFailures = state.verificationFailures ?? [];
+  const reason: PlanRevisionContext["reason"] = buildExhausted
+    ? "build_failed"
+    : verificationFailures.length > 0
+      ? "verification_failed"
+      : "user_requested";
+
+  const previouslyWritten = (state.implementationOutput?.files_changed ?? []).map(
+    (f) => f.path,
+  );
+
+  const decision = interrupt({
+    stage: "replan" as PipelineStage,
+    payload: {
+      reason,
+      verification_failures: verificationFailures,
+      build_attempts: buildAttempts,
+      prior_plan: state.plan,
+      previously_written_files: previouslyWritten,
+      revisions_used: state.planRevisions,
+      revisions_remaining: Math.max(0, PLAN_REVISION_MAX - state.planRevisions),
+    },
+  }) as CheckpointResume;
+
+  if (decision.action === "abort") {
+    throw new Error(`Pipeline aborted at replan: ${decision.reason ?? "(no reason given)"}`);
+  }
+  if (decision.action === "reply") {
+    throw new Error(`Stage replan received a 'reply' resume; only triage handles replies.`);
+  }
+  if (decision.action === "revise") {
+    if (!state.plan) {
+      throw new Error("Cannot revise: no prior plan in state.");
+    }
+    const ctx: PlanRevisionContext = {
+      prior_plan: state.plan,
+      verification_failures: verificationFailures,
+      build_attempts: buildAttempts,
+      reason,
+    };
+    return new Command({
+      goto: "do_plan",
+      update: { planRevisionContext: ctx },
+    });
+  }
+  // approve → user accepts the partial implementation as-is
+  return new Command({ goto: "checkpoint_implementation" });
 }
 
 async function triageCheckpointNode(state: PipelineState): Promise<Command> {
@@ -1113,6 +1437,12 @@ export function buildPipelineGraph(ctx: PipelineGraphContext) {
       "checkpoint_implementation",
       checkpointNode("implementation", (s) => s.implementationOutput),
     )
+    // Plan-revision checkpoint: surfaced after verification or build failures
+    // exhaust their in-stage budgets. Lets the user choose to revise the plan
+    // (loops back to do_plan) or accept the partial work.
+    .addNode("replan_check", replanCheckpointNode, {
+      ends: ["do_plan", "checkpoint_implementation"],
+    })
     .addNode("checkpoint_test_plan", checkpointNode("test_plan", (s) => s.testPlan))
     .addNode("checkpoint_test_gen", checkpointNode("test_gen", (s) => s.testOutput))
     .addNode(
@@ -1131,14 +1461,20 @@ export function buildPipelineGraph(ctx: PipelineGraphContext) {
     .addEdge("triage", "checkpoint_triage")
     .addEdge("do_plan", "do_guidance")
     .addEdge("do_guidance", "implementation")
-    // Phase 3c routing: implementation → (build_check OR checkpoint_implementation),
-    // build_check → (build_fix OR checkpoint_implementation), build_fix → build_check.
+    // implementation → (replan_check on verification failures, build_check
+    //                   when build verification is enabled, else checkpoint).
+    // build_check     → (build_fix while we have fix budget,
+    //                   replan_check once that budget is exhausted and we
+    //                   still have plan-revision budget,
+    //                   else checkpoint_implementation).
     .addConditionalEdges("implementation", routeAfterImplementation, [
       "build_check",
+      "replan_check",
       "checkpoint_implementation",
     ])
     .addConditionalEdges("build_check", routeAfterBuildCheck, [
       "build_fix",
+      "replan_check",
       "checkpoint_implementation",
     ])
     .addEdge("build_fix", "build_check")

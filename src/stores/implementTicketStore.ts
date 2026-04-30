@@ -38,10 +38,9 @@ import {
   syncGroomingWorktree,
   getNonSecretConfig,
   runGroomingFileProbe,
-  runCheckpointAction,
-  type CheckpointActionResult,
   runGroomingChatTurn,
   type BuildCheckResult,
+  type ReplanCheckpointPayload,
   updateJiraIssue,
   parseAgentJson,
   readGroomingFile,
@@ -52,7 +51,12 @@ import {
   type PipelineEvent,
   type PipelineWorkflowArgs,
   type PipelineWorkflowResult,
+  type PipelineResumeAction,
   rewindImplementationPipelineWorkflow,
+  chatWithOrchestrator,
+  applyPlanEdits,
+  type OrchestratorMessage,
+  type OrchestratorPendingProposal,
 } from "@/lib/tauri";
 import { listen } from "@tauri-apps/api/event";
 
@@ -72,8 +76,8 @@ let pipelineUnlisten: (() => void) | null = null;
 // fresh module's `ensurePipelineListener` re-subscribes against the
 // (potentially recreated) store instance. Without this, the old listener
 // keeps writing to a stale store and the UI sees no updates until reload.
-if (typeof import.meta !== "undefined" && (import.meta as { hot?: { dispose?: (cb: () => void) => void } }).hot) {
-  (import.meta as { hot: { dispose: (cb: () => void) => void } }).hot.dispose(() => {
+if (typeof import.meta !== "undefined" && (import.meta as unknown as { hot?: { dispose?: (cb: () => void) => void } }).hot) {
+  (import.meta as unknown as { hot: { dispose: (cb: () => void) => void } }).hot.dispose(() => {
     if (pipelineUnlisten) {
       pipelineUnlisten();
       pipelineUnlisten = null;
@@ -105,6 +109,7 @@ const NODE_TO_STAGE: Record<string, Stage> = {
   do_plan: "plan",
   do_guidance: "implementation",
   implementation: "implementation",
+  replan: "replan",
   test_plan: "tests_plan",
   test_gen: "tests",
   code_review: "review",
@@ -138,6 +143,10 @@ function applyInterruptToState(
     const updates: Partial<ImplementTicketState> = {
       pendingApproval: stage ?? s.pendingApproval,
       currentStage: stage ?? s.currentStage,
+      // The replan checkpoint payload is only meaningful while we're paused
+      // at it; clear it as soon as the workflow advances to any other stage
+      // so the UI doesn't render stale failure context.
+      replanCheckpoint: stage === "replan" ? s.replanCheckpoint : null,
       // Always sync viewingStage so the UI follows the workflow forward.
       // (The user can still navigate back to a prior stage to inspect it
       // — they'd reset viewingStage themselves via the stage list.)
@@ -242,6 +251,9 @@ function applyInterruptToState(
       case "implementation":
         updates.implementation = payload as ImplementationOutput;
         break;
+      case "replan":
+        updates.replanCheckpoint = payload as ReplanCheckpointPayload;
+        break;
       case "test_plan":
         updates.testPlan = payload as TestPlan;
         break;
@@ -268,6 +280,33 @@ function applyWorkflowResult(
   if (result.interrupt) {
     applyInterruptToState(set, result.interrupt.reason, result.interrupt.payload);
     set(() => ({ pipelineThreadId: result.interrupt!.threadId }));
+    // Auto-trigger an orchestrator review for stages where it adds value.
+    // Grooming/triage have their own dedicated sub-agent chats; replan
+    // surfaces its own structured panel; retro is terminal. The trigger
+    // itself is dedup-guarded so duplicate calls (e.g. re-render) are no-ops.
+    const reason = result.interrupt.reason;
+    const reviewable = new Set([
+      "impact",
+      "implementation",
+      "test_plan",
+      "test_gen",
+      "code_review",
+      "pr_description",
+    ]);
+    if (reviewable.has(reason)) {
+      const contextText = JSON.stringify(result.interrupt.payload, null, 2);
+      const stage = NODE_TO_STAGE[reason];
+      if (stage) {
+        // Defer to break out of the current synchronous update cycle so
+        // state has settled before we read it inside the action.
+        queueMicrotask(() => {
+          void useImplementTicketStore.getState().triggerOrchestratorReview(
+            stage,
+            `=== ${reason.toUpperCase()} OUTPUT ===\n${contextText}`,
+          );
+        });
+      }
+    }
   } else if (result.output) {
     set(() => ({
       pipelineFinalState: result.output,
@@ -381,6 +420,10 @@ export type Stage =
   | "triage"
   | "plan"
   | "implementation"
+  // Surfaced when implementation verification or build verification has
+  // exhausted its in-stage budget — user chooses to revise the plan or
+  // accept the partial work.
+  | "replan"
   | "tests_plan"
   | "tests"
   | "review"
@@ -603,7 +646,12 @@ export type PipelineSession = Pick<
   | "jiraUpdateError"
   | "groomingProgress"
   | "groomingStreamText"
-  | "checkpointChats"
+  | "orchestratorThreadId"
+  | "orchestratorThread"
+  | "orchestratorStageSummaries"
+  | "orchestratorUserNotes"
+  | "orchestratorPendingProposal"
+  | "orchestratorReviewedStages"
   | "errors"
   | "worktreeInfo"
   | "ticketText"
@@ -650,6 +698,9 @@ interface ImplementTicketState {
   } | null;
   buildVerification: BuildCheckResult | null;
   buildCheckStreamText: string;
+  /** Payload for the `replan` checkpoint, populated when the pipeline pauses
+   *  at the plan-revision interrupt. Cleared on next interrupt. */
+  replanCheckpoint: ReplanCheckpointPayload | null;
   /** Proposed test plan from the test_plan stage — user reviews/approves before tests are written. */
   testPlan: TestPlan | null;
   tests: TestOutput | null;
@@ -702,8 +753,36 @@ interface ImplementTicketState {
   retroStreamText: string;
   checkpointStreamText: string;
 
-  // ── Checkpoint chats (per stage follow-up conversations) ─────────────────────
-  checkpointChats: Partial<Record<Stage, TriageMessage[]>>;
+  // ── Orchestrator chat (long-lived, spans every stage) ───────────────────────
+  /** Persistent thread id for the orchestrator workflow. Derived from the
+   *  selected ticket's key (e.g. "orchestrator:PROJ-123") so the same chat
+   *  history is rehydrated across sessions / app restarts. Null when no
+   *  ticket is active. */
+  orchestratorThreadId: string | null;
+  /** The full lossless chat thread the orchestrator persists in its
+   *  checkpointer. Mirrored here so the UI can render without a round-trip;
+   *  every successful turn replaces this with the latest from the workflow
+   *  result. */
+  orchestratorThread: OrchestratorMessage[];
+  /** Compressed per-stage summaries (UI doesn't render these directly —
+   *  they're only used by the model — but the store mirrors them so we can
+   *  show a small "compressing…" indicator and for debug visibility). */
+  orchestratorStageSummaries: Record<string, string>;
+  /** Persistent "user told me X" notes the orchestrator decides are worth
+   *  keeping across stages. */
+  orchestratorUserNotes: string[];
+  /** Outstanding proposal awaiting the user's accept/reject. The chat panel
+   *  renders a confirm card while this is non-null. */
+  orchestratorPendingProposal: OrchestratorPendingProposal | null;
+  /** Live token stream for the in-flight turn — accumulates while the
+   *  sidecar emits `stream` events; cleared when the turn completes and the
+   *  final assistant message lands in `orchestratorThread`. */
+  orchestratorStreamText: string;
+  /** True while a turn is in flight. Drives the send button + spinner. */
+  orchestratorSending: boolean;
+  /** Stages we've already auto-fired a review turn for, so a single
+   *  pipeline advance doesn't trigger duplicate reviews. */
+  orchestratorReviewedStages: Stage[];
 
   // ── Error state ──────────────────────────────────────────────────────────────
   errors: Partial<Record<Stage, string>>;
@@ -740,8 +819,19 @@ interface ImplementTicketState {
   finalizePlan: () => Promise<void>;
   /** Squash feature branch commits, push, and create a PR on Bitbucket (no reviewers). */
   submitDraftPr: () => Promise<void>;
-  proceedFromStage: (stage: Stage) => Promise<void>;
-  sendCheckpointMessage: (stage: Stage, input: string) => Promise<void>;
+  proceedFromStage: (stage: Stage, action?: PipelineResumeAction) => Promise<void>;
+  /** Send a user-typed turn through the orchestrator (replaces the per-stage
+   *  `sendCheckpointMessage`). The orchestrator decides whether to answer
+   *  conversationally, propose a pipeline action, or both. */
+  sendOrchestratorMessage: (input: string) => Promise<void>;
+  /** Resolve an outstanding orchestrator proposal. `accepted` fires the
+   *  appropriate pipeline command (resume / rewind / triage-reply) and then
+   *  notifies the orchestrator via a system_note; `rejected` only notifies. */
+  resolveOrchestratorProposal: (decision: "accepted" | "rejected") => Promise<void>;
+  /** Auto-fire a stage-review turn against the orchestrator with the freshly
+   *  arrived stage output as a system_note. Idempotent — guarded by
+   *  `orchestratorReviewedStages`. */
+  triggerOrchestratorReview: (stage: Stage, contextText: string) => Promise<void>;
   sendGroomingChatMessage: (input: string) => Promise<void>;
   handleApproveEdit: (id: string) => void;
   handleDeclineEdit: (id: string) => void;
@@ -773,7 +863,6 @@ export const INITIAL: Omit<
   | "finalizePlan"
   | "submitDraftPr"
   | "proceedFromStage"
-  | "sendCheckpointMessage"
   | "sendGroomingChatMessage"
   | "handleApproveEdit"
   | "handleDeclineEdit"
@@ -786,6 +875,9 @@ export const INITIAL: Omit<
   | "setError"
   | "clearError"
   | "retryStage"
+  | "sendOrchestratorMessage"
+  | "resolveOrchestratorProposal"
+  | "triggerOrchestratorReview"
   | "sendPipelineMessage"
 > = {
   selectedIssue: null,
@@ -805,6 +897,7 @@ export const INITIAL: Omit<
   implementationProgress: null,
   buildVerification: null,
   buildCheckStreamText: "",
+  replanCheckpoint: null,
   testPlan: null,
   tests: null,
   review: null,
@@ -836,7 +929,14 @@ export const INITIAL: Omit<
   prStreamText: "",
   retroStreamText: "",
   checkpointStreamText: "",
-  checkpointChats: {},
+  orchestratorThreadId: null,
+  orchestratorThread: [],
+  orchestratorStageSummaries: {},
+  orchestratorUserNotes: [],
+  orchestratorPendingProposal: null,
+  orchestratorStreamText: "",
+  orchestratorSending: false,
+  orchestratorReviewedStages: [],
   errors: {},
   worktreeInfo: null,
   ticketText: "",
@@ -850,7 +950,10 @@ export const INITIAL: Omit<
 
 // ── Persistence key ────────────────────────────────────────────────────────────
 
-export const IMPLEMENT_STORE_KEY = "meridian-implement-store";
+// v2: orchestrator landed; the old shape held `checkpointChats` and other
+// fields the new code doesn't read. Bumping the key abandons the stale
+// blob so we don't hydrate ghost state into the new schema.
+export const IMPLEMENT_STORE_KEY = "meridian-implement-store-v2";
 
 // ── Session snapshot helper ────────────────────────────────────────────────────
 
@@ -894,7 +997,12 @@ export function snapshotSession(s: ImplementTicketState): PipelineSession {
     jiraUpdateError: s.jiraUpdateError,
     groomingProgress: s.groomingProgress,
     groomingStreamText: s.groomingStreamText,
-    checkpointChats: s.checkpointChats,
+    orchestratorThreadId: s.orchestratorThreadId,
+    orchestratorThread: s.orchestratorThread,
+    orchestratorStageSummaries: s.orchestratorStageSummaries,
+    orchestratorUserNotes: s.orchestratorUserNotes,
+    orchestratorPendingProposal: s.orchestratorPendingProposal,
+    orchestratorReviewedStages: s.orchestratorReviewedStages,
     errors: s.errors,
     worktreeInfo: s.worktreeInfo,
     ticketText: s.ticketText,
@@ -1475,14 +1583,16 @@ export const useImplementTicketStore = create<ImplementTicketState>()(
     },
 
     // ── Proceed from checkpoint ────────────────────────────────────────────────
-    proceedFromStage: async (stage) => {
+    proceedFromStage: async (stage, action = { action: "approve" }) => {
       set({ pendingApproval: null, proceeding: true });
       try {
         // Side-effects that the old per-stage proceed flow handled around the
         // implementation/tests boundary. The workflow itself doesn't commit;
         // the user's local feature branch needs the commits to accumulate
-        // real history that the PR stage can squash later.
-        if (stage === "implementation" || stage === "tests") {
+        // real history that the PR stage can squash later. Skip when revising
+        // — the partial work hasn't reached an approved state yet.
+        const isApprove = action.action === "approve";
+        if (isApprove && (stage === "implementation" || stage === "tests")) {
           const { selectedIssue } = get();
           if (selectedIssue) {
             const msg = `${selectedIssue.key}: ${stage}`;
@@ -1500,9 +1610,7 @@ export const useImplementTicketStore = create<ImplementTicketState>()(
             "Pipeline workflow has no active thread — cannot resume. Restart the pipeline.",
           );
         }
-        const result = await resumeImplementationPipelineWorkflow(threadId, {
-          action: "approve",
-        });
+        const result = await resumeImplementationPipelineWorkflow(threadId, action);
         applyWorkflowResult((updater) => set((s) => updater(s)), result);
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -1513,197 +1621,7 @@ export const useImplementTicketStore = create<ImplementTicketState>()(
       }
     },
 
-    // ── Checkpoint chat ────────────────────────────────────────────────────────
-    sendCheckpointMessage: async (stage, input) => {
-      await get()._reloadSkills();
-      const {
-        checkpointChats,
-        ticketText,
-        grooming,
-        impact,
-        skills,
-        groomingChat,
-      } = get();
-      const stageLabels: Partial<Record<Stage, string>> = {
-        grooming: "GROOMING",
-        impact: "IMPACT ANALYSIS",
-        plan: "IMPLEMENTATION PLAN",
-        implementation: "IMPLEMENTATION RESULT",
-        tests: "TEST SUGGESTIONS",
-        review: "CODE REVIEW",
-        pr: "PR DESCRIPTION",
-        retro: "RETROSPECTIVE",
-      };
-      const s = get();
-      const stageOutput =
-        stage === "grooming"
-          ? s.grooming
-          : stage === "impact"
-            ? s.impact
-            : stage === "plan"
-              ? s.plan
-              : stage === "implementation"
-                ? s.implementation
-                : stage === "tests"
-                  ? s.tests
-                  : stage === "review"
-                    ? s.review
-                    : stage === "pr"
-                      ? s.prDescription
-                      : stage === "retro"
-                        ? s.retrospective
-                        : null;
-
-      // Post-implementation stages benefit from having the implementation output in context.
-      const postImplStages: Stage[] = [
-        "implementation",
-        "tests",
-        "review",
-        "pr",
-        "retro",
-      ];
-      const isPostImpl = postImplStages.includes(stage);
-
-      const contextParts = [
-        compilePipelineContext(
-          ticketText,
-          grooming,
-          impact,
-          skills,
-          groomingChat,
-        ),
-        isPostImpl && s.plan
-          ? `=== IMPLEMENTATION PLAN ===\n${JSON.stringify(s.plan, null, 2)}`
-          : "",
-        isPostImpl && s.implementation
-          ? `=== IMPLEMENTATION RESULT ===\n${JSON.stringify(s.implementation, null, 2)}`
-          : "",
-        stageOutput
-          ? `=== ${stageLabels[stage] ?? stage.toUpperCase()} OUTPUT ===\n${JSON.stringify(stageOutput, null, 2)}`
-          : "",
-      ];
-
-      const context = contextParts.filter(Boolean).join("\n\n");
-
-      const prev = checkpointChats[stage] ?? [];
-      const newHistory: TriageMessage[] = [
-        ...prev,
-        { role: "user", content: input },
-      ];
-      set({ checkpointChats: { ...checkpointChats, [stage]: newHistory } });
-
-      try {
-        const raw = await runCheckpointAction(
-          stage,
-          context,
-          JSON.stringify(newHistory),
-        );
-
-        const parsed = parseAgentJson<CheckpointActionResult>(raw);
-        const message = parsed?.message ?? raw;
-
-        // ── Files were written directly by write_repo_file tool calls ────────
-        const filesWritten: string[] = parsed?.files_written ?? [];
-
-        // ── Update implementation state if files were changed ────────────────
-        if (
-          stage === "implementation" &&
-          (filesWritten.length ||
-            parsed?.deviations_resolved?.length ||
-            parsed?.skipped_resolved?.length)
-        ) {
-          const devsResolved = new Set(parsed?.deviations_resolved ?? []);
-          const skippedResolved = new Set(parsed?.skipped_resolved ?? []);
-          set((st) => {
-            if (!st.implementation) return {};
-            const writtenSet = new Set(filesWritten);
-            const updatedFiles = st.implementation.files_changed.map((f) =>
-              writtenSet.has(f.path)
-                ? { ...f, action: "modified" as const, summary: "Updated via checkpoint chat" }
-                : f,
-            );
-            const newPaths = filesWritten.filter(
-              (p) => !st.implementation!.files_changed.some((f) => f.path === p),
-            );
-            return {
-              implementation: {
-                ...st.implementation,
-                files_changed: [
-                  ...updatedFiles,
-                  ...newPaths.map((p) => ({
-                    path: p,
-                    action: "modified" as const,
-                    summary: "Created via checkpoint chat",
-                  })),
-                ],
-                deviations: st.implementation.deviations.filter(
-                  (d) => !devsResolved.has(d),
-                ),
-                skipped: st.implementation.skipped.filter(
-                  (p) => !skippedResolved.has(p),
-                ),
-              },
-            };
-          });
-        }
-
-        // ── Apply updated_output for non-implementation stages ───────────────
-        if (parsed?.updated_output && stage !== "implementation") {
-          switch (stage) {
-            case "impact":
-              set({ impact: parsed.updated_output as ImpactOutput });
-              break;
-            case "plan":
-              set({ plan: parsed.updated_output as ImplementationPlan });
-              break;
-            case "tests":
-              set({ tests: parsed.updated_output as TestOutput });
-              break;
-            case "review":
-              set({ review: parsed.updated_output as PlanReviewOutput });
-              break;
-            case "pr":
-              set({ prDescription: parsed.updated_output as PrDescriptionOutput });
-              break;
-            case "retro":
-              set({ retrospective: parsed.updated_output as RetrospectiveOutput });
-              break;
-          }
-        }
-
-        // ── Build display message with applied-changes callout ───────────────
-        let displayMessage = message;
-        if (filesWritten.length) {
-          displayMessage += `\n\n**Files updated:** ${filesWritten.map((p) => `\`${p}\``).join(", ")}`;
-        }
-        if (parsed?.updated_output && stage !== "implementation") {
-          displayMessage += "\n\n**Stage output updated.**";
-        }
-
-        set((st) => ({
-          checkpointStreamText: "",
-          checkpointChats: {
-            ...st.checkpointChats,
-            [stage]: [
-              ...(st.checkpointChats[stage] ?? newHistory),
-              { role: "assistant", content: displayMessage },
-            ],
-          },
-        }));
-      } catch (e) {
-        const errMsg = `⚠️ Something went wrong: ${String(e)}`;
-        set((st) => ({
-          checkpointStreamText: "",
-          checkpointChats: {
-            ...st.checkpointChats,
-            [stage]: [
-              ...(st.checkpointChats[stage] ?? newHistory),
-              { role: "assistant", content: errMsg },
-            ],
-          },
-        }));
-      }
-    },
+    // (sendCheckpointMessage removed — replaced by sendOrchestratorMessage)
 
     // ── Grooming conversation ──────────────────────────────────────────────────
     sendGroomingChatMessage: async (input) => {
@@ -1941,18 +1859,316 @@ export const useImplementTicketStore = create<ImplementTicketState>()(
     },
 
     // ── Unified pipeline chat ──────────────────────────────────────────────────
+    // ── Orchestrator actions ──────────────────────────────────────────────────
+    sendOrchestratorMessage: async (input) => {
+      const trimmed = input.trim();
+      if (!trimmed) return;
+      // Race lock: a single orchestrator thread can only have one outstanding
+      // turn at a time. The sidecar's SQLite checkpointer also serialises on
+      // thread_id, but coordinating concurrent invokes from the frontend
+      // wastes time + tokens — refuse early.
+      if (get().orchestratorSending) {
+        console.warn("[orchestrator] refused: another turn is in flight");
+        return;
+      }
+      await get()._reloadSkills();
+
+      const s = get();
+      const threadId = ensureOrchestratorThreadId(set, get);
+      if (!threadId) {
+        console.warn("[orchestrator] cannot send: no active ticket");
+        return;
+      }
+
+      set({
+        orchestratorSending: true,
+        orchestratorStreamText: "",
+      });
+
+      try {
+        const result = await chatWithOrchestrator({
+          threadId,
+          pipelineThreadId: s.pipelineThreadId ?? undefined,
+          message: trimmed,
+          messageKind: "user",
+          currentStage: s.currentStage,
+          contextText: buildOrchestratorContextText(s),
+        });
+        applyOrchestratorResult(set, result);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error("[orchestrator] turn failed:", msg);
+        set({
+          orchestratorSending: false,
+          orchestratorStreamText: "",
+        });
+      }
+    },
+
+    resolveOrchestratorProposal: async (decision) => {
+      const s = get();
+      const proposal = s.orchestratorPendingProposal;
+      if (!proposal) return;
+      if (s.orchestratorSending) {
+        console.warn("[orchestrator] refused proposal resolution: turn in flight");
+        return;
+      }
+
+      // On accept, fire the appropriate pipeline command or mutation. On
+      // reject, skip and just notify the orchestrator.
+      let actionDescription: string;
+      // Stage summaries that became stale because of this resolution. Only
+      // populated for rewind acceptance — every other resolution leaves
+      // existing summaries valid.
+      let dropSummariesForStages: string[] = [];
+      if (decision === "accepted") {
+        try {
+          switch (proposal.kind) {
+            case "proceed": {
+              await get().proceedFromStage(s.currentStage, {
+                action: proposal.action,
+                ...(proposal.action === "abort" && proposal.reason
+                  ? { reason: proposal.reason }
+                  : {}),
+              } as PipelineResumeAction);
+              actionDescription = `User accepted — pipeline ${proposal.action} fired.`;
+              break;
+            }
+            case "rewind": {
+              const threadId = s.pipelineThreadId;
+              if (!threadId) throw new Error("No active pipeline thread to rewind.");
+              await rewindImplementationPipelineWorkflow(threadId, proposal.toStage);
+              actionDescription = `User accepted — rewound to ${proposal.toStage}.`;
+              // Any summary whose stage came AFTER the rewind target is now
+              // stale — its conversation referenced state that no longer
+              // exists. Compute the set so the orchestrator's next turn
+              // drops them via the new dropSummariesForStages channel.
+              const targetIdx = STAGE_ORDER.indexOf(proposal.toStage as Stage);
+              if (targetIdx >= 0) {
+                dropSummariesForStages = STAGE_ORDER.slice(targetIdx).filter(
+                  (st) => st !== proposal.toStage,
+                );
+              }
+              break;
+            }
+            case "reply": {
+              const threadId = s.pipelineThreadId;
+              if (!threadId) throw new Error("No active pipeline thread.");
+              await resumeImplementationPipelineWorkflow(threadId, {
+                action: "reply",
+                message: proposal.message,
+              });
+              actionDescription = `User accepted — triage reply sent.`;
+              break;
+            }
+            case "edit_plan": {
+              const threadId = s.pipelineThreadId;
+              if (!threadId)
+                throw new Error("No active pipeline thread to edit plan on.");
+              const result = await applyPlanEdits({
+                pipelineThreadId: threadId,
+                edits: proposal.edits,
+              });
+              const fileCount = result.output?.planFileCount;
+              actionDescription =
+                `User accepted — applied ${proposal.edits.length} plan edit(s).` +
+                (fileCount !== undefined ? ` Plan now has ${fileCount} file(s).` : "");
+              // Mirror the new plan into local store state so the panel
+              // refreshes immediately. We re-fetch via the next interrupt
+              // when one fires; for now, mark the plan dirty by reading
+              // the orchestrator-supplied state. Since the pipeline isn't
+              // currently running, the easiest visible refresh is to
+              // include a hint here for the user.
+              break;
+            }
+            case "accept_grooming_edit": {
+              if (proposal.newStatus === "approved") {
+                get().handleApproveEdit(proposal.editId);
+              } else {
+                get().handleDeclineEdit(proposal.editId);
+              }
+              actionDescription = `User accepted — grooming edit ${proposal.editId} ${proposal.newStatus}.`;
+              break;
+            }
+          }
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          actionDescription = `User accepted but the action failed: ${msg}`;
+        }
+      } else {
+        actionDescription = `User rejected the proposal.`;
+      }
+
+      // Notify the orchestrator so its next turn knows the outcome and
+      // clears its `pendingProposal` channel.
+      const threadId = ensureOrchestratorThreadId(set, get);
+      if (!threadId) return;
+
+      set({
+        orchestratorSending: true,
+        orchestratorStreamText: "",
+      });
+      try {
+        const result = await chatWithOrchestrator({
+          threadId,
+          pipelineThreadId: get().pipelineThreadId ?? undefined,
+          message: actionDescription,
+          messageKind: "system_note",
+          currentStage: get().currentStage,
+          clearPendingProposal: true,
+          dropSummariesForStages,
+        });
+        applyOrchestratorResult(set, result);
+      } catch (err) {
+        console.error("[orchestrator] proposal-resolution turn failed:", err);
+        set({
+          orchestratorSending: false,
+          orchestratorStreamText: "",
+          // Even if the notify-turn fails, clear locally so the UI doesn't
+          // leave a stale confirm card up.
+          orchestratorPendingProposal: null,
+        });
+      }
+    },
+
+    triggerOrchestratorReview: async (stage, contextText) => {
+      const s = get();
+      if (s.orchestratorReviewedStages.includes(stage)) return; // dedup
+      // If a turn is in flight, bail rather than queue. The auto-review
+      // re-fires next time the user advances; a missed review is far better
+      // than a malformed concurrent one.
+      if (s.orchestratorSending) return;
+      const threadId = ensureOrchestratorThreadId(set, get);
+      if (!threadId) return;
+
+      set((st) => ({
+        orchestratorReviewedStages: [...st.orchestratorReviewedStages, stage],
+        orchestratorSending: true,
+        orchestratorStreamText: "",
+      }));
+
+      const reviewPrompt =
+        `The ${stage} agent just produced its output. Review it briefly for ` +
+        `consistency with our prior conversation and any concerns the developer ` +
+        `flagged earlier. If everything looks good, say so plainly so we can move on. ` +
+        `Be concise — 1 to 3 sentences.`;
+
+      try {
+        const result = await chatWithOrchestrator({
+          threadId,
+          pipelineThreadId: s.pipelineThreadId ?? undefined,
+          message: reviewPrompt,
+          messageKind: "system_note",
+          currentStage: stage,
+          contextText,
+        });
+        applyOrchestratorResult(set, result);
+      } catch (err) {
+        console.error("[orchestrator] review turn failed:", err);
+        set({
+          orchestratorSending: false,
+          orchestratorStreamText: "",
+        });
+      }
+    },
+
     sendPipelineMessage: async (input) => {
       const s = get();
+      // Grooming and triage keep their dedicated chats — they're tightly
+      // coupled to their sub-agent's state machine. Every other stage
+      // routes through the long-lived orchestrator.
       if (s.pendingApproval === "grooming") {
         await get().sendGroomingChatMessage(input);
-      } else if (s.pendingApproval) {
-        await get().sendCheckpointMessage(s.pendingApproval, input);
       } else if (s.currentStage === "triage") {
         await get().sendTriageMessage(input);
+      } else {
+        await get().sendOrchestratorMessage(input);
       }
     },
   }),
 );
+
+// ── Orchestrator helpers ─────────────────────────────────────────────────────
+
+/** Ensure `orchestratorThreadId` is set for the currently-selected ticket;
+ *  initialises lazily so the same chat thread is reused across sessions. */
+export function ensureOrchestratorThreadId(
+  set: (partial: Partial<ImplementTicketState>) => void,
+  get: () => ImplementTicketState,
+): string | null {
+  const s = get();
+  if (s.orchestratorThreadId) return s.orchestratorThreadId;
+  const key = s.selectedIssue?.key;
+  if (!key) return null;
+  const threadId = `orchestrator:${key}`;
+  set({ orchestratorThreadId: threadId });
+  return threadId;
+}
+
+/** Apply the result of one orchestrator turn to the store. The sidecar
+ *  returns the full updated state; we replace the slice wholesale rather
+ *  than diffing. */
+export function applyOrchestratorResult(
+  set: (
+    updater: (s: ImplementTicketState) => Partial<ImplementTicketState>,
+  ) => void,
+  result: { output: import("@/lib/tauri").OrchestratorTurnOutput | null },
+): void {
+  const out = result.output;
+  if (!out) {
+    set(() => ({
+      orchestratorSending: false,
+      orchestratorStreamText: "",
+    }));
+    return;
+  }
+  set(() => ({
+    orchestratorThread: out.thread,
+    orchestratorStageSummaries: out.stageSummaries,
+    orchestratorUserNotes: out.userNotes,
+    orchestratorPendingProposal: out.pendingProposal ?? null,
+    orchestratorSending: false,
+    orchestratorStreamText: "",
+  }));
+}
+
+/** Build the per-turn context text the orchestrator gets for grounding.
+ *  Cheap to assemble; saves the orchestrator from having to call
+ *  `get_pipeline_state` for routine "what stage am I on / what did the
+ *  current agent produce" questions. */
+export function buildOrchestratorContextText(s: ImplementTicketState): string {
+  const parts: string[] = [];
+  if (s.currentStage && s.currentStage !== "select") {
+    parts.push(`Current stage: ${s.currentStage}`);
+  }
+  if (s.grooming) {
+    parts.push(`=== GROOMING OUTPUT ===\n${JSON.stringify(s.grooming, null, 2)}`);
+  }
+  if (s.impact) {
+    parts.push(`=== IMPACT OUTPUT ===\n${JSON.stringify(s.impact, null, 2)}`);
+  }
+  if (s.plan) {
+    parts.push(`=== PLAN ===\n${JSON.stringify(s.plan, null, 2)}`);
+  }
+  if (s.implementation) {
+    parts.push(
+      `=== IMPLEMENTATION RESULT ===\n${JSON.stringify(s.implementation, null, 2)}`,
+    );
+  }
+  if (s.testPlan) {
+    parts.push(`=== TEST PLAN ===\n${JSON.stringify(s.testPlan, null, 2)}`);
+  }
+  if (s.tests) {
+    parts.push(`=== TESTS WRITTEN ===\n${JSON.stringify(s.tests, null, 2)}`);
+  }
+  if (s.review) {
+    parts.push(`=== CODE REVIEW ===\n${JSON.stringify(s.review, null, 2)}`);
+  }
+  if (s.prDescription) {
+    parts.push(`=== PR DESCRIPTION ===\n${JSON.stringify(s.prDescription, null, 2)}`);
+  }
+  return parts.join("\n\n");
+}
 
 // ── File-backed persistence ────────────────────────────────────────────────────
 

@@ -146,4 +146,39 @@ export async function execInWorktree(args: {
   return result;
 }
 
+/** Stat a worktree-relative path. Distinguishes missing from empty — used by
+ *  the implementation node to verify what the agent actually did on disk
+ *  after a per-file iteration. Not exposed as a LangChain tool because the
+ *  agent itself doesn't need it; verification is the node's job. */
+export async function statRepoFile(args: {
+  workflowId: string;
+  emit: Emitter;
+  path: string;
+}): Promise<{ exists: boolean; sizeBytes: number }> {
+  const result = (await requestToolCallback({
+    workflowId: args.workflowId,
+    tool: "stat_repo_file",
+    input: { path: args.path },
+    emit: args.emit,
+  })) as { exists: boolean; sizeBytes: number };
+  return result;
+}
+
+/** Read a worktree-relative file via the IPC bridge. Mirrors the agent-facing
+ *  read_repo_file tool but callable directly by node code (verification, etc.)
+ *  without going through a LangChain tool invocation. */
+export async function readRepoFileDirect(args: {
+  workflowId: string;
+  emit: Emitter;
+  path: string;
+}): Promise<string> {
+  const result = (await requestToolCallback({
+    workflowId: args.workflowId,
+    tool: "read_repo_file",
+    input: { path: args.path },
+    emit: args.emit,
+  })) as { contents: string };
+  return result.contents;
+}
+
 export type RepoTools = ReturnType<typeof makeRepoTools>;
