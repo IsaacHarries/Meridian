@@ -35,6 +35,7 @@ import {
   listWhisperModels,
   downloadWhisperModel,
   summarizeMeeting,
+  generateMeetingTitle,
   chatMeeting,
   diarizeMeeting,
   renameMeetingSpeaker,
@@ -45,6 +46,7 @@ import {
 import { getPreferences, setPreference } from "@/lib/preferences";
 import { loadCache, saveCache } from "@/lib/storeCache";
 import { extractTiptapPlainText } from "@/lib/tiptapText";
+import { subscribeWorkflowStream } from "@/lib/workflowStream";
 
 export const MEETINGS_STORE_KEY = "meridian-meetings-store";
 
@@ -125,6 +127,10 @@ interface MeetingsState {
   busy: Set<string>;
   /** Chat streaming text per meeting id (cleared when reply commits). */
   chatStreamText: Record<string, string>;
+  /** Partial-parsed summary JSON per meeting id while a summary is streaming.
+   *  Populated by the meeting-summary workflow's `progress` events; cleared
+   *  when the final, validated summary lands on the record. */
+  summaryStreamPartial: Record<string, Partial<MeetingSummaryJson>>;
 
   // ── Active session (only one at a time) ────────────────────────────────────
   active: ActiveSession | null;
@@ -196,6 +202,13 @@ interface MeetingsState {
   saveNotesForMeeting: (meetingId: string, notes: string) => Promise<void>;
 
   summarizeSelected: () => Promise<void>;
+  /**
+   * Generate a short title for the currently-selected meeting. If the meeting
+   * has no usable content (empty notes, no transcript) the title falls back
+   * to the meeting's start date + time so the field still ends up populated
+   * without a wasted LLM call.
+   */
+  generateTitleForSelected: () => Promise<void>;
   sendChatMessage: (input: string) => Promise<void>;
 
   diarizeSelected: () => Promise<void>;
@@ -280,6 +293,7 @@ export const useMeetingsStore = create<MeetingsState>()((set, get) => ({
   selectedId: null,
   busy: new Set(),
   chatStreamText: {},
+  summaryStreamPartial: {},
 
   active: null,
 
@@ -545,12 +559,72 @@ export const useMeetingsStore = create<MeetingsState>()((set, get) => ({
     }
   },
 
-  summarizeSelected: async () => {
+  generateTitleForSelected: async () => {
     const { selectedId, meetings } = get();
     if (!selectedId) return;
     const record = meetings.find((m) => m.id === selectedId);
     if (!record) return;
     set((s) => ({ busy: new Set(s.busy).add(selectedId) }));
+    try {
+      const content = buildAgentInputText(record).trim();
+      // Pure-fallback path: when there's nothing meaningful to feed the model,
+      // skip the LLM call entirely and use the meeting's start date+time as
+      // the title. Cheaper, faster, and avoids an "Untitled" round-trip.
+      let nextTitle: string;
+      if (!content || content === "(no transcript available)") {
+        const d = new Date(record.startedAt);
+        const date = d.toLocaleDateString(undefined, {
+          month: "short",
+          day: "numeric",
+          year: "numeric",
+        });
+        const time = d.toLocaleTimeString(undefined, {
+          hour: "numeric",
+          minute: "2-digit",
+        });
+        nextTitle = `${date} · ${time}`;
+      } else {
+        const generated = await generateMeetingTitle(content, record.tags);
+        nextTitle = generated.trim() || "Untitled";
+      }
+      // Re-read the freshest record before saving — diarization or notes
+      // edits may have completed while we were waiting on the AI call.
+      const latest = await loadMeeting(selectedId).catch(() => record);
+      const updated: MeetingRecord = { ...latest, title: nextTitle };
+      await saveMeeting(updated);
+      set((s) => ({ meetings: replaceOrInsert(s.meetings, updated) }));
+    } finally {
+      set((s) => {
+        const next = new Set(s.busy);
+        next.delete(selectedId);
+        return { busy: next };
+      });
+    }
+  },
+
+  summarizeSelected: async () => {
+    const { selectedId, meetings } = get();
+    if (!selectedId) return;
+    const record = meetings.find((m) => m.id === selectedId);
+    if (!record) return;
+    set((s) => ({
+      busy: new Set(s.busy).add(selectedId),
+      summaryStreamPartial: { ...s.summaryStreamPartial, [selectedId]: {} },
+    }));
+    const stream = await listen<{
+      kind?: string;
+      data?: { partial?: Partial<MeetingSummaryJson> };
+    }>("meeting-summary-workflow-event", (event) => {
+      if (event.payload.kind !== "progress") return;
+      const partial = event.payload.data?.partial;
+      if (!partial || typeof partial !== "object") return;
+      set((s) => ({
+        summaryStreamPartial: {
+          ...s.summaryStreamPartial,
+          [selectedId]: partial,
+        },
+      }));
+    });
     try {
       const raw = await summarizeMeeting(
         buildAgentInputText(record),
@@ -582,10 +656,13 @@ export const useMeetingsStore = create<MeetingsState>()((set, get) => ({
       await saveMeeting(updated);
       set((s) => ({ meetings: replaceOrInsert(s.meetings, updated) }));
     } finally {
+      stream();
       set((s) => {
-        const next = new Set(s.busy);
-        next.delete(selectedId);
-        return { busy: next };
+        const nextBusy = new Set(s.busy);
+        nextBusy.delete(selectedId);
+        const nextPartial = { ...s.summaryStreamPartial };
+        delete nextPartial[selectedId];
+        return { busy: nextBusy, summaryStreamPartial: nextPartial };
       });
     }
   },
@@ -609,6 +686,14 @@ export const useMeetingsStore = create<MeetingsState>()((set, get) => ({
       chatStreamText: { ...s.chatStreamText, [selectedId]: "" },
     }));
 
+    const stream = await subscribeWorkflowStream(
+      "meeting-chat-workflow-event",
+      (text) => {
+        set((s) => ({
+          chatStreamText: { ...s.chatStreamText, [selectedId]: text },
+        }));
+      },
+    );
     try {
       const reply = await chatMeeting(
         buildAgentInputText(record),
@@ -630,6 +715,7 @@ export const useMeetingsStore = create<MeetingsState>()((set, get) => ({
         };
       });
     } finally {
+      await stream.dispose();
       set((s) => {
         const nextBusy = new Set(s.busy);
         nextBusy.delete(selectedId);
@@ -905,6 +991,11 @@ export async function hydrateMeetingsStore(): Promise<void> {
   } catch {
     /* ignore */
   }
+
+  // Eagerly load the meetings list so the TasksPanel can extract unchecked
+  // taskItems from notes-mode meetings on first paint, instead of waiting
+  // for the user to navigate to the Meetings screen.
+  void useMeetingsStore.getState().loadMeetingsList();
 }
 
 useMeetingsStore.subscribe((state) => {

@@ -35,6 +35,7 @@ import {
   listMeetings,
 } from "@/lib/tauri";
 import { extractTiptapPlainText } from "@/lib/tiptapText";
+import { subscribeWorkflowStream } from "@/lib/workflowStream";
 
 interface RetrospectivesScreenProps {
   onBack: () => void;
@@ -326,6 +327,14 @@ function PrActivityCard({
 
 // ── Team breakdown card ───────────────────────────────────────────────────────
 
+// Treats "In Review" loosely: anything tagged review/testing/QA counts —
+// matches SprintDashboard's bucket so a ticket sitting in PR review shows
+// up in the same bar segment in both screens.
+function isInReviewIssue(issue: JiraIssue): boolean {
+  const s = issue.status.toLowerCase();
+  return s.includes("review") || s.includes("testing") || s.includes("qa");
+}
+
 function TeamBreakdownCard({ sprint, issues }: { sprint: JiraSprint; issues: JiraIssue[] }) {
   const devMap = new Map<string, JiraIssue[]>();
   for (const issue of issues) {
@@ -335,16 +344,26 @@ function TeamBreakdownCard({ sprint, issues }: { sprint: JiraSprint; issues: Jir
   }
 
   const devs = Array.from(devMap.entries())
-    .map(([name, devIssues]) => ({
-      name,
-      donePts: totalPoints(devIssues.filter((i) => isDone(i, sprint.endDate))),
-      assignedPts: totalPoints(devIssues),
-      doneCount: devIssues.filter((i) => isDone(i, sprint.endDate)).length,
-      totalCount: devIssues.length,
-    }))
-    .sort((a, b) => b.donePts - a.donePts);
-
-  const maxPts = Math.max(...devs.map((d) => d.assignedPts), 1);
+    .map(([name, devIssues]) => {
+      const done = devIssues.filter((i) => isDone(i, sprint.endDate));
+      // Reviewed/in-progress buckets are mutually exclusive with Done so a
+      // single ticket only contributes to one segment of the bar.
+      const remaining = devIssues.filter((i) => !isDone(i, sprint.endDate));
+      const inReview = remaining.filter(isInReviewIssue);
+      const inProgress = remaining.filter(
+        (i) => !isInReviewIssue(i) && i.statusCategory === "In Progress",
+      );
+      return {
+        name,
+        donePts: totalPoints(done),
+        assignedPts: totalPoints(devIssues),
+        doneCount: done.length,
+        inReviewCount: inReview.length,
+        inProgressCount: inProgress.length,
+        totalCount: devIssues.length,
+      };
+    })
+    .sort((a, b) => b.doneCount - a.doneCount);
 
   return (
     <Card>
@@ -352,24 +371,43 @@ function TeamBreakdownCard({ sprint, issues }: { sprint: JiraSprint; issues: Jir
         <CardTitle className="text-base">Team Breakdown</CardTitle>
       </CardHeader>
       <CardContent className="space-y-3">
-        {devs.map((dev) => (
-          <div key={dev.name} className="space-y-1">
-            <div className="flex items-center justify-between text-sm">
-              <span className="font-medium">{dev.name}</span>
-              <span className="text-xs text-muted-foreground tabular-nums">
-                {dev.doneCount}/{dev.totalCount} tickets · {dev.donePts}/{dev.assignedPts} pts
-              </span>
+        {devs.map((dev) => {
+          const activeCount =
+            dev.doneCount + dev.inReviewCount + dev.inProgressCount;
+          return (
+            <div key={dev.name} className="space-y-1">
+              <div className="flex items-center justify-between text-sm">
+                <span className="font-medium">{dev.name}</span>
+                <span className="text-xs text-muted-foreground tabular-nums">
+                  {activeCount}/{dev.totalCount} tickets · {dev.donePts}/{dev.assignedPts} pts
+                </span>
+              </div>
+              <div className="h-2 rounded-full bg-muted overflow-hidden flex">
+                {dev.totalCount > 0 && dev.doneCount > 0 && (
+                  <div
+                    className="h-full bg-emerald-500 transition-all"
+                    style={{ width: `${(dev.doneCount / dev.totalCount) * 100}%` }}
+                    title={`Done: ${dev.doneCount} ticket${dev.doneCount === 1 ? "" : "s"}`}
+                  />
+                )}
+                {dev.totalCount > 0 && dev.inReviewCount > 0 && (
+                  <div
+                    className="h-full bg-blue-500 transition-all"
+                    style={{ width: `${(dev.inReviewCount / dev.totalCount) * 100}%` }}
+                    title={`In Review: ${dev.inReviewCount} ticket${dev.inReviewCount === 1 ? "" : "s"}`}
+                  />
+                )}
+                {dev.totalCount > 0 && dev.inProgressCount > 0 && (
+                  <div
+                    className="h-full bg-amber-500 transition-all"
+                    style={{ width: `${(dev.inProgressCount / dev.totalCount) * 100}%` }}
+                    title={`In Progress: ${dev.inProgressCount} ticket${dev.inProgressCount === 1 ? "" : "s"}`}
+                  />
+                )}
+              </div>
             </div>
-            <div className="h-2 rounded-full bg-muted overflow-hidden">
-              <div
-                className="h-full rounded-full bg-emerald-500"
-                style={{
-                  width: `${maxPts > 0 ? (dev.donePts / maxPts) * 100 : 0}%`,
-                }}
-              />
-            </div>
-          </div>
-        ))}
+          );
+        })}
         {devs.length === 0 && (
           <p className="text-xs text-muted-foreground text-center py-2">
             No assigned issues found.
@@ -517,6 +555,11 @@ function AiSummaryPanel({
   async function generate() {
     setState("loading");
     setError("");
+    setSummary("");
+    const stream = await subscribeWorkflowStream(
+      "sprint-retrospective-workflow-event",
+      (text) => setSummary(text),
+    );
     try {
       // Pull meetings on demand rather than at screen mount — that way a
       // recently-recorded meeting is always reflected without a refresh.
@@ -529,6 +572,8 @@ function AiSummaryPanel({
     } catch (e) {
       setError(String(e));
       setState("error");
+    } finally {
+      await stream.dispose();
     }
   }
 
@@ -578,12 +623,13 @@ function AiSummaryPanel({
             and suggested discussion points for the retro meeting.
           </p>
         )}
-        {state === "loading" && (
+        {state === "loading" && !summary && (
           <div className="flex items-center gap-2 text-sm text-muted-foreground py-4 justify-center">
             <Loader2 className="h-4 w-4 animate-spin" />
             The AI is analysing the sprint…
           </div>
         )}
+        {state === "loading" && summary && <MarkdownBlock text={summary} />}
         {state === "error" && (
           <div className="flex items-start gap-2 rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
             <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5" />

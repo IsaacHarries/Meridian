@@ -1034,7 +1034,11 @@ function ActiveRecordingView({ onStopped }: { onStopped: () => void }) {
 
 function MeetingDetailView({ record }: { record: MeetingRecord }) {
   const busy = useMeetingsStore((s) => s.busy);
+  const summaryPartial = useMeetingsStore(
+    (s) => s.summaryStreamPartial[record.id],
+  );
   const summarizeSelected = useMeetingsStore((s) => s.summarizeSelected);
+  const generateTitleForSelected = useMeetingsStore((s) => s.generateTitleForSelected);
   const renameMeeting = useMeetingsStore((s) => s.renameMeeting);
   const setMeetingTags = useMeetingsStore((s) => s.setMeetingTags);
   const deleteSelectedMeeting = useMeetingsStore((s) => s.deleteSelectedMeeting);
@@ -1098,11 +1102,50 @@ function MeetingDetailView({ record }: { record: MeetingRecord }) {
     }
   }
 
+  // While a summary is streaming we render fields directly off the partial
+  // JSON (so they fill in live), otherwise off the saved record.
+  const hasPartial =
+    isBusy &&
+    summaryPartial != null &&
+    (!!summaryPartial.summary ||
+      (summaryPartial.actionItems?.length ?? 0) > 0 ||
+      (summaryPartial.decisions?.length ?? 0) > 0 ||
+      (summaryPartial.perPerson?.length ?? 0) > 0);
+  const summaryView: {
+    summary: string | null;
+    actionItems: string[];
+    decisions: string[];
+    perPerson: { name: string; summary: string; actionItems: string[] }[];
+  } = hasPartial
+    ? {
+        summary: summaryPartial?.summary ?? null,
+        actionItems: (summaryPartial?.actionItems ?? []).filter(
+          (s): s is string => typeof s === "string",
+        ),
+        decisions: (summaryPartial?.decisions ?? []).filter(
+          (s): s is string => typeof s === "string",
+        ),
+        perPerson: (summaryPartial?.perPerson ?? [])
+          .filter((p) => p && typeof p === "object")
+          .map((p) => ({
+            name: typeof p.name === "string" ? p.name : "",
+            summary: typeof p.summary === "string" ? p.summary : "",
+            actionItems: Array.isArray(p.actionItems)
+              ? p.actionItems.filter((a): a is string => typeof a === "string")
+              : [],
+          })),
+      }
+    : {
+        summary: record.summary,
+        actionItems: record.actionItems,
+        decisions: record.decisions,
+        perPerson: record.perPerson ?? [],
+      };
   const hasSummary =
-    !!record.summary ||
-    record.actionItems.length > 0 ||
-    record.decisions.length > 0 ||
-    (record.perPerson?.length ?? 0) > 0;
+    !!summaryView.summary ||
+    summaryView.actionItems.length > 0 ||
+    summaryView.decisions.length > 0 ||
+    summaryView.perPerson.length > 0;
   // For notes-mode the buffer holds a serialised TipTap document; an "empty"
   // doc is `{"type":"doc","content":[{"type":"paragraph"}]}`, which still has
   // length > 0. Strip down to plain text before judging emptiness.
@@ -1122,13 +1165,37 @@ function MeetingDetailView({ record }: { record: MeetingRecord }) {
       )}
     >
       <div className="flex items-start gap-3">
-        <Input
-          value={title}
-          onChange={(e) => setTitle(e.target.value)}
-          onBlur={saveTitleIfChanged}
-          placeholder={isBusy ? "Generating title…" : "Untitled meeting"}
-          className="text-lg font-semibold h-10"
-        />
+        <div className="relative flex-1">
+          <Input
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            onBlur={saveTitleIfChanged}
+            placeholder={isBusy ? "Generating title…" : "Untitled meeting"}
+            // Right-pad so the inline generate button never overlaps text.
+            className="text-lg font-semibold h-10 pr-10"
+          />
+          {/* Inline regenerate button — only renders when the title field is
+              empty, so a meeting with a real title doesn't show a stray
+              control inside the field. Disabled (and hidden) once present
+              text is typed; clicking generates a title from the meeting
+              content, or falls back to date+time when content is empty. */}
+          {title.trim().length === 0 && (
+            <button
+              type="button"
+              onClick={() => void generateTitleForSelected()}
+              disabled={isBusy}
+              aria-label="Generate title with AI"
+              title="Generate title"
+              className="absolute right-1.5 top-1/2 -translate-y-1/2 inline-flex h-7 w-7 items-center justify-center rounded text-muted-foreground hover:text-foreground hover:bg-muted disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {isBusy ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <Sparkles className="h-4 w-4" />
+              )}
+            </button>
+          )}
+        </div>
         <Button
           variant="outline"
           size="sm"
@@ -1256,44 +1323,50 @@ function MeetingDetailView({ record }: { record: MeetingRecord }) {
               </Card>
             ) : (
               <div className="space-y-3">
-                {record.summary && (
+                {hasPartial && (
+                  <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    <span>Generating summary…</span>
+                  </div>
+                )}
+                {summaryView.summary && (
                   <Card>
                     <CardContent className="p-4 space-y-1">
                       <p className="text-xs font-medium text-muted-foreground">Overview</p>
-                      <p className="text-sm whitespace-pre-wrap">{record.summary}</p>
+                      <p className="text-sm whitespace-pre-wrap">{summaryView.summary}</p>
                     </CardContent>
                   </Card>
                 )}
-                {record.decisions.length > 0 && (
+                {summaryView.decisions.length > 0 && (
                   <Card>
                     <CardContent className="p-4 space-y-2">
                       <p className="text-xs font-medium text-muted-foreground">Decisions</p>
                       <ul className="list-disc list-inside space-y-1 text-sm">
-                        {record.decisions.map((d, i) => (
+                        {summaryView.decisions.map((d, i) => (
                           <li key={i}>{d}</li>
                         ))}
                       </ul>
                     </CardContent>
                   </Card>
                 )}
-                {record.actionItems.length > 0 && (
+                {summaryView.actionItems.length > 0 && (
                   <Card>
                     <CardContent className="p-4 space-y-2">
                       <p className="text-xs font-medium text-muted-foreground">Action items</p>
                       <ul className="list-disc list-inside space-y-1 text-sm">
-                        {record.actionItems.map((a, i) => (
+                        {summaryView.actionItems.map((a, i) => (
                           <li key={i}>{a}</li>
                         ))}
                       </ul>
                     </CardContent>
                   </Card>
                 )}
-                {(record.perPerson?.length ?? 0) > 0 && (
+                {summaryView.perPerson.length > 0 && (
                   <Card>
                     <CardContent className="p-4 space-y-3">
                       <p className="text-xs font-medium text-muted-foreground">Per person</p>
                       <div className="space-y-3">
-                        {record.perPerson.map((p, i) => (
+                        {summaryView.perPerson.map((p, i) => (
                           <div key={i} className="space-y-1">
                             <p className="text-sm font-medium">{p.name}</p>
                             {p.summary && (
@@ -1497,6 +1570,7 @@ function SpeakerRow({
 
 function MeetingChatPanel({ record }: { record: MeetingRecord }) {
   const busy = useMeetingsStore((s) => s.busy);
+  const streamText = useMeetingsStore((s) => s.chatStreamText);
   const sendChatMessage = useMeetingsStore((s) => s.sendChatMessage);
   const summarizeSelected = useMeetingsStore((s) => s.summarizeSelected);
   const clearSelectedChat = useMeetingsStore((s) => s.clearSelectedChat);
@@ -1657,8 +1731,14 @@ function MeetingChatPanel({ record }: { record: MeetingRecord }) {
         )}
         {isBusy && (
           <div className="flex justify-start pt-1">
-            <div className="bg-muted rounded-lg px-3 py-2 flex items-center gap-2 text-sm text-muted-foreground">
-              <Loader2 className="h-3.5 w-3.5 animate-spin" /> Thinking…
+            <div className="bg-muted rounded-lg px-3 py-2 max-w-[90%] text-sm leading-relaxed text-foreground whitespace-pre-wrap">
+              {streamText[record.id] ? (
+                streamText[record.id]
+              ) : (
+                <span className="flex items-center gap-2 text-muted-foreground">
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" /> Thinking…
+                </span>
+              )}
             </div>
           </div>
         )}

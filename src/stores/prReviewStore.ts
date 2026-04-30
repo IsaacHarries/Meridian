@@ -23,8 +23,7 @@ import {
   getPrTasks,
   getIssue,
   getNonSecretConfig,
-  reviewPr,
-  parseReviewReport,
+  runPrReviewWorkflow,
   chatPrReview,
   checkoutPrReviewBranch,
   readRepoFile,
@@ -39,6 +38,7 @@ import {
   deletePrComment,
   updatePrComment,
   cancelReview,
+  isMockMode,
 } from "@/lib/tauri";
 import { listen } from "@tauri-apps/api/event";
 
@@ -62,6 +62,9 @@ export interface PrSession {
   /** True while a background staleness check + diff/comment refresh is in progress. */
   checkingForUpdates: boolean;
   report: ReviewReport | null;
+  /** Partially-parsed report streamed from the sidecar synthesis nodes —
+   *  populated while `reviewing`, cleared when the final `report` is set. */
+  partialReport: Partial<ReviewReport> | null;
   rawError: string | null;
   reviewing: boolean;
   reviewProgress: string;
@@ -97,6 +100,7 @@ function emptySession(): PrSession {
     loadingDetails: false,
     checkingForUpdates: false,
     report: null,
+    partialReport: null,
     rawError: null,
     reviewing: false,
     reviewProgress: "",
@@ -348,7 +352,7 @@ export const usePrReviewStore = create<PrReviewState>()(
       const { linkedIssue } = session;
 
       patchSession(selectedPr.id, {
-        reviewing: true, report: null, rawError: null,
+        reviewing: true, report: null, partialReport: null, rawError: null,
         reviewStreamText: "", reviewProgress: "Fetching latest diff…", reviewChat: [],
         diffStale: false,  // user has acknowledged any staleness by running a fresh review
       });
@@ -377,39 +381,46 @@ export const usePrReviewStore = create<PrReviewState>()(
         // and worktreeBranch matches), skip the checkout to avoid an unnecessary stash
         // + reset cycle. The user can press "Pull branch" manually if they want to
         // refresh to the latest remote commits.
+        //
+        // Mock mode: skip the checkout entirely. The mocked PR refers to a repo
+        // that doesn't exist locally, so `git fetch origin <branch>` would fail
+        // with "'origin' does not appear to be a git repository". The mock diff
+        // is enough for the AI to review.
         if (!selectedPr.sourceBranch) {
           throw new Error("PR has no source branch — cannot check out worktree.");
         }
 
-        const session = get().sessions.get(selectedPr.id);
-        const alreadyCheckedOut =
-          session?.checkoutStatus === "ready" &&
-          session?.worktreeBranch === selectedPr.sourceBranch;
+        let worktreeBranch: string = selectedPr.sourceBranch;
+        if (!isMockMode()) {
+          const session = get().sessions.get(selectedPr.id);
+          const alreadyCheckedOut =
+            session?.checkoutStatus === "ready" &&
+            session?.worktreeBranch === selectedPr.sourceBranch;
 
-        let worktreeBranch: string;
-        if (alreadyCheckedOut) {
-          worktreeBranch = session!.worktreeBranch!;
-          patchSession(selectedPr.id, {
-            reviewProgress: `Branch ${worktreeBranch} already checked out — skipping checkout…`,
-          });
-        } else {
-          patchSession(selectedPr.id, {
-            checkoutStatus: "checking-out",
-            reviewProgress: `Checking out branch ${selectedPr.sourceBranch}…`,
-          });
-
-          try {
-            const info = await checkoutPrReviewBranch(selectedPr.sourceBranch);
-            worktreeBranch = info.branch;
+          if (alreadyCheckedOut) {
+            worktreeBranch = session!.worktreeBranch!;
             patchSession(selectedPr.id, {
-              worktreeBranch: info.branch,
-              checkoutStatus: "ready",
-              diffUpdatedOn: selectedPr.updatedOn,  // record timestamp at review time
+              reviewProgress: `Branch ${worktreeBranch} already checked out — skipping checkout…`,
             });
-          } catch (e) {
-            patchSession(selectedPr.id, { checkoutStatus: "error", checkoutError: String(e) });
-            // Re-throw so the outer catch aborts the review with a visible error
-            throw new Error(`Branch checkout failed — cannot review until the worktree is on the correct branch.\n\n${String(e)}`);
+          } else {
+            patchSession(selectedPr.id, {
+              checkoutStatus: "checking-out",
+              reviewProgress: `Checking out branch ${selectedPr.sourceBranch}…`,
+            });
+
+            try {
+              const info = await checkoutPrReviewBranch(selectedPr.sourceBranch);
+              worktreeBranch = info.branch;
+              patchSession(selectedPr.id, {
+                worktreeBranch: info.branch,
+                checkoutStatus: "ready",
+                diffUpdatedOn: selectedPr.updatedOn, // record timestamp at review time
+              });
+            } catch (e) {
+              patchSession(selectedPr.id, { checkoutStatus: "error", checkoutError: String(e) });
+              // Re-throw so the outer catch aborts the review with a visible error
+              throw new Error(`Branch checkout failed — cannot review until the worktree is on the correct branch.\n\n${String(e)}`);
+            }
           }
         }
 
@@ -418,46 +429,76 @@ export const usePrReviewStore = create<PrReviewState>()(
         let fullReviewText = buildReviewText(selectedPr, diff, linkedIssue);
 
         // ── Step 3: enrich with full file contents from the checked-out branch ──
-        patchSession(selectedPr.id, { reviewProgress: `Reading changed files from branch ${worktreeBranch}…` });
+        // Skipped in mock mode — there is no real worktree to read from.
+        if (!isMockMode()) {
+          patchSession(selectedPr.id, { reviewProgress: `Reading changed files from branch ${worktreeBranch}…` });
+          try {
+            const changedFiles = diff
+              .split("\n")
+              .filter((l) => l.startsWith("diff --git"))
+              .map((l) => { const m = l.match(/b\/(.+)$/); return m ? m[1] : null; })
+              .filter(Boolean) as string[];
+
+            const MAX_FILE_BYTES = 30 * 1024;
+            const parts: string[] = [];
+            let total = 0;
+
+            for (const f of changedFiles.slice(0, 8)) {
+              try {
+                const content = await readRepoFile(f);
+                const chunk = `--- ${f} ---\n${content}\n`;
+                if (total + chunk.length > MAX_FILE_BYTES) break;
+                parts.push(chunk);
+                total += chunk.length;
+              } catch { /* skip individual unreadable files */ }
+            }
+
+            if (parts.length > 0) {
+              fullReviewText +=
+                `\n\n=== FULL FILE CONTENTS FROM BRANCH (for deeper context) ===\n` +
+                `INSTRUCTION: Use these full file contents to VERIFY any finding about undefined types, ` +
+                `missing definitions, duplicate fields, or compilation errors before reporting them. ` +
+                `Definitions that are not visible in the diff alone (e.g. a new type added in the same ` +
+                `file outside the changed hunk) WILL appear here. If the referenced identifier is ` +
+                `present in these file contents, drop or downgrade the finding accordingly.\n` +
+                parts.join("\n");
+            }
+          } catch { /* non-fatal — proceed with diff-only context */ }
+        }
+
+        // Subscribe to streaming partial-report events from the sidecar
+        // synthesis. Throttle Zustand writes via a flush timer so a token-
+        // heavy stream cannot flood React re-renders.
+        const prId = selectedPr.id;
+        let pendingPartial: Partial<ReviewReport> | null = null;
+        let partialFlushTimer: ReturnType<typeof setTimeout> | null = null;
+        const flushPartial = () => {
+          partialFlushTimer = null;
+          if (!pendingPartial) return;
+          usePrReviewStore.getState()._patchSession(prId, {
+            partialReport: pendingPartial,
+          });
+          pendingPartial = null;
+        };
+        const unlistenPartial = await listen<{
+          kind?: string;
+          data?: { partialReport?: Partial<ReviewReport> };
+        }>("pr-review-workflow-event", (event) => {
+          if (event.payload.kind !== "progress") return;
+          const partial = event.payload.data?.partialReport;
+          if (!partial || typeof partial !== "object") return;
+          pendingPartial = partial;
+          if (partialFlushTimer === null) {
+            partialFlushTimer = setTimeout(flushPartial, 80);
+          }
+        });
+
         try {
-          const changedFiles = diff
-            .split("\n")
-            .filter((l) => l.startsWith("diff --git"))
-            .map((l) => { const m = l.match(/b\/(.+)$/); return m ? m[1] : null; })
-            .filter(Boolean) as string[];
-
-          const MAX_FILE_BYTES = 30 * 1024;
-          const parts: string[] = [];
-          let total = 0;
-
-          for (const f of changedFiles.slice(0, 8)) {
-            try {
-              const content = await readRepoFile(f);
-              const chunk = `--- ${f} ---\n${content}\n`;
-              if (total + chunk.length > MAX_FILE_BYTES) break;
-              parts.push(chunk);
-              total += chunk.length;
-            } catch { /* skip individual unreadable files */ }
-          }
-
-          if (parts.length > 0) {
-            fullReviewText +=
-              `\n\n=== FULL FILE CONTENTS FROM BRANCH (for deeper context) ===\n` +
-              `INSTRUCTION: Use these full file contents to VERIFY any finding about undefined types, ` +
-              `missing definitions, duplicate fields, or compilation errors before reporting them. ` +
-              `Definitions that are not visible in the diff alone (e.g. a new type added in the same ` +
-              `file outside the changed hunk) WILL appear here. If the referenced identifier is ` +
-              `present in these file contents, drop or downgrade the finding accordingly.\n` +
-              parts.join("\n");
-          }
-        } catch { /* non-fatal — proceed with diff-only context */ }
-
-        const raw = await reviewPr(fullReviewText);
-        const parsed = parseReviewReport(raw);
-        if (parsed) {
-          patchSession(selectedPr.id, { report: parsed });
-        } else {
-          patchSession(selectedPr.id, { rawError: raw });
+          const parsed = await runPrReviewWorkflow(fullReviewText);
+          patchSession(selectedPr.id, { report: parsed, partialReport: null });
+        } finally {
+          if (partialFlushTimer !== null) clearTimeout(partialFlushTimer);
+          unlistenPartial();
         }
       } catch (e) {
         const errMsg = String(e);
@@ -563,9 +604,13 @@ export const usePrReviewStore = create<PrReviewState>()(
       const chatAcc = { text: "" };
       let chatFlushTimer: ReturnType<typeof setTimeout> | null = null;
 
-      const unlisten = await listen<{ delta: string }>(
-        "pr-review-chat-stream",
+      const unlisten = await listen<{
+        kind?: string;
+        delta?: string;
+      }>(
+        "pr-review-chat-workflow-event",
         (event) => {
+          if (event.payload.kind !== "stream" || !event.payload.delta) return;
           chatAcc.text += event.payload.delta;
           if (chatFlushTimer !== null) return;
           chatFlushTimer = setTimeout(() => {
@@ -762,6 +807,7 @@ function serializableState(s: PrReviewState) {
           reviewProgress: "",
           reviewStreamText: "",
           reviewChatStreamText: "",
+          partialReport: null,
           // Always reset checkout status on persist — the branch is re-checked-out
           // at the start of each review run, so a stale "error" or "ready" status
           // from a previous session should never be restored.
@@ -808,6 +854,7 @@ export async function hydratePrReviewStore(): Promise<void> {
       // never persists across app restarts.
       comments: [],
       tasks: [],
+      partialReport: null,
       commentCountAtFetch: 0,
       commentsLastFetchedAt: null,
       hasNewComments: false,

@@ -78,6 +78,31 @@ function confidenceBadgeVariant(confidence: FixProposal["confidence"]) {
   return "destructive";
 }
 
+function buildFixPlanFromPartial(arr: unknown[]): FixProposal[] {
+  return arr
+    .filter((item): item is Record<string, unknown> =>
+      item != null && typeof item === "object",
+    )
+    .map((item) => ({
+      commentId: Number(item.commentId ?? 0),
+      file: (item.file as string) ?? null,
+      fromLine: item.fromLine != null ? Number(item.fromLine) : null,
+      toLine: item.toLine != null ? Number(item.toLine) : null,
+      reviewerName: String(item.reviewerName ?? "Reviewer"),
+      commentSummary: String(item.commentSummary ?? ""),
+      proposedFix: String(item.proposedFix ?? ""),
+      confidence: (item.confidence as FixProposal["confidence"]) ?? "Medium",
+      affectedFiles: Array.isArray(item.affectedFiles)
+        ? (item.affectedFiles as string[])
+        : item.file ? [item.file as string] : [],
+      newContent: (item.newContent as string) ?? null,
+      skippable: Boolean(item.skippable),
+      approved: (item.confidence as string) !== "Needs human judgment",
+      skipped: false,
+      annotation: "",
+    }));
+}
+
 function parseFixPlan(raw: string): FixProposal[] {
   try {
     const cleaned = raw
@@ -448,6 +473,17 @@ export function AddressPrCommentsScreen({ credStatus, onBack }: Props) {
       streamRef.current += event.payload;
       setStreamBuffer(streamRef.current);
     });
+    // Subscribe to partial-parsed JSON from the sidecar so the fix cards
+    // populate live as the model produces them.
+    const unlistenPartial = await listen<{
+      kind?: string;
+      data?: { partial?: unknown };
+    }>("analyze-pr-comments-workflow-event", (event) => {
+      if (event.payload.kind !== "progress") return;
+      const partial = event.payload.data?.partial;
+      if (!Array.isArray(partial)) return;
+      setFixPlan(buildFixPlanFromPartial(partial));
+    });
 
     try {
       const raw = await analyzePrComments(reviewText);
@@ -466,6 +502,7 @@ export function AddressPrCommentsScreen({ credStatus, onBack }: Props) {
       setStepError(String(e));
     } finally {
       unlisten();
+      unlistenPartial();
     }
   }
 
@@ -573,9 +610,13 @@ export function AddressPrCommentsScreen({ credStatus, onBack }: Props) {
     );
 
     let response = "";
-    const unlisten = await listen<string>("address-pr-chat-stream", (event) => {
-      response += event.payload;
-    });
+    const unlisten = await listen<{ kind?: string; delta?: string }>(
+      "address-pr-chat-workflow-event",
+      (event) => {
+        if (event.payload.kind !== "stream" || !event.payload.delta) return;
+        response += event.payload.delta;
+      },
+    );
 
     try {
       const result = await chatAddressPr(contextText, historyJson);

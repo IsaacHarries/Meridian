@@ -35,6 +35,7 @@ import {
   listTrendAnalyses,
   deleteTrendAnalysis,
 } from "@/lib/tauri";
+import { subscribeWorkflowStream } from "@/lib/workflowStream";
 
 // ── Input transformation ──────────────────────────────────────────────────────
 
@@ -153,6 +154,7 @@ export function TrendAnalysisPanel({ sprints }: Props) {
   const [historyLoading, setHistoryLoading] = useState(false);
   const [copied, setCopied] = useState(false);
   const [resultCollapsed, setResultCollapsed] = useState(false);
+  const [streamText, setStreamText] = useState("");
 
   // Auto-expand when a different result is opened (or a new one completes).
   const currentRecordId = phase.kind === "result" ? phase.record.id : null;
@@ -254,6 +256,11 @@ export function TrendAnalysisPanel({ sprints }: Props) {
     }
 
     setPhase({ kind: "analyzing" });
+    setStreamText("");
+    const stream = await subscribeWorkflowStream(
+      "multi-sprint-trends-workflow-event",
+      (t) => setStreamText(t),
+    );
     try {
       // Oldest → newest so "trend direction" language maps naturally.
       loaded.sort((a, b) => {
@@ -286,6 +293,9 @@ export function TrendAnalysisPanel({ sprints }: Props) {
       setPhase({ kind: "result", record, fromHistory: false });
     } catch (e) {
       setPhase({ kind: "error", message: String(e) });
+    } finally {
+      await stream.dispose();
+      setStreamText("");
     }
   }
 
@@ -447,11 +457,20 @@ export function TrendAnalysisPanel({ sprints }: Props) {
           </div>
         )}
 
-        {phase.kind === "analyzing" && (
+        {phase.kind === "analyzing" && !streamText && (
           <div className="flex flex-col items-center justify-center py-12 gap-3 text-sm text-muted-foreground">
             <Loader2 className="h-6 w-6 animate-spin text-purple-400" />
             <p>The AI is analysing trends across the selected sprints…</p>
             <p className="text-xs opacity-70">This typically takes 15–45 seconds.</p>
+          </div>
+        )}
+        {phase.kind === "analyzing" && streamText && (
+          <div className="space-y-2">
+            <div className="flex items-center gap-2 text-xs text-muted-foreground">
+              <Loader2 className="h-3.5 w-3.5 animate-spin text-purple-400" />
+              <span>Analysing trends…</span>
+            </div>
+            <MarkdownBlock text={streamText} />
           </div>
         )}
 

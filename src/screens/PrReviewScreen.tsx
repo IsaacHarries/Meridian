@@ -2374,7 +2374,8 @@ export function PrReviewScreen({ credStatus, onBack }: PrReviewScreenProps) {
     comments: [] as import("@/lib/tauri").BitbucketComment[],
     commentCountAtFetch: 0, commentsLastFetchedAt: null as string | null, hasNewComments: false,
     linkedIssue: null, loadingDetails: false, checkingForUpdates: false,
-    report: null, rawError: null, reviewing: false,
+    report: null, partialReport: null as Partial<import("@/lib/tauri").ReviewReport> | null,
+    rawError: null, reviewing: false,
     reviewProgress: "", reviewStreamText: "", reviewChatStreamText: "",
     worktreeBranch: null, checkoutStatus: "idle" as const, checkoutError: "",
     submitAction: null, submitStatus: "idle" as const, submitError: "",
@@ -2387,7 +2388,7 @@ export function PrReviewScreen({ credStatus, onBack }: PrReviewScreenProps) {
   const myPostedCommentIds = session.myPostedCommentIds ?? [];
   const tasks = session.tasks ?? [];
   const {
-    diff, linkedIssue, loadingDetails, report, rawError, reviewing,
+    diff, linkedIssue, loadingDetails, report, partialReport, rawError, reviewing,
     reviewProgress, reviewStreamText, worktreeBranch, checkoutStatus, checkoutError,
     submitAction, submitStatus, submitError, reviewChat, reviewChatStreamText,
     diffStale, checkingForUpdates,
@@ -2684,9 +2685,23 @@ export function PrReviewScreen({ credStatus, onBack }: PrReviewScreenProps) {
     setTimeout(() => setCopiedSummary(false), 2000);
   }
 
+  // Display report: prefer the final, validated report; otherwise show the
+  // partial JSON streamed from the synthesis node so the UI populates the
+  // summary and per-lens cards live as the model produces them.
+  const displayReport: Partial<ReviewReport> | null = report ?? partialReport;
+
+  function safeLens(lens?: Partial<ReviewLens>): ReviewLens {
+    return {
+      assessment: lens?.assessment ?? "",
+      findings: Array.isArray(lens?.findings)
+        ? (lens!.findings as ReviewLens["findings"]).filter((f) => f && typeof f === "object")
+        : [],
+    };
+  }
+
   // Count total blocking issues
-  const blockingTotal = report
-    ? Object.values(report.lenses).flatMap((l) => l.findings).filter((f) => f.severity === "blocking").length
+  const blockingTotal = displayReport?.lenses
+    ? Object.values(displayReport.lenses).flatMap((l) => safeLens(l).findings).filter((f) => f.severity === "blocking").length
     : 0;
 
   /**
@@ -2756,8 +2771,8 @@ export function PrReviewScreen({ credStatus, onBack }: PrReviewScreenProps) {
   }
 
   const lensTabLabel = (key: keyof ReviewReport["lenses"], icon: React.ReactNode, label: string) => {
-    if (!report) return <>{icon}<span className="hidden sm:inline ml-1">{label}</span></>;
-    const count = report.lenses[key].findings.filter((f) => f.severity === "blocking").length;
+    if (!displayReport?.lenses) return <>{icon}<span className="hidden sm:inline ml-1">{label}</span></>;
+    const count = safeLens(displayReport.lenses[key]).findings.filter((f) => f.severity === "blocking").length;
     return (
       <span className="flex items-center gap-1">
         {icon}
@@ -3072,26 +3087,33 @@ export function PrReviewScreen({ credStatus, onBack }: PrReviewScreenProps) {
                   )}
 
                   {/* Verdict + summary + Bitbucket submit + error */}
-                  {(report || rawError) && !reviewing && (
+                  {(displayReport || rawError) && (
                   <div className="p-4 border-b space-y-3">
-                    {report && (
+                    {displayReport && (
                       <div className="space-y-2">
                         <div className="flex items-center justify-between">
-                          <VerdictBadge overall={report.overall} />
+                          {displayReport.overall ? (
+                            <VerdictBadge overall={displayReport.overall} />
+                          ) : (
+                            <span className="text-xs text-muted-foreground italic">Verdict pending…</span>
+                          )}
                           {blockingTotal > 0 && (
                             <span className="text-xs text-red-600 dark:text-red-400 font-medium">
                               {blockingTotal} blocking {blockingTotal === 1 ? "issue" : "issues"}
                             </span>
                           )}
                         </div>
-                        <p className="text-sm text-muted-foreground leading-relaxed">{report.summary}</p>
+                        {displayReport.summary && (
+                          <p className="text-sm text-muted-foreground leading-relaxed">{displayReport.summary}</p>
+                        )}
 
-                        {/* Bug test steps */}
-                        {report.bug_test_steps && (
+                        {/* Bug test steps — only show on the final report */}
+                        {report && report.bug_test_steps && (
                           <BugTestStepsCard steps={report.bug_test_steps} />
                         )}
 
-                        {/* Submit to Bitbucket */}
+                        {/* Submit to Bitbucket — only after the final, validated report */}
+                        {report && !reviewing && (
                         <div className="pt-1 space-y-2">
                           <p className="text-xs text-muted-foreground font-medium uppercase tracking-wide">Submit to Bitbucket</p>
                           <div className="flex items-center gap-2 flex-wrap">
@@ -3140,6 +3162,7 @@ export function PrReviewScreen({ credStatus, onBack }: PrReviewScreenProps) {
                             )}
                           </div>
                         </div>
+                        )}
                       </div>
                     )}
 
@@ -3154,8 +3177,9 @@ export function PrReviewScreen({ credStatus, onBack }: PrReviewScreenProps) {
                   </div>
                 )}
 
-                {/* Findings tabs */}
-                {report && !reviewing && (
+                {/* Findings tabs — render against displayReport so cards
+                    populate live as the synthesis JSON streams in. */}
+                {displayReport?.lenses && (
                   <div className="p-4">
                     <Tabs defaultValue="acceptance_criteria">
                       <TabsList className="grid grid-cols-5 w-full">
@@ -3176,19 +3200,19 @@ export function PrReviewScreen({ credStatus, onBack }: PrReviewScreenProps) {
                         </TabsTrigger>
                       </TabsList>
                       <TabsContent value="acceptance_criteria" className="mt-4">
-                        <LensPanel lens={report.lenses.acceptance_criteria} onJumpToFile={jumpToFile} onPostComment={postFindingComment} />
+                        <LensPanel lens={safeLens(displayReport.lenses.acceptance_criteria)} onJumpToFile={jumpToFile} onPostComment={postFindingComment} />
                       </TabsContent>
                       <TabsContent value="security" className="mt-4">
-                        <LensPanel lens={report.lenses.security} onJumpToFile={jumpToFile} onPostComment={postFindingComment} />
+                        <LensPanel lens={safeLens(displayReport.lenses.security)} onJumpToFile={jumpToFile} onPostComment={postFindingComment} />
                       </TabsContent>
                       <TabsContent value="logic" className="mt-4">
-                        <LensPanel lens={report.lenses.logic} onJumpToFile={jumpToFile} onPostComment={postFindingComment} />
+                        <LensPanel lens={safeLens(displayReport.lenses.logic)} onJumpToFile={jumpToFile} onPostComment={postFindingComment} />
                       </TabsContent>
                       <TabsContent value="quality" className="mt-4">
-                        <LensPanel lens={report.lenses.quality} onJumpToFile={jumpToFile} onPostComment={postFindingComment} />
+                        <LensPanel lens={safeLens(displayReport.lenses.quality)} onJumpToFile={jumpToFile} onPostComment={postFindingComment} />
                       </TabsContent>
                       <TabsContent value="testing" className="mt-4">
-                        <LensPanel lens={report.lenses.testing ?? { assessment: "No testing analysis available.", findings: [] }} onJumpToFile={jumpToFile} onPostComment={postFindingComment} />
+                        <LensPanel lens={safeLens(displayReport.lenses.testing) ?? { assessment: "No testing analysis available.", findings: [] }} onJumpToFile={jumpToFile} onPostComment={postFindingComment} />
                       </TabsContent>
                     </Tabs>
                   </div>
@@ -3270,14 +3294,17 @@ export function PrReviewScreen({ credStatus, onBack }: PrReviewScreenProps) {
                 )}
 
                 {/* Empty state */}
-                {!report && !reviewing && !rawError && (
+                {!displayReport && !reviewing && !rawError && (
                   <div className="flex items-center justify-center h-full text-sm text-muted-foreground p-6 text-center">
                     Run the AI review to see findings across four lenses
                   </div>
                 )}
 
-                {/* Reviewing progress */}
-                {reviewing && (
+                {/* Reviewing progress — show the spinner banner only while we
+                    don't yet have a partial report to display. Once partial
+                    JSON starts arriving, the verdict/summary/lens cards above
+                    take over and the banner would just be redundant chrome. */}
+                {reviewing && !displayReport?.lenses && (
                   <div className="p-4 space-y-3">
                     <ReviewProgressBanner
                       message={reviewProgress || "Analysing diff…"}

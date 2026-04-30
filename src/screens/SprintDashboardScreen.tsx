@@ -49,6 +49,7 @@ import {
 import { classifyWorkloads } from "@/lib/workloadClassifier";
 import { getIgnoredDevs, setIgnoredDevs } from "@/lib/preferences";
 import { useWorkloadAlertStore } from "@/stores/workloadAlertStore";
+import { subscribeWorkflowStream } from "@/lib/workflowStream";
 
 interface SprintDashboardScreenProps {
   credStatus: CredentialStatus;
@@ -1780,6 +1781,7 @@ function SprintChatPanel({
   const [history, setHistory] = useState<ChatTurn[]>([]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
+  const [streamText, setStreamText] = useState("");
   const bottomRef = useRef<HTMLDivElement>(null);
 
   // Keep a ref so callbacks see the latest snapshot without having to rebuild
@@ -1806,7 +1808,12 @@ function SprintChatPanel({
       const userMsg: ChatTurn = { role: "user", content: text };
       const nextHistory: ChatTurn[] = [...history, userMsg];
       setHistory(nextHistory);
+      setStreamText("");
       setBusy(true);
+      const stream = await subscribeWorkflowStream(
+        "sprint-dashboard-chat-workflow-event",
+        (t) => setStreamText(t),
+      );
       try {
         const context = buildSprintContext(dataRef.current);
         const reply = await chatSprintDashboard(
@@ -1820,6 +1827,8 @@ function SprintChatPanel({
       } catch (e) {
         toast.error("Chat failed", { description: String(e) });
       } finally {
+        await stream.dispose();
+        setStreamText("");
         setBusy(false);
       }
     },
@@ -1841,7 +1850,12 @@ function SprintChatPanel({
     const userMsg: ChatTurn = { role: "user", content: "/rebalance" };
     const nextHistory: ChatTurn[] = [...history, userMsg];
     setHistory(nextHistory);
+    setStreamText("");
     setBusy(true);
+    const stream = await subscribeWorkflowStream(
+      "workload-suggestions-workflow-event",
+      (t) => setStreamText(t),
+    );
     try {
       const text = formatWorkloadForClaude(sprint, workloads, unstarted);
       const result = await generateWorkloadSuggestions(text);
@@ -1852,6 +1866,8 @@ function SprintChatPanel({
     } catch (e) {
       toast.error("Rebalance failed", { description: String(e) });
     } finally {
+      await stream.dispose();
+      setStreamText("");
       setBusy(false);
     }
   }, [history, aiAvailable]);
@@ -2003,8 +2019,14 @@ function SprintChatPanel({
         )}
         {busy && (
           <div className="flex justify-start pt-1">
-            <div className="bg-muted rounded-lg px-3 py-2 flex items-center gap-2 text-sm text-muted-foreground">
-              <Loader2 className="h-3.5 w-3.5 animate-spin" /> Thinking…
+            <div className="bg-muted rounded-lg px-3 py-2 max-w-[90%] text-sm leading-relaxed text-foreground whitespace-pre-wrap">
+              {streamText ? (
+                streamText
+              ) : (
+                <span className="flex items-center gap-2 text-muted-foreground">
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" /> Thinking…
+                </span>
+              )}
             </div>
           </div>
         )}
