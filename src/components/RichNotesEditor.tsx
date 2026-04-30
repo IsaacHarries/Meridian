@@ -364,7 +364,13 @@ function Toolbar({
           ? "h2"
           : editor.isActive("heading", { level: 3 })
             ? "h3"
-            : "paragraph",
+            : editor.isActive("heading", { level: 4 })
+              ? "h4"
+              : editor.isActive("heading", { level: 5 })
+                ? "h5"
+                : editor.isActive("heading", { level: 6 })
+                  ? "h6"
+                  : "paragraph",
       isBold: editor.isActive("bold"),
       isItalic: editor.isActive("italic"),
       isUnderline: editor.isActive("underline"),
@@ -385,7 +391,7 @@ function Toolbar({
       editor.chain().focus().setParagraph().run();
       return;
     }
-    const level = Number(value.slice(1)) as 1 | 2 | 3;
+    const level = Number(value.slice(1)) as 1 | 2 | 3 | 4 | 5 | 6;
     editor.chain().focus().setHeading({ level }).run();
   }
 
@@ -410,6 +416,9 @@ function Toolbar({
         <option value="h1">Heading 1</option>
         <option value="h2">Heading 2</option>
         <option value="h3">Heading 3</option>
+        <option value="h4">Heading 4</option>
+        <option value="h5">Heading 5</option>
+        <option value="h6">Heading 6</option>
       </select>
       <Divider />
       <ToolButton

@@ -1,0 +1,61 @@
+import { ChatAnthropic } from "@langchain/anthropic";
+import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
+import { ChatOllama } from "@langchain/ollama";
+import type { BaseChatModel } from "@langchain/core/language_models/chat_models";
+import type { ModelSelection } from "../protocol.js";
+import { ClaudeOAuthChatModel } from "./anthropic-oauth.js";
+import { GeminiCodeAssistChatModel } from "./gemini-codeassist.js";
+import { CopilotChatModel } from "./copilot.js";
+
+export function buildModel(selection: ModelSelection): BaseChatModel {
+  const { model, credentials } = selection;
+
+  switch (credentials.provider) {
+    case "anthropic": {
+      if (credentials.mode === "oauth") {
+        return new ClaudeOAuthChatModel({
+          accessToken: credentials.accessToken,
+          model,
+        });
+      }
+      return new ChatAnthropic({
+        apiKey: credentials.apiKey,
+        model,
+      });
+    }
+    case "google": {
+      if (credentials.mode === "oauth") {
+        if (!credentials.project) {
+          throw new Error(
+            "Google CodeAssist OAuth requires a project ID. The Rust backend must call ensure_gemini_codeassist_project before dispatching the workflow.",
+          );
+        }
+        return new GeminiCodeAssistChatModel({
+          accessToken: credentials.accessToken,
+          projectId: credentials.project,
+          model,
+        });
+      }
+      return new ChatGoogleGenerativeAI({
+        apiKey: credentials.apiKey,
+        model,
+      });
+    }
+    case "ollama": {
+      return new ChatOllama({
+        baseUrl: credentials.baseUrl,
+        model,
+      });
+    }
+    case "copilot": {
+      return new CopilotChatModel({
+        accessToken: credentials.accessToken,
+        model,
+      });
+    }
+    default: {
+      const _exhaustive: never = credentials;
+      throw new Error(`Unknown provider: ${JSON.stringify(_exhaustive)}`);
+    }
+  }
+}

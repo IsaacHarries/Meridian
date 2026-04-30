@@ -7,7 +7,6 @@
  */
 
 import { create } from "zustand";
-import { getPreferences } from "@/lib/preferences";
 import {
   type JiraIssue,
   type GroomingOutput,
@@ -15,6 +14,7 @@ import {
   type ImplementationPlan,
   type GuidanceOutput,
   type ImplementationOutput,
+  type TestPlan,
   type TestOutput,
   type PlanReviewOutput,
   type PrDescriptionOutput,
@@ -38,30 +38,339 @@ import {
   syncGroomingWorktree,
   getNonSecretConfig,
   runGroomingFileProbe,
-  runGroomingAgent,
-  runImpactAnalysis,
-  runTriageTurn,
-  runCheckpointChatTurn as _runCheckpointChatTurnLegacy,
   runCheckpointAction,
   type CheckpointActionResult,
   runGroomingChatTurn,
-  finalizeImplementationPlan,
-  runImplementationGuidance,
-  runImplementationAgent,
-  runBuildCheck,
   type BuildCheckResult,
-  runTestAgent,
-  runPlanReview,
-  getRepoDiff,
-  runPrDescriptionGen,
-  runRetrospectiveAgent,
   updateJiraIssue,
   parseAgentJson,
   readGroomingFile,
   grepGroomingFiles,
+  runImplementationPipelineWorkflow,
+  resumeImplementationPipelineWorkflow,
+  PIPELINE_EVENT_NAME,
+  type PipelineEvent,
+  type PipelineWorkflowArgs,
+  type PipelineWorkflowResult,
+  rewindImplementationPipelineWorkflow,
 } from "@/lib/tauri";
+import { listen } from "@tauri-apps/api/event";
 
 export type { SkillType };
+
+// ── Pipeline workflow event wiring ────────────────────────────────────────────
+//
+// The implementation pipeline runs as a single LangGraph workflow in the
+// sidecar. We dispatch one `runImplementationPipelineWorkflow` to start the
+// run, then subscribe to PIPELINE_EVENT_NAME events to learn about progress
+// and interrupts. On each interrupt the relevant store slice is updated and
+// `pendingApproval` is set so the UI can render the checkpoint.
+
+let pipelineUnlisten: (() => void) | null = null;
+
+// Vite HMR replaces this module on save — drop the old listener so the
+// fresh module's `ensurePipelineListener` re-subscribes against the
+// (potentially recreated) store instance. Without this, the old listener
+// keeps writing to a stale store and the UI sees no updates until reload.
+if (typeof import.meta !== "undefined" && (import.meta as { hot?: { dispose?: (cb: () => void) => void } }).hot) {
+  (import.meta as { hot: { dispose: (cb: () => void) => void } }).hot.dispose(() => {
+    if (pipelineUnlisten) {
+      pipelineUnlisten();
+      pipelineUnlisten = null;
+    }
+  });
+}
+
+/** Linear order of user-facing stages — used to mark all prior stages
+ *  complete whenever a downstream interrupt fires (some stages like
+ *  `plan` run silently inside the workflow without an interrupt). */
+const STAGE_ORDER: Stage[] = [
+  "grooming",
+  "impact",
+  "triage",
+  "plan",
+  "implementation",
+  "tests_plan",
+  "tests",
+  "review",
+  "pr",
+  "retro",
+];
+
+/** Map a sidecar pipeline node name to the user-facing Stage in this store. */
+const NODE_TO_STAGE: Record<string, Stage> = {
+  grooming: "grooming",
+  impact: "impact",
+  triage: "triage",
+  do_plan: "plan",
+  do_guidance: "implementation",
+  implementation: "implementation",
+  test_plan: "tests_plan",
+  test_gen: "tests",
+  code_review: "review",
+  pr_description: "pr",
+  do_retrospective: "retro",
+};
+
+/** Map a user-facing Stage to the sidecar node we need to rewind to in
+ *  order to re-run just that stage. */
+const STAGE_TO_REWIND_NODE: Partial<Record<Stage, string>> = {
+  grooming: "grooming",
+  impact: "impact",
+  triage: "triage",
+  plan: "do_plan",
+  implementation: "implementation",
+  tests_plan: "test_plan",
+  tests: "test_gen",
+  review: "code_review",
+  pr: "pr_description",
+  retro: "do_retrospective",
+};
+
+/** Apply a workflow interrupt's payload to the matching store slice. */
+function applyInterruptToState(
+  set: (updater: (s: ImplementTicketState) => Partial<ImplementTicketState>) => void,
+  reason: string,
+  payload: unknown,
+): void {
+  const stage = NODE_TO_STAGE[reason] ?? null;
+  set((s) => {
+    const updates: Partial<ImplementTicketState> = {
+      pendingApproval: stage ?? s.pendingApproval,
+      currentStage: stage ?? s.currentStage,
+      // Always sync viewingStage so the UI follows the workflow forward.
+      // (The user can still navigate back to a prior stage to inspect it
+      // — they'd reset viewingStage themselves via the stage list.)
+      viewingStage:
+        stage && stage !== "select"
+          ? (stage as Exclude<Stage, "select">)
+          : s.viewingStage,
+      proceeding: false,
+      // Mark the stage complete AND every prior stage — some stages run
+      // silently inside the workflow (e.g. `plan` runs between `triage`
+      // and `implementation` without an interrupt of its own), so the
+      // only signal the frontend has that they finished is the next
+      // downstream interrupt.
+      completedStages: stage
+        ? (() => {
+            const idx = STAGE_ORDER.indexOf(stage);
+            if (idx < 0) return new Set([...s.completedStages, stage]);
+            return new Set<Stage>([
+              ...s.completedStages,
+              ...STAGE_ORDER.slice(0, idx + 1),
+            ]);
+          })()
+        : s.completedStages,
+    };
+    switch (reason) {
+      case "grooming": {
+        const data = payload as GroomingOutput;
+        updates.grooming = data;
+        // Mirror the post-grooming UI setup the old per-stage path did:
+        // build editable suggestions, surface clarifying questions as a
+        // welcome chat message, snapshot the initial Q/A state for the
+        // diff-style highlight rendering, and detect blockers.
+        const edits: SuggestedEdit[] = (data.suggested_edits ?? []).map((e) => ({
+          ...e,
+          status: "pending" as SuggestedEditStatus,
+        }));
+        const questions = data.clarifying_questions ?? [];
+        const ambiguities = data.ambiguities ?? [];
+        const openItems = [
+          ...questions.map((q) => ({ label: "Question", text: q })),
+          ...ambiguities.map((a) => ({ label: "Ambiguity", text: a })),
+        ];
+        const initialChat: TriageMessage[] =
+          openItems.length > 0
+            ? [
+                {
+                  role: "assistant",
+                  content:
+                    openItems.length === 1
+                      ? `I have one item to clarify before we finalise the grooming:\n\n**${openItems[0].label}:** ${openItems[0].text}`
+                      : `I have a few items to clarify before we finalise the grooming:\n\n${openItems
+                          .map(
+                            (item, i) =>
+                              `${i + 1}. **${item.label}:** ${item.text}`,
+                          )
+                          .join("\n\n")}`,
+                },
+              ]
+            : [];
+        updates.groomingEdits = edits;
+        updates.clarifyingQuestions = questions;
+        updates.clarifyingQuestionsInitial = questions;
+        updates.ambiguitiesInitial = ambiguities;
+        updates.groomingHighlights = {
+          editIds: [],
+          questions: false,
+          ambiguities: false,
+        };
+        updates.groomingChat = initialChat;
+        updates.groomingBlockers = s.selectedIssue
+          ? detectGroomingBlockers(s.selectedIssue, data)
+          : [];
+        updates.completedStages = new Set([...s.completedStages, "grooming"]);
+        updates.viewingStage = "grooming";
+        break;
+      }
+      case "impact":
+        updates.impact = payload as ImpactOutput;
+        break;
+      case "triage": {
+        const turn = payload as TriageTurnOutput;
+        if (turn) {
+          // Append the assistant turn to history if it isn't already there.
+          const last = s.triageHistory[s.triageHistory.length - 1];
+          const formatted = formatTriageChatContent(turn);
+          if (!last || last.role !== "assistant" || last.content !== formatted) {
+            updates.triageHistory = [
+              ...s.triageHistory,
+              { role: "assistant", content: formatted },
+            ];
+            updates.triageTurns = [...s.triageTurns, turn];
+          }
+        }
+        // Triage's interrupt is NOT an approval gate — the screen treats
+        // triage as the "active chat" stage (`isTriageActive` = currentStage
+        // is triage AND pendingApproval is null). Setting pendingApproval
+        // to anything other than null hides both the chat input and the
+        // Finalise Plan button.
+        updates.pendingApproval = null;
+        break;
+      }
+      case "implementation":
+        updates.implementation = payload as ImplementationOutput;
+        break;
+      case "test_plan":
+        updates.testPlan = payload as TestPlan;
+        break;
+      case "test_gen":
+        updates.tests = payload as TestOutput;
+        break;
+      case "code_review":
+        updates.review = payload as PlanReviewOutput;
+        break;
+      case "pr_description":
+        updates.prDescription = payload as PrDescriptionOutput;
+        break;
+    }
+    return updates;
+  });
+}
+
+/** Map a workflow result (interrupt or final) onto the store; called after
+ *  every workflow.start / workflow.resume call. */
+function applyWorkflowResult(
+  set: (updater: (s: ImplementTicketState) => Partial<ImplementTicketState>) => void,
+  result: PipelineWorkflowResult,
+): void {
+  if (result.interrupt) {
+    applyInterruptToState(set, result.interrupt.reason, result.interrupt.payload);
+    set(() => ({ pipelineThreadId: result.interrupt!.threadId }));
+  } else if (result.output) {
+    set(() => ({
+      pipelineFinalState: result.output,
+      currentStage: "complete" as Stage,
+      pendingApproval: null,
+      proceeding: false,
+    }));
+  }
+}
+
+/** Per-node stream text field — populated as the agent streams its output
+ *  so the user sees live progress instead of waiting for the interrupt. */
+const NODE_TO_STREAM_FIELD: Record<string, keyof ImplementTicketState> = {
+  grooming: "groomingStreamText",
+  impact: "impactStreamText",
+  triage: "triageStreamText",
+  do_plan: "planStreamText",
+  do_guidance: "planStreamText",
+  implementation: "implementationStreamText",
+  test_plan: "testsStreamText",
+  test_gen: "testsStreamText",
+  code_review: "reviewStreamText",
+  pr_description: "prStreamText",
+  do_retrospective: "retroStreamText",
+};
+
+async function ensurePipelineListener(): Promise<void> {
+  if (pipelineUnlisten) return;
+  pipelineUnlisten = await listen<PipelineEvent>(PIPELINE_EVENT_NAME, (event) => {
+    const e = event.payload;
+    // Always go through the live store API rather than a captured set —
+    // Vite HMR can replace the create() closure during development and
+    // leave us writing to a stale store instance.
+    const setState = useImplementTicketStore.setState;
+    const updaterAdapter = (
+      updater: (s: ImplementTicketState) => Partial<ImplementTicketState>,
+    ) => {
+      setState((s) => updater(s));
+    };
+
+    if (e.kind === "progress" && e.status === "started") {
+      // Per-file implementation progress: update the implementationProgress
+      // field so the loading UI can show "Writing src/cli.ts (3/8)…".
+      const data = e.data as
+        | {
+            phase?: string;
+            file?: string;
+            fileIndex?: number;
+            totalFiles?: number;
+          }
+        | undefined;
+      if (
+        e.node === "implementation" &&
+        data?.phase === "file_started" &&
+        typeof data.file === "string" &&
+        typeof data.fileIndex === "number" &&
+        typeof data.totalFiles === "number"
+      ) {
+        setState({
+          implementationProgress: {
+            file: data.file,
+            fileIndex: data.fileIndex,
+            totalFiles: data.totalFiles,
+          },
+        });
+        return;
+      }
+
+      const stage = NODE_TO_STAGE[e.node];
+      if (stage && stage !== "select") {
+        setState((s) => {
+          const updates: Partial<ImplementTicketState> = {
+            currentStage: stage,
+            viewingStage: stage as Exclude<Stage, "select">,
+          };
+          const streamField = NODE_TO_STREAM_FIELD[e.node];
+          if (streamField) {
+            (updates as Record<string, unknown>)[streamField] = "";
+          }
+          void s;
+          return updates;
+        });
+      }
+    } else if (e.kind === "stream") {
+      const streamField = NODE_TO_STREAM_FIELD[e.node];
+      if (streamField) {
+        setState((s) => {
+          const current = (s[streamField] as string | undefined) ?? "";
+          return {
+            [streamField]: current + e.delta,
+          } as Partial<ImplementTicketState>;
+        });
+      }
+    } else if (e.kind === "interrupt") {
+      console.log(
+        `[Meridian] pipeline interrupt: reason=${e.reason} payload=`,
+        e.payload,
+      );
+      applyInterruptToState(updaterAdapter, e.reason, e.payload);
+      setState({ pipelineThreadId: e.threadId });
+    }
+  });
+}
 
 // ── Re-export Stage type so the screen and store share one definition ──────────
 
@@ -72,6 +381,7 @@ export type Stage =
   | "triage"
   | "plan"
   | "implementation"
+  | "tests_plan"
   | "tests"
   | "review"
   | "pr"
@@ -190,36 +500,6 @@ export function compilePipelineContext(
   return parts.join("\n\n");
 }
 
-function prependSkill(
-  text: string,
-  skill: string | undefined,
-  label: string,
-): string {
-  if (!skill) return text;
-  return `=== ${label} (follow these) ===\n${skill}\n\n${text}`;
-}
-
-/**
- * Parse a raw triage agent response into a TriageTurnOutput. Falls back
- * gracefully when the JSON can't be parsed (e.g. truncation): the raw text
- * is treated as the proposal, with a small disclaimer message in chat.
- */
-function parseTriageTurn(raw: string): TriageTurnOutput {
-  const parsed = parseAgentJson<TriageTurnOutput>(raw);
-  if (parsed && typeof parsed.proposal === "string") {
-    return {
-      message: typeof parsed.message === "string" ? parsed.message : "",
-      proposal: parsed.proposal,
-      questions: Array.isArray(parsed.questions) ? parsed.questions : [],
-    };
-  }
-  return {
-    message:
-      "I had trouble formatting my response — the raw output is in the proposal panel.",
-    proposal: raw,
-    questions: [],
-  };
-}
 
 /**
  * Build the chat-bubble text for a triage turn: the conversational `message`
@@ -291,6 +571,8 @@ export type PipelineSession = Pick<
   | "completedStages"
   | "pendingApproval"
   | "proceeding"
+  | "pipelineThreadId"
+  | "pipelineFinalState"
   | "grooming"
   | "impact"
   | "triageHistory"
@@ -299,6 +581,7 @@ export type PipelineSession = Pick<
   | "guidance"
   | "implementation"
   | "implementationStreamText"
+  | "testPlan"
   | "tests"
   | "review"
   | "prDescription"
@@ -338,6 +621,13 @@ interface ImplementTicketState {
   pendingApproval: Stage | null;
   proceeding: boolean;
 
+  // ── LangGraph workflow tracking ──────────────────────────────────────────────
+  /** Checkpoint thread id of the running pipeline workflow; resume calls
+   *  pass this back to the sidecar so it can rehydrate state. */
+  pipelineThreadId: string | null;
+  /** Final structured pipeline state when the workflow completes. */
+  pipelineFinalState: unknown | null;
+
   // ── Agent outputs ────────────────────────────────────────────────────────────
   grooming: GroomingOutput | null;
   impact: ImpactOutput | null;
@@ -350,8 +640,18 @@ interface ImplementTicketState {
   guidance: GuidanceOutput | null;
   implementation: ImplementationOutput | null;
   implementationStreamText: string;
+  /** Per-file progress emitted by the implementation node. Surfaces which
+   *  file is currently being written so the loading UI can show
+   *  "Writing src/cli.ts (3/8)…" instead of a static label. */
+  implementationProgress: {
+    file: string;
+    fileIndex: number;
+    totalFiles: number;
+  } | null;
   buildVerification: BuildCheckResult | null;
   buildCheckStreamText: string;
+  /** Proposed test plan from the test_plan stage — user reviews/approves before tests are written. */
+  testPlan: TestPlan | null;
   tests: TestOutput | null;
   review: PlanReviewOutput | null;
   prDescription: PrDescriptionOutput | null;
@@ -436,15 +736,8 @@ interface ImplementTicketState {
 
   resetSession: () => void;
   startPipeline: (issue: JiraIssue) => Promise<void>;
-  runImpactStage: () => Promise<void>;
-  runTriageStage: () => Promise<void>;
   sendTriageMessage: (input: string) => Promise<void>;
   finalizePlan: () => Promise<void>;
-  runImplementationStage: () => Promise<void>;
-  runTestsStage: () => Promise<void>;
-  runReviewStage: () => Promise<void>;
-  runPrStage: () => Promise<void>;
-  runRetroStage: () => Promise<void>;
   /** Squash feature branch commits, push, and create a PR on Bitbucket (no reviewers). */
   submitDraftPr: () => Promise<void>;
   proceedFromStage: (stage: Stage) => Promise<void>;
@@ -463,7 +756,6 @@ interface ImplementTicketState {
   markComplete: (stage: Stage) => void;
   setError: (stage: Stage, err: string) => void;
   clearError: (stage: Stage) => void;
-  runGroomingStage: () => Promise<void>;
   retryStage: (stage: Stage) => Promise<void>;
   /** Routes a chat message to the correct agent based on the active pipeline stage. */
   sendPipelineMessage: (input: string) => Promise<void>;
@@ -477,15 +769,8 @@ export const INITIAL: Omit<
   | "_reloadSkills"
   | "resetSession"
   | "startPipeline"
-  | "runImpactStage"
-  | "runTriageStage"
   | "sendTriageMessage"
   | "finalizePlan"
-  | "runImplementationStage"
-  | "runTestsStage"
-  | "runReviewStage"
-  | "runPrStage"
-  | "runRetroStage"
   | "submitDraftPr"
   | "proceedFromStage"
   | "sendCheckpointMessage"
@@ -500,7 +785,6 @@ export const INITIAL: Omit<
   | "markComplete"
   | "setError"
   | "clearError"
-  | "runGroomingStage"
   | "retryStage"
   | "sendPipelineMessage"
 > = {
@@ -518,8 +802,10 @@ export const INITIAL: Omit<
   guidance: null,
   implementation: null,
   implementationStreamText: "",
+  implementationProgress: null,
   buildVerification: null,
   buildCheckStreamText: "",
+  testPlan: null,
   tests: null,
   review: null,
   prDescription: null,
@@ -557,6 +843,8 @@ export const INITIAL: Omit<
   skills: {},
   isSessionActive: false,
   activeSessionId: "",
+  pipelineThreadId: null,
+  pipelineFinalState: null,
   sessions: new Map(),
 };
 
@@ -574,6 +862,8 @@ export function snapshotSession(s: ImplementTicketState): PipelineSession {
     completedStages: s.completedStages,
     pendingApproval: s.pendingApproval,
     proceeding: s.proceeding,
+    pipelineThreadId: s.pipelineThreadId,
+    pipelineFinalState: s.pipelineFinalState,
     grooming: s.grooming,
     impact: s.impact,
     triageHistory: s.triageHistory,
@@ -582,6 +872,7 @@ export function snapshotSession(s: ImplementTicketState): PipelineSession {
     guidance: s.guidance,
     implementation: s.implementation,
     implementationStreamText: s.implementationStreamText,
+    testPlan: s.testPlan,
     tests: s.tests,
     review: s.review,
     prDescription: s.prDescription,
@@ -707,9 +998,19 @@ export const useImplementTicketStore = create<ImplementTicketState>()(
           Object.assign(outputResets, {
             implementation: null,
             implementationStreamText: "",
+            implementationProgress: null,
             buildVerification: null,
             buildCheckStreamText: "",
             guidance: null,
+          });
+          break;
+        case "tests_plan":
+          // Re-running the proposal also invalidates whatever tests were
+          // written from the prior plan.
+          Object.assign(outputResets, {
+            testPlan: null,
+            tests: null,
+            testsStreamText: "",
           });
           break;
         case "tests":
@@ -732,36 +1033,40 @@ export const useImplementTicketStore = create<ImplementTicketState>()(
           break;
       }
 
-      set({ errors, completedStages, pendingApproval, ...outputResets });
+      set({
+        errors,
+        completedStages,
+        pendingApproval,
+        ...outputResets,
+      });
 
-      switch (stage) {
-        case "grooming":
-          await get().runGroomingStage();
-          break;
-        case "impact":
-          await get().runImpactStage();
-          break;
-        case "triage":
-          await get().runTriageStage();
-          break;
-        case "plan":
-          await get().finalizePlan();
-          break;
-        case "implementation":
-          await get().runImplementationStage();
-          break;
-        case "tests":
-          await get().runTestsStage();
-          break;
-        case "review":
-          await get().runReviewStage();
-          break;
-        case "pr":
-          await get().runPrStage();
-          break;
-        case "retro":
-          await get().runRetroStage();
-          break;
+      // Per-stage retry uses LangGraph's checkpoint history: rewind to the
+      // checkpoint just before the target stage's node ran, then resume.
+      // The workflow re-runs that stage and everything downstream onto a
+      // new branch in the same thread.
+      const threadId = get().pipelineThreadId;
+      const rewindNode = STAGE_TO_REWIND_NODE[stage];
+      if (threadId && rewindNode) {
+        try {
+          set({ proceeding: true });
+          const result = await rewindImplementationPipelineWorkflow(
+            threadId,
+            rewindNode,
+          );
+          applyWorkflowResult((updater) => set((s) => updater(s)), result);
+        } catch (e) {
+          set({ proceeding: false });
+          get().setError(stage, String(e));
+        }
+        return;
+      }
+
+      // No active workflow yet (e.g. retry triggered on a stage that never
+      // ran via the new path) — fall back to a fresh pipeline start.
+      const issue = get().selectedIssue;
+      if (issue) {
+        set({ pipelineThreadId: null });
+        await get().startPipeline(issue);
       }
     },
 
@@ -831,8 +1136,17 @@ export const useImplementTicketStore = create<ImplementTicketState>()(
       }
 
       // ── Restore an existing session for this ticket ─────────────────────────
+      // Only restorable if the session was driven by the LangGraph workflow
+      // path and has a live thread we can resume from. Sessions created by
+      // the old per-stage flow are discarded — restoring them would leave
+      // `pipelineThreadId` null and the next Proceed click would fail with
+      // "Pipeline workflow has no active thread".
       const existingSession = get().sessions.get(issue.key);
-      if (existingSession && existingSession.currentStage !== "select") {
+      if (
+        existingSession &&
+        existingSession.currentStage !== "select" &&
+        existingSession.pipelineThreadId
+      ) {
         // Assign a fresh session ID — the old backend process is gone.
         set({
           ...existingSession,
@@ -890,392 +1204,148 @@ export const useImplementTicketStore = create<ImplementTicketState>()(
         console.warn("[Meridian] Worktree sync failed:", e);
       }
 
-      // Agent 1: Grooming
-      await get().runGroomingStage();
-    },
-
-    // ── Grooming ───────────────────────────────────────────────────────────────
-    runGroomingStage: async () => {
-      console.log("[Meridian] runGroomingStage: starting");
-      set({ currentStage: "grooming", viewingStage: "grooming" });
-      await get()._reloadSkills();
-      const { ticketText, worktreeInfo, skills } = get();
-
-      const repoContext = worktreeInfo
-        ? `\n\n=== CODEBASE CONTEXT ===\nWorktree: ${worktreeInfo.path}\nBranch: ${worktreeInfo.branch} (HEAD: ${worktreeInfo.headCommit})\nCommit: ${worktreeInfo.headMessage}\nYou have access to this codebase. File contents will be injected below after a probe step.`
+      // ── Pre-load codebase context via the grooming file probe ────────────
+      // The grooming agent expects file contents in its prompt. Without them
+      // the model often replies "I need to read X first" rather than
+      // producing the schema-conformant JSON. Run the probe step now and
+      // pass the result through to the workflow.
+      const { worktreeInfo: probeWorktreeInfo } = get();
+      const repoContext = probeWorktreeInfo
+        ? `\n\n=== CODEBASE CONTEXT ===\nWorktree: ${probeWorktreeInfo.path}\nBranch: ${probeWorktreeInfo.branch} (HEAD: ${probeWorktreeInfo.headCommit})\nCommit: ${probeWorktreeInfo.headMessage}\nYou have access to this codebase. File contents will be injected below after a probe step.`
         : "";
 
-      try {
-        const ticketWithContext = ticketText + repoContext;
-        let fileContentsBlock = "";
-        const readFiles: string[] = [];
-
-        if (repoContext) {
-          try {
-            console.log("[Meridian] runGroomingStage: starting file probe");
-            set({
-              groomingProgress: "Identifying relevant files in the codebase…",
-            });
-            const probeRaw = await runGroomingFileProbe(ticketWithContext);
-            console.log(
-              "[Meridian] runGroomingStage: probe raw output received",
-            );
-            const probe = parseAgentJson<{
-              files: string[];
-              grep_patterns: string[];
-            }>(probeRaw);
-            if (probe) {
-              console.log("[Meridian] runGroomingStage: probe parsed", probe);
-              const MAX_TOTAL = 40 * 1024;
-              let totalSize = 0;
-              const parts: string[] = [];
-
-              for (const filePath of (probe.files ?? []).slice(0, 12)) {
-                try {
-                  console.log(
-                    "[Meridian] runGroomingStage: reading file",
-                    filePath,
-                  );
-                  set({ groomingProgress: `Reading ${filePath}…` });
-                  const content = await readGroomingFile(filePath);
-                  const chunk = `--- ${filePath} ---\n${content}\n`;
-                  if (totalSize + chunk.length > MAX_TOTAL) {
-                    console.log(
-                      "[Meridian] runGroomingStage: context size limit reached, stopping file reads",
-                    );
-                    break;
-                  }
-                  parts.push(chunk);
-                  totalSize += chunk.length;
-                  readFiles.push(filePath);
-                } catch (e) {
-                  console.warn(
-                    "[Meridian] runGroomingStage: failed to read file",
-                    filePath,
-                    e,
-                  );
-                }
-              }
-
-              for (const pattern of (probe.grep_patterns ?? []).slice(0, 6)) {
-                try {
-                  console.log(
-                    "[Meridian] runGroomingStage: grepping pattern",
-                    pattern,
-                  );
-                  set({
-                    groomingProgress: `Searching codebase for "${pattern}"…`,
-                  });
-                  const lines = await grepGroomingFiles(pattern);
-                  if (lines.length === 0) continue;
-                  const chunk = `--- grep: ${pattern} ---\n${lines.join("\n")}\n`;
-                  if (totalSize + chunk.length > MAX_TOTAL) {
-                    console.log(
-                      "[Meridian] runGroomingStage: context size limit reached, stopping grep",
-                    );
-                    break;
-                  }
-                  parts.push(chunk);
-                  totalSize += chunk.length;
-                } catch (e) {
-                  console.warn(
-                    "[Meridian] runGroomingStage: failed to grep pattern",
-                    pattern,
-                    e,
-                  );
-                }
-              }
-
-              if (parts.length > 0) {
-                fileContentsBlock = parts.join("\n");
-                set({ filesRead: readFiles });
+      let codebaseContext = "";
+      const readFilesForProbe: string[] = [];
+      if (repoContext) {
+        try {
+          set({ groomingProgress: "Identifying relevant files in the codebase…" });
+          const probeRaw = await runGroomingFileProbe(text + repoContext);
+          const probe = parseAgentJson<{
+            files: string[];
+            grep_patterns: string[];
+          }>(probeRaw);
+          if (probe) {
+            const MAX_TOTAL = 40 * 1024;
+            let totalSize = 0;
+            const parts: string[] = [];
+            for (const filePath of (probe.files ?? []).slice(0, 12)) {
+              try {
+                set({ groomingProgress: `Reading ${filePath}…` });
+                const content = await readGroomingFile(filePath);
+                const chunk = `--- ${filePath} ---\n${content}\n`;
+                if (totalSize + chunk.length > MAX_TOTAL) break;
+                parts.push(chunk);
+                totalSize += chunk.length;
+                readFilesForProbe.push(filePath);
+              } catch (e) {
+                console.warn("[Meridian] file probe read failed:", filePath, e);
               }
             }
-          } catch (e) {
-            console.warn("[Meridian] File probe failed:", e);
-            set({ groomingProgress: "" });
+            for (const pattern of (probe.grep_patterns ?? []).slice(0, 6)) {
+              try {
+                set({ groomingProgress: `Searching codebase for "${pattern}"…` });
+                const lines = await grepGroomingFiles(pattern);
+                if (lines.length === 0) continue;
+                const chunk = `--- grep: ${pattern} ---\n${lines.join("\n")}\n`;
+                if (totalSize + chunk.length > MAX_TOTAL) break;
+                parts.push(chunk);
+                totalSize += chunk.length;
+              } catch (e) {
+                console.warn("[Meridian] file probe grep failed:", pattern, e);
+              }
+            }
+            codebaseContext = parts.join("\n");
+            set({ filesRead: readFilesForProbe, groomingProgress: "" });
           }
+        } catch (e) {
+          console.warn("[Meridian] file probe failed:", e);
+          set({ groomingProgress: "" });
         }
-
-        console.log("[Meridian] runGroomingStage: calling runGroomingAgent");
-        const groomingInput = prependSkill(
-          ticketWithContext,
-          skills.grooming,
-          "GROOMING CONVENTIONS",
-        );
-        const raw = await runGroomingAgent(groomingInput, fileContentsBlock);
-        console.log("[Meridian] runGroomingStage: runGroomingAgent finished");
-        const data = parseAgentJson<GroomingOutput>(raw);
-        if (!data) {
-          // Log the raw response so we can diagnose why parsing failed.
-          // Truncated JSON (token cap hit) is the most common cause — detect
-          // by checking whether the response ends with a closing brace.
-          console.error(
-            "[Meridian] grooming output parse failed. Raw length:",
-            raw.length,
-            "Last 200 chars:",
-            raw.slice(-200),
-          );
-          const looksTruncated = !raw.trimEnd().endsWith("}");
-          throw new Error(
-            looksTruncated
-              ? `The agent's response was truncated mid-JSON (${raw.length} chars, did not end with '}'). The model may have hit its token limit on a large ticket. Try retrying — if it persists, the cap may need to be raised again.`
-              : `Could not parse grooming output (${raw.length} chars). Check the developer console for the raw response.`,
-          );
-        }
-
-        const edits: SuggestedEdit[] = (data.suggested_edits ?? []).map(
-          (e) => ({
-            ...e,
-            status: "pending" as SuggestedEditStatus,
-          }),
-        );
-
-        const questions = data.clarifying_questions ?? [];
-        const ambiguities = data.ambiguities ?? [];
-        const openItems: { label: string; text: string }[] = [
-          ...questions.map((q) => ({ label: "Question", text: q })),
-          ...ambiguities.map((a) => ({ label: "Ambiguity", text: a })),
-        ];
-        const initialChat: TriageMessage[] =
-          openItems.length > 0
-            ? [
-                {
-                  role: "assistant",
-                  content:
-                    openItems.length === 1
-                      ? `I have one item to clarify before we finalise the grooming:\n\n**${openItems[0].label}:** ${openItems[0].text}`
-                      : `I have a few items to clarify before we finalise the grooming:\n\n${openItems
-                          .map(
-                            (item, i) =>
-                              `${i + 1}. **${item.label}:** ${item.text}`,
-                          )
-                          .join("\n\n")}`,
-                },
-              ]
-            : [];
-
-        const currentIssue = get().selectedIssue;
-        set({
-          grooming: data,
-          groomingEdits: edits,
-          clarifyingQuestions: questions,
-          clarifyingQuestionsInitial: questions,
-          ambiguitiesInitial: ambiguities,
-          groomingHighlights: {
-            editIds: [],
-            questions: false,
-            ambiguities: false,
-          },
-          groomingChat: initialChat,
-          groomingBlockers: currentIssue
-            ? detectGroomingBlockers(currentIssue, data)
-            : [],
-        });
-        get().markComplete("grooming");
-        set({ pendingApproval: "grooming" });
-      } catch (e) {
-        get().setError("grooming", String(e));
       }
-    },
 
-    // ── Impact ─────────────────────────────────────────────────────────────────
-    runImpactStage: async () => {
-      set({
-        currentStage: "impact",
-        viewingStage: "impact",
-        impactStreamText: "",
-      });
+      // ── Pipeline workflow: run all stages via LangGraph in the sidecar ───
+      await ensurePipelineListener();
+
+      // Build worktree path from settings (used by the workflow for tool calls).
+      let worktreePath = "";
       try {
-        await get()._reloadSkills();
-        const { ticketText, grooming, skills, groomingChat } = get();
-        const groomingWithQa =
-          groomingChat.length > 0
-            ? JSON.stringify(grooming) +
-              "\n\n=== GROOMING Q&A (resolved) ===\n" +
-              groomingChat
-                .map(
-                  (m) =>
-                    `${m.role === "user" ? "User" : "Agent"}: ${m.content}`,
-                )
-                .join("\n\n")
-            : JSON.stringify(grooming);
-        const impactInput = prependSkill(
-          ticketText,
-          skills.patterns,
-          "CODEBASE PATTERNS",
-        );
-        const raw = await runImpactAnalysis(impactInput, groomingWithQa);
-        const data = parseAgentJson<ImpactOutput>(raw);
-        if (!data) throw new Error("Could not parse impact output");
-        set({ impact: data });
-        get().markComplete("impact");
-        set({ pendingApproval: "impact" });
-      } catch (e) {
-        get().setError("impact", String(e));
+        const config = await getNonSecretConfig();
+        worktreePath = (config["repo_worktree_path"] as string) ?? "";
+      } catch {
+        /* fall back to empty — workflow tools won't function, but the
+           workflow itself will at least surface the missing config */
       }
-    },
 
-    // ── Triage ─────────────────────────────────────────────────────────────────
-    runTriageStage: async () => {
-      set({
-        currentStage: "triage",
-        viewingStage: "triage",
-        triageStreamText: "",
-      });
-      await get()._reloadSkills();
-      const { ticketText, grooming, impact, skills, groomingChat } = get();
-      const contextText = compilePipelineContext(
-        ticketText,
-        grooming,
-        impact,
-        skills,
-        groomingChat,
-      );
+      const args: PipelineWorkflowArgs = {
+        ticketText: text + (repoContext || ""),
+        ticketKey: fullIssue.key,
+        worktreePath,
+        codebaseContext,
+        skills: {
+          grooming: skills.grooming ?? null,
+          patterns: (skills as Record<string, string | undefined>).patterns ?? null,
+          implementation: skills.implementation ?? null,
+          review: skills.review ?? null,
+          testing: (skills as Record<string, string | undefined>).testing ?? null,
+        },
+      };
+
+      set({ proceeding: true });
       try {
-        const initialMessage =
-          "Please analyse this ticket and propose a concrete implementation approach. Ask any clarifying questions you need answered before we can finalise the plan.";
-        const response = await runTriageTurn(
-          contextText,
-          JSON.stringify([{ role: "user", content: initialMessage }]),
-        );
-        const turn = parseTriageTurn(response);
-        set({
-          triageHistory: [
-            { role: "user", content: initialMessage },
-            { role: "assistant", content: formatTriageChatContent(turn) },
-          ],
-          triageTurns: [turn],
-          triageStreamText: "",
-        });
-      } catch (e) {
-        set({ triageStreamText: "" });
-        get().setError("triage", String(e));
+        const result = await runImplementationPipelineWorkflow(args);
+        applyWorkflowResult((updater) => set((s) => updater(s)), result);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        set((s) => ({
+          errors: { ...s.errors, [s.currentStage]: msg },
+          proceeding: false,
+        }));
       }
     },
 
     sendTriageMessage: async (input) => {
-      await get()._reloadSkills();
-      const {
-        triageHistory,
-        triageTurns,
-        ticketText,
-        grooming,
-        impact,
-        skills,
-        groomingChat,
-      } = get();
+      // The pipeline workflow is paused at the triage interrupt — resume with
+      // a `reply` action and the workflow's triage node will take another turn
+      // with the engineer's message appended to its history. The next
+      // interrupt arrives over the event channel and is mapped onto the
+      // triage state slices by `applyInterruptToState`.
       const userMsg: TriageMessage = { role: "user", content: input };
-      const newHistory = [...triageHistory, userMsg];
-      set({ triageHistory: newHistory });
+      set((s) => ({
+        triageHistory: [...s.triageHistory, userMsg],
+        proceeding: true,
+        pendingApproval: null,
+      }));
       try {
-        const contextText = compilePipelineContext(
-          ticketText,
-          grooming,
-          impact,
-          skills,
-          groomingChat,
-        );
-        // The chat-formatted assistant content (message + enumerated questions)
-        // is displayed-only — for the agent we substitute the raw structured
-        // turn JSON so it can see its own prior proposals and iterate on them.
-        const agentHistory = newHistory.map((msg, idx) => {
-          if (msg.role !== "assistant") return msg;
-          const assistantIdxBefore = newHistory
-            .slice(0, idx)
-            .filter((m) => m.role === "assistant").length;
-          const t = triageTurns[assistantIdxBefore];
-          return t
-            ? { role: "assistant" as const, content: JSON.stringify(t) }
-            : msg;
+        const threadId = get().pipelineThreadId;
+        if (!threadId) {
+          throw new Error(
+            "Pipeline workflow has no active thread — cannot send triage reply.",
+          );
+        }
+        const result = await resumeImplementationPipelineWorkflow(threadId, {
+          action: "reply",
+          message: input,
         });
-        const response = await runTriageTurn(
-          contextText,
-          JSON.stringify(agentHistory),
-        );
-        const turn = parseTriageTurn(response);
-        set({
-          triageHistory: [
-            ...newHistory,
-            { role: "assistant", content: formatTriageChatContent(turn) },
-          ],
-          triageTurns: [...triageTurns, turn],
-          triageStreamText: "",
-        });
+        applyWorkflowResult((updater) => set((s) => updater(s)), result);
       } catch (e) {
-        set({ triageStreamText: "" });
+        set({ proceeding: false });
         get().setError("triage", String(e));
       }
     },
 
     finalizePlan: async () => {
-      set({ currentStage: "plan" });
+      // Finalising the triage chat == approving the triage checkpoint. The
+      // workflow then runs the plan + guidance nodes silently and interrupts
+      // at the implementation checkpoint, where the user reviews the plan
+      // before the implementation agent starts writing code.
+      set({ pendingApproval: null, proceeding: true });
       try {
-        await get()._reloadSkills();
-        const {
-          ticketText,
-          grooming,
-          impact,
-          skills,
-          triageHistory,
-          groomingChat,
-        } = get();
-        const contextText = compilePipelineContext(
-          ticketText,
-          grooming,
-          impact,
-          skills,
-          groomingChat,
-        );
-        const raw = await finalizeImplementationPlan(
-          contextText,
-          JSON.stringify(triageHistory),
-        );
-        const data = parseAgentJson<ImplementationPlan>(raw);
-        if (!data) throw new Error("Could not parse plan output");
-        set({ plan: data, viewingStage: "plan" });
-
-        // Run guidance silently as part of plan finalization (not a separate user-visible stage)
-        try {
-          const guidanceInput = prependSkill(
-            prependSkill(ticketText, skills.patterns, "CODEBASE PATTERNS"),
-            skills.implementation,
-            "IMPLEMENTATION STANDARDS",
-          );
-          const guidanceRaw = await runImplementationGuidance(
-            guidanceInput,
-            JSON.stringify(data),
-          );
-          const guidanceData = parseAgentJson<GuidanceOutput>(guidanceRaw);
-          if (guidanceData) set({ guidance: guidanceData });
-        } catch {
-          /* guidance failure is non-fatal — implementation can proceed with plan alone */
-        }
-
-        get().markComplete("triage");
-        get().markComplete("plan");
-        set({ pendingApproval: "plan" });
-      } catch (e) {
-        get().setError("plan", String(e));
-      }
-    },
-
-    // ── Implementation ─────────────────────────────────────────────────────────
-    runImplementationStage: async () => {
-      set({
-        currentStage: "implementation",
-        viewingStage: "implementation",
-        implementationStreamText: "",
-        buildVerification: null,
-        buildCheckStreamText: "",
-      });
-      try {
-        await get()._reloadSkills();
-        const { ticketText, plan, guidance, selectedIssue, featureBranch } = get();
-
-        // Create a feature branch in the worktree before the agent writes any
-        // files. Branch name embeds the JIRA key so Bitbucket auto-links to the
-        // ticket. Skips if a branch is already recorded for this session.
+        // Create the feature branch BEFORE implementation runs — once the
+        // workflow advances past triage it'll execute plan → guidance →
+        // implementation in sequence, and the implementation agent's
+        // write_repo_file calls need to land on the feature branch, not
+        // the base branch.
+        const { selectedIssue, featureBranch } = get();
         if (selectedIssue && !featureBranch) {
           try {
             const info = await createFeatureBranch(
@@ -1288,130 +1358,18 @@ export const useImplementTicketStore = create<ImplementTicketState>()(
           }
         }
 
-        const raw = await runImplementationAgent(
-          ticketText,
-          JSON.stringify(plan),
-          guidance ? JSON.stringify(guidance) : "",
-        );
-        const data = parseAgentJson<ImplementationOutput>(raw);
-        if (!data) throw new Error("Could not parse implementation output");
-        set({ implementation: data });
-
-        // ── Build verification (if enabled) ──────────────────────────────────
-        const prefs = await getPreferences().catch(() => ({} as Record<string, string>));
-        const buildVerifyEnabled = prefs["build_verify_enabled"] === "true";
-        if (buildVerifyEnabled) {
-          set({ buildCheckStreamText: "" });
-          try {
-            const buildRaw = await runBuildCheck(
-              ticketText,
-              JSON.stringify(plan),
-              raw,
-            );
-            const buildResult = parseAgentJson<BuildCheckResult>(buildRaw);
-            if (buildResult) set({ buildVerification: buildResult });
-          } catch (e) {
-            console.warn("[Meridian] build check failed:", e);
-          }
+        const threadId = get().pipelineThreadId;
+        if (!threadId) {
+          throw new Error("Pipeline workflow has no active thread — cannot finalize plan.");
         }
-
-        get().markComplete("implementation");
-        set({ pendingApproval: "implementation" });
+        const result = await resumeImplementationPipelineWorkflow(threadId, {
+          action: "approve",
+        });
+        applyWorkflowResult((updater) => set((s) => updater(s)), result);
+        get().markComplete("triage");
       } catch (e) {
-        get().setError("implementation", String(e));
-      }
-    },
-
-    // ── Tests ──────────────────────────────────────────────────────────────────
-    runTestsStage: async () => {
-      set({
-        currentStage: "tests",
-        viewingStage: "tests",
-        testsStreamText: "",
-      });
-      try {
-        await get()._reloadSkills();
-        const { ticketText, plan, implementation } = get();
-        let diff = "";
-        try {
-          diff = await getRepoDiff();
-        } catch {
-          /* no worktree — proceed without diff */
-        }
-        const raw = await runTestAgent(
-          ticketText,
-          JSON.stringify(plan),
-          JSON.stringify(implementation),
-          diff,
-        );
-        const data = parseAgentJson<TestOutput>(raw);
-        if (!data) {
-          console.error("[Meridian] runTestsStage: raw response failed to parse:", raw);
-          throw new Error("Could not parse test output");
-        }
-        set({ tests: data });
-        get().markComplete("tests");
-        set({ pendingApproval: "tests" });
-      } catch (e) {
-        get().setError("tests", String(e));
-      }
-    },
-
-    // ── Review ─────────────────────────────────────────────────────────────────
-    runReviewStage: async () => {
-      set({
-        currentStage: "review",
-        viewingStage: "review",
-        reviewStreamText: "",
-      });
-      try {
-        await get()._reloadSkills();
-        const { ticketText, plan, implementation, tests, skills } = get();
-        let diff = "";
-        try {
-          diff = await getRepoDiff();
-        } catch {
-          /* no worktree — proceed without diff */
-        }
-        const reviewPlanJson = skills.review
-          ? `=== REVIEW STANDARDS (follow these) ===\n${skills.review}\n\n${JSON.stringify(plan)}`
-          : JSON.stringify(plan);
-        const raw = await runPlanReview(
-          ticketText,
-          reviewPlanJson,
-          JSON.stringify(implementation),
-          JSON.stringify(tests),
-          diff,
-        );
-        const data = parseAgentJson<PlanReviewOutput>(raw);
-        if (!data) throw new Error("Could not parse review output");
-        set({ review: data });
-        get().markComplete("review");
-        set({ pendingApproval: "review" });
-      } catch (e) {
-        get().setError("review", String(e));
-      }
-    },
-
-    // ── PR Description ─────────────────────────────────────────────────────────
-    runPrStage: async () => {
-      set({ currentStage: "pr", viewingStage: "pr", prStreamText: "" });
-      try {
-        await get()._reloadSkills();
-        const { ticketText, plan, implementation, review } = get();
-        const raw = await runPrDescriptionGen(
-          ticketText,
-          JSON.stringify(plan),
-          JSON.stringify(implementation),
-          JSON.stringify(review),
-        );
-        const data = parseAgentJson<PrDescriptionOutput>(raw);
-        if (!data) throw new Error("Could not parse PR description output");
-        set({ prDescription: data });
-        get().markComplete("pr");
-        set({ pendingApproval: "pr" });
-      } catch (e) {
-        get().setError("pr", String(e));
+        set({ proceeding: false });
+        get().setError("plan", String(e));
       }
     },
 
@@ -1516,86 +1474,42 @@ export const useImplementTicketStore = create<ImplementTicketState>()(
       }
     },
 
-    // ── Retrospective ──────────────────────────────────────────────────────────
-    runRetroStage: async () => {
-      set({
-        currentStage: "retro",
-        viewingStage: "retro",
-        retroStreamText: "",
-      });
-      try {
-        await get()._reloadSkills();
-        const { ticketText, plan, implementation, review } = get();
-        const raw = await runRetrospectiveAgent(
-          ticketText,
-          JSON.stringify(plan),
-          JSON.stringify(implementation),
-          JSON.stringify(review),
-        );
-        const data = parseAgentJson<RetrospectiveOutput>(raw);
-        if (!data) throw new Error("Could not parse retrospective output");
-        set({ retrospective: data });
-        get().markComplete("retro");
-        set({ pendingApproval: "retro" });
-      } catch (e) {
-        get().setError("retro", String(e));
-      }
-    },
-
     // ── Proceed from checkpoint ────────────────────────────────────────────────
     proceedFromStage: async (stage) => {
       set({ pendingApproval: null, proceeding: true });
       try {
-        switch (stage) {
-          case "grooming":
-            await get().runImpactStage();
-            break;
-          case "impact":
-            await get().runTriageStage();
-            break;
-          case "plan":
-            await get().runImplementationStage();
-            break;
-          case "implementation": {
-            // Commit whatever the implementation agent wrote so the feature
-            // branch accumulates real history (later squashed at PR stage).
-            const { selectedIssue } = get();
-            if (selectedIssue) {
-              const msg = `${selectedIssue.key}: implementation`;
-              try {
-                await commitWorktreeChanges(msg);
-              } catch (e) {
-                console.warn("[Meridian] commit after implementation failed:", e);
-              }
+        // Side-effects that the old per-stage proceed flow handled around the
+        // implementation/tests boundary. The workflow itself doesn't commit;
+        // the user's local feature branch needs the commits to accumulate
+        // real history that the PR stage can squash later.
+        if (stage === "implementation" || stage === "tests") {
+          const { selectedIssue } = get();
+          if (selectedIssue) {
+            const msg = `${selectedIssue.key}: ${stage}`;
+            try {
+              await commitWorktreeChanges(msg);
+            } catch (e) {
+              console.warn(`[Meridian] commit after ${stage} failed:`, e);
             }
-            await get().runTestsStage();
-            break;
           }
-          case "tests": {
-            const { selectedIssue } = get();
-            if (selectedIssue) {
-              const msg = `${selectedIssue.key}: tests`;
-              try {
-                await commitWorktreeChanges(msg);
-              } catch (e) {
-                console.warn("[Meridian] commit after tests failed:", e);
-              }
-            }
-            await get().runReviewStage();
-            break;
-          }
-          case "review":
-            await get().runPrStage();
-            break;
-          case "pr":
-            await get().runRetroStage();
-            break;
-          case "retro":
-            set({ currentStage: "complete" });
-            break;
         }
-      } finally {
-        set({ proceeding: false });
+
+        const threadId = get().pipelineThreadId;
+        if (!threadId) {
+          throw new Error(
+            "Pipeline workflow has no active thread — cannot resume. Restart the pipeline.",
+          );
+        }
+        const result = await resumeImplementationPipelineWorkflow(threadId, {
+          action: "approve",
+        });
+        applyWorkflowResult((updater) => set((s) => updater(s)), result);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        set((s) => ({
+          errors: { ...s.errors, [stage]: msg },
+          proceeding: false,
+        }));
       }
     },
 
@@ -2059,6 +1973,7 @@ function serializableState(s: ImplementTicketState) {
     triageStreamText: "",
     planStreamText: "",
     implementationStreamText: "",
+    implementationProgress: null,
     buildCheckStreamText: "",
     testsStreamText: "",
     reviewStreamText: "",

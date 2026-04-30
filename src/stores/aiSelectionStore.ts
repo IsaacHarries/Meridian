@@ -104,6 +104,10 @@ interface Actions {
   hydrate: () => Promise<void>;
   refreshFromPrefs: () => Promise<void>;
   loadModels: (provider: AiProvider) => Promise<void>;
+  /** Drop the cached model list for a provider so the next picker open
+   *  re-fetches it. Settings calls this after adding/removing custom models
+   *  so header dropdowns pick up the change without a reload. */
+  invalidateModels: (provider: AiProvider) => void;
   /** Set or clear a panel-level override for the current priority mode. */
   setPanelOverride: (panel: PanelId, value: AiOverride | null) => Promise<void>;
   /** Set or clear a stage-level override for the current priority mode. */
@@ -232,6 +236,14 @@ export const useAiSelectionStore = create<State & Actions>((set, get) => ({
         modelsLoading: { ...s.modelsLoading, [provider]: false },
       }));
     }
+  },
+
+  invalidateModels: (provider) => {
+    set((s) => {
+      const next = { ...s.modelsByProvider };
+      delete next[provider];
+      return { modelsByProvider: next };
+    });
   },
 
   setPanelOverride: async (panel, value) => {

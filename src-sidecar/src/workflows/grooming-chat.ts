@@ -1,0 +1,90 @@
+// Grooming Chat workflow.
+//
+// Multi-turn chat at the grooming checkpoint. The agent refines suggested
+// edits, asks clarifying questions, and adjusts the ambiguities list as the
+// engineer answers. Returns a JSON object the frontend parses to apply state
+// updates (suggested edits + open questions + ambiguities). Streams reply
+// tokens live to the workflow event channel.
+
+import { z } from "zod";
+import { ChatHistoryItemSchema } from "./chat-with-tools.js";
+
+export const GroomingChatInputSchema = z.object({
+  contextText: z.string(),
+  historyJson: z.string(),
+  /** Per-field grooming format templates configured by the user. Either may
+   *  be `null` if the user hasn't configured one. The sidecar pulls these
+   *  through into the system prompt so the agent's `suggested` text follows
+   *  the user's expected structure. */
+  templates: z
+    .object({
+      acceptance_criteria: z.string().nullish(),
+      steps_to_reproduce: z.string().nullish(),
+    })
+    .nullish(),
+});
+
+export type GroomingChatInput = z.infer<typeof GroomingChatInputSchema>;
+
+export const GroomingChatHistorySchema = z.array(ChatHistoryItemSchema);
+
+function buildTemplatesBlock(
+  templates: GroomingChatInput["templates"],
+): string {
+  const ac = templates?.acceptance_criteria;
+  const str = templates?.steps_to_reproduce;
+  if (!ac && !str) return "";
+  let out =
+    "\n\n=== FORMAT TEMPLATES ===\n" +
+    "When you draft text for the `suggested` field of an edit, follow the " +
+    "format shown below for the matching `field`. Match the structure, " +
+    "bullet style, numbering, and line breaks exactly — the user relies on " +
+    "a consistent format across tickets.\n";
+  if (ac) {
+    out += "\n--- Format for field `acceptance_criteria` ---\n" + ac.trimEnd() + "\n";
+  }
+  if (str) {
+    out += "\n--- Format for field `steps_to_reproduce` ---\n" + str.trimEnd() + "\n";
+  }
+  return out;
+}
+
+export function buildGroomingChatSystemPrompt(input: GroomingChatInput): string {
+  const templatesBlock = buildTemplatesBlock(input.templates);
+  return (
+    `You are a grooming agent leading a structured review of a JIRA ticket with a senior engineer. The ticket details, relevant code context, and current state of suggested edits are below.\n\n` +
+    `${input.contextText}\n\n` +
+    `Your role in this conversation:\n` +
+    `- Respond naturally to the engineer's message\n` +
+    `- Refine, add, or retract suggested edits based on new information\n` +
+    `- Ask follow-up clarifying questions if you still need information\n` +
+    `- When the engineer answers a question, incorporate it into your suggestions immediately\n` +
+    `- Lead toward a complete, well-groomed ticket\n\n` +
+    `IMPORTANT — you have NO ability to write to JIRA, Bitbucket, or any external system. You only return suggested edits as JSON; the engineer must approve them in the UI before anything is pushed anywhere.\n\n` +
+    `CRITICAL: You MUST always respond with ONLY a valid JSON object — no markdown fences, no prose outside the JSON, no matter how conversational the engineer's message is. Every single response must be valid JSON.\n\n` +
+    `Required schema:\n` +
+    `{\n` +
+    `  "message": "<your conversational reply to the engineer — plain prose, no JSON>",\n` +
+    `  "updated_edits": [\n` +
+    `    {\n` +
+    `      "id": "<same id as existing edit to update it, or a new slug for new edits>",\n` +
+    `      "field": "<description|acceptance_criteria|steps_to_reproduce|observed_behavior|expected_behavior|summary>",\n` +
+    `      "section": "<human label>",\n` +
+    `      "current": "<existing text or null>",\n` +
+    `      "suggested": "<proposed text>",\n` +
+    `      "reasoning": "<why>"\n` +
+    `    }\n` +
+    `  ],\n` +
+    `  "updated_questions": ["<any remaining open questions you still need answered>"],\n` +
+    `  "updated_ambiguities": ["<remaining unresolved ambiguities — drop ones the engineer has clarified>"]\n` +
+    `}\n\n` +
+    `Rules:\n` +
+    `- updated_edits may be empty if no changes are needed this turn\n` +
+    `- To remove a suggestion, omit its id from updated_edits (the frontend will not delete it — include it with a note in reasoning if it should be withdrawn)\n` +
+    `- updated_ambiguities MUST reflect the conversation so far. If the engineer has clarified a previously listed ambiguity, drop it from this list. If new ambiguities surface, add them. Return the FULL current list every turn — it replaces the previous list, it does not merge.\n` +
+    `- If you change the suggested text or current text of an existing edit, the engineer's previous approval is automatically reset and they must re-approve — your edit is a fresh proposal.\n` +
+    `- Keep the message focused and concise\n` +
+    `- Even if the engineer says only 'yes', 'ok', or 'thanks', you must still return the full JSON object` +
+    templatesBlock
+  );
+}

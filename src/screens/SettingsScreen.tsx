@@ -1455,6 +1455,7 @@ function GeminiSection({
       const updated = await addCustomGeminiModel(id);
       setCustomModels(updated);
       setModels(await getGeminiModels());
+      useAiSelectionStore.getState().invalidateModels("gemini");
       setCustomModelDraft("");
       if (!selectedModel) handleModelChange(id);
     } catch (err) {
@@ -1469,6 +1470,7 @@ function GeminiSection({
       const updated = await removeCustomGeminiModel(id);
       setCustomModels(updated);
       setModels(await getGeminiModels());
+      useAiSelectionStore.getState().invalidateModels("gemini");
       if (selectedModel === id) handleModelChange("");
     } catch (err) {
       setCustomModelErr(String(err));
@@ -1984,6 +1986,7 @@ function CopilotSection({
       const updated = await addCustomCopilotModel(id);
       setCustomModels(updated);
       setModels(await getCopilotModels());
+      useAiSelectionStore.getState().invalidateModels("copilot");
       setCustomModelDraft("");
       if (!selectedModel) handleModelChange(id);
     } catch (err) {
@@ -1998,6 +2001,7 @@ function CopilotSection({
       const updated = await removeCustomCopilotModel(id);
       setCustomModels(updated);
       setModels(await getCopilotModels());
+      useAiSelectionStore.getState().invalidateModels("copilot");
       if (selectedModel === id) handleModelChange("");
     } catch (err) {
       setCustomModelErr(String(err));
@@ -3295,6 +3299,7 @@ function ConfigSection({
   const [groomingWorktreePath, setGroomingWorktreePath] = useState("");
   const [prTerminal, setPrTerminal] = useState("iTerm2");
   const [buildVerifyEnabled, setBuildVerifyEnabled] = useState(false);
+  const [buildCheckCommand, setBuildCheckCommand] = useState("");
   const [editing, setEditing] = useState(!jiraBoardId || !bitbucketRepoSlug);
   const [status, setStatus] = useState<SectionStatus>({
     state: "idle",
@@ -3325,6 +3330,7 @@ function ConfigSection({
       setGroomingWorktreePath(prefs["grooming_worktree_path"] ?? "");
       setPrTerminal(prefs["pr_review_terminal"] || "iTerm2");
       setBuildVerifyEnabled(prefs["build_verify_enabled"] === "true");
+      setBuildCheckCommand(prefs["build_check_command"] ?? "");
     } catch {
       setBoardId("");
       setRepoSlug("");
@@ -3360,6 +3366,9 @@ function ConfigSection({
           );
           setBuildVerifyEnabled(
             (prev) => prev || prefs["build_verify_enabled"] === "true",
+          );
+          setBuildCheckCommand(
+            (prev) => prev || (prefs["build_check_command"] ?? ""),
           );
         })
         .catch(() => {});
@@ -3413,6 +3422,7 @@ function ConfigSection({
         "build_verify_enabled",
         buildVerifyEnabled ? "true" : "false",
       );
+      await setPreference("build_check_command", buildCheckCommand.trim());
       setStatus({ state: "success", message: "Configuration saved." });
       setEditing(false);
       onSaved();
@@ -3722,9 +3732,10 @@ function ConfigSection({
               <div>
                 <p className="text-sm font-medium">Build Verification</p>
                 <p className="text-xs text-muted-foreground mt-0.5">
-                  After writing code, the AI automatically detects and runs the
-                  project's build command, fixes any errors, and retries (up to
-                  5 times).
+                  After the implementation agent writes code, run the
+                  configured build command. If it fails, an AI fix loop reads
+                  the error, edits the offending files, and retries (up to 3
+                  times) before handing control back to you.
                 </p>
               </div>
               <Button
@@ -3737,6 +3748,30 @@ function ConfigSection({
                 {buildVerifyEnabled ? "Enabled" : "Disabled"}
               </Button>
             </div>
+            {buildVerifyEnabled && (
+              <div className="space-y-1.5 pl-1">
+                <label
+                  htmlFor="build-check-command"
+                  className="text-xs font-medium text-muted-foreground"
+                >
+                  Build command
+                </label>
+                <input
+                  id="build-check-command"
+                  type="text"
+                  value={buildCheckCommand}
+                  onChange={(e) => setBuildCheckCommand(e.target.value)}
+                  placeholder="e.g. pnpm build, cargo check, make test"
+                  spellCheck={false}
+                  className="w-full rounded-md border bg-background px-3 py-1.5 text-sm font-mono"
+                  disabled={status.state === "loading"}
+                />
+                <p className="text-xs text-muted-foreground">
+                  Runs in the configured worktree. Leave empty to skip the
+                  build sub-loop even when the toggle is on.
+                </p>
+              </div>
+            )}
             <div className="flex gap-2">
               <Button
                 size="sm"
@@ -5582,25 +5617,6 @@ export function SettingsScreen({ onClose, onNavigate }: SettingsScreenProps) {
                           Configure domain knowledge injected into AI agents —
                           grooming conventions, codebase patterns,
                           implementation standards, review criteria
-                        </p>
-                      </div>
-                      <ChevronRight className="h-4 w-4 text-muted-foreground" />
-                    </CardContent>
-                  </Card>
-                  <Card
-                    className="cursor-pointer hover:bg-muted/40 transition-colors"
-                    onClick={() => onNavigate("tool-sandbox")}
-                  >
-                    <CardContent className="flex items-center gap-4 py-4">
-                      <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-violet-500/10">
-                        <FlaskConical className="h-4 w-4 text-violet-500" />
-                      </div>
-                      <div className="flex-1">
-                        <p className="text-sm font-medium">Tool Sandbox</p>
-                        <p className="text-xs text-muted-foreground">
-                          Invoke any agent tool directly — read/write repo
-                          files, search JIRA, grep the codebase, fetch URLs —
-                          and inspect the raw output to verify each tool works
                         </p>
                       </div>
                       <ChevronRight className="h-4 w-4 text-muted-foreground" />

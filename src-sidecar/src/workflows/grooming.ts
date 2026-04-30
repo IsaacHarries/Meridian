@@ -1,0 +1,292 @@
+import { Annotation, END, START, StateGraph } from "@langchain/langgraph";
+import { HumanMessage, SystemMessage } from "@langchain/core/messages";
+import { z } from "zod";
+import type { BaseChatModel } from "@langchain/core/language_models/chat_models";
+import { buildModel } from "../models/factory.js";
+import type { ModelSelection } from "../protocol.js";
+
+// ── Input / output schemas ────────────────────────────────────────────────────
+
+export const GroomingInputSchema = z.object({
+  ticketText: z.string(),
+  fileContents: z.string().optional().default(""),
+  templates: z
+    .object({
+      // Rust serializes unset templates as JSON null (Option::None), so accept
+      // both null and missing/undefined for either field.
+      acceptance_criteria: z.string().nullish(),
+      steps_to_reproduce: z.string().nullish(),
+    })
+    .nullish(),
+});
+
+export type GroomingInput = z.infer<typeof GroomingInputSchema>;
+
+export const SuggestedEditSchema = z.object({
+  id: z.string(),
+  field: z.enum([
+    "description",
+    "acceptance_criteria",
+    "steps_to_reproduce",
+    "observed_behavior",
+    "expected_behavior",
+    "summary",
+  ]),
+  section: z.string(),
+  current: z.string().nullable(),
+  // Models occasionally return an array of strings here (one per bullet) even
+  // when the prompt asks for a single string — coerce to a newline-joined
+  // string. They also sometimes return null/undefined when they couldn't
+  // propose anything; coerce to empty string rather than failing the whole
+  // grooming response (an edit with empty suggested text is harmless and the
+  // user will simply ignore it in the diff UI).
+  suggested: z
+    .union([z.string(), z.array(z.string()), z.null(), z.undefined()])
+    .transform((v) => {
+      if (v == null) return "";
+      if (Array.isArray(v)) return v.join("\n");
+      return v;
+    }),
+  reasoning: z.string(),
+});
+
+export const RelevantAreaSchema = z.object({
+  area: z.string(),
+  reason: z.string(),
+  files_to_check: z.array(z.string()),
+});
+
+export const GroomingOutputSchema = z.object({
+  ticket_summary: z.string(),
+  // Mirrors Jira's standard work item types plus a couple of agile aliases
+  // some teams use. "feature" and "chore" aren't Jira types but kept for
+  // tickets imported from other trackers; "story" and "task" are the most
+  // common Jira types and the only ones the grooming agent treats as
+  // requiring acceptance criteria.
+  ticket_type: z.enum([
+    "story",
+    "task",
+    "bug",
+    "spike",
+    "epic",
+    "subtask",
+    "feature",
+    "chore",
+  ]),
+  acceptance_criteria: z.array(z.string()),
+  relevant_areas: z.array(RelevantAreaSchema),
+  ambiguities: z.array(z.string()),
+  dependencies: z.array(z.string()),
+  estimated_complexity: z.enum(["low", "medium", "high"]),
+  grooming_notes: z.string(),
+  suggested_edits: z.array(SuggestedEditSchema),
+  clarifying_questions: z.array(z.string()),
+});
+
+export type GroomingOutput = z.infer<typeof GroomingOutputSchema>;
+
+// ── System prompt ─────────────────────────────────────────────────────────────
+
+const BASE_SYSTEM = `You are a grooming agent helping a senior engineer understand and refine a JIRA ticket. \
+You have been given the ticket details and relevant source code from the codebase. \
+Your job is twofold:
+1. Analyse the ticket and produce a structured grooming summary
+2. Identify any gaps, inaccuracies, or missing sections in the ticket and suggest concrete improvements
+
+For each suggested edit:
+- Compare what the ticket currently says against what the code actually does
+- Propose a specific, concrete replacement (not vague advice)
+- For missing sections (e.g. no Acceptance Criteria on a Story, no Steps to Reproduce on a Bug), \
+draft what should be there based on the code context — or raise a clarifying_question if you genuinely cannot determine it
+
+Return ONLY valid JSON (no markdown fences) with this schema:
+{
+  "ticket_summary": "<2-3 sentence summary of what the ticket is asking for>",
+  "ticket_type": "story|task|bug|spike|epic|subtask",
+  "acceptance_criteria": ["<criterion>", ...],
+  "relevant_areas": [
+    {"area": "<module or layer>", "reason": "<why relevant>", "files_to_check": ["<path>"]}
+  ],
+  "ambiguities": ["<unclear thing>", ...],
+  "dependencies": ["<other tickets or systems>", ...],
+  "estimated_complexity": "low|medium|high",
+  "grooming_notes": "<anything else worth flagging>",
+  "suggested_edits": [
+    {
+      "id": "<short unique slug e.g. 'ac-1' or 'desc-clarity'>",
+      "field": "<jira field: description|acceptance_criteria|steps_to_reproduce|observed_behavior|expected_behavior|summary>",
+      "section": "<human label e.g. 'Acceptance Criteria' or 'Description'>",
+      "current": "<exact existing text, or null if the section is missing entirely>",
+      "suggested": "<your proposed replacement or addition>",
+      "reasoning": "<1-2 sentences explaining why this change improves the ticket>"
+    }
+  ],
+  "clarifying_questions": [
+    "<question you need answered before you can complete the analysis or a suggestion>"
+  ]
+}
+
+Important:
+- Only raise a clarifying_question when you genuinely cannot determine the answer from the code or ticket
+- Prefer drafting a concrete suggestion (even if tentative) over asking a question
+- If the ticket title (summary) is vague, too generic, or does not clearly convey the scope \
+or intent of the work, suggest a concrete improved title using field \`summary\` — be specific \
+and concise (under 80 characters). Only suggest a title change if it genuinely adds clarity; \
+do not change titles that are already specific
+- If the ticket is a Story/Task and has no Acceptance Criteria, always suggest them
+- Keep each suggested text concise and actionable
+- Only include ONE suggested_edit per field value — if you have multiple improvements for \
+the same field (e.g. multiple acceptance criteria points), consolidate them into a single \
+edit with all content merged. Never produce two suggested_edits with the same \`field\`.
+
+=== BUG-SPECIFIC RULES (ticket_type == "bug") ===
+When the ticket is a Bug, the following fields MUST all be populated. For \
+every one that is missing OR empty, emit a suggested_edit:
+- \`description\` — a concise summary of the bug (what is broken, where it shows up). \
+NOT the reproduction steps and NOT the observed/expected behaviour — those \
+belong in their own fields. Aim for 2–4 sentences.
+- \`steps_to_reproduce\` — a numbered list of actions a reader can follow to \
+reliably trigger the bug
+- \`observed_behavior\` — what actually happens when those steps are followed
+- \`expected_behavior\` — what the user/system should see instead
+
+If the existing \`description\` field contains content that belongs in another \
+bug field, MOVE it rather than duplicate it:
+- If the description has a "Steps to Reproduce" section (or a numbered list of \
+reproduction steps), extract those steps into a suggested_edit for \
+\`steps_to_reproduce\` and emit a suggested_edit for \`description\` whose \
+\`suggested\` value is the description WITHOUT those steps (replaced by a \
+summary of the bug).
+- If the description contains "Observed Behavior" / "Actual Result" / similar \
+content, extract it into \`observed_behavior\` and remove it from the description.
+- If the description contains "Expected Behavior" / "Expected Result" / \
+similar, extract it into \`expected_behavior\` and remove it from the description.
+
+In short: after your suggested edits are applied, the description should read \
+as a summary of the bug, and each of steps_to_reproduce / observed_behavior / \
+expected_behavior should hold its own dedicated content.
+
+When you cannot determine a field's content from the ticket text alone, draft \
+a plausible value from the relevant source code provided below — only fall \
+back to a clarifying_question if even the code does not give enough context.`;
+
+function templatesBlock(templates?: GroomingInput["templates"]): string {
+  if (!templates) return "";
+  const ac = templates.acceptance_criteria;
+  const str = templates.steps_to_reproduce;
+  if (!ac && !str) return "";
+
+  let out =
+    "\n\n=== FORMAT TEMPLATES ===\n" +
+    "When you draft text for the `suggested` field of an edit, follow the " +
+    "format shown below for the matching `field`. Match the structure, " +
+    "bullet style, numbering, and line breaks exactly — the user relies on " +
+    "a consistent format across tickets.\n";
+  if (ac) {
+    out += "\n--- Format for field `acceptance_criteria` ---\n" + ac.trimEnd() + "\n";
+  }
+  if (str) {
+    out += "\n--- Format for field `steps_to_reproduce` ---\n" + str.trimEnd() + "\n";
+  }
+  return out;
+}
+
+export function buildSystemPrompt(templates?: GroomingInput["templates"]): string {
+  return BASE_SYSTEM + templatesBlock(templates);
+}
+
+export function buildUserPrompt(input: GroomingInput): string {
+  const fileBlock = input.fileContents
+    ? `\n\n=== RELEVANT FILE CONTENTS (read from codebase) ===\n${input.fileContents}`
+    : "";
+  return `Groom this ticket:\n\n${input.ticketText}${fileBlock}`;
+}
+
+// ── State graph ───────────────────────────────────────────────────────────────
+
+const GroomingStateAnnotation = Annotation.Root({
+  input: Annotation<GroomingInput>(),
+  model: Annotation<ModelSelection>(),
+  rawResponse: Annotation<string | undefined>(),
+  parsedOutput: Annotation<GroomingOutput | undefined>(),
+  parseError: Annotation<string | undefined>(),
+  usage: Annotation<{ inputTokens: number; outputTokens: number } | undefined>(),
+});
+
+type GroomingState = typeof GroomingStateAnnotation.State;
+
+function stripJsonFences(text: string): string {
+  const trimmed = text.trim();
+  if (trimmed.startsWith("```")) {
+    return trimmed.replace(/^```(?:json)?\s*\n?/, "").replace(/\n?```\s*$/, "").trim();
+  }
+  return trimmed;
+}
+
+/**
+ * Models occasionally emit bad JSON escape sequences — usually a bare `\`
+ * inside a string field (code snippets, regex patterns). JSON.parse then
+ * fails with "Bad escaped character". Try to recover by escaping any `\`
+ * that isn't followed by a valid JSON escape character.
+ */
+function tryParseJsonLenient(text: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch (firstErr) {
+    const repaired = text.replace(/\\(?!["\\/bfnrtu])/g, "\\\\");
+    if (repaired !== text) {
+      try {
+        return JSON.parse(repaired);
+      } catch {
+        // fall through to throw the original error so the user sees the
+        // actual position the model produced (more useful for debugging)
+      }
+    }
+    throw firstErr;
+  }
+}
+
+async function analyseNode(state: GroomingState): Promise<Partial<GroomingState>> {
+  const model: BaseChatModel = buildModel(state.model);
+  const system = buildSystemPrompt(state.input.templates);
+  const user = buildUserPrompt(state.input);
+
+  const response = await model.invoke([
+    new SystemMessage(system),
+    new HumanMessage(user),
+  ]);
+
+  const rawResponse = typeof response.content === "string"
+    ? response.content
+    : response.text;
+
+  const usage = response.usage_metadata
+    ? {
+        inputTokens: response.usage_metadata.input_tokens,
+        outputTokens: response.usage_metadata.output_tokens,
+      }
+    : undefined;
+
+  // Parse + validate against the schema. On failure we surface parseError so
+  // the caller can decide how to handle it (retry, surface to user, etc.).
+  const cleaned = stripJsonFences(rawResponse);
+  try {
+    const parsed = tryParseJsonLenient(cleaned);
+    const validated = GroomingOutputSchema.parse(parsed);
+    return { rawResponse, parsedOutput: validated, usage };
+  } catch (err) {
+    return {
+      rawResponse,
+      parseError: err instanceof Error ? err.message : String(err),
+      usage,
+    };
+  }
+}
+
+export function buildGroomingGraph() {
+  return new StateGraph(GroomingStateAnnotation)
+    .addNode("analyse", analyseNode)
+    .addEdge(START, "analyse")
+    .addEdge("analyse", END)
+    .compile();
+}

@@ -11,7 +11,7 @@ import type {
   ReviewReport,
 } from "./tauri";
 
-/** JSON agent outputs (no markdown fences) for parseAgentJson / parseQualityReport / parseReviewReport */
+/** JSON agent outputs (no markdown fences) for parseAgentJson / parseQualityReport / runPrReviewWorkflow */
 
 const grooming: GroomingOutput = {
   ticket_summary:

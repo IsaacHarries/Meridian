@@ -17,29 +17,12 @@ pub mod tasks;
 pub mod time_tracking;
 pub mod trend_analyses;
 pub mod validate;
+pub mod workflows;
 
 use crate::agents;
 use crate::llms;
 
-pub use agents::briefing::{
-    chat_sprint_dashboard, generate_sprint_retrospective, generate_workload_suggestions,
-};
 pub use agents::dispatch::llm_client;
-pub use agents::grooming::{
-    assess_ticket_quality, run_grooming_agent, run_grooming_chat_turn, run_grooming_file_probe,
-};
-pub use agents::implementation::{
-    run_build_check, run_implementation_agent, run_implementation_guidance, run_plan_review,
-    run_pr_description_gen, run_retrospective_agent, run_test_agent,
-};
-pub use agents::meetings::{chat_meeting, summarize_meeting};
-pub use agents::planning::{
-    finalize_implementation_plan, run_checkpoint_action, run_checkpoint_chat_turn,
-    run_impact_analysis, run_tool_test, run_tool_test_with_llm, run_triage_turn,
-};
-pub use agents::review::{
-    analyze_pr_comments, chat_address_pr, chat_pr_review, review_pr as review_pr_agent,
-};
 pub use agents::trends::generate_multi_sprint_trends;
 pub use bitbucket::{
     approve_pr, create_pr_task, create_pull_request, delete_pr_comment, fetch_bitbucket_image,
@@ -124,6 +107,16 @@ pub use trend_analyses::{
 pub use store_cache::{
     clear_all_store_caches, delete_store_cache, get_store_cache_info, load_store_cache,
     save_store_cache,
+};
+pub use workflows::{
+    resume_implementation_pipeline_workflow, rewind_implementation_pipeline_workflow,
+    run_address_pr_chat_workflow, run_analyze_pr_comments_workflow,
+    run_checkpoint_chat_workflow, run_grooming_chat_workflow,
+    run_grooming_file_probe_workflow, run_grooming_workflow,
+    run_implementation_pipeline_workflow, run_meeting_chat_workflow,
+    run_meeting_summary_workflow, run_meeting_title_workflow, run_pr_review_chat_workflow,
+    run_pr_review_workflow, run_sprint_dashboard_chat_workflow,
+    run_sprint_retrospective_workflow, run_workload_suggestions_workflow,
 };
 pub use validate::{
     debug_jira_endpoints, import_claude_code_token, ping_anthropic, ping_copilot, ping_gemini,

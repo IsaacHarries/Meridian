@@ -409,9 +409,14 @@ export async function generateSprintRetrospective(
       await import("./mockClaudeResponses");
     return MOCK_SPRINT_RETRO_MARKDOWN;
   }
-  return invokeWithLlmCheck<string>("generate_sprint_retrospective", {
-    sprintText,
-  });
+  // Routes through the TypeScript sidecar's `sprint_retrospective` workflow.
+  // The sidecar emits a final result with `output: { markdown }`; the Rust
+  // bridge wraps that in a WorkflowResult. We pull the markdown back out so
+  // existing callers keep their string-returning contract.
+  const result = await invokeWithLlmCheck<{
+    output?: { markdown?: string } | null;
+  }>("run_sprint_retrospective_workflow", { sprintText });
+  return result?.output?.markdown ?? "";
 }
 
 export async function generateWorkloadSuggestions(
@@ -421,28 +426,47 @@ export async function generateWorkloadSuggestions(
     const { MOCK_WORKLOAD_MARKDOWN } = await import("./mockClaudeResponses");
     return MOCK_WORKLOAD_MARKDOWN;
   }
-  return invokeWithLlmCheck<string>("generate_workload_suggestions", {
+  const result = await invokeWithLlmCheck<{
+    output?: { markdown?: string } | null;
+  }>("run_workload_suggestions_workflow", {
     workloadText,
   });
+  return result?.output?.markdown ?? "";
 }
 
-/** Multi-turn chat over the current sprint dashboard snapshot. */
+/** Multi-turn chat over the current sprint dashboard snapshot. Routes
+ *  through the sidecar's `sprint_dashboard_chat` workflow. */
 export async function chatSprintDashboard(
   contextText: string,
   historyJson: string,
 ): Promise<string> {
-  return invokeWithLlmCheck<string>("chat_sprint_dashboard", {
+  const result = await invokeWithLlmCheck<{
+    output?: { markdown?: string } | null;
+  }>("run_sprint_dashboard_chat_workflow", {
     contextText,
     historyJson,
   });
+  return result?.output?.markdown ?? "";
 }
 
-export async function reviewPr(reviewText: string): Promise<string> {
+/**
+ * PR Review workflow. Runs a chunk-aware LangGraph in the sidecar — one-pass
+ * for small PRs, sequential per-chunk findings + synthesis for large ones.
+ * The sidecar validates the final report against the ReviewReport schema and
+ * returns it parsed.
+ */
+export async function runPrReviewWorkflow(
+  reviewText: string,
+): Promise<ReviewReport> {
   if (isMockClaudeMode()) {
     const { MOCK_PR_REVIEW_JSON } = await import("./mockClaudeResponses");
-    return MOCK_PR_REVIEW_JSON;
+    return JSON.parse(MOCK_PR_REVIEW_JSON) as ReviewReport;
   }
-  return invokeWithLlmCheck<string>("review_pr", { reviewText });
+  const result = await invokeWithLlmCheck<WorkflowResult<ReviewReport>>(
+    "run_pr_review_workflow",
+    { reviewText },
+  );
+  return result.output;
 }
 
 /** Signal the backend to stop an in-progress PR review between chunks. */
@@ -450,15 +474,109 @@ export async function cancelReview(): Promise<void> {
   return invoke<void>("cancel_review");
 }
 
-/** Conversational follow-up chat about a completed PR review. */
+// ── Implementation pipeline workflow ──────────────────────────────────────────
+//
+// The pipeline runs as a single LangGraph workflow in the sidecar with
+// `interrupt()` between every agent stage. Frontend dispatches `start` once,
+// then on each interrupt either approves (advances to next stage), aborts,
+// or — for triage — replies with a chat message.
+
+export interface PipelineInterrupt {
+  threadId: string;
+  /** Stage name from PIPELINE_STAGES (grooming, impact, triage, ...). */
+  reason: string;
+  /** The stage's structured output for the user to review. */
+  payload: unknown;
+}
+
+export interface PipelineWorkflowResult {
+  /** Set when the workflow completed normally; pipeline state shape. */
+  output: unknown | null;
+  /** Set when the workflow paused at a human checkpoint. */
+  interrupt: PipelineInterrupt | null;
+  usage: SidecarUsage;
+}
+
+export type PipelineResumeAction =
+  | { action: "approve" }
+  | { action: "abort"; reason?: string }
+  | { action: "reply"; message: string };
+
+export interface PipelineWorkflowArgs {
+  ticketText: string;
+  ticketKey: string;
+  worktreePath: string;
+  codebaseContext?: string;
+  groomingTemplates?: {
+    acceptance_criteria?: string | null;
+    steps_to_reproduce?: string | null;
+  } | null;
+  skills?: {
+    grooming?: string | null;
+    patterns?: string | null;
+    implementation?: string | null;
+    review?: string | null;
+    testing?: string | null;
+  };
+  prTemplate?: { body: string; mode: "guide" | "strict" };
+}
+
+export async function runImplementationPipelineWorkflow(
+  args: PipelineWorkflowArgs,
+): Promise<PipelineWorkflowResult> {
+  return invokeWithLlmCheck<PipelineWorkflowResult>(
+    "run_implementation_pipeline_workflow",
+    { args },
+  );
+}
+
+export async function resumeImplementationPipelineWorkflow(
+  threadId: string,
+  resumeValue: PipelineResumeAction,
+): Promise<PipelineWorkflowResult> {
+  return invokeWithLlmCheck<PipelineWorkflowResult>(
+    "resume_implementation_pipeline_workflow",
+    { threadId, resumeValue },
+  );
+}
+
+/**
+ * Rewind the workflow to the checkpoint just before `toNode` ran, then
+ * resume forward. Used by the per-stage Retry button so the user can
+ * re-run a single stage without restarting the whole pipeline.
+ */
+export async function rewindImplementationPipelineWorkflow(
+  threadId: string,
+  toNode: string,
+): Promise<PipelineWorkflowResult> {
+  return invokeWithLlmCheck<PipelineWorkflowResult>(
+    "rewind_implementation_pipeline_workflow",
+    { threadId, toNode },
+  );
+}
+
+/** Tauri event payload streamed during pipeline runs. */
+export type PipelineEvent =
+  | { kind: "progress"; node: string; status: "started" | "completed"; data?: unknown }
+  | { kind: "stream"; node: string; delta: string }
+  | { kind: "interrupt"; threadId: string; reason: string; payload: unknown };
+
+export const PIPELINE_EVENT_NAME = "implementation-pipeline-event";
+
+/** Conversational follow-up chat about a completed PR review. Streams reply
+ *  tokens through the workflow event channel `pr-review-chat-workflow-event`
+ *  — subscribers should filter for `kind === "stream"` and read `delta`. */
 export async function chatPrReview(
   contextText: string,
   historyJson: string,
 ): Promise<string> {
-  return invokeWithLlmCheck<string>("chat_pr_review", {
+  const result = await invokeWithLlmCheck<{
+    output?: { reply?: string } | null;
+  }>("run_pr_review_chat_workflow", {
     contextText,
     historyJson,
   });
+  return result?.output?.reply ?? "";
 }
 
 // ── PR review report types ────────────────────────────────────────────────────
@@ -493,28 +611,6 @@ export interface ReviewReport {
     quality: ReviewLens;
     testing: ReviewLens;
   };
-}
-
-export function parseReviewReport(raw: string): ReviewReport | null {
-  try {
-    // Strip markdown fences if present
-    let cleaned = raw
-      .replace(/^```(?:json)?\n?/m, "")
-      .replace(/\n?```$/m, "")
-      .trim();
-
-    // Sanitise bare unquoted line_range values produced by some models, e.g.:
-    //   "line_range": L96-L127   →   "line_range": "L96-L127"
-    // Matches: "line_range": followed by whitespace and a non-null, non-quote, non-digit token
-    cleaned = cleaned.replace(
-      /"line_range"\s*:\s*(?!null\b|")(L[\w\-]+)/g,
-      '"line_range": "$1"',
-    );
-
-    return JSON.parse(cleaned) as ReviewReport;
-  } catch {
-    return null;
-  }
 }
 
 // ── JIRA types ────────────────────────────────────────────────────────────────
@@ -1261,6 +1357,20 @@ export interface TestOutput {
   coverage_notes: string;
 }
 
+export interface TestPlanFile {
+  path: string;
+  framework?: string;
+  description: string;
+  cases: string[];
+}
+
+export interface TestPlan {
+  summary: string;
+  files: TestPlanFile[];
+  edge_cases_covered: string[];
+  coverage_notes: string;
+}
+
 export interface ImplementationFileResult {
   path: string;
   action: "created" | "modified" | "deleted";
@@ -1313,28 +1423,50 @@ export interface TriageMessage {
 
 // ── Agent pipeline commands ───────────────────────────────────────────────────
 
-export async function runGroomingAgent(
-  ticketText: string,
-  fileContents: string,
-): Promise<string> {
-  if (isMockClaudeMode()) {
-    const { MOCK_GROOMING_JSON } = await import("./mockClaudeResponses");
-    return MOCK_GROOMING_JSON;
-  }
-  return invokeWithLlmCheck<string>("run_grooming_agent", {
-    ticketText,
-    fileContents,
-  });
+/**
+ * Grooming workflow. Runs a LangGraph StateGraph in the sidecar, which
+ * validates the model response against the GroomingOutput Zod schema and
+ * returns the parsed object directly.
+ */
+export interface SidecarUsage {
+  inputTokens: number;
+  outputTokens: number;
 }
 
-/** Phase-1 probe: ask the agent which files to read before full grooming. */
+export interface WorkflowResult<T> {
+  output: T;
+  usage: SidecarUsage;
+}
+
+export async function runGroomingWorkflow(
+  ticketText: string,
+  fileContents: string,
+): Promise<GroomingOutput> {
+  if (isMockClaudeMode()) {
+    const { MOCK_GROOMING_JSON } = await import("./mockClaudeResponses");
+    return JSON.parse(MOCK_GROOMING_JSON) as GroomingOutput;
+  }
+  const result = await invokeWithLlmCheck<WorkflowResult<GroomingOutput>>(
+    "run_grooming_workflow",
+    { ticketText, fileContents },
+  );
+  return result.output;
+}
+
+/** Phase-1 probe: ask the agent which files to read before full grooming.
+ *  Routes through the sidecar's `grooming_file_probe` workflow; the response
+ *  is the raw JSON text the model produced, which existing callers parse via
+ *  `parseAgentJson`. */
 export async function runGroomingFileProbe(
   ticketText: string,
 ): Promise<string> {
   if (isMockClaudeMode()) {
     return JSON.stringify({ files: [], grep_patterns: [] });
   }
-  return invokeWithLlmCheck<string>("run_grooming_file_probe", { ticketText });
+  const result = await invokeWithLlmCheck<{
+    output?: { markdown?: string } | null;
+  }>("run_grooming_file_probe_workflow", { ticketText });
+  return result?.output?.markdown ?? "";
 }
 
 /**
@@ -1353,52 +1485,17 @@ export async function runGroomingChatTurn(
       updated_questions: [],
     });
   }
-  return invokeWithLlmCheck<string>("run_grooming_chat_turn", {
+  // Routes through the sidecar's `grooming_chat` workflow, which streams reply
+  // tokens to `grooming-chat-workflow-event` and returns the final raw JSON
+  // text via `output.reply`. Existing callers parse the JSON with
+  // `parseAgentJson` so we keep the string-returning shape.
+  const result = await invokeWithLlmCheck<{
+    output?: { reply?: string } | null;
+  }>("run_grooming_chat_workflow", {
     contextText,
     historyJson,
   });
-}
-
-export async function runImpactAnalysis(
-  ticketText: string,
-  groomingJson: string,
-): Promise<string> {
-  if (isMockClaudeMode()) {
-    const { MOCK_IMPACT_JSON } = await import("./mockClaudeResponses");
-    return MOCK_IMPACT_JSON;
-  }
-  return invokeWithLlmCheck<string>("run_impact_analysis", {
-    ticketText,
-    groomingJson,
-  });
-}
-
-export async function runTriageTurn(
-  contextText: string,
-  historyJson: string,
-): Promise<string> {
-  if (isMockClaudeMode()) {
-    const { MOCK_TRIAGE_ASSISTANT_REPLY } =
-      await import("./mockClaudeResponses");
-    return MOCK_TRIAGE_ASSISTANT_REPLY;
-  }
-  return invokeWithLlmCheck<string>("run_triage_turn", {
-    contextText,
-    historyJson,
-  });
-}
-
-export async function runCheckpointChatTurn(
-  contextText: string,
-  historyJson: string,
-): Promise<string> {
-  if (isMockClaudeMode()) {
-    return "Happy to help clarify. Based on the stage output, everything looks on track. Let me know if you have specific questions.";
-  }
-  return invokeWithLlmCheck<string>("run_checkpoint_chat_turn", {
-    contextText,
-    historyJson,
-  });
+  return result?.output?.reply ?? "";
 }
 
 export interface CheckpointActionResult {
@@ -1427,35 +1524,18 @@ export async function runCheckpointAction(
       updated_output: null,
     });
   }
-  return invokeWithLlmCheck<string>("run_checkpoint_action", {
+  // Routes through the sidecar's `checkpoint_chat` workflow, which streams
+  // reply tokens to `checkpoint-chat-workflow-event` and returns the final
+  // raw JSON text via `output.reply`. The frontend continues to parse the
+  // string with `parseAgentJson` so existing callers don't change.
+  const result = await invokeWithLlmCheck<{
+    output?: { reply?: string } | null;
+  }>("run_checkpoint_chat_workflow", {
     stage,
     contextText,
     historyJson,
   });
-}
-
-export async function runToolTest(
-  toolName: string,
-  inputJson: string,
-): Promise<string> {
-  return invoke<string>("run_tool_test", { toolName, inputJson });
-}
-
-export interface LlmToolTestResult {
-  ok: boolean;
-  provider: string;
-  tool_name: string;
-  llm_response?: string;
-  error?: string;
-}
-
-export async function runToolTestWithLlm(
-  provider: string,
-  toolName: string,
-  inputJson: string,
-): Promise<LlmToolTestResult> {
-  const raw = await invoke<string>("run_tool_test_with_llm", { provider, toolName, inputJson });
-  return JSON.parse(raw) as LlmToolTestResult;
+  return result?.output?.reply ?? "";
 }
 
 export async function writeRepoFile(
@@ -1477,18 +1557,6 @@ export interface BuildCheckResult {
   build_command: string;
   build_passed: boolean;
   attempts: BuildAttempt[];
-}
-
-export async function runBuildCheck(
-  ticketText: string,
-  planJson: string,
-  implJson: string,
-): Promise<string> {
-  return invoke<string>("run_build_check", {
-    ticketText,
-    planJson,
-    implJson,
-  });
 }
 
 export async function execInWorktree(
@@ -1519,121 +1587,6 @@ export async function updateJiraFields(
   fieldsJson: string,
 ): Promise<void> {
   return invoke("update_jira_fields", { issueKey, fieldsJson });
-}
-
-export async function finalizeImplementationPlan(
-  contextText: string,
-  conversationJson: string,
-): Promise<string> {
-  if (isMockClaudeMode()) {
-    const { MOCK_IMPLEMENTATION_PLAN_JSON } =
-      await import("./mockClaudeResponses");
-    return MOCK_IMPLEMENTATION_PLAN_JSON;
-  }
-  return invokeWithLlmCheck<string>("finalize_implementation_plan", {
-    contextText,
-    conversationJson,
-  });
-}
-
-export async function runImplementationAgent(
-  ticketText: string,
-  planJson: string,
-  guidanceJson: string,
-): Promise<string> {
-  return invokeWithLlmCheck<string>("run_implementation_agent", {
-    ticketText,
-    planJson,
-    guidanceJson,
-  });
-}
-
-export async function runImplementationGuidance(
-  ticketText: string,
-  planJson: string,
-): Promise<string> {
-  if (isMockClaudeMode()) {
-    const { MOCK_GUIDANCE_JSON } = await import("./mockClaudeResponses");
-    return MOCK_GUIDANCE_JSON;
-  }
-  return invokeWithLlmCheck<string>("run_implementation_guidance", {
-    ticketText,
-    planJson,
-  });
-}
-
-export async function runTestAgent(
-  ticketText: string,
-  planJson: string,
-  implJson: string,
-  diff: string,
-): Promise<string> {
-  if (isMockClaudeMode()) {
-    const { MOCK_TESTS_JSON } = await import("./mockClaudeResponses");
-    return MOCK_TESTS_JSON;
-  }
-  return invokeWithLlmCheck<string>("run_test_agent", {
-    ticketText,
-    planJson,
-    implJson,
-    diff,
-  });
-}
-
-export async function runPlanReview(
-  ticketText: string,
-  planJson: string,
-  implJson: string,
-  testJson: string,
-  diff: string,
-): Promise<string> {
-  if (isMockClaudeMode()) {
-    const { MOCK_PLAN_REVIEW_JSON } = await import("./mockClaudeResponses");
-    return MOCK_PLAN_REVIEW_JSON;
-  }
-  return invokeWithLlmCheck<string>("run_plan_review", {
-    ticketText,
-    planJson,
-    implJson,
-    testJson,
-    diff,
-  });
-}
-
-export async function runPrDescriptionGen(
-  ticketText: string,
-  planJson: string,
-  implJson: string,
-  reviewJson: string,
-): Promise<string> {
-  if (isMockClaudeMode()) {
-    const { MOCK_PR_DESCRIPTION_JSON } = await import("./mockClaudeResponses");
-    return MOCK_PR_DESCRIPTION_JSON;
-  }
-  return invokeWithLlmCheck<string>("run_pr_description_gen", {
-    ticketText,
-    planJson,
-    implJson,
-    reviewJson,
-  });
-}
-
-export async function runRetrospectiveAgent(
-  ticketText: string,
-  planJson: string,
-  implJson: string,
-  reviewJson: string,
-): Promise<string> {
-  if (isMockClaudeMode()) {
-    const { MOCK_RETROSPECTIVE_JSON } = await import("./mockClaudeResponses");
-    return MOCK_RETROSPECTIVE_JSON;
-  }
-  return invokeWithLlmCheck<string>("run_retrospective_agent", {
-    ticketText,
-    planJson,
-    implJson,
-    reviewJson,
-  });
 }
 
 // ── Repo / worktree types & commands ─────────────────────────────────────────
@@ -1884,17 +1837,27 @@ export async function createPullRequest(
  * Returns a JSON array of fix proposals.
  */
 export async function analyzePrComments(reviewText: string): Promise<string> {
-  return invoke<string>("analyze_pr_comments", { reviewText });
+  const result = await invoke<{ output?: { markdown?: string } | null }>(
+    "run_analyze_pr_comments_workflow",
+    { reviewText },
+  );
+  return result?.output?.markdown ?? "";
 }
 
 /**
- * Multi-turn chat for the Address PR Comments workflow.
+ * Multi-turn chat for the Address PR Comments workflow. Streams reply tokens
+ * through the workflow event channel `address-pr-chat-workflow-event` —
+ * subscribers should filter for `kind === "stream"` and read `delta`.
  */
 export async function chatAddressPr(
   contextText: string,
   historyJson: string,
 ): Promise<string> {
-  return invoke<string>("chat_address_pr", { contextText, historyJson });
+  const result = await invoke<{ output?: { reply?: string } | null }>(
+    "run_address_pr_chat_workflow",
+    { contextText, historyJson },
+  );
+  return result?.output?.reply ?? "";
 }
 
 export type SkillType = "grooming" | "patterns" | "implementation" | "review";
@@ -2240,21 +2203,40 @@ export async function summarizeMeeting(
   currentTitle: string,
   currentTags: string[],
 ): Promise<string> {
-  return invokeWithLlmCheck<string>("summarize_meeting", {
+  const result = await invokeWithLlmCheck<{
+    output?: { markdown?: string } | null;
+  }>("run_meeting_summary_workflow", {
     transcriptText,
     currentTitle,
     currentTagsJson: JSON.stringify(currentTags),
   });
+  return result?.output?.markdown ?? "";
+}
+
+export async function generateMeetingTitle(
+  contentText: string,
+  currentTags: string[],
+): Promise<string> {
+  const result = await invokeWithLlmCheck<{
+    output?: { markdown?: string } | null;
+  }>("run_meeting_title_workflow", {
+    contentText,
+    currentTagsJson: JSON.stringify(currentTags),
+  });
+  return (result?.output?.markdown ?? "").trim();
 }
 
 export async function chatMeeting(
   contextText: string,
   historyJson: string,
 ): Promise<string> {
-  return invokeWithLlmCheck<string>("chat_meeting", {
+  const result = await invokeWithLlmCheck<{
+    output?: { markdown?: string } | null;
+  }>("run_meeting_chat_workflow", {
     contextText,
     historyJson,
   });
+  return result?.output?.markdown ?? "";
 }
 
 // ── Manual tasks ──────────────────────────────────────────────────────────────

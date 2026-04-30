@@ -68,6 +68,8 @@ import {
   type ImplementationOutput,
   type TestOutput,
   type TestFileWritten,
+  type TestPlan,
+  type TestPlanFile,
   type PlanReviewOutput,
   type PrDescriptionOutput,
   type BitbucketPr,
@@ -120,7 +122,8 @@ const STAGE_LABELS: Record<Exclude<Stage, "select">, string> = {
   triage: "Triage",
   plan: "Implementation Plan",
   implementation: "Implementation",
-  tests: "Test Suggestions",
+  tests_plan: "Test Plan",
+  tests: "Tests",
   review: "Code Review",
   pr: "PR Description",
   retro: "Retrospective",
@@ -133,6 +136,7 @@ const STAGE_ORDER: Exclude<Stage, "select" | "complete">[] = [
   "triage",
   "plan",
   "implementation",
+  "tests_plan",
   "tests",
   "review",
   "pr",
@@ -1531,6 +1535,52 @@ function ImplementationPanel({
   );
 }
 
+function TestPlanPanel({ data }: { data: TestPlan }) {
+  const files = data.files ?? [];
+  const edgeCases = data.edge_cases_covered ?? [];
+  return (
+    <div className="space-y-3">
+      <p className="text-sm leading-relaxed">{data.summary}</p>
+      {files.length > 0 && (
+        <div className="border rounded-md overflow-hidden">
+          <div className="px-3 py-2 bg-muted/30 text-sm font-medium flex items-center gap-2">
+            <TestTube className="h-4 w-4 text-muted-foreground" /> Proposed Test
+            Files ({files.length})
+          </div>
+          <div className="divide-y">
+            {files.map((f: TestPlanFile, i: number) => (
+              <div key={i} className="px-3 py-2 space-y-1">
+                <div className="flex items-baseline gap-2">
+                  <p className="text-xs font-mono text-foreground">{f.path}</p>
+                  {f.framework && (
+                    <span className="text-xs text-muted-foreground">
+                      {f.framework}
+                    </span>
+                  )}
+                </div>
+                <p className="text-sm text-muted-foreground">{f.description}</p>
+                {f.cases.length > 0 && (
+                  <ul className="list-disc pl-5 space-y-0.5 text-sm text-muted-foreground">
+                    {f.cases.map((c, j) => (
+                      <li key={j}>{c}</li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+      <CollapsibleList title="Edge Cases Planned" items={edgeCases} />
+      {data.coverage_notes && (
+        <p className="text-sm text-muted-foreground italic">
+          {data.coverage_notes}
+        </p>
+      )}
+    </div>
+  );
+}
+
 function TestsPanel({ data }: { data: TestOutput }) {
   const filesWritten = data.files_written ?? [];
   const edgeCases = data.edge_cases_covered ?? [];
@@ -2192,7 +2242,8 @@ const CHAT_STAGE_LABEL: Partial<Record<Stage, string>> = {
   impact: "Impact Analysis",
   plan: "Implementation Plan",
   implementation: "Implementation",
-  tests: "Test Suggestions",
+  tests_plan: "Test Plan",
+  tests: "Tests",
   review: "Code Review",
   pr: "PR Description",
   retro: "Retrospective",
@@ -2256,6 +2307,7 @@ function PipelineChatPanel({
     "impact",
     "plan",
     "implementation",
+    "tests_plan",
     "tests",
     "review",
     "pr",
@@ -2334,13 +2386,19 @@ function PipelineChatPanel({
                         : "bg-muted text-foreground"
                     }`}
                   >
-                    <p className="whitespace-pre-wrap">
-                      {msg.role === "assistant" && stage === "grooming"
-                        ? msg.content
-                            .replace(/```json[\s\S]*?```/g, "")
-                            .trim() || msg.content
-                        : msg.content}
-                    </p>
+                    {msg.role === "assistant" ? (
+                      <MarkdownBlock
+                        text={
+                          stage === "grooming"
+                            ? msg.content
+                                .replace(/```json[\s\S]*?```/g, "")
+                                .trim() || msg.content
+                            : msg.content
+                        }
+                      />
+                    ) : (
+                      <p className="whitespace-pre-wrap">{msg.content}</p>
+                    )}
                   </div>
                 </div>
               ))}
@@ -2635,6 +2693,8 @@ function stageToStep(stage: Stage): number | undefined {
     triage: 2,
     plan: 2,
     implementation: 3,
+    // Test plan and final tests both fall under the "tests" pipeline-step.
+    tests_plan: 4,
     tests: 4,
     review: 5,
     pr: 6,
@@ -2668,8 +2728,10 @@ export function ImplementTicketScreen({
     plan,
     implementation,
     implementationStreamText,
+    implementationProgress,
     buildVerification,
     buildCheckStreamText,
+    testPlan,
     tests,
     review,
     prDescription,
@@ -2926,21 +2988,17 @@ export function ImplementTicketScreen({
       | "retroStreamText"
       | "checkpointStreamText"
       | "buildCheckStreamText";
-    const streams: Array<[string, StreamKey]> = [
-      ["impact-stream", "impactStreamText"],
-      ["triage-stream", "triageStreamText"],
-      ["plan-stream", "planStreamText"],
-      ["tests-stream", "testsStreamText"],
-      ["review-stream", "reviewStreamText"],
-      ["pr-stream", "prStreamText"],
-      ["retro-stream", "retroStreamText"],
-      ["checkpoint-chat-stream", "checkpointStreamText"],
-      ["build-check-stream", "buildCheckStreamText"],
+    // Workflow event channels: deltas arrive as `{kind: "stream", node, delta}`
+    // (sidecar bridge format). Filter for stream events and accumulate.
+    const workflowStreams: Array<[string, StreamKey]> = [
+      ["checkpoint-chat-workflow-event", "checkpointStreamText"],
+      ["grooming-chat-workflow-event", "groomingStreamText"],
     ];
-    const cleanups = streams.map(([event, key]) => {
+    const cleanups = workflowStreams.map(([event, key]) => {
       const acc = { text: "", sessionId: "" };
       let flushTimer: ReturnType<typeof setTimeout> | null = null;
-      const unlisten = listen<{ delta: string }>(event, (e) => {
+      const unlisten = listen<{ kind?: string; delta?: string }>(event, (e) => {
+        if (e.payload.kind !== "stream" || !e.payload.delta) return;
         const currentSessionId =
           useImplementTicketStore.getState().activeSessionId;
         if (acc.sessionId !== currentSessionId) {
@@ -3396,9 +3454,12 @@ export function ImplementTicketScreen({
     }
     if (stage === "implementation") {
       if (!implementation) {
+        const label = implementationProgress
+          ? `Writing ${implementationProgress.file} (${implementationProgress.fileIndex}/${implementationProgress.totalFiles})…`
+          : "Writing code…";
         return (
           <StreamingLoader
-            label="Writing code…"
+            label={label}
             streamText={implementationStreamText}
           />
         );
@@ -3420,6 +3481,21 @@ export function ImplementTicketScreen({
             tab={implementationTab}
             buildVerification={buildVerification}
           />
+          {renderCheckpoint(stage)}
+        </>
+      );
+    }
+    if (stage === "tests_plan") {
+      if (!testPlan)
+        return (
+          <StreamingLoader
+            label="Proposing test plan…"
+            streamText={testsStreamText}
+          />
+        );
+      return (
+        <>
+          <TestPlanPanel data={testPlan} />
           {renderCheckpoint(stage)}
         </>
       );

@@ -1,6 +1,7 @@
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { BitbucketImage } from "@/components/BitbucketImage";
+import { openUrl } from "@/lib/tauri";
 
 /**
  * Shared renderer for AI-generated markdown (retro summaries, trend analyses,
@@ -41,6 +42,28 @@ export function MarkdownBlock({ text }: { text: string }) {
           h2: (props) => <h3 className="font-semibold text-foreground mt-4 mb-2 text-base" {...props} />,
           h3: (props) => <h4 className="font-semibold text-foreground mt-3 mb-1 text-sm" {...props} />,
           h4: (props) => <h5 className="font-semibold text-foreground mt-3 mb-1 text-sm" {...props} />,
+          a: ({ href, children, ...props }) => {
+            const url = typeof href === "string" ? href : "";
+            const external =
+              url.startsWith("http://") || url.startsWith("https://");
+            return (
+              <a
+                href={url || undefined}
+                onClick={
+                  external
+                    ? (e) => {
+                        e.preventDefault();
+                        openUrl(url);
+                      }
+                    : undefined
+                }
+                className="text-primary underline underline-offset-2 hover:text-primary/80"
+                {...props}
+              >
+                {children}
+              </a>
+            );
+          },
           p: (props) => <p className="text-muted-foreground my-2" {...props} />,
           strong: (props) => <strong className="font-semibold text-foreground" {...props} />,
           ul: (props) => <ul className="list-disc pl-5 space-y-1 my-2 text-muted-foreground" {...props} />,

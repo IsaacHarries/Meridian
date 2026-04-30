@@ -28,8 +28,6 @@ import {
   Hand,
   Sunrise,
   AlertTriangle,
-  Eye,
-  EyeOff,
   Sliders,
   ChevronLeft,
   ChevronRight,
@@ -79,9 +77,6 @@ export function TimeTrackingScreen({ onBack }: { onBack: () => void }) {
   const deleteSegment = useTimeTrackingStore((s) => s.deleteSegment);
   const addManualSegment = useTimeTrackingStore((s) => s.addManualSegment);
   const clearAdjustment = useTimeTrackingStore((s) => s.clearAdjustment);
-  const setChipHiddenInHeader = useTimeTrackingStore(
-    (s) => s.setChipHiddenInHeader,
-  );
   const setTrackingEnabled = useTimeTrackingStore((s) => s.setTrackingEnabled);
 
   // Local 1s tick so the running segment's display advances. Keeping this
@@ -446,37 +441,6 @@ export function TimeTrackingScreen({ onBack }: { onBack: () => void }) {
           }
         />
 
-        {/* Chip visibility — exposed here as well as in Settings so the
-            user can flip it back on without leaving this workflow after
-            hiding the chip from its own popover. */}
-        <Card>
-          <CardHeader className="pb-3">
-            <CardTitle className="text-base">Header chip</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="flex items-center justify-between gap-3 text-sm">
-              <div className="flex items-center gap-2">
-                {settings.chipHiddenInHeader ? (
-                  <EyeOff className="h-4 w-4 text-muted-foreground" />
-                ) : (
-                  <Eye className="h-4 w-4 text-muted-foreground" />
-                )}
-                <span>
-                  {settings.chipHiddenInHeader
-                    ? "Hidden from the top bar."
-                    : "Visible in the top bar."}
-                </span>
-              </div>
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={() => setChipHiddenInHeader(!settings.chipHiddenInHeader)}
-              >
-                {settings.chipHiddenInHeader ? "Show chip" : "Hide chip"}
-              </Button>
-            </div>
-          </CardContent>
-        </Card>
       </main>
     </div>
   );
@@ -867,7 +831,7 @@ function HistoryPanel({
   // available height by subtracting:
   //   • the card's viewport-top (everything above it in `<main>`)
   //   • the height of anything that renders AFTER the card inside `<main>`
-  //     (the "Header chip" card + main's bottom-padding)
+  //     (main's bottom-padding)
   //   • a small padding for sub-pixel rounding so the window scrollbar
   //     doesn't flicker on certain zoom levels.
   // ResizeObserver on `<main>` re-runs on layout shifts above OR below the

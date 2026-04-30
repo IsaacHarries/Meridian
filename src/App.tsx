@@ -46,9 +46,8 @@ import { AddressPrCommentsScreen } from "@/screens/AddressPrCommentsScreen";
 import { MeetingsScreen } from "@/screens/MeetingsScreen";
 import { TimeTrackingScreen } from "@/screens/TimeTrackingScreen";
 import { AgentSkillsScreen } from "@/screens/AgentSkillsScreen";
-import { ToolSandboxScreen } from "@/screens/ToolSandboxScreen";
 
-type Screen = "loading" | "onboarding" | "landing" | "settings" | "agent-skills" | "tool-sandbox" | WorkflowId;
+type Screen = "loading" | "onboarding" | "landing" | "settings" | "agent-skills" | WorkflowId;
 
 function LoadingScreen() {
   return (
@@ -180,8 +179,6 @@ function AppInner() {
         <TimeTrackingScreen onBack={() => setScreen("landing")} />
       ) : screen === "agent-skills" ? (
         <AgentSkillsScreen onBack={() => setScreen("landing")} />
-      ) : screen === "tool-sandbox" ? (
-        <ToolSandboxScreen onBack={() => setScreen("settings")} />
       ) : isWorkflowId(screen) ? (
         <WorkflowScreen workflowId={screen} onBack={() => setScreen("landing")} />
       ) : credStatus ? (

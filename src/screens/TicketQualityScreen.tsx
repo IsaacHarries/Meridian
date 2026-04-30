@@ -59,7 +59,7 @@ import {
   getSprintIssues,
   getIssue,
   searchJiraIssues,
-  runGroomingAgent,
+  runGroomingWorkflow,
   runGroomingFileProbe,
   runGroomingChatTurn,
   grepGroomingFiles,
@@ -2061,9 +2061,10 @@ export function TicketQualityScreen({ credStatus, onBack }: TicketQualityScreenP
 
       setSession((prev) => prev?.issue.key === sessionKey ? { ...prev, probeStatus: "" } : prev);
       const ticketWithContext = ticketText + worktreeContext;
-      const raw = await runGroomingAgent(ticketWithContext, fileContentsBlock);
-      const output = parseAgentJson<GroomingOutput>(raw);
-      if (!output) throw new Error("Could not parse grooming response.");
+      const output = await runGroomingWorkflow(
+        ticketWithContext,
+        fileContentsBlock,
+      );
       const drafts = suggestedEditsToDraftChanges(output.suggested_edits, freshIssue);
       const openingMsg = buildOpeningMessage(freshIssue, output);
       setSession((prev) =>
