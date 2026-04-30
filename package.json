@@ -10,7 +10,9 @@
     "tauri": "tauri",
     "test": "vitest run",
     "test:ci": "vitest run --reporter=verbose",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "sidecar:bundle": "cd src-sidecar && pnpm bundle && mkdir -p ../src-tauri/target/debug && cp -f dist/bundle.cjs ../src-tauri/target/debug/bundle.cjs",
+    "sidecar:rebuild": "pnpm sidecar:bundle && (pkill -f 'target/debug/bundle.cjs' 2>/dev/null || true)"
   },
   "dependencies": {
     "@monaco-editor/react": "^4.7.0",

@@ -69,18 +69,9 @@ docs/                   supplementary architecture docs
 
 ## Dev Workflow
 
-- **Run the app**: `pnpm tauri dev` (from repo root). Vite serves the frontend with HMR; Tauri rebuilds Rust on file change and restarts the app, which kills the supervised sidecar so the next IPC request spawns a fresh one.
+- **Run the app**: `pnpm tauri dev` (from repo root). The Tauri config's `beforeDevCommand` runs `pnpm sidecar:bundle` first, so the sidecar bundle is always rebuilt before vite + Tauri start. Vite serves the frontend with HMR; Tauri rebuilds Rust on file change and restarts the app, which kills the supervised sidecar so the next IPC request spawns a fresh one.
 - **Run tests**: `pnpm test` at repo root for the React layer, `pnpm test` inside `src-sidecar/` for sidecar units. **New code should land with tests.** Default to writing unit tests for: pure functions (op application, classifiers, reducers), schema validators (Zod parsing edge cases including rejection paths), routing logic (LangGraph conditional edges), and any code with non-obvious branching. Tests live next to the source as `*.test.ts` / `*.test.tsx`. End-to-end validation by running workflows in dev is still useful, but it's a complement to unit tests, not a substitute.
-- **Sidecar bundling — important**: when you edit `src-sidecar/` source, `pnpm tauri dev` does **not** rebuild the sidecar bundle automatically. The flow:
-
-  ```sh
-  cd src-sidecar
-  pnpm bundle                                                # → dist/bundle.cjs
-  cp dist/bundle.cjs ../src-tauri/target/debug/bundle.cjs    # the runtime path
-  pkill -f "target/debug/bundle.cjs"                         # force respawn
-  ```
-
-  The kill is needed because the sidecar is a long-lived child process; Tauri only respawns it on its own restart (which a Rust-only edit triggers). Without the kill, the next IPC request still hits the old in-memory bundle.
+- **Mid-session sidecar refresh**: when you edit `src-sidecar/` source while `tauri dev` is already running, the in-memory sidecar process won't pick up the change on its own. Run `pnpm sidecar:rebuild` from the repo root — it bundles, copies to the runtime path, and kills the long-lived child process so the next IPC request spawns a fresh one with the new code.
 - **Tauri command additions** must be wired in *three* places: the `pub use` re-export in `src-tauri/src/commands/mod.rs`, the import block in `src-tauri/src/lib.rs`, and the handler list inside `tauri::generate_handler![ … ]`. Skipping any one yields a runtime "command not found" rather than a compile error.
 
 ---

@@ -3,9 +3,9 @@
   "version": "0.1.0",
   "identifier": "com.meridian.desktop",
   "build": {
-    "beforeDevCommand": "npm run dev",
+    "beforeDevCommand": "npm run sidecar:bundle && npm run dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "npm run build && (cd src-sidecar && npm run bundle)",
+    "beforeBuildCommand": "npm run sidecar:bundle && npm run build",
     "frontendDist": "../dist"
   },
   "app": {
