@@ -87,6 +87,10 @@ function AppInner() {
       hydrateMeetingsStore(),
       hydrateTasksStore(),
       hydrateTimeTrackingStore(),
+      // Pull saved PR-task filter rules from preferences so the sidebar
+      // applies them on the very first render — otherwise the user
+      // sees noise tasks flash in for a moment before the filter loads.
+      usePrTasksStore.getState().hydrateFilters(),
     ]);
 
     getCredentialStatus()

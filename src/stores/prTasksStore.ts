@@ -26,6 +26,11 @@ import {
   getPrTasks,
   resolvePrTask,
 } from "@/lib/tauri";
+import {
+  type PrTaskFilter,
+  getPrTaskFilters,
+  matchesAnyFilter,
+} from "@/lib/prTaskFilters";
 
 export const PR_TASKS_POLL_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
 
@@ -37,7 +42,14 @@ export interface PrTaskGroup {
 }
 
 interface PrTasksState {
+  /** Visible list, with user-defined filters applied. */
   entries: PrTaskGroup[];
+  /** Unfiltered fetch result — kept so we can re-apply filters
+   *  in-place (e.g. when the user edits a filter rule in Settings)
+   *  without re-hitting Bitbucket. */
+  rawEntries: PrTaskGroup[];
+  /** Active filter rules. Hidden tasks are dropped from `entries`. */
+  filters: PrTaskFilter[];
   loading: boolean;
   /** ISO timestamp of the last successful refresh, or null. */
   lastFetchedAt: string | null;
@@ -50,10 +62,31 @@ interface PrTasksState {
   /** Resolve a single task on a PR. Optimistically removes it from
    *  `entries`; on Bitbucket failure the next poll will re-add it. */
   resolveTask: (prId: number, taskId: number) => Promise<void>;
+  /** Replace the active filter rules and re-apply them to the cached
+   *  raw entries. Persisting to preferences is the caller's
+   *  responsibility — typically the Settings UI. */
+  setFilters: (filters: PrTaskFilter[]) => void;
+  /** Hydrate filters from preferences. Call once on app startup. */
+  hydrateFilters: () => Promise<void>;
+}
+
+function applyFilters(
+  raw: PrTaskGroup[],
+  filters: PrTaskFilter[],
+): PrTaskGroup[] {
+  if (filters.length === 0) return raw;
+  return raw
+    .map((g) => ({
+      pr: g.pr,
+      tasks: g.tasks.filter((t) => !matchesAnyFilter(t.content, filters)),
+    }))
+    .filter((g) => g.tasks.length > 0);
 }
 
 export const usePrTasksStore = create<PrTasksState>()((set, get) => ({
   entries: [],
+  rawEntries: [],
+  filters: [],
   loading: false,
   lastFetchedAt: null,
   error: null,
@@ -84,13 +117,15 @@ export const usePrTasksStore = create<PrTasksState>()((set, get) => ({
       );
       // Drop PRs with no unresolved tasks — they'd just render as empty
       // category headers in the sidebar.
-      const entries = groups
+      const rawEntries = groups
         .filter((g) => g.tasks.length > 0)
         // Newest PRs first — "what just landed in review" is usually
         // what the user wants to see at the top.
         .sort((a, b) => b.pr.updatedOn.localeCompare(a.pr.updatedOn));
+      const filters = get().filters;
       set({
-        entries,
+        rawEntries,
+        entries: applyFilters(rawEntries, filters),
         loading: false,
         lastFetchedAt: new Date().toISOString(),
       });
@@ -104,22 +139,44 @@ export const usePrTasksStore = create<PrTasksState>()((set, get) => ({
   resolveTask: async (prId, taskId) => {
     // Optimistic remove — the panel hides the row immediately. If the
     // server call fails we restore the prior entries; the next poll
-    // will reconcile regardless.
-    const prior = get().entries;
-    const next = prior
-      .map((g) =>
-        g.pr.id === prId
-          ? { ...g, tasks: g.tasks.filter((t) => t.id !== taskId) }
-          : g,
-      )
-      .filter((g) => g.tasks.length > 0);
-    set({ entries: next });
+    // will reconcile regardless. We mutate both `entries` (visible)
+    // and `rawEntries` (cached fetch) so the row doesn't reappear when
+    // the user edits a filter rule in Settings before the next poll.
+    const priorEntries = get().entries;
+    const priorRaw = get().rawEntries;
+    const stripTask = (groups: PrTaskGroup[]) =>
+      groups
+        .map((g) =>
+          g.pr.id === prId
+            ? { ...g, tasks: g.tasks.filter((t) => t.id !== taskId) }
+            : g,
+        )
+        .filter((g) => g.tasks.length > 0);
+    set({
+      entries: stripTask(priorEntries),
+      rawEntries: stripTask(priorRaw),
+    });
     try {
       await resolvePrTask(prId, taskId, true);
     } catch (e) {
       console.warn(`[prTasks] resolvePrTask failed:`, e);
-      set({ entries: prior });
+      set({ entries: priorEntries, rawEntries: priorRaw });
       throw e;
     }
+  },
+
+  setFilters: (filters) => {
+    set({
+      filters,
+      entries: applyFilters(get().rawEntries, filters),
+    });
+  },
+
+  hydrateFilters: async () => {
+    const filters = await getPrTaskFilters();
+    set({
+      filters,
+      entries: applyFilters(get().rawEntries, filters),
+    });
   },
 }));
