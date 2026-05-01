@@ -3,11 +3,15 @@ import {
   AIMessage,
   HumanMessage,
   SystemMessage,
+  ToolMessage,
 } from "@langchain/core/messages";
+import { tool } from "@langchain/core/tools";
+import { z } from "zod";
 import {
   extractCompletionDelta,
   parseSseFrames,
   toCopilotMessages,
+  toOpenAITools,
 } from "./copilot.js";
 
 describe("copilot message conversion", () => {
@@ -39,6 +43,70 @@ describe("copilot message conversion", () => {
   it("omits system role entirely when no system message is present", () => {
     const wire = toCopilotMessages([new HumanMessage("hi")]);
     expect(wire.find((m) => m.role === "system")).toBeUndefined();
+  });
+
+  it("serialises AIMessage tool_calls into the OpenAI assistant tool_calls shape", () => {
+    const ai = new AIMessage({
+      content: "",
+      tool_calls: [
+        {
+          id: "call_abc",
+          name: "read_file",
+          args: { path: "src/foo.ts" },
+          type: "tool_call",
+        },
+      ],
+    });
+    const wire = toCopilotMessages([new HumanMessage("hi"), ai]);
+    expect(wire[1]).toEqual({
+      role: "assistant",
+      content: "",
+      tool_calls: [
+        {
+          id: "call_abc",
+          type: "function",
+          function: {
+            name: "read_file",
+            arguments: JSON.stringify({ path: "src/foo.ts" }),
+          },
+        },
+      ],
+    });
+  });
+
+  it("converts ToolMessage to the {role: tool, tool_call_id, content} shape Copilot expects", () => {
+    const wire = toCopilotMessages([
+      new HumanMessage("hi"),
+      new ToolMessage({
+        tool_call_id: "call_abc",
+        content: "file contents here",
+      }),
+    ]);
+    expect(wire[1]).toEqual({
+      role: "tool",
+      tool_call_id: "call_abc",
+      content: "file contents here",
+    });
+  });
+});
+
+describe("toOpenAITools", () => {
+  it("converts LangChain structured tools into OpenAI function-tool wire format", () => {
+    const readFile = tool(async () => "ok", {
+      name: "read_file",
+      description: "Read a file from the worktree",
+      schema: z.object({
+        path: z.string().describe("Path relative to the worktree root"),
+      }),
+    });
+    const [openaiTool] = toOpenAITools([readFile]);
+    expect(openaiTool.type).toBe("function");
+    expect(openaiTool.function.name).toBe("read_file");
+    expect(openaiTool.function.description).toBe("Read a file from the worktree");
+    expect(openaiTool.function.parameters).toMatchObject({
+      type: "object",
+      properties: { path: { type: "string" } },
+    });
   });
 });
 
@@ -125,5 +193,64 @@ describe("extractCompletionDelta", () => {
       usage: undefined,
       done: false,
     });
+  });
+
+  it("forwards a tool-call delta with id and name as a tool_call_chunk", () => {
+    const payload = JSON.stringify({
+      choices: [
+        {
+          delta: {
+            tool_calls: [
+              {
+                index: 0,
+                id: "call_abc",
+                type: "function",
+                function: { name: "read_file", arguments: "" },
+              },
+            ],
+          },
+        },
+      ],
+    });
+    const delta = extractCompletionDelta(payload);
+    expect(delta?.toolCallChunks).toEqual([
+      { index: 0, id: "call_abc", name: "read_file", args: "" },
+    ]);
+    expect(delta?.content).toBe("");
+  });
+
+  it("forwards a follow-up tool-call delta carrying only argument fragments", () => {
+    const payload = JSON.stringify({
+      choices: [
+        {
+          delta: {
+            tool_calls: [
+              { index: 0, function: { arguments: '{"path":"src/foo.ts"}' } },
+            ],
+          },
+        },
+      ],
+    });
+    const delta = extractCompletionDelta(payload);
+    expect(delta?.toolCallChunks).toEqual([
+      { index: 0, id: undefined, name: undefined, args: '{"path":"src/foo.ts"}' },
+    ]);
+  });
+
+  it("uses the array position as a fallback index when the server omits it", () => {
+    const payload = JSON.stringify({
+      choices: [
+        {
+          delta: {
+            tool_calls: [
+              { id: "call_a", function: { name: "tool_a", arguments: "" } },
+              { id: "call_b", function: { name: "tool_b", arguments: "" } },
+            ],
+          },
+        },
+      ],
+    });
+    const delta = extractCompletionDelta(payload);
+    expect(delta?.toolCallChunks?.map((c) => c.index)).toEqual([0, 1]);
   });
 });

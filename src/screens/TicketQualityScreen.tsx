@@ -6,7 +6,7 @@ import {
   useState,
   useCallback,
 } from "react";
-import { createPortal } from "react-dom";
+import { listen } from "@tauri-apps/api/event";
 import { JiraTicketLink } from "@/components/JiraTicketLink";
 import { SlashCommandInput } from "@/components/SlashCommandInput";
 import { createGlobalCommands, type SlashCommand } from "@/lib/slashCommands";
@@ -33,11 +33,10 @@ import {
   PanelLeftOpen,
   PanelRightClose,
   PanelRightOpen,
-  Undo2,
+  Pencil,
 } from "lucide-react";
 import { diffArrays } from "diff";
 import { MarkdownBlock } from "@/components/MarkdownBlock";
-import { RichFieldEditor } from "@/components/RichFieldEditor";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { WorkflowPanelHeader, APP_HEADER_TITLE } from "@/components/appHeaderLayout";
@@ -112,6 +111,14 @@ interface GroomSession {
    * an explicit click so we never burn tokens unprompted.
    */
   analyzed: boolean;
+  /**
+   * Partially-parsed JSON streamed back from the sidecar's grooming agent
+   * while it's still emitting. Cleared once the final parsed output lands
+   * on `drafts` / `chat`. Surfaced live so the assistant panel and draft
+   * preview update token-by-token instead of sitting blank for the whole
+   * model call.
+   */
+  partialOutput: Partial<GroomingOutput> | null;
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -213,6 +220,48 @@ function hasOrphanDrafts(drafts: DraftChange[], issue: JiraIssue): boolean {
   );
 }
 
+/**
+ * Render a human-readable preview of the partially-parsed grooming JSON so
+ * the chat panel updates token-by-token while the model is still emitting.
+ * Reads only the fields that fill in earliest in the schema's order
+ * (ticket_summary first, then suggested_edits as the bulk of the response).
+ * Returns an empty string when nothing useful is available yet so the caller
+ * can fall back to the static "Thinking…" indicator.
+ */
+function buildStreamingPreview(partial: Partial<GroomingOutput>): string {
+  const parts: string[] = [];
+  const summary = typeof partial.ticket_summary === "string" ? partial.ticket_summary.trim() : "";
+  if (summary) parts.push(summary);
+
+  const editsRaw: unknown[] = Array.isArray(partial.suggested_edits) ? partial.suggested_edits : [];
+  const sections: string[] = [];
+  for (const e of editsRaw) {
+    if (e && typeof e === "object") {
+      const section = (e as { section?: unknown }).section;
+      if (typeof section === "string" && section.trim().length > 0) {
+        sections.push(section.trim());
+      }
+    }
+  }
+  if (sections.length > 0) {
+    const head = sections.slice(0, 6);
+    const more = sections.length > head.length ? `, +${sections.length - head.length} more` : "";
+    parts.push(`Drafting ${sections.length} change${sections.length === 1 ? "" : "s"}: ${head.join(", ")}${more}`);
+  }
+
+  const questionsRaw: unknown[] = Array.isArray(partial.clarifying_questions)
+    ? partial.clarifying_questions
+    : [];
+  const questions = questionsRaw.filter(
+    (q): q is string => typeof q === "string" && q.trim().length > 0,
+  );
+  if (questions.length > 0) {
+    parts.push(`Questions so far:\n${questions.map((q, i) => `${i + 1}. ${q}`).join("\n")}`);
+  }
+
+  return parts.join("\n\n");
+}
+
 function buildOpeningMessage(issue: JiraIssue, output: GroomingOutput): string {
   const { clarifying_questions: questions, ticket_summary } = output;
   if (questions && questions.length > 0) {
@@ -274,16 +323,15 @@ function FieldDiagnostics({ issue }: { issue: JiraIssue }) {
 // ── All-fields panel ──────────────────────────────────────────────────────────
 //
 // Surfaces every relevant field on the loaded ticket up-front so the user
-// can read the whole ticket without first running AI analysis. Each row is
-// edit-in-place: clicking Edit swaps the rendered MarkdownBlock for a
-// Textarea; Save sends the new value back to JIRA via `saveFieldEdit`,
-// which refreshes the issue once the request returns.
-//
-// Description renders out of `descriptionSections` (joined to markdown so
-// embedded images surface); other fields render their plain-string
-// projection from the JIRA integration. Fields the user can't edit yet
-// (custom fields whose JIRA IDs haven't been auto-discovered) show a
-// read-only badge instead of the Edit button.
+// can read the whole ticket without first running AI analysis. Fields
+// render through MarkdownBlock so headings / bold / lists / code / links
+// look the way they do in JIRA. Clicking Edit swaps the rendered view for
+// a plain Textarea on the raw markdown source; Save commits via
+// `saveFieldEdit` and switches back to the rendered view. The Textarea is
+// never mounted unless the user explicitly chose to edit, so opening a
+// ticket can't trip the dirty flag (no round-trip on display). Fields the
+// user can't edit yet (custom fields whose JIRA IDs haven't been
+// auto-discovered) show a read-only badge instead of the Edit button.
 
 const FIELD_LABELS: Record<SuggestedEditField, string> = {
   summary: "Summary",
@@ -345,20 +393,9 @@ function preserveImagesFromOriginal(
 // chunk with the immediately-following added chunk so the user sees a
 // "before / after" rather than separate add/remove rows.
 
-interface DiffEntry {
-  /** "modified" = old text was rewritten; "added" = new paragraph that
-   *  wasn't present before; "removed" = paragraph deleted from the
-   *  baseline. We surface only changed entries to the user — unchanged
-   *  paragraphs would just be noise alongside the editor that already
-   *  shows them. */
-  kind: "modified" | "added" | "removed";
-  oldText: string;
-  newText: string;
-}
-
-/** Same shape as `DiffEntry` but extended with "unchanged" — used by the
- *  pre-accept inline diff view so the user sees changed paragraphs in
- *  context with the surrounding unchanged ones. */
+/** Per-paragraph entry produced by the unified diff used in the
+ *  pre-accept inline view. Includes "unchanged" so changed paragraphs
+ *  read in context with their unchanged neighbours. */
 interface UnifiedDiffEntry {
   kind: "modified" | "added" | "removed" | "unchanged";
   oldText: string;
@@ -370,28 +407,6 @@ function splitParagraphs(text: string): string[] {
     .split(/\n{2,}/g)
     .map((p) => p.trim())
     .filter((p) => p.length > 0);
-}
-
-/**
- * Plain-text projection of a markdown paragraph — used to match diff
- * entries (markdown source) against rendered DOM nodes (no syntax) when
- * positioning gutter bars in the editor. Strips the most common markdown
- * sigils so `**bold**` matches `bold`, `[text](url)` matches `text`,
- * etc. Image embeds collapse to their alt text since the rendered DOM
- * for an image is just its alt attribute.
- */
-function markdownToPlainText(md: string): string {
-  return md
-    .replace(/!\[([^\]]*)\]\([^)]+\)/g, "$1")
-    .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
-    .replace(/`([^`]+)`/g, "$1")
-    .replace(/[*_~`]/g, "")
-    .replace(/^#+\s*/gm, "")
-    .replace(/^[-+*]\s+/gm, "")
-    .replace(/^\d+\.\s+/gm, "")
-    .replace(/^>\s?/gm, "")
-    .replace(/\s+/g, " ")
-    .trim();
 }
 
 /**
@@ -429,8 +444,7 @@ function composeFromDecisions(
   return out.join("\n\n");
 }
 
-/** Like `computeParagraphDiff` but emits "unchanged" entries too. Used by
- *  the inline-diff view shown before the user accepts a suggestion, so
+/** Paragraph-level unified diff used by the pre-accept inline view so
  *  changed paragraphs read in context with their unchanged neighbours. */
 function computeUnifiedDiff(
   oldText: string,
@@ -476,57 +490,14 @@ function computeUnifiedDiff(
   return entries;
 }
 
-function computeParagraphDiff(
-  oldText: string,
-  newText: string,
-): DiffEntry[] {
-  const oldParas = splitParagraphs(oldText);
-  const newParas = splitParagraphs(newText);
-  const chunks = diffArrays(oldParas, newParas);
-  const entries: DiffEntry[] = [];
-  for (let i = 0; i < chunks.length; i++) {
-    const c = chunks[i];
-    const next = chunks[i + 1];
-    if (c.removed && next?.added) {
-      // Pair removed-then-added as 1:1 modifications. Padding with empty
-      // strings if counts diverge keeps each pair matched up; the
-      // overflow surfaces as standalone added/removed entries via the
-      // logic below.
-      const pairCount = Math.min(c.value.length, next.value.length);
-      for (let j = 0; j < pairCount; j++) {
-        entries.push({
-          kind: "modified",
-          oldText: c.value[j],
-          newText: next.value[j],
-        });
-      }
-      for (let j = pairCount; j < c.value.length; j++) {
-        entries.push({ kind: "removed", oldText: c.value[j], newText: "" });
-      }
-      for (let j = pairCount; j < next.value.length; j++) {
-        entries.push({ kind: "added", oldText: "", newText: next.value[j] });
-      }
-      i++; // consume the paired `added` chunk
-    } else if (c.removed) {
-      for (const p of c.value) {
-        entries.push({ kind: "removed", oldText: p, newText: "" });
-      }
-    } else if (c.added) {
-      for (const p of c.value) {
-        entries.push({ kind: "added", oldText: "", newText: p });
-      }
-    }
-    // unchanged chunks contribute nothing — the editor already shows them.
-  }
-  return entries;
-}
-
 /** Compose a markdown projection of the description from its sections.
- *  Falls back to the plain `issue.description` if no sections are present. */
+ *  Each heading is rendered as an h2 so MarkdownBlock styles it consistently
+ *  with the rest of the ticket prose. Falls back to the plain
+ *  `issue.description` if no sections are present. */
 function joinDescriptionSections(issue: JiraIssue): string {
   if (issue.descriptionSections && issue.descriptionSections.length > 0) {
     return issue.descriptionSections
-      .map((s) => (s.heading ? `## ${s.heading}\n${s.content}` : s.content))
+      .map((s) => (s.heading ? `## ${s.heading}\n\n${s.content}` : s.content))
       .join("\n\n")
       .trim();
   }
@@ -664,12 +635,21 @@ function FieldEditor({
   const [baseline, setBaseline] = useState(value);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // Snapshot of editor content at the moment the user accepted an AI
-  // suggestion. Used to compute a paragraph-level diff against the
-  // current editor content, so the user can peek at and selectively
-  // revert individual paragraph changes the AI made. Cleared on Save,
-  // Cancel, or another Accept (the new accept overwrites the snapshot).
-  const [preAcceptBaseline, setPreAcceptBaseline] = useState<string | null>(null);
+  // View vs. edit toggle. Default is read-only rendered markdown so the
+  // field looks the way it does in JIRA. Clicking Edit switches to a
+  // plain Textarea on the raw markdown source — no WYSIWYG round-trip,
+  // so opening / re-rendering never silently mutates the value.
+  const [mode, setMode] = useState<"view" | "edit">("view");
+  // Auto-grow the textarea so the whole field is visible without an
+  // inner scrollbar. Resync on every content change (typing, suggestion
+  // accept, JIRA refetch) and on edit-mode entry.
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  useLayoutEffect(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${el.scrollHeight}px`;
+  }, [editorContent, mode]);
   // Per-entry decisions for the inline pre-accept diff. Keyed by entry
   // index in the unified diff (which is stable across renders for a
   // given suggestion since the AI's text doesn't change while the strip
@@ -717,71 +697,13 @@ function FieldEditor({
       // Optimistically pin the new baseline; the parent's refetch will
       // overwrite via the value-resync effect when it lands.
       setBaseline(editorContent);
-      // Snapshot is no longer meaningful once the new content is the
-      // truth on JIRA — clear so the gutter bars disappear.
-      setPreAcceptBaseline(null);
+      setMode("view");
     } catch (e) {
       setError(String(e));
     } finally {
       setSaving(false);
     }
   }
-
-  /** Revert a single diff entry's change, swapping the AI's text back to
-   *  the pre-accept paragraph (or removing/re-inserting for pure
-   *  add/remove cases). Operates on the LIVE editor content so further
-   *  user edits are preserved when possible — if the new text the user
-   *  is reverting has been edited away, the substring search fails and
-   *  we surface a hint instead of silently doing the wrong thing. */
-  function revertDiffEntry(entry: DiffEntry) {
-    setError(null);
-    if (entry.kind === "modified") {
-      const idx = editorContent.indexOf(entry.newText);
-      if (idx === -1) {
-        setError(
-          "Couldn't auto-revert — the surrounding text has been edited.",
-        );
-        return;
-      }
-      setEditorContent(
-        editorContent.slice(0, idx) +
-          entry.oldText +
-          editorContent.slice(idx + entry.newText.length),
-      );
-    } else if (entry.kind === "added") {
-      const idx = editorContent.indexOf(entry.newText);
-      if (idx === -1) {
-        setError(
-          "Couldn't auto-revert — the inserted paragraph has been edited.",
-        );
-        return;
-      }
-      // Trim a surrounding paragraph break on whichever side has one so
-      // the field doesn't end up with a double blank line.
-      const before = editorContent.slice(0, idx);
-      const after = editorContent.slice(idx + entry.newText.length);
-      const stitched = before.trimEnd() + (after.trimStart() ? "\n\n" : "") + after.trimStart();
-      setEditorContent(stitched);
-    } else {
-      // "removed" — the paragraph existed in the baseline but the AI
-      // dropped it. Re-insert at the end of the editor as a paragraph
-      // (we don't know the exact original position once other edits have
-      // shifted things around).
-      const sep = editorContent.endsWith("\n\n")
-        ? ""
-        : editorContent.endsWith("\n")
-          ? "\n"
-          : "\n\n";
-      setEditorContent(`${editorContent}${sep}${entry.oldText}`);
-    }
-  }
-
-  // Diff the current editor content against the snapshot taken at accept
-  // time. Recomputed on every keystroke, but each step is cheap (split +
-  // single-pass diff over a small paragraph array).
-  const diffEntries = preAcceptBaseline !== null
-    ? computeParagraphDiff(preAcceptBaseline, editorContent)
-    : [];
 
   return (
     <div className="border rounded-md overflow-hidden">
@@ -799,13 +721,35 @@ function FieldEditor({
             </span>
           )}
         </div>
-        {editable && dirty && (
+        {pendingDraft ? (
+          <Button
+            size="sm"
+            variant="ghost"
+            className="h-6 px-2 text-xs gap-1"
+            onClick={() => onDeclineSuggestion(pendingDraft.id)}
+            title="Dismiss the whole AI suggestion without applying any changes"
+          >
+            <X className="h-3 w-3" />
+            Decline all
+          </Button>
+        ) : editable && mode === "view" ? (
+          <Button
+            size="sm"
+            variant="ghost"
+            className="h-6 px-2 text-xs gap-1"
+            onClick={() => setMode("edit")}
+            title={`Edit ${label.toLowerCase()}`}
+          >
+            <Pencil className="h-3 w-3" />
+            Edit
+          </Button>
+        ) : editable && mode === "edit" ? (
           <div className="flex gap-1">
             <Button
               size="sm"
               className="h-6 px-2 text-xs gap-1"
               onClick={commit}
-              disabled={saving}
+              disabled={saving || !dirty}
             >
               {saving ? (
                 <Loader2 className="h-3 w-3 animate-spin" />
@@ -821,7 +765,7 @@ function FieldEditor({
               onClick={() => {
                 setEditorContent(baseline);
                 setError(null);
-                setPreAcceptBaseline(null);
+                setMode("view");
               }}
               disabled={saving}
             >
@@ -829,40 +773,19 @@ function FieldEditor({
               Cancel
             </Button>
           </div>
-        )}
+        ) : null}
       </div>
 
-      {/* AI suggestion strip — Accept/Decline now live per-change inside
-          the diff view. The strip just carries the AI label, reasoning,
-          and a "Decline all" quick-out for the user to dismiss the whole
-          set without resolving each entry. */}
-      {pendingDraft && (
-        <div className="border-b bg-primary/5 px-3 py-2 space-y-1.5">
-          <div className="flex items-center justify-between gap-2">
-            <div className="flex items-center gap-1.5 text-xs font-medium text-primary">
-              <Sparkles className="h-3 w-3" />
-              AI suggestion — accept or decline each change below
-            </div>
-            <Button
-              size="sm"
-              variant="ghost"
-              className="h-6 px-2 text-xs gap-1"
-              onClick={() => onDeclineSuggestion(pendingDraft.id)}
-              title="Dismiss the whole suggestion without applying any changes"
-            >
-              <X className="h-3 w-3" />
-              Decline all
-            </Button>
-          </div>
-          {pendingDraft.reasoning && (
-            <p className="text-[11px] text-muted-foreground italic leading-snug">
-              {pendingDraft.reasoning}
-            </p>
-          )}
-        </div>
+      {/* When the AI's reasoning is non-empty, surface it as a thin
+          italic line under the header so the user knows *why* the
+          suggested edit was proposed without a chrome-heavy strip. */}
+      {pendingDraft?.reasoning && (
+        <p className="text-[11px] text-muted-foreground italic leading-snug px-3 py-1.5 border-b bg-primary/5">
+          {pendingDraft.reasoning}
+        </p>
       )}
 
-      <div className="min-h-[120px]">
+      <div>
         {pendingDraft ? (
           /* Pre-accept preview: show the proposed change as a unified
              diff in the field area, with per-entry Accept / Decline so
@@ -891,33 +814,40 @@ function FieldEditor({
                 (e, i) => e.kind === "unchanged" || next.has(i),
               );
               if (allResolved) {
-                // Commit the composed result to the editor, snapshot
-                // the pre-accept state for the post-accept revert UX,
-                // and dismiss the suggestion in parent state.
+                // Commit the composed result to the editor, jump into
+                // edit mode so the Save button is visible (the field is
+                // now dirty and the user just made changes), and dismiss
+                // the suggestion in parent state.
                 const composed = composeFromDecisions(entries, next);
-                setPreAcceptBaseline(editorContent);
                 setEditorContent(composed);
                 setError(null);
                 setDiffDecisions(new Map());
+                setMode("edit");
                 onAcceptSuggestion(pendingDraft.id);
               } else {
                 setDiffDecisions(next);
               }
             }}
           />
-        ) : (
-          <EditorWithGutter
-            editorContent={editorContent}
-            setEditorContent={setEditorContent}
+        ) : mode === "edit" ? (
+          <Textarea
+            ref={textareaRef}
+            value={editorContent}
+            onChange={(e) => setEditorContent(e.currentTarget.value)}
             placeholder={`Enter ${label.toLowerCase()}…`}
             disabled={saving || !editable}
-            // Gutter bars only render when there's a pre-accept snapshot
-            // (immediately after the user has resolved the AI's diff).
-            // They disappear on Save / Cancel — at that point the field
-            // matches its JIRA truth and there's nothing to "revert to".
-            diffEntries={preAcceptBaseline !== null ? diffEntries : []}
-            onRevertEntry={revertDiffEntry}
+            spellCheck
+            autoFocus
+            className="min-h-[60px] rounded-none border-0 focus-visible:ring-0 focus-visible:ring-offset-0 resize-none overflow-hidden font-mono text-xs leading-relaxed whitespace-pre-wrap"
           />
+        ) : editorContent.trim() ? (
+          <div className="px-3 py-2">
+            <MarkdownBlock text={editorContent} />
+          </div>
+        ) : (
+          <div className="px-3 py-2 text-xs text-muted-foreground italic">
+            (empty)
+          </div>
         )}
       </div>
 
@@ -963,8 +893,11 @@ function InlineDiffView({
       {entries.map((entry, i) => {
         if (entry.kind === "unchanged") {
           return (
-            <div key={i} className="text-foreground/60">
-              <MarkdownBlock text={entry.newText} />
+            <div
+              key={i}
+              className="text-foreground/60 text-sm whitespace-pre-wrap break-words"
+            >
+              {entry.newText}
             </div>
           );
         }
@@ -999,84 +932,37 @@ function DiffEntryProposal({
   onAccept: () => void;
   onDecline: () => void;
 }) {
-  const showOld =
-    entry.kind === "removed" || entry.kind === "modified";
-  const showNew =
-    entry.kind === "added" || entry.kind === "modified";
+  const showOld = entry.kind === "removed" || entry.kind === "modified";
+  const showNew = entry.kind === "added" || entry.kind === "modified";
 
   // When resolved, mute the side that "lost" so the user can still see
   // both halves but the decision is obvious.
   const oldMuted = resolved === "accepted";
   const newMuted = resolved === "declined";
 
-  const kindLabel =
-    entry.kind === "modified"
-      ? "Modified"
-      : entry.kind === "added"
-        ? "Added"
-        : "Removed";
+  // Inline action affordance — for modified entries the buttons live next
+  // to the proposed new text (Accept = adopt new). For pure adds they sit
+  // next to the inserted paragraph; for pure removes, next to the doomed
+  // paragraph. There's no separate header bar; the +/- sigil and colour
+  // already say what kind of change it is.
+  const actionsOnNew = entry.kind === "added" || entry.kind === "modified";
+  const actions = (
+    <DiffEntryActions
+      entry={entry}
+      resolved={resolved}
+      onAccept={onAccept}
+      onDecline={onDecline}
+    />
+  );
 
   return (
-    <div className="rounded-md border bg-background overflow-hidden">
-      <div className="flex items-center justify-between px-2 py-1 border-b bg-muted/40">
-        <span
-          className={cn(
-            "text-[10px] uppercase tracking-wide font-semibold",
-            entry.kind === "modified" && "text-amber-600 dark:text-amber-400",
-            entry.kind === "added" && "text-emerald-600 dark:text-emerald-400",
-            entry.kind === "removed" && "text-rose-600 dark:text-rose-400",
-          )}
-        >
-          {kindLabel}
-        </span>
-        {resolved ? (
-          <span
-            className={cn(
-              "text-[10px] uppercase tracking-wide font-semibold",
-              resolved === "accepted"
-                ? "text-emerald-700 dark:text-emerald-400"
-                : "text-muted-foreground",
-            )}
-          >
-            {resolved === "accepted" ? "✓ Accepted" : "✕ Declined"}
-          </span>
-        ) : (
-          <div className="flex gap-1">
-            <Button
-              size="sm"
-              className="h-5 px-1.5 text-[11px] gap-1"
-              onClick={onAccept}
-              title={
-                entry.kind === "removed"
-                  ? "Accept removal — drop this paragraph"
-                  : "Accept this change"
-              }
-            >
-              <Check className="h-3 w-3" />
-              Accept
-            </Button>
-            <Button
-              size="sm"
-              variant="ghost"
-              className="h-5 px-1.5 text-[11px] gap-1"
-              onClick={onDecline}
-              title={
-                entry.kind === "added"
-                  ? "Decline — don't insert this paragraph"
-                  : "Keep the existing text instead"
-              }
-            >
-              <X className="h-3 w-3" />
-              Decline
-            </Button>
-          </div>
-        )}
-      </div>
+    <div className="space-y-1">
       {showOld && (
         <DiffParagraphBlock
           kind="removed"
           text={entry.oldText}
           dim={oldMuted}
+          actions={actionsOnNew ? null : actions}
         />
       )}
       {showNew && (
@@ -1084,8 +970,67 @@ function DiffEntryProposal({
           kind="added"
           text={entry.newText}
           dim={newMuted}
+          actions={actionsOnNew ? actions : null}
         />
       )}
+    </div>
+  );
+}
+
+function DiffEntryActions({
+  entry,
+  resolved,
+  onAccept,
+  onDecline,
+}: {
+  entry: UnifiedDiffEntry;
+  resolved: "accepted" | "declined" | undefined;
+  onAccept: () => void;
+  onDecline: () => void;
+}) {
+  if (resolved) {
+    return (
+      <span
+        className={cn(
+          "text-[10px] uppercase tracking-wide font-semibold whitespace-nowrap mt-1",
+          resolved === "accepted"
+            ? "text-emerald-700 dark:text-emerald-400"
+            : "text-muted-foreground",
+        )}
+      >
+        {resolved === "accepted" ? "✓ Accepted" : "✕ Declined"}
+      </span>
+    );
+  }
+  return (
+    <div className="flex gap-1 shrink-0">
+      <Button
+        size="sm"
+        className="h-5 px-1.5 text-[11px] gap-1"
+        onClick={onAccept}
+        title={
+          entry.kind === "removed"
+            ? "Accept removal — drop this paragraph"
+            : "Accept this change"
+        }
+      >
+        <Check className="h-3 w-3" />
+        Accept
+      </Button>
+      <Button
+        size="sm"
+        variant="ghost"
+        className="h-5 px-1.5 text-[11px] gap-1"
+        onClick={onDecline}
+        title={
+          entry.kind === "added"
+            ? "Decline — don't insert this paragraph"
+            : "Keep the existing text instead"
+        }
+      >
+        <X className="h-3 w-3" />
+        Decline
+      </Button>
     </div>
   );
 }
@@ -1094,10 +1039,15 @@ function DiffParagraphBlock({
   kind,
   text,
   dim,
+  actions,
 }: {
   kind: "added" | "removed";
   text: string;
   dim?: boolean;
+  /** Optional inline action area rendered to the right of the text — used
+   *  by `DiffEntryProposal` to dock per-entry Accept/Decline buttons next
+   *  to the paragraph they refer to instead of in a separate header bar. */
+  actions?: React.ReactNode;
 }) {
   const colors =
     kind === "added"
@@ -1124,351 +1074,14 @@ function DiffParagraphBlock({
       </span>
       <div
         className={cn(
-          "flex-1 min-w-0",
+          "flex-1 min-w-0 text-sm whitespace-pre-wrap break-words",
           kind === "removed" && "line-through decoration-rose-400/60",
         )}
       >
-        <MarkdownBlock text={text} />
+        {text}
       </div>
+      {actions}
     </div>
-  );
-}
-
-// ── Post-accept editor + gutter bars + revert popover ───────────────────────
-//
-// After the user accepts an AI suggestion (per-paragraph), the editor
-// returns showing the composed result, but with coloured vertical bars
-// in a left-side gutter aligned with each paragraph that changed. The
-// alignment is by DOM measurement: we read the rendered ProseMirror
-// children's bounding rects, match each against the diff entries by
-// plain-text projection (markdown sigils stripped on both sides), and
-// position absolute-positioned bar buttons in the gutter at the same
-// vertical coordinates. Clicking a bar opens a small popover anchored
-// near it showing the pre-accept text and a Revert button.
-
-function EditorWithGutter({
-  editorContent,
-  setEditorContent,
-  placeholder,
-  disabled,
-  diffEntries,
-  onRevertEntry,
-}: {
-  editorContent: string;
-  setEditorContent: (md: string) => void;
-  placeholder: string;
-  disabled: boolean;
-  diffEntries: DiffEntry[];
-  onRevertEntry: (entry: DiffEntry) => void;
-}) {
-  const editorWrapperRef = useRef<HTMLDivElement>(null);
-  const [bars, setBars] = useState<
-    {
-      key: string;
-      top: number;
-      height: number;
-      entry: DiffEntry;
-    }[]
-  >([]);
-  // Anchor for the open popover, captured at click time in viewport
-  // (fixed-position) coordinates. The popover is rendered via portal
-  // to document.body so the field's overflow:hidden card doesn't clip
-  // it when its content is taller than the gutter.
-  const [popover, setPopover] = useState<
-    | {
-        entry: DiffEntry;
-        anchor: { top: number; left: number; height: number };
-      }
-    | null
-  >(null);
-
-  // Recompute bar positions whenever the editor content or the diff list
-  // changes. Uses MutationObserver to also catch ProseMirror's internal
-  // re-renders (focus, selection, etc.) so bars stay aligned as the user
-  // edits inside changed paragraphs.
-  useEffect(() => {
-    const wrapper = editorWrapperRef.current;
-    if (!wrapper) return;
-    if (diffEntries.length === 0) {
-      setBars([]);
-      return;
-    }
-
-    // Match-key: plain-text projection of each diff entry's "new" side
-    // (or "old" side for removed). Only modified/added entries actually
-    // map to a paragraph in the editor — removed entries are gone, so
-    // they get no bar (the user can find them via revert-on-modified
-    // entries adjacent to where they sat). For added we use newText;
-    // modified also uses newText since that's what the editor shows.
-    const matchTargets: { plain: string; entry: DiffEntry }[] = [];
-    for (const entry of diffEntries) {
-      if (entry.kind === "removed") continue;
-      const plain = markdownToPlainText(entry.newText);
-      if (plain) matchTargets.push({ plain, entry });
-    }
-
-    function recompute() {
-      const wrapperEl = editorWrapperRef.current;
-      if (!wrapperEl) return;
-      const proseMirror = wrapperEl.querySelector(".ProseMirror");
-      if (!proseMirror) {
-        setBars([]);
-        return;
-      }
-      const wrapperRect = wrapperEl.getBoundingClientRect();
-      const used = new Set<DiffEntry>();
-      const next: typeof bars = [];
-      Array.from(proseMirror.children).forEach((child, idx) => {
-        const text = markdownToPlainText(child.textContent ?? "");
-        if (!text) return;
-        // Find the first unused matching entry. Multiple paragraphs with
-        // identical text would all get bars in document order, which is
-        // the natural reading.
-        const match = matchTargets.find(
-          (t) => t.plain === text && !used.has(t.entry),
-        );
-        if (!match) return;
-        used.add(match.entry);
-        const r = (child as HTMLElement).getBoundingClientRect();
-        next.push({
-          key: `${idx}-${text.slice(0, 16)}`,
-          top: r.top - wrapperRect.top,
-          height: r.height,
-          entry: match.entry,
-        });
-      });
-      setBars(next);
-    }
-
-    recompute();
-    const observer = new MutationObserver(recompute);
-    observer.observe(wrapper, {
-      childList: true,
-      subtree: true,
-      characterData: true,
-    });
-    window.addEventListener("resize", recompute);
-    return () => {
-      observer.disconnect();
-      window.removeEventListener("resize", recompute);
-    };
-  }, [editorContent, diffEntries]);
-
-  // Close the popover when clicking outside or when the user scrolls /
-  // resizes the window. The bar's click sets popover state; clicks
-  // inside the popover are stopped at the popover root so they don't
-  // reach this listener.
-  useEffect(() => {
-    if (!popover) return;
-    function onDocClick(e: MouseEvent) {
-      const wrapper = editorWrapperRef.current;
-      const target = e.target as Node | null;
-      // Hits on the gutter/editor go through this same handler. Ignore
-      // them so the user can click another bar to switch popovers.
-      if (wrapper && target && wrapper.contains(target)) return;
-      setPopover(null);
-    }
-    function onScrollOrResize() {
-      // Cheaper than re-anchoring the popover to the bar on every frame.
-      // Real-world editors don't scroll while the popover is open often,
-      // so closing is acceptable UX.
-      setPopover(null);
-    }
-    document.addEventListener("mousedown", onDocClick);
-    window.addEventListener("scroll", onScrollOrResize, true);
-    window.addEventListener("resize", onScrollOrResize);
-    return () => {
-      document.removeEventListener("mousedown", onDocClick);
-      window.removeEventListener("scroll", onScrollOrResize, true);
-      window.removeEventListener("resize", onScrollOrResize);
-    };
-  }, [popover]);
-
-  function barColor(entry: DiffEntry): string {
-    if (entry.kind === "modified") return "bg-amber-500";
-    if (entry.kind === "added") return "bg-emerald-500";
-    return "bg-rose-500";
-  }
-
-  return (
-    <div className="flex" ref={editorWrapperRef}>
-      {/* Gutter — fixed-width column to the left of the editor. Bars are
-          absolutely positioned within it at the y-offsets we measured. */}
-      <div
-        className="relative w-3 shrink-0 border-r border-border/40"
-        aria-hidden={bars.length === 0}
-      >
-        {bars.map((bar) => {
-          const isActive = popover?.entry === bar.entry;
-          return (
-            <button
-              key={bar.key}
-              type="button"
-              onClick={(e) => {
-                if (isActive) {
-                  setPopover(null);
-                  return;
-                }
-                const rect = (
-                  e.currentTarget as HTMLButtonElement
-                ).getBoundingClientRect();
-                setPopover({
-                  entry: bar.entry,
-                  anchor: {
-                    top: rect.top,
-                    left: rect.right,
-                    height: rect.height,
-                  },
-                });
-              }}
-              className={cn(
-                "absolute left-1 w-1 rounded-sm transition-opacity hover:opacity-100",
-                barColor(bar.entry),
-                isActive ? "opacity-100" : "opacity-70",
-              )}
-              style={{ top: bar.top, height: bar.height }}
-              title="View previous text and revert"
-              aria-label="View previous text and revert"
-            />
-          );
-        })}
-      </div>
-      <div className="flex-1 min-w-0">
-        <RichFieldEditor
-          value={editorContent}
-          onChange={setEditorContent}
-          placeholder={placeholder}
-          disabled={disabled}
-        />
-      </div>
-      {popover && (
-        <RevertPopover
-          entry={popover.entry}
-          anchor={popover.anchor}
-          onRevert={() => {
-            onRevertEntry(popover.entry);
-            setPopover(null);
-          }}
-          onClose={() => setPopover(null)}
-        />
-      )}
-    </div>
-  );
-}
-
-function RevertPopover({
-  entry,
-  anchor,
-  onRevert,
-  onClose,
-}: {
-  entry: DiffEntry;
-  /** Bar's bounding rect (viewport-relative). The popover positions
-   *  itself just to the right of the bar and is clamped inside the
-   *  visible viewport so a tall popover next to a paragraph near the
-   *  bottom of the screen flips upward instead of running off-screen. */
-  anchor: { top: number; left: number; height: number };
-  onRevert: () => void;
-  onClose: () => void;
-}) {
-  const popRef = useRef<HTMLDivElement>(null);
-  // Computed position. Initially placed near the anchor; after layout we
-  // measure the popover and adjust to stay on-screen.
-  const [pos, setPos] = useState<{ top: number; left: number }>(() => ({
-    top: anchor.top,
-    left: anchor.left + 8,
-  }));
-
-  useLayoutEffect(() => {
-    const el = popRef.current;
-    if (!el) return;
-    const rect = el.getBoundingClientRect();
-    const vw = window.innerWidth;
-    const vh = window.innerHeight;
-    const margin = 8;
-
-    // Horizontal: prefer right of the bar. If the popover would overflow
-    // the viewport's right edge, shift it left of the bar instead.
-    let left = anchor.left + 8;
-    if (left + rect.width + margin > vw) {
-      left = Math.max(margin, anchor.left - rect.width - 8);
-    }
-    // Vertical: top-align with the bar. If too tall to fit below, anchor
-    // its bottom to the viewport's bottom edge so the whole popover
-    // stays visible.
-    let top = anchor.top;
-    if (top + rect.height + margin > vh) {
-      top = Math.max(margin, vh - rect.height - margin);
-    }
-    setPos({ top, left });
-    // anchor is captured at click time and stable for the lifetime of
-    // this popover instance — re-running on its identity is correct.
-  }, [anchor]);
-
-  const kindLabel =
-    entry.kind === "modified"
-      ? "Modified paragraph"
-      : entry.kind === "added"
-        ? "Added paragraph"
-        : "Removed paragraph";
-
-  return createPortal(
-    <div
-      ref={popRef}
-      className="fixed z-50 w-80 max-w-[calc(100vw-1rem)] rounded-md border bg-popover shadow-lg"
-      style={{ top: pos.top, left: pos.left }}
-      role="dialog"
-      onMouseDown={(e) => e.stopPropagation()}
-    >
-      <div className="flex items-center justify-between px-3 py-2 border-b bg-muted/40">
-        <span className="text-[10px] uppercase tracking-wide font-semibold text-muted-foreground">
-          {kindLabel}
-        </span>
-        <Button
-          size="sm"
-          variant="ghost"
-          className="h-5 px-1 -mr-1"
-          onClick={onClose}
-          aria-label="Close"
-        >
-          <X className="h-3 w-3" />
-        </Button>
-      </div>
-      <div className="px-3 py-2 space-y-2 max-h-[60vh] overflow-y-auto">
-        {entry.kind !== "added" && entry.oldText && (
-          <div className="rounded-sm border-l-2 border-rose-400/60 bg-rose-50/60 dark:bg-rose-950/20 px-2 py-1">
-            <p className="text-[10px] text-rose-700 dark:text-rose-400 mb-0.5 uppercase tracking-wide">
-              Before
-            </p>
-            <p className="text-xs whitespace-pre-wrap break-words text-foreground/90 line-through decoration-rose-400/60">
-              {entry.oldText}
-            </p>
-          </div>
-        )}
-        {entry.kind !== "removed" && entry.newText && (
-          <div className="rounded-sm border-l-2 border-emerald-400/60 bg-emerald-50/60 dark:bg-emerald-950/20 px-2 py-1">
-            <p className="text-[10px] text-emerald-700 dark:text-emerald-400 mb-0.5 uppercase tracking-wide">
-              After (now in field)
-            </p>
-            <p className="text-xs whitespace-pre-wrap break-words text-foreground/90">
-              {entry.newText}
-            </p>
-          </div>
-        )}
-      </div>
-      <div className="flex justify-end px-3 py-2 border-t">
-        <Button
-          size="sm"
-          variant="outline"
-          className="h-7 px-2 text-xs gap-1"
-          onClick={onRevert}
-        >
-          <Undo2 className="h-3 w-3" />
-          Revert
-        </Button>
-      </div>
-    </div>,
-    document.body,
   );
 }
 
@@ -1563,6 +1176,7 @@ function ChatPanel({
   messages,
   thinking,
   probeStatus,
+  partialOutput,
   onSend,
   commands,
   onCollapse,
@@ -1570,6 +1184,10 @@ function ChatPanel({
   messages: GroomChatMessage[];
   thinking: boolean;
   probeStatus: string;
+  /** Streaming partial output emitted by the grooming agent while it's
+   *  still mid-response. When non-null, the "Thinking…" bubble swaps to
+   *  a live preview that grows token-by-token instead of sitting blank. */
+  partialOutput: Partial<GroomingOutput> | null;
   onSend: (text: string) => void;
   commands: SlashCommand[];
   /** When provided, renders a collapse button in the header so the user
@@ -1578,7 +1196,13 @@ function ChatPanel({
 }) {
   const bottomRef = useRef<HTMLDivElement>(null);
   const [value, setValue] = useState("");
-  useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages, thinking]);
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages, thinking, partialOutput]);
+
+  const streamingPreview = thinking && partialOutput
+    ? buildStreamingPreview(partialOutput)
+    : "";
 
   return (
     <Card className="flex flex-col min-h-0 flex-1">
@@ -1611,11 +1235,22 @@ function ChatPanel({
             </p>
           )}
           {messages.map((msg, i) => <MessageBubble key={i} msg={msg} />)}
-          {thinking && (
+          {thinking && !streamingPreview && (
             <div className="flex justify-start">
               <div className="bg-muted text-muted-foreground px-4 py-2.5 rounded-2xl rounded-tl-sm text-sm flex items-center gap-2">
                 <Loader2 className="h-3.5 w-3.5 animate-spin" />
                 {probeStatus || "Thinking…"}
+              </div>
+            </div>
+          )}
+          {thinking && streamingPreview && (
+            <div className="flex justify-start">
+              <div className="bg-muted text-foreground px-4 py-2.5 rounded-2xl rounded-tl-sm text-sm leading-relaxed whitespace-pre-wrap max-w-[85%]">
+                <div className="flex items-center gap-2 text-xs text-muted-foreground mb-1.5">
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                  Analyzing…
+                </div>
+                {streamingPreview}
               </div>
             </div>
           )}
@@ -2001,6 +1636,7 @@ export function TicketQualityScreen({ credStatus, onBack }: TicketQualityScreenP
       applying: false,
       probeStatus: "",
       analyzed: false,
+      partialOutput: null,
     });
   }
 
@@ -2012,9 +1648,40 @@ export function TicketQualityScreen({ credStatus, onBack }: TicketQualityScreenP
     setInitError(null);
     setSession((prev) =>
       prev?.issue.key === sessionKey
-        ? { ...prev, thinking: true, chat: [], drafts: [] }
+        ? { ...prev, thinking: true, chat: [], drafts: [], partialOutput: null }
         : prev,
     );
+
+    // Subscribe to streaming partial-output events from the sidecar so the
+    // panel renders fields as the model emits them, instead of waiting for
+    // the full reply. Throttled to 80ms to avoid flooding React on token-
+    // heavy streams. Mirrors the PR Review streaming wiring.
+    let pendingPartial: Partial<GroomingOutput> | null = null;
+    let partialFlushTimer: ReturnType<typeof setTimeout> | null = null;
+    const flushPartial = () => {
+      partialFlushTimer = null;
+      if (!pendingPartial) return;
+      const next = pendingPartial;
+      pendingPartial = null;
+      setSession((prev) =>
+        prev?.issue.key === sessionKey ? { ...prev, partialOutput: next } : prev,
+      );
+    };
+    const unlistenPartial = await listen<{
+      kind?: string;
+      node?: string;
+      status?: "started" | "completed";
+      data?: { partial?: Partial<GroomingOutput> };
+    }>("grooming-workflow-event", (event) => {
+      if (event.payload.kind !== "progress") return;
+      const partial = event.payload.data?.partial;
+      if (!partial || typeof partial !== "object") return;
+      pendingPartial = partial;
+      if (partialFlushTimer === null) {
+        partialFlushTimer = setTimeout(flushPartial, 80);
+      }
+    });
+
     try {
       const ticketText = compileTicketText(freshIssue);
 
@@ -2075,12 +1742,16 @@ export function TicketQualityScreen({ credStatus, onBack }: TicketQualityScreenP
               chat: [{ role: "assistant", content: openingMsg }],
               thinking: false,
               analyzed: true,
+              partialOutput: null,
             }
           : prev,
       );
     } catch (e) {
       setInitError(String(e));
-      setSession((prev) => (prev?.issue.key === sessionKey ? { ...prev, thinking: false } : prev));
+      setSession((prev) => (prev?.issue.key === sessionKey ? { ...prev, thinking: false, partialOutput: null } : prev));
+    } finally {
+      if (partialFlushTimer !== null) clearTimeout(partialFlushTimer);
+      unlistenPartial();
     }
   }
 
@@ -2510,6 +2181,7 @@ export function TicketQualityScreen({ credStatus, onBack }: TicketQualityScreenP
                   messages={session.chat}
                   thinking={session.thinking}
                   probeStatus={session.probeStatus}
+                  partialOutput={session.partialOutput}
                   onSend={sendChatMessage}
                   commands={groomingCommands}
                   onCollapse={() => setChatCollapsed(true)}

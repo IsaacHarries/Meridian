@@ -47,6 +47,7 @@ import {
   GroomingOutputSchema,
   type GroomingOutput,
 } from "./grooming.js";
+import { streamLLMJson } from "./streaming.js";
 import {
   GuidanceOutputSchema,
   ImpactOutputSchema,
@@ -372,6 +373,34 @@ async function invokeAndParse<S extends z.ZodTypeAny>(
   return { parsed, usage: tokenUsage(response.usage_metadata) };
 }
 
+/**
+ * Streaming counterpart to `invokeAndParse`. Forwards each parsable
+ * incremental partial-JSON snapshot to the frontend as a `progress` event
+ * with `data.partial` so the UI can render fields as they fill in,
+ * instead of waiting for the full reply. Returns the same shape as
+ * `invokeAndParse` once the model finishes.
+ */
+async function streamAndParse<S extends z.ZodTypeAny>(args: {
+  ctx: PipelineGraphContext;
+  nodeName: string;
+  model: BaseChatModel;
+  messages: BaseMessage[];
+  schema: S;
+}): Promise<{ parsed: z.output<S>; usage: { inputTokens: number; outputTokens: number } }> {
+  const { ctx, nodeName, model, messages, schema } = args;
+  const { raw, usage } = await streamLLMJson({
+    llm: model,
+    messages,
+    emit: ctx.emit,
+    workflowId: ctx.workflowId,
+    nodeName,
+    cleanText: stripJsonFences,
+  });
+  const json = parseStructuredResponse(raw);
+  const parsed = schema.parse(json) as z.output<S>;
+  return { parsed, usage };
+}
+
 function buildContextText(state: PipelineState): string {
   const parts: string[] = [`=== TICKET ===\n${state.input.ticketText}`];
   if (state.groomingOutput) {
@@ -517,70 +546,98 @@ export function isTransientModelError(err: unknown): boolean {
 
 // ── Nodes ─────────────────────────────────────────────────────────────────────
 
-async function groomingNode(state: PipelineState): Promise<Partial<PipelineState>> {
-  const model = buildModel(state.model);
-  const system = appendSkill(
-    buildGroomingSystem(state.input.groomingTemplates ?? undefined),
-    state.input.skills?.grooming,
-    "GROOMING CONVENTIONS",
-  );
-  const user = buildGroomingUser({
-    ticketText: state.input.ticketText,
-    fileContents: state.input.codebaseContext,
-    templates: state.input.groomingTemplates ?? undefined,
-  });
+function makeGroomingNode(ctx: PipelineGraphContext) {
+  return async function groomingNode(
+    state: PipelineState,
+  ): Promise<Partial<PipelineState>> {
+    const model = buildModel(state.model);
+    const system = appendSkill(
+      buildGroomingSystem(state.input.groomingTemplates ?? undefined),
+      state.input.skills?.grooming,
+      "GROOMING CONVENTIONS",
+    );
+    const user = buildGroomingUser({
+      ticketText: state.input.ticketText,
+      fileContents: state.input.codebaseContext,
+      templates: state.input.groomingTemplates ?? undefined,
+    });
 
-  const { parsed, usage } = await invokeAndParse(model, system, user, GroomingOutputSchema);
-  return { groomingOutput: parsed, currentStage: "impact" as PipelineStage, usage };
+    const { parsed, usage } = await streamAndParse({
+      ctx,
+      nodeName: "grooming",
+      model,
+      messages: [new SystemMessage(system), new HumanMessage(user)],
+      schema: GroomingOutputSchema,
+    });
+    return { groomingOutput: parsed, currentStage: "impact" as PipelineStage, usage };
+  };
 }
 
-async function impactNode(state: PipelineState): Promise<Partial<PipelineState>> {
-  if (!state.groomingOutput) throw new Error("Impact node ran before grooming completed");
-  const model = buildModel(state.model);
-  const user = `Ticket:\n${state.input.ticketText}\n\nGrooming analysis:\n${JSON.stringify(state.groomingOutput, null, 2)}`;
-  const { parsed, usage } = await invokeAndParse(model, IMPACT_SYSTEM, user, ImpactOutputSchema);
-  return { impactOutput: parsed, currentStage: "triage" as PipelineStage, usage };
+function makeImpactNode(ctx: PipelineGraphContext) {
+  return async function impactNode(
+    state: PipelineState,
+  ): Promise<Partial<PipelineState>> {
+    if (!state.groomingOutput) throw new Error("Impact node ran before grooming completed");
+    const model = buildModel(state.model);
+    const user = `Ticket:\n${state.input.ticketText}\n\nGrooming analysis:\n${JSON.stringify(state.groomingOutput, null, 2)}`;
+    const { parsed, usage } = await streamAndParse({
+      ctx,
+      nodeName: "impact",
+      model,
+      messages: [new SystemMessage(IMPACT_SYSTEM), new HumanMessage(user)],
+      schema: ImpactOutputSchema,
+    });
+    return { impactOutput: parsed, currentStage: "triage" as PipelineStage, usage };
+  };
 }
 
-async function triageNode(state: PipelineState): Promise<Partial<PipelineState>> {
-  const model = buildModel(state.model);
-  const contextText = buildContextText(state);
-  const system = buildTriageSystem(contextText);
+function makeTriageNode(ctx: PipelineGraphContext) {
+  return async function triageNode(
+    state: PipelineState,
+  ): Promise<Partial<PipelineState>> {
+    const model = buildModel(state.model);
+    const contextText = buildContextText(state);
+    const system = buildTriageSystem(contextText);
 
-  const seedHistory: TriageMessage[] =
-    state.triageHistory.length === 0
-      ? [
-          {
-            role: "user",
-            content:
-              "Kick off the triage discussion. Surface the candidate approaches and any decisions I need to make.",
-          },
-        ]
-      : [];
+    const seedHistory: TriageMessage[] =
+      state.triageHistory.length === 0
+        ? [
+            {
+              role: "user",
+              content:
+                "Kick off the triage discussion. Surface the candidate approaches and any decisions I need to make.",
+            },
+          ]
+        : [];
 
-  const conversation: TriageMessage[] = [...seedHistory, ...state.triageHistory];
-  const messages = [
-    new SystemMessage(system),
-    ...conversation.map((m) =>
-      m.role === "user" ? new HumanMessage(m.content) : new SystemMessage(m.content),
-    ),
-  ];
+    const conversation: TriageMessage[] = [...seedHistory, ...state.triageHistory];
+    const messages = [
+      new SystemMessage(system),
+      ...conversation.map((m) =>
+        m.role === "user" ? new HumanMessage(m.content) : new SystemMessage(m.content),
+      ),
+    ];
 
-  const response = await model.invoke(messages);
-  const raw = extractText(response.content) || response.text;
-  const turn = TriageTurnOutputSchema.parse(parseStructuredResponse(raw));
+    const { parsed: turn, usage } = await streamAndParse({
+      ctx,
+      nodeName: "triage",
+      model,
+      messages,
+      schema: TriageTurnOutputSchema,
+    });
 
-  // Render the structured turn as plain markdown for the chat history. The
-  // raw model response is JSON wrapped in prose / fences; storing that
-  // verbatim makes the triage panel show a JSON dump instead of the agent's
-  // actual proposal. The structured form is still surfaced via
-  // triageLastTurn for the checkpoint payload.
-  const formatted = formatTriageTurnAsMarkdown(turn);
+    // Render the structured turn as plain markdown for the chat history.
+    // The raw model response is JSON wrapped in prose / fences; storing
+    // that verbatim makes the triage panel show a JSON dump instead of
+    // the agent's actual proposal. The structured form is still surfaced
+    // via triageLastTurn for the checkpoint payload.
+    const formatted = formatTriageTurnAsMarkdown(turn);
 
-  return {
-    triageHistory: [...seedHistory, { role: "assistant", content: formatted }],
-    triageLastTurn: turn,
-    usage: tokenUsage(response.usage_metadata),
+    return {
+      triageHistory: [...seedHistory, { role: "assistant", content: formatted }],
+      triageLastTurn: turn,
+      usage,
+    };
   };
 }
 
@@ -597,63 +654,83 @@ function formatTriageTurnAsMarkdown(turn: TriageTurnOutput): string {
   return parts.join("\n\n");
 }
 
-async function planNode(state: PipelineState): Promise<Partial<PipelineState>> {
-  const model = buildModel(state.model);
-  const contextText = buildContextText(state);
-  const system = buildPlanSystem(contextText);
-  const conversation = JSON.stringify(state.triageHistory, null, 2);
+function makePlanNode(ctx: PipelineGraphContext) {
+  return async function planNode(
+    state: PipelineState,
+  ): Promise<Partial<PipelineState>> {
+    const model = buildModel(state.model);
+    const contextText = buildContextText(state);
+    const system = buildPlanSystem(contextText);
+    const conversation = JSON.stringify(state.triageHistory, null, 2);
 
-  // When `planRevisionContext` is populated, this is a re-plan triggered by
-  // `replan_check` after the prior plan failed verification or build. Prepend
-  // a REVISE preamble so the model produces a *revised* plan rather than
-  // regenerating from scratch with no awareness of what already failed.
-  const revision = state.planRevisionContext;
-  const revisionPreamble = revision
-    ? `=== PLAN REVISION REQUIRED (revision #${state.planRevisions + 1}) ===\n` +
-      `Reason: ${revision.reason}\n\n` +
-      `Prior plan that failed:\n${JSON.stringify(revision.prior_plan, null, 2)}\n\n` +
-      (revision.verification_failures.length
-        ? `Per-file verification failures (these files did not end up in the expected state on disk):\n${JSON.stringify(revision.verification_failures, null, 2)}\n\n`
-        : "") +
-      (revision.build_attempts.length
-        ? `Build attempt history (most recent last):\n${JSON.stringify(revision.build_attempts, null, 2)}\n\n`
-        : "") +
-      `Produce a REVISED plan that addresses the failure mode above. ` +
-      `If a different file set or different approach is needed, say so. ` +
-      `Note: any partially-written files from the prior plan are still on disk — call out files that should be reverted in the plan summary.\n\n`
-    : "";
+    // When `planRevisionContext` is populated, this is a re-plan triggered by
+    // `replan_check` after the prior plan failed verification or build. Prepend
+    // a REVISE preamble so the model produces a *revised* plan rather than
+    // regenerating from scratch with no awareness of what already failed.
+    const revision = state.planRevisionContext;
+    const revisionPreamble = revision
+      ? `=== PLAN REVISION REQUIRED (revision #${state.planRevisions + 1}) ===\n` +
+        `Reason: ${revision.reason}\n\n` +
+        `Prior plan that failed:\n${JSON.stringify(revision.prior_plan, null, 2)}\n\n` +
+        (revision.verification_failures.length
+          ? `Per-file verification failures (these files did not end up in the expected state on disk):\n${JSON.stringify(revision.verification_failures, null, 2)}\n\n`
+          : "") +
+        (revision.build_attempts.length
+          ? `Build attempt history (most recent last):\n${JSON.stringify(revision.build_attempts, null, 2)}\n\n`
+          : "") +
+        `Produce a REVISED plan that addresses the failure mode above. ` +
+        `If a different file set or different approach is needed, say so. ` +
+        `Note: any partially-written files from the prior plan are still on disk — call out files that should be reverted in the plan summary.\n\n`
+      : "";
 
-  const user = `${revisionPreamble}Triage conversation:\n${conversation}`;
-  const { parsed, usage } = await invokeAndParse(model, system, user, ImplementationPlanSchema);
+    const user = `${revisionPreamble}Triage conversation:\n${conversation}`;
+    const { parsed, usage } = await streamAndParse({
+      ctx,
+      nodeName: "do_plan",
+      model,
+      messages: [new SystemMessage(system), new HumanMessage(user)],
+      schema: ImplementationPlanSchema,
+    });
 
-  // Clear revision context + prior failure state so the next implementation
-  // pass starts clean. `planRevisions` is incremented so the routing edges
-  // can cap runaway loops.
-  const updates: Partial<PipelineState> = {
-    plan: parsed,
-    currentStage: "implementation" as PipelineStage,
-    usage,
+    // Clear revision context + prior failure state so the next implementation
+    // pass starts clean. `planRevisions` is incremented so the routing edges
+    // can cap runaway loops.
+    const updates: Partial<PipelineState> = {
+      plan: parsed,
+      currentStage: "implementation" as PipelineStage,
+      usage,
+    };
+    if (revision) {
+      updates.planRevisions = state.planRevisions + 1;
+      updates.planRevisionContext = undefined;
+      updates.verificationFailures = [];
+      updates.buildVerification = undefined;
+    }
+    return updates;
   };
-  if (revision) {
-    updates.planRevisions = state.planRevisions + 1;
-    updates.planRevisionContext = undefined;
-    updates.verificationFailures = [];
-    updates.buildVerification = undefined;
-  }
-  return updates;
 }
 
-async function guidanceNode(state: PipelineState): Promise<Partial<PipelineState>> {
-  if (!state.plan) throw new Error("Guidance node ran before plan was finalised");
-  const model = buildModel(state.model);
-  const system = appendSkill(
-    GUIDANCE_SYSTEM,
-    state.input.skills?.implementation,
-    "IMPLEMENTATION CONVENTIONS",
-  );
-  const user = `Ticket:\n${state.input.ticketText}\n\nImplementation plan:\n${JSON.stringify(state.plan, null, 2)}`;
-  const { parsed, usage } = await invokeAndParse(model, system, user, GuidanceOutputSchema);
-  return { guidance: parsed, usage };
+function makeGuidanceNode(ctx: PipelineGraphContext) {
+  return async function guidanceNode(
+    state: PipelineState,
+  ): Promise<Partial<PipelineState>> {
+    if (!state.plan) throw new Error("Guidance node ran before plan was finalised");
+    const model = buildModel(state.model);
+    const system = appendSkill(
+      GUIDANCE_SYSTEM,
+      state.input.skills?.implementation,
+      "IMPLEMENTATION CONVENTIONS",
+    );
+    const user = `Ticket:\n${state.input.ticketText}\n\nImplementation plan:\n${JSON.stringify(state.plan, null, 2)}`;
+    const { parsed, usage } = await streamAndParse({
+      ctx,
+      nodeName: "do_guidance",
+      model,
+      messages: [new SystemMessage(system), new HumanMessage(user)],
+      schema: GuidanceOutputSchema,
+    });
+    return { guidance: parsed, usage };
+  };
 }
 
 // Per-file response from the implementation tool-loop. `summary` is treated
@@ -1238,7 +1315,8 @@ function makeTestGenNode(tools: RepoTools) {
   };
 }
 
-function makeCodeReviewNode(tools: RepoTools) {
+function makeCodeReviewNode(ctx: PipelineGraphContext) {
+  const tools = ctx.tools;
   return async function codeReviewNode(
     state: PipelineState,
   ): Promise<Partial<PipelineState>> {
@@ -1268,30 +1346,51 @@ function makeCodeReviewNode(tools: RepoTools) {
     const testJson = JSON.stringify(state.testOutput ?? {}, null, 2);
     const user = `Ticket:\n${state.input.ticketText}\n\nImplementation plan:\n${planJson}\n\nImplementation result:\n${implJson}\n\nTest plan:\n${testJson}\n\nCode diff:\n${diff}`;
 
-    const { parsed, usage } = await invokeAndParse(model, system, user, PlanReviewOutputSchema);
+    const { parsed, usage } = await streamAndParse({
+      ctx,
+      nodeName: "code_review",
+      model,
+      messages: [new SystemMessage(system), new HumanMessage(user)],
+      schema: PlanReviewOutputSchema,
+    });
     return { reviewOutput: parsed, usage };
   };
 }
 
-async function prDescriptionNode(state: PipelineState): Promise<Partial<PipelineState>> {
-  const model = buildModel(state.model);
-  const tmpl = state.input.prTemplate;
-  const system = buildPrDescriptionSystem(tmpl?.body, tmpl?.mode ?? "guide");
-  const user = `Ticket:\n${state.input.ticketText}\n\nImplementation plan:\n${JSON.stringify(state.plan ?? {}, null, 2)}\n\nImplementation result:\n${JSON.stringify(state.implementationOutput ?? {}, null, 2)}\n\nReview notes:\n${JSON.stringify(state.reviewOutput ?? {}, null, 2)}`;
-  const { parsed, usage } = await invokeAndParse(model, system, user, PrDescriptionOutputSchema);
-  return { prDescription: parsed, usage };
+function makePrDescriptionNode(ctx: PipelineGraphContext) {
+  return async function prDescriptionNode(
+    state: PipelineState,
+  ): Promise<Partial<PipelineState>> {
+    const model = buildModel(state.model);
+    const tmpl = state.input.prTemplate;
+    const system = buildPrDescriptionSystem(tmpl?.body, tmpl?.mode ?? "guide");
+    const user = `Ticket:\n${state.input.ticketText}\n\nImplementation plan:\n${JSON.stringify(state.plan ?? {}, null, 2)}\n\nImplementation result:\n${JSON.stringify(state.implementationOutput ?? {}, null, 2)}\n\nReview notes:\n${JSON.stringify(state.reviewOutput ?? {}, null, 2)}`;
+    const { parsed, usage } = await streamAndParse({
+      ctx,
+      nodeName: "pr_description",
+      model,
+      messages: [new SystemMessage(system), new HumanMessage(user)],
+      schema: PrDescriptionOutputSchema,
+    });
+    return { prDescription: parsed, usage };
+  };
 }
 
-async function retrospectiveNode(state: PipelineState): Promise<Partial<PipelineState>> {
-  const model = buildModel(state.model);
-  const user = `Ticket:\n${state.input.ticketText}\n\nImplementation plan:\n${JSON.stringify(state.plan ?? {}, null, 2)}\n\nImplementation result:\n${JSON.stringify(state.implementationOutput ?? {}, null, 2)}\n\nReview:\n${JSON.stringify(state.reviewOutput ?? {}, null, 2)}`;
-  const { parsed, usage } = await invokeAndParse(
-    model,
-    RETROSPECTIVE_SYSTEM,
-    user,
-    RetrospectiveOutputSchema,
-  );
-  return { retrospective: parsed, usage };
+function makeRetrospectiveNode(ctx: PipelineGraphContext) {
+  return async function retrospectiveNode(
+    state: PipelineState,
+  ): Promise<Partial<PipelineState>> {
+    const model = buildModel(state.model);
+    const user = `Ticket:\n${state.input.ticketText}\n\nImplementation plan:\n${JSON.stringify(state.plan ?? {}, null, 2)}\n\nImplementation result:\n${JSON.stringify(state.implementationOutput ?? {}, null, 2)}\n\nReview:\n${JSON.stringify(state.reviewOutput ?? {}, null, 2)}`;
+    const { parsed, usage } = await streamAndParse({
+      ctx,
+      nodeName: "do_retrospective",
+      model,
+      messages: [new SystemMessage(RETROSPECTIVE_SYSTEM), new HumanMessage(user)],
+      schema: RetrospectiveOutputSchema,
+    });
+    return { retrospective: parsed, usage };
+  };
 }
 
 // ── Checkpoint nodes ──────────────────────────────────────────────────────────
@@ -1409,15 +1508,15 @@ async function triageCheckpointNode(state: PipelineState): Promise<Command> {
 export function buildPipelineGraph(ctx: PipelineGraphContext) {
   const { tools } = ctx;
   return new StateGraph(PipelineStateAnnotation)
-    .addNode("grooming", groomingNode)
-    .addNode("impact", impactNode)
-    .addNode("triage", triageNode)
+    .addNode("grooming", makeGroomingNode(ctx))
+    .addNode("impact", makeImpactNode(ctx))
+    .addNode("triage", makeTriageNode(ctx))
     // Node names use a `do_` prefix for plan/guidance/retrospective because
     // LangGraph forbids node names that collide with state-channel names —
     // and we already have `plan`, `guidance`, and `retrospective` as state
     // fields holding each agent's output.
-    .addNode("do_plan", planNode)
-    .addNode("do_guidance", guidanceNode)
+    .addNode("do_plan", makePlanNode(ctx))
+    .addNode("do_guidance", makeGuidanceNode(ctx))
     .addNode("implementation", makeImplementationNode(ctx))
     // Phase 3c — optional build verification sub-loop. Skipped entirely when
     // the user hasn't enabled it in Settings.
@@ -1425,9 +1524,9 @@ export function buildPipelineGraph(ctx: PipelineGraphContext) {
     .addNode("build_fix", makeBuildFixNode(ctx))
     .addNode("test_plan", makeTestPlanNode(tools))
     .addNode("test_gen", makeTestGenNode(tools))
-    .addNode("code_review", makeCodeReviewNode(tools))
-    .addNode("pr_description", prDescriptionNode)
-    .addNode("do_retrospective", retrospectiveNode)
+    .addNode("code_review", makeCodeReviewNode(ctx))
+    .addNode("pr_description", makePrDescriptionNode(ctx))
+    .addNode("do_retrospective", makeRetrospectiveNode(ctx))
     .addNode("checkpoint_grooming", checkpointNode("grooming", (s) => s.groomingOutput))
     .addNode("checkpoint_impact", checkpointNode("impact", (s) => s.impactOutput))
     .addNode("checkpoint_triage", triageCheckpointNode, {

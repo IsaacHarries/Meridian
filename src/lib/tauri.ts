@@ -510,10 +510,6 @@ export interface PipelineWorkflowArgs {
   ticketKey: string;
   worktreePath: string;
   codebaseContext?: string;
-  groomingTemplates?: {
-    acceptance_criteria?: string | null;
-    steps_to_reproduce?: string | null;
-  } | null;
   skills?: {
     grooming?: string | null;
     patterns?: string | null;
@@ -522,6 +518,10 @@ export interface PipelineWorkflowArgs {
     testing?: string | null;
   };
   prTemplate?: { body: string; mode: "guide" | "strict" };
+  /** Frontend-minted UUID for this run. The sidecar tags every event
+   *  with this id so the store can drop stale events from a prior run
+   *  the user has cancelled (via retry at an earlier stage). */
+  runId?: string;
 }
 
 export async function runImplementationPipelineWorkflow(
@@ -536,10 +536,11 @@ export async function runImplementationPipelineWorkflow(
 export async function resumeImplementationPipelineWorkflow(
   threadId: string,
   resumeValue: PipelineResumeAction,
+  runId?: string,
 ): Promise<PipelineWorkflowResult> {
   return invokeWithLlmCheck<PipelineWorkflowResult>(
     "resume_implementation_pipeline_workflow",
-    { threadId, resumeValue },
+    { threadId, resumeValue, runId },
   );
 }
 
@@ -551,18 +552,38 @@ export async function resumeImplementationPipelineWorkflow(
 export async function rewindImplementationPipelineWorkflow(
   threadId: string,
   toNode: string,
+  runId?: string,
 ): Promise<PipelineWorkflowResult> {
   return invokeWithLlmCheck<PipelineWorkflowResult>(
     "rewind_implementation_pipeline_workflow",
-    { threadId, toNode },
+    { threadId, toNode, runId },
   );
 }
 
-/** Tauri event payload streamed during pipeline runs. */
+/**
+ * Cancel an in-flight implementation pipeline run. Used when the user
+ * clicks Retry at an earlier stage — that explicitly invalidates the
+ * prior run, so we tell the sidecar to stop emitting its events. The
+ * model call may still finish in the background (LangChain providers
+ * don't all honour AbortSignal) but the events no longer reach the UI.
+ */
+export async function cancelImplementationPipelineWorkflow(
+  runId: string,
+): Promise<void> {
+  return invokeWithLlmCheck<void>(
+    "cancel_implementation_pipeline_workflow",
+    { runId },
+  );
+}
+
+/** Tauri event payload streamed during pipeline runs. Each event carries
+ *  a `runId` matching the originating workflow.start / workflow.resume /
+ *  workflow.rewind call so the listener can drop events from runs the
+ *  user has explicitly cancelled / superseded. */
 export type PipelineEvent =
-  | { kind: "progress"; node: string; status: "started" | "completed"; data?: unknown }
-  | { kind: "stream"; node: string; delta: string }
-  | { kind: "interrupt"; threadId: string; reason: string; payload: unknown };
+  | { kind: "progress"; runId: string; node: string; status: "started" | "completed"; data?: unknown }
+  | { kind: "stream"; runId: string; node: string; delta: string }
+  | { kind: "interrupt"; runId: string; threadId: string; reason: string; payload: unknown };
 
 export const PIPELINE_EVENT_NAME = "implementation-pipeline-event";
 
@@ -1425,11 +1446,14 @@ export interface GroomingOutput {
   ticket_type: string;
   acceptance_criteria: string[];
   relevant_areas: { area: string; reason: string; files_to_check: string[] }[];
-  ambiguities: string[];
   dependencies: string[];
   estimated_complexity: "low" | "medium" | "high";
   grooming_notes: string;
   suggested_edits: SuggestedEdit[];
+  /** Open items the agent surfaces for the engineer to address before
+   *  grooming finalises. Covers both literal questions and ambiguous
+   *  ticket details (phrased as questions) — they were previously two
+   *  separate fields that overlapped in practice. */
   clarifying_questions: string[];
 }
 
@@ -1460,7 +1484,6 @@ export interface GroomingChatResponse {
   message: string;
   updated_edits: Omit<SuggestedEdit, "status">[];
   updated_questions: string[];
-  updated_ambiguities?: string[];
 }
 
 /**

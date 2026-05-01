@@ -12,7 +12,6 @@ vi.mock("@/lib/tauri", () => ({
     ticket_type: "feature",
     acceptance_criteria: [],
     relevant_areas: [],
-    ambiguities: [],
     dependencies: [],
     estimated_complexity: "low",
     grooming_notes: "",

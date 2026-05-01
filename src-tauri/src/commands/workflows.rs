@@ -155,6 +155,7 @@ pub async fn run_grooming_workflow(
         input,
         model,
         None,
+        None,
     )
     .await
 }
@@ -169,11 +170,16 @@ pub struct PipelineStartArgs {
     worktree_path: String,
     #[serde(rename = "codebaseContext")]
     codebase_context: Option<String>,
-    #[serde(rename = "groomingTemplates")]
-    grooming_templates: Option<serde_json::Value>,
     skills: Option<serde_json::Value>,
     #[serde(rename = "prTemplate")]
     pr_template: Option<serde_json::Value>,
+    /// Frontend-supplied UUID for this run. Tagged on every event so the
+    /// implement-ticket store can drop stale events from a prior run that
+    /// the user has explicitly cancelled (via retryStage at an earlier
+    /// stage). Optional for backwards-compat — falls back to a server-
+    /// generated id when omitted.
+    #[serde(rename = "runId", default)]
+    run_id: Option<String>,
 }
 
 #[tauri::command]
@@ -196,12 +202,24 @@ pub async fn run_implementation_pipeline_workflow(
     let build_check_command =
         crate::storage::preferences::get_pref("build_check_command").unwrap_or_default();
 
+    // Read the user's grooming format templates from disk and bundle them
+    // into the workflow input. Mirrors `run_grooming_workflow` /
+    // `run_grooming_chat_workflow` so the pipeline's grooming stage gets
+    // the same template guidance the standalone grooming workflow does.
+    // Pre-sidecar these were read here too; the LangGraph refactor briefly
+    // expected the frontend to pass them, but no caller did, so the
+    // pipeline grooming stage was running without templates.
+    let grooming_templates = serde_json::json!({
+        "acceptance_criteria": read_grooming_template(&app, "acceptance_criteria"),
+        "steps_to_reproduce": read_grooming_template(&app, "steps_to_reproduce"),
+    });
+
     let input = serde_json::json!({
         "ticketText": args.ticket_text,
         "ticketKey": args.ticket_key,
         "worktreePath": args.worktree_path,
         "codebaseContext": args.codebase_context.unwrap_or_default(),
-        "groomingTemplates": args.grooming_templates,
+        "groomingTemplates": grooming_templates,
         "skills": args.skills,
         "prTemplate": args.pr_template,
         "buildVerifyEnabled": build_verify_enabled,
@@ -216,6 +234,7 @@ pub async fn run_implementation_pipeline_workflow(
         input,
         model,
         Some(args.worktree_path),
+        args.run_id,
     )
     .await
 }
@@ -226,6 +245,7 @@ pub async fn resume_implementation_pipeline_workflow(
     state: tauri::State<'_, SidecarState>,
     thread_id: String,
     resume_value: serde_json::Value,
+    #[allow(non_snake_case)] runId: Option<String>,
 ) -> Result<WorkflowResult, String> {
     // Refresh the OAuth token so long-running pipelines (which can span an
     // hour of triage chat + tool loops) don't 401 mid-stage. The sidecar
@@ -239,6 +259,7 @@ pub async fn resume_implementation_pipeline_workflow(
         thread_id,
         resume_value,
         Some(model),
+        runId,
     )
     .await
 }
@@ -249,6 +270,7 @@ pub async fn rewind_implementation_pipeline_workflow(
     state: tauri::State<'_, SidecarState>,
     thread_id: String,
     to_node: String,
+    #[allow(non_snake_case)] runId: Option<String>,
 ) -> Result<WorkflowResult, String> {
     let ctx = AiContext::stage("implement_ticket", "pipeline");
     let model = resolve_model_for_context(&ctx).await?;
@@ -259,8 +281,23 @@ pub async fn rewind_implementation_pipeline_workflow(
         thread_id,
         to_node,
         Some(model),
+        runId,
     )
     .await
+}
+
+/// Cancel an in-flight implementation pipeline run. Used when the user
+/// explicitly invalidates a run by clicking Retry at an earlier stage —
+/// the prior run's output is no longer relevant, and we want to stop
+/// emitting its events so the UI doesn't jump back to a later stage when
+/// the orphan run finishes. No-op if the run already completed or the
+/// sidecar isn't running.
+#[tauri::command]
+pub async fn cancel_implementation_pipeline_workflow(
+    state: tauri::State<'_, SidecarState>,
+    #[allow(non_snake_case)] runId: String,
+) -> Result<(), String> {
+    crate::integrations::sidecar::cancel_workflow(&state, runId).await
 }
 
 #[tauri::command]
@@ -311,6 +348,7 @@ pub async fn run_pr_review_workflow(
         input,
         model,
         None,
+        None,
     )
     .await
 }
@@ -336,6 +374,7 @@ pub async fn run_sprint_retrospective_workflow(
         input,
         model,
         None,
+        None,
     )
     .await
 }
@@ -360,6 +399,7 @@ pub async fn run_workload_suggestions_workflow(
         "workload_suggestions",
         input,
         model,
+        None,
         None,
     )
     .await
@@ -390,6 +430,7 @@ pub async fn run_meeting_summary_workflow(
         input,
         model,
         None,
+        None,
     )
     .await
 }
@@ -416,6 +457,7 @@ pub async fn run_meeting_title_workflow(
         "meeting_title",
         input,
         model,
+        None,
         None,
     )
     .await
@@ -444,6 +486,7 @@ pub async fn run_sprint_dashboard_chat_workflow(
         input,
         model,
         None,
+        None,
     )
     .await
 }
@@ -471,6 +514,7 @@ pub async fn run_meeting_chat_workflow(
         input,
         model,
         None,
+        None,
     )
     .await
 }
@@ -495,6 +539,7 @@ pub async fn run_analyze_pr_comments_workflow(
         "analyze_pr_comments",
         input,
         model,
+        None,
         None,
     )
     .await
@@ -549,6 +594,7 @@ pub async fn run_pr_review_chat_workflow(
         input,
         model,
         None,
+        None,
     )
     .await
 }
@@ -575,6 +621,7 @@ pub async fn run_address_pr_chat_workflow(
         "address_pr_chat",
         input,
         model,
+        None,
         None,
     )
     .await
@@ -618,6 +665,7 @@ pub async fn run_grooming_chat_workflow(
         input,
         model,
         None,
+        None,
     )
     .await
 }
@@ -652,6 +700,7 @@ pub async fn apply_plan_edits(
         "apply_plan_edits",
         input,
         model,
+        None,
         None,
     )
     .await
@@ -700,6 +749,7 @@ pub async fn chat_with_orchestrator(
         input,
         model,
         None,
+        None,
     )
     .await
 }
@@ -735,6 +785,7 @@ pub async fn run_grooming_file_probe_workflow(
         "grooming_file_probe",
         input,
         model,
+        None,
         None,
     )
     .await

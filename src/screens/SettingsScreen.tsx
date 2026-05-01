@@ -2546,6 +2546,9 @@ function LocalLlmSection({
       setStatus({ state: "success", message: msg });
       setEditing(false);
       onSaved();
+      // Drop any cached "local" model list in the AI selection store so the
+      // per-panel model picker fetches a fresh list against the new URL.
+      useAiSelectionStore.getState().invalidateModels("local");
       const list = await getLocalModels();
       setModels(list);
       if (list.length > 0 && !selectedModel) {
@@ -2581,6 +2584,7 @@ function LocalLlmSection({
       await deleteCredential("local_llm_url");
       setTestResult("untested");
       setModels([]);
+      useAiSelectionStore.getState().invalidateModels("local");
       onSaved();
     } catch {
       /* fine */

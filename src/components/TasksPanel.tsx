@@ -13,7 +13,7 @@
  */
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Plus, X, ListTodo, Trash2, Tag, ChevronDown } from "lucide-react";
+import { Plus, X, ListTodo, Tag, ChevronDown } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
@@ -45,7 +45,6 @@ export function TasksPanel() {
   const addTask = useTasksStore((s) => s.addTask);
   const setTaskCompleted = useTasksStore((s) => s.setTaskCompleted);
   const setTaskCategory = useTasksStore((s) => s.setTaskCategory);
-  const removeTask = useTasksStore((s) => s.removeTask);
   const setPanelOpen = useTasksStore((s) => s.setPanelOpen);
 
   const meetings = useMeetingsStore((s) => s.meetings);
@@ -245,7 +244,6 @@ export function TasksPanel() {
                     task={t}
                     categories={allCategories}
                     onCheck={() => void setTaskCompleted(t.id, true)}
-                    onDelete={() => void removeTask(t.id)}
                     onChangeCategory={(cat) =>
                       void setTaskCategory(t.id, cat)
                     }
@@ -368,45 +366,37 @@ function ManualTaskRow({
   task,
   categories,
   onCheck,
-  onDelete,
   onChangeCategory,
 }: {
   task: TaskRecord;
   categories: string[];
   onCheck: () => void;
-  onDelete: () => void;
   onChangeCategory: (cat: string | null) => void;
 }) {
   return (
     <div className="group flex items-start gap-2 px-3 py-1.5 hover:bg-muted/40">
       <Checkbox onCheck={onCheck} />
-      <div className="flex-1 min-w-0 space-y-1">
-        <span className="block text-sm leading-tight break-words">{task.text}</span>
-        {/* Category chip — visible on row hover (or always when set), so the
-            user can recategorise without retyping the task. */}
-        <div
-          className={cn(
-            "transition-opacity",
-            task.category ? "opacity-100" : "opacity-0 group-hover:opacity-100",
-          )}
-        >
-          <CategoryPicker
-            categories={categories}
-            value={task.category ?? null}
-            onChange={onChangeCategory}
-            triggerLabel={task.category ?? "Set category"}
-            compact
-          />
-        </div>
-      </div>
-      <button
-        onClick={onDelete}
-        title="Delete task"
-        aria-label="Delete task"
-        className="opacity-0 group-hover:opacity-100 transition-opacity text-muted-foreground hover:text-destructive shrink-0 mt-0.5"
+      <span className="flex-1 min-w-0 text-sm leading-tight break-words">
+        {task.text}
+      </span>
+      {/* Tag button — visible always when a category is set, on hover otherwise.
+          Section headers already show the category name, so the icon alone is
+          enough; the click target opens the recategorise menu. */}
+      <div
+        className={cn(
+          "shrink-0 self-center transition-opacity",
+          task.category ? "opacity-100" : "opacity-0 group-hover:opacity-100",
+        )}
       >
-        <Trash2 className="h-3.5 w-3.5" />
-      </button>
+        <CategoryPicker
+          categories={categories}
+          value={task.category ?? null}
+          onChange={onChangeCategory}
+          triggerLabel={task.category ?? "Set category"}
+          compact
+          iconOnly
+        />
+      </div>
     </div>
   );
 }
@@ -429,12 +419,17 @@ function CategoryPicker({
   onChange,
   triggerLabel,
   compact,
+  iconOnly,
 }: {
   categories: string[];
   value: string | null;
   onChange: (cat: string | null) => void;
   triggerLabel: string;
   compact?: boolean;
+  /** Render a square tag-icon trigger only — used in the per-row picker where
+   *  the section header already names the category, so showing it again would
+   *  be redundant. */
+  iconOnly?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const [creating, setCreating] = useState(false);
@@ -479,17 +474,27 @@ function CategoryPicker({
         type="button"
         onClick={() => setOpen((v) => !v)}
         className={cn(
-          "inline-flex items-center gap-1 rounded-md border bg-background hover:bg-muted text-muted-foreground transition-colors",
-          compact ? "h-5 text-[10px] px-1.5" : "h-6 text-[11px] px-2",
-          value && !compact && "text-foreground border-primary/30 bg-primary/5",
+          "inline-flex items-center rounded-md border bg-background hover:bg-muted text-muted-foreground transition-colors",
+          iconOnly
+            ? "h-5 w-5 justify-center"
+            : compact
+            ? "h-5 text-[10px] px-1.5 gap-1"
+            : "h-6 text-[11px] px-2 gap-1",
+          value && !compact && !iconOnly && "text-foreground border-primary/30 bg-primary/5",
+          value && iconOnly && "text-foreground border-primary/30 bg-primary/5",
         )}
-        title="Set category"
+        title={value ? `Category: ${triggerLabel}` : "Set category"}
         aria-haspopup="menu"
         aria-expanded={open}
+        aria-label={value ? `Category: ${triggerLabel}` : "Set category"}
       >
-        <Tag className={compact ? "h-2.5 w-2.5" : "h-3 w-3"} />
-        <span className="max-w-[120px] truncate">{triggerLabel}</span>
-        <ChevronDown className={compact ? "h-2.5 w-2.5" : "h-3 w-3"} />
+        <Tag className={iconOnly || compact ? "h-2.5 w-2.5" : "h-3 w-3"} />
+        {!iconOnly && (
+          <>
+            <span className="max-w-[120px] truncate">{triggerLabel}</span>
+            <ChevronDown className={compact ? "h-2.5 w-2.5" : "h-3 w-3"} />
+          </>
+        )}
       </button>
       {open && (
         <div

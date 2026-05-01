@@ -34,15 +34,14 @@ const grooming: GroomingOutput = {
       files_to_check: ["src/config.rs"],
     },
   ],
-  ambiguities: [
-    "Whether authenticated users should have a separate (higher) limit than anonymous traffic.",
-  ],
   dependencies: ["Redis cluster must be reachable from API tier"],
   estimated_complexity: "medium",
   grooming_notes:
     "This is static mock output for development. Real grooming would reference your ticket text.",
   suggested_edits: [],
-  clarifying_questions: [],
+  clarifying_questions: [
+    "Should authenticated users have a separate (higher) limit than anonymous traffic?",
+  ],
 };
 
 const impact: ImpactOutput = {

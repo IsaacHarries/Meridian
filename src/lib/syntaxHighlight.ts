@@ -129,15 +129,26 @@ export function highlightDiffLine(
   const code = hasPrefix ? raw.slice(1) : raw;
 
   if (code.length === 0) {
-    return escapeHtml(raw);
+    return renderPrefix(prefix) + escapeHtml(raw.slice(prefix.length));
   }
 
   try {
     const highlighted = Prism.highlight(code, grammar, language);
-    return escapeHtml(prefix) + highlighted;
+    return renderPrefix(prefix) + highlighted;
   } catch {
     // Defensive — Prism shouldn't throw on valid grammars, but if it does
     // (malformed grammar in dev, etc.), fall through to no-highlight.
     return null;
   }
+}
+
+/**
+ * Wrap the leading `+`/`-` of a diff line in a coloured span so the glyph
+ * stays visually green/red while the rest of the line uses normal syntax
+ * highlight colours. Context-line and missing prefixes pass through escaped.
+ */
+function renderPrefix(prefix: string): string {
+  if (prefix === "+") return `<span class="diff-prefix-add">+</span>`;
+  if (prefix === "-") return `<span class="diff-prefix-del">-</span>`;
+  return escapeHtml(prefix);
 }

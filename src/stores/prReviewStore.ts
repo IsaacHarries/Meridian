@@ -130,6 +130,13 @@ interface PrReviewState {
   jiraBaseUrl: string;
   myAccountId: string;
   prListLoaded: boolean;
+  /**
+   * Cache of linked JIRA issues keyed by issue key. Populated lazily after
+   * `loadPrLists` so the PR list can show ticket priority without blocking
+   * the initial render. Only the priority is currently rendered, but the full
+   * issue is cached in case other fields are needed later.
+   */
+  linkedIssuesByKey: Map<string, JiraIssue>;
 
   // ── Per-PR session cache (keyed by PR id) ────────────────────────────────────
   sessions: Map<number, PrSession>;
@@ -202,6 +209,7 @@ export const usePrReviewStore = create<PrReviewState>()(
     jiraBaseUrl: "",
     myAccountId: "",
     prListLoaded: false,
+    linkedIssuesByKey: new Map(),
     sessions: new Map(),
     selectedPr: null,
     isSessionActive: false,
@@ -229,12 +237,43 @@ export const usePrReviewStore = create<PrReviewState>()(
       if (isFirstLoad || forceSpinner) set({ loadingPrs: true });
 
       const [forReview, allOpen] = await Promise.allSettled([getPrsForReview(), getOpenPrs()]);
+      const newForReview =
+        forReview.status === "fulfilled" ? forReview.value.filter((pr) => !pr.draft) : get().prsForReview;
+      const newAllOpen =
+        allOpen.status === "fulfilled" ? allOpen.value.filter((pr) => !pr.draft) : get().allOpenPrs;
       set({
-        prsForReview: forReview.status === "fulfilled" ? forReview.value.filter((pr) => !pr.draft) : get().prsForReview,
-        allOpenPrs: allOpen.status === "fulfilled" ? allOpen.value.filter((pr) => !pr.draft) : get().allOpenPrs,
+        prsForReview: newForReview,
+        allOpenPrs: newAllOpen,
         loadingPrs: false,
         prListLoaded: true,
       });
+
+      // Lazy: enrich the PR list with linked JIRA issues so we can show priority
+      // and sort by it. Skip keys we already have cached. Best-effort — failures
+      // just leave the priority blank for that PR.
+      if (_jiraAvailable) {
+        const cached = get().linkedIssuesByKey;
+        const keys = new Set<string>();
+        for (const pr of [...newForReview, ...newAllOpen]) {
+          if (pr.jiraIssueKey && !cached.has(pr.jiraIssueKey)) {
+            keys.add(pr.jiraIssueKey);
+          }
+        }
+        if (keys.size > 0) {
+          Promise.allSettled(
+            [...keys].map((k) => getIssue(k).then((issue) => [k, issue] as const)),
+          ).then((results) => {
+            const next = new Map(get().linkedIssuesByKey);
+            for (const r of results) {
+              if (r.status === "fulfilled") {
+                const [k, issue] = r.value;
+                next.set(k, issue);
+              }
+            }
+            set({ linkedIssuesByKey: next });
+          });
+        }
+      }
     },
 
     // ── Select a PR ───────────────────────────────────────────────────────────
@@ -317,9 +356,15 @@ export const usePrReviewStore = create<PrReviewState>()(
       ];
 
       if (pr.jiraIssueKey && jiraAvailable) {
+        const key = pr.jiraIssueKey;
         fetches.push(
-          getIssue(pr.jiraIssueKey)
-            .then((issue) => patchSession(pr.id, { linkedIssue: issue }))
+          getIssue(key)
+            .then((issue) => {
+              patchSession(pr.id, { linkedIssue: issue });
+              const next = new Map(get().linkedIssuesByKey);
+              next.set(key, issue);
+              set({ linkedIssuesByKey: next });
+            })
             .catch(() => {})
         );
       }

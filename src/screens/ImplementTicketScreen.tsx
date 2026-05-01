@@ -54,6 +54,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import { Skeleton, SkeletonLines } from "@/components/ui/skeleton";
 import {
   Dialog,
   DialogContent,
@@ -238,13 +239,21 @@ function CollapsibleList({
   title,
   items,
   icon,
+  loading,
+  skeletonCount = 3,
 }: {
   title: string;
   items: string[];
   icon?: React.ReactNode;
+  /** When true and `items` is empty, render the section with skeleton
+   *  glow rows instead of hiding it entirely — keeps the panel layout
+   *  stable while the agent is still streaming. */
+  loading?: boolean;
+  skeletonCount?: number;
 }) {
   const [open, setOpen] = useState(true);
-  if (items.length === 0) return null;
+  const skeletonMode = items.length === 0 && loading;
+  if (items.length === 0 && !loading) return null;
   return (
     <div className="border rounded-md overflow-hidden">
       <button
@@ -253,7 +262,9 @@ function CollapsibleList({
       >
         {icon}
         <span className="flex-1 text-sm font-medium">{title}</span>
-        <span className="text-xs text-muted-foreground">{items.length}</span>
+        <span className="text-xs text-muted-foreground">
+          {skeletonMode ? "…" : items.length}
+        </span>
         {open ? (
           <ChevronDown className="h-4 w-4 text-muted-foreground" />
         ) : (
@@ -262,12 +273,26 @@ function CollapsibleList({
       </button>
       {open && (
         <ul className="px-3 pb-2 pt-1 space-y-1">
-          {items.map((item, i) => (
-            <li key={i} className="text-sm text-muted-foreground flex gap-2">
-              <span className="text-muted-foreground shrink-0">·</span>
-              <span>{item}</span>
-            </li>
-          ))}
+          {skeletonMode ? (
+            <>
+              {Array.from({ length: skeletonCount }).map((_, i) => (
+                <li key={i} className="flex gap-2 items-center py-0.5">
+                  <span className="text-muted-foreground/40 shrink-0">·</span>
+                  <Skeleton
+                    className="h-3"
+                    style={{ width: ["88%", "72%", "94%", "80%"][i % 4] }}
+                  />
+                </li>
+              ))}
+            </>
+          ) : (
+            items.map((item, i) => (
+              <li key={i} className="text-sm text-muted-foreground flex gap-2">
+                <span className="text-muted-foreground shrink-0">·</span>
+                <span>{item}</span>
+              </li>
+            ))
+          )}
         </ul>
       )}
     </div>
@@ -456,7 +481,7 @@ function CollapsibleSection({
 
 /**
  * Diff two string arrays and return each item tagged as "added", "removed", or "unchanged".
- * Simple string equality — good enough for AC/ambiguities/dependencies.
+ * Simple string equality — good enough for AC/dependencies/etc.
  */
 function diffStringArrays(
   prev: string[],
@@ -490,9 +515,11 @@ function DiffedCollapsibleList({
   items,
   icon,
   hasChanges,
-}: DiffedListProps) {
+  loading,
+}: DiffedListProps & { loading?: boolean }) {
   const [open, setOpen] = useState(true);
-  if (items.length === 0) return null;
+  if (items.length === 0 && !loading) return null;
+  const skeletonMode = items.length === 0 && loading;
   return (
     <div
       className={`border rounded-md overflow-hidden ${hasChanges ? "border-blue-300 dark:border-blue-700" : ""}`}
@@ -509,7 +536,9 @@ function DiffedCollapsibleList({
           </span>
         )}
         <span className="text-xs text-muted-foreground">
-          {items.filter((i) => i.status !== "removed").length}
+          {skeletonMode
+            ? "…"
+            : items.filter((i) => i.status !== "removed").length}
         </span>
         {open ? (
           <ChevronDown className="h-4 w-4 text-muted-foreground" />
@@ -519,27 +548,41 @@ function DiffedCollapsibleList({
       </button>
       {open && (
         <ul className="px-3 pb-2 pt-1 space-y-1">
-          {items.map((item, i) => (
-            <li
-              key={i}
-              className={`text-sm flex gap-2 rounded px-1 py-0.5 ${
-                item.status === "added"
-                  ? "bg-green-50 dark:bg-green-950/30 text-green-800 dark:text-green-200"
-                  : item.status === "removed"
-                    ? "bg-red-50 dark:bg-red-950/30 text-red-700 dark:text-red-300 line-through opacity-60"
-                    : "text-muted-foreground"
-              }`}
-            >
-              <span className="shrink-0">
-                {item.status === "added"
-                  ? "+"
-                  : item.status === "removed"
-                    ? "−"
-                    : "·"}
-              </span>
-              <span>{item.text}</span>
-            </li>
-          ))}
+          {skeletonMode ? (
+            <>
+              {Array.from({ length: 3 }).map((_, i) => (
+                <li key={i} className="flex gap-2 items-center py-0.5">
+                  <span className="text-muted-foreground/40 shrink-0">·</span>
+                  <Skeleton
+                    className="h-3"
+                    style={{ width: ["86%", "70%", "92%"][i % 3] }}
+                  />
+                </li>
+              ))}
+            </>
+          ) : (
+            items.map((item, i) => (
+              <li
+                key={i}
+                className={`text-sm flex gap-2 rounded px-1 py-0.5 ${
+                  item.status === "added"
+                    ? "bg-green-50 dark:bg-green-950/30 text-green-800 dark:text-green-200"
+                    : item.status === "removed"
+                      ? "bg-red-50 dark:bg-red-950/30 text-red-700 dark:text-red-300 line-through opacity-60"
+                      : "text-muted-foreground"
+                }`}
+              >
+                <span className="shrink-0">
+                  {item.status === "added"
+                    ? "+"
+                    : item.status === "removed"
+                      ? "−"
+                      : "·"}
+                </span>
+                <span>{item.text}</span>
+              </li>
+            ))
+          )}
         </ul>
       )}
     </div>
@@ -783,9 +826,8 @@ function SuggestedEditCard({
 
 // ── Resolvable list ──────────────────────────────────────────────────────────
 // Renders the union of `initial` and `current`, marking items missing from
-// `current` as resolved (strikethrough). Used for both clarifying questions
-// and ambiguities so the engineer can see what was answered without losing
-// the original list.
+// `current` as resolved (strikethrough). Used for clarifying questions so
+// the engineer can see what was answered without losing the original list.
 
 function ResolvableList({
   title,
@@ -895,8 +937,7 @@ interface GroomingPanelProps {
   suggestedEdits: SuggestedEdit[];
   clarifyingQuestions: string[];
   clarifyingQuestionsInitial: string[];
-  ambiguitiesInitial: string[];
-  highlights: { editIds: string[]; questions: boolean; ambiguities: boolean };
+  highlights: { editIds: string[]; questions: boolean };
   showHighlights: boolean;
   onToggleHighlights: () => void;
   filesRead: string[];
@@ -906,6 +947,10 @@ interface GroomingPanelProps {
   onUpdateJira: () => void;
   jiraUpdateStatus: "idle" | "saving" | "saved" | "error";
   jiraUpdateError: string;
+  /** True while the grooming agent is still streaming and the final
+   *  GroomingOutput hasn't landed. Empty fields render as skeleton glow
+   *  rows so the panel layout is visible from stage entry. */
+  isStreaming?: boolean;
 }
 
 function GroomingPanel({
@@ -919,7 +964,6 @@ function GroomingPanel({
   suggestedEdits,
   clarifyingQuestions,
   clarifyingQuestionsInitial,
-  ambiguitiesInitial,
   highlights,
   showHighlights,
   onToggleHighlights,
@@ -930,8 +974,10 @@ function GroomingPanel({
   onUpdateJira,
   jiraUpdateStatus,
   jiraUpdateError,
+  isStreaming,
 }: GroomingPanelProps) {
   const hasDiff = baseline != null;
+  const hasSummary = data.ticket_summary.trim().length > 0;
 
   const relevantItems = hasDiff
     ? diffStringArrays(
@@ -961,18 +1007,30 @@ function GroomingPanel({
     <div className="space-y-3">
       {/* Badges */}
       <div className="flex items-center gap-2 flex-wrap">
-        <Badge variant="secondary">{data.ticket_type}</Badge>
-        <Badge
-          variant={
-            data.estimated_complexity === "high"
-              ? "destructive"
-              : data.estimated_complexity === "medium"
-                ? "secondary"
-                : "outline"
-          }
-        >
-          {data.estimated_complexity} complexity
-        </Badge>
+        {data.ticket_type && hasSummary ? (
+          <Badge variant="secondary">{data.ticket_type}</Badge>
+        ) : isStreaming ? (
+          <Skeleton className="h-5 w-14" />
+        ) : (
+          <Badge variant="secondary">{data.ticket_type}</Badge>
+        )}
+        {data.estimated_complexity && hasSummary ? (
+          <Badge
+            variant={
+              data.estimated_complexity === "high"
+                ? "destructive"
+                : data.estimated_complexity === "medium"
+                  ? "secondary"
+                  : "outline"
+            }
+          >
+            {data.estimated_complexity} complexity
+          </Badge>
+        ) : isStreaming ? (
+          <Skeleton className="h-5 w-28" />
+        ) : (
+          <Badge variant="outline">{data.estimated_complexity} complexity</Badge>
+        )}
         {approvedCount > 0 && (
           <span className="text-xs px-2 py-0.5 rounded-full bg-green-100 text-green-700 dark:bg-green-900 dark:text-green-300 font-medium">
             {approvedCount} approved
@@ -989,7 +1047,11 @@ function GroomingPanel({
       <div
         className={`rounded px-2 py-1 -mx-2 ${summaryChanged ? "bg-blue-50 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-800" : ""}`}
       >
-        <p className="text-sm leading-relaxed">{data.ticket_summary}</p>
+        {hasSummary ? (
+          <p className="text-sm leading-relaxed">{data.ticket_summary}</p>
+        ) : isStreaming ? (
+          <SkeletonLines count={2} />
+        ) : null}
         {summaryChanged && (
           <p className="text-xs text-muted-foreground line-through mt-0.5">
             {baseline!.ticket_summary}
@@ -998,9 +1060,7 @@ function GroomingPanel({
       </div>
 
       {/* Highlights toggle — shows when there is anything to highlight */}
-      {(highlights.editIds.length > 0 ||
-        highlights.questions ||
-        highlights.ambiguities) && (
+      {(highlights.editIds.length > 0 || highlights.questions) && (
         <div className="flex items-center justify-end">
           <button
             onClick={onToggleHighlights}
@@ -1021,21 +1081,16 @@ function GroomingPanel({
         </div>
       )}
 
-      {/* Open items — clarifying questions + ambiguities (with strike-through
-          when resolved through chat) */}
+      {/* Open items — clarifying questions (with strike-through when
+          resolved through chat). Subsumes the previous Ambiguities
+          section: the agent now phrases ambiguous ticket details as
+          questions in this list rather than keeping a parallel list. */}
       <ResolvableList
         title="Clarifying Questions"
         initial={clarifyingQuestionsInitial}
         current={clarifyingQuestions}
         icon={<AlertTriangle className="h-4 w-4 text-amber-500" />}
         highlight={showHighlights && highlights.questions}
-      />
-      <ResolvableList
-        title="Ambiguities"
-        initial={ambiguitiesInitial}
-        current={data.ambiguities}
-        icon={<AlertTriangle className="h-4 w-4 text-amber-500" />}
-        highlight={showHighlights && highlights.ambiguities}
       />
 
       {/* JIRA description sections */}
@@ -1138,11 +1193,13 @@ function GroomingPanel({
         items={relevantItems}
         icon={<FileCode className="h-4 w-4 text-muted-foreground" />}
         hasChanges={relevantItems.some((i) => i.status !== "unchanged")}
+        loading={isStreaming}
       />
       <DiffedCollapsibleList
         title="Dependencies"
         items={depItems}
         hasChanges={depItems.some((i) => i.status !== "unchanged")}
+        loading={isStreaming}
       />
       {data.grooming_notes && (
         <p className="text-sm text-muted-foreground italic">
@@ -1156,31 +1213,56 @@ function GroomingPanel({
   );
 }
 
-function ImpactPanel({ data }: { data: ImpactOutput }) {
+function ImpactPanel({
+  data,
+  isStreaming,
+}: {
+  data: ImpactOutput;
+  isStreaming?: boolean;
+}) {
+  const hasJustification = data.risk_justification.trim().length > 0;
+  const hasRecommendations = data.recommendations.trim().length > 0;
   return (
     <div className="space-y-3">
       <div className="flex items-center gap-2">
-        <RiskBadge level={data.risk_level} />
-        <p className="text-sm text-muted-foreground">
-          {data.risk_justification}
-        </p>
+        {data.risk_level && hasJustification ? (
+          <RiskBadge level={data.risk_level} />
+        ) : isStreaming ? (
+          <Skeleton className="h-5 w-16" />
+        ) : (
+          <RiskBadge level={data.risk_level} />
+        )}
+        {hasJustification ? (
+          <p className="text-sm text-muted-foreground">
+            {data.risk_justification}
+          </p>
+        ) : isStreaming ? (
+          <Skeleton className="h-3 flex-1 max-w-[420px]" />
+        ) : null}
       </div>
-      <CollapsibleList title="Affected Areas" items={data.affected_areas} />
+      <CollapsibleList
+        title="Affected Areas"
+        items={data.affected_areas}
+        loading={isStreaming}
+      />
       <CollapsibleList
         title="Potential Regressions"
         items={data.potential_regressions}
         icon={<AlertTriangle className="h-4 w-4 text-amber-500" />}
+        loading={isStreaming}
       />
       <CollapsibleList
         title="Cross-cutting Concerns"
         items={data.cross_cutting_concerns}
+        loading={isStreaming}
       />
       <CollapsibleList
         title="Files Needing Consistent Updates"
         items={data.files_needing_consistent_updates}
         icon={<FileCode className="h-4 w-4 text-muted-foreground" />}
+        loading={isStreaming}
       />
-      {data.recommendations && (
+      {hasRecommendations ? (
         <div className="rounded-md border border-blue-200 bg-blue-50 dark:border-blue-900 dark:bg-blue-950/30 px-3 py-2">
           <p className="text-sm font-medium text-blue-800 dark:text-blue-200 mb-1">
             Recommendations
@@ -1189,16 +1271,34 @@ function ImpactPanel({ data }: { data: ImpactOutput }) {
             {data.recommendations}
           </p>
         </div>
-      )}
+      ) : isStreaming ? (
+        <div className="rounded-md border border-blue-200/60 bg-blue-50/40 dark:border-blue-900/60 dark:bg-blue-950/10 px-3 py-2 space-y-1.5">
+          <p className="text-sm font-medium text-blue-800/70 dark:text-blue-200/70">
+            Recommendations
+          </p>
+          <SkeletonLines count={2} />
+        </div>
+      ) : null}
     </div>
   );
 }
 
-function PlanPanel({ data }: { data: ImplementationPlan }) {
+function PlanPanel({
+  data,
+  isStreaming,
+}: {
+  data: ImplementationPlan;
+  isStreaming?: boolean;
+}) {
+  const hasSummary = data.summary.trim().length > 0;
   return (
     <div className="space-y-3">
-      <p className="text-sm font-medium leading-relaxed">{data.summary}</p>
-      {data.files.length > 0 && (
+      {hasSummary ? (
+        <p className="text-sm font-medium leading-relaxed">{data.summary}</p>
+      ) : isStreaming ? (
+        <SkeletonLines count={2} />
+      ) : null}
+      {data.files.length > 0 ? (
         <div className="border rounded-md overflow-hidden">
           <div className="px-3 py-2 bg-muted/30 text-sm font-medium flex items-center gap-2">
             <FileCode className="h-4 w-4 text-muted-foreground" /> Files (
@@ -1226,26 +1326,51 @@ function PlanPanel({ data }: { data: ImplementationPlan }) {
             ))}
           </div>
         </div>
-      )}
+      ) : isStreaming ? (
+        <div className="border rounded-md overflow-hidden">
+          <div className="px-3 py-2 bg-muted/30 text-sm font-medium flex items-center gap-2">
+            <FileCode className="h-4 w-4 text-muted-foreground" /> Files (…)
+          </div>
+          <div className="divide-y">
+            {Array.from({ length: 3 }).map((_, i) => (
+              <div key={i} className="px-3 py-2 space-y-1">
+                <div className="flex items-center gap-2 mb-0.5">
+                  <Skeleton className="h-3 w-44" />
+                  <Skeleton className="h-3.5 w-12" />
+                </div>
+                <SkeletonLines count={1} />
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : null}
       <CollapsibleList
         title="Order of Operations"
         items={data.order_of_operations}
+        loading={isStreaming}
       />
       <CollapsibleList
         title="Edge Cases to Handle"
         items={data.edge_cases}
         icon={<AlertTriangle className="h-4 w-4 text-amber-500" />}
+        loading={isStreaming}
       />
       <CollapsibleList
         title="Do NOT Change"
         items={data.do_not_change}
         icon={<Shield className="h-4 w-4 text-red-500" />}
+        loading={isStreaming}
       />
-      <CollapsibleList title="Assumptions" items={data.assumptions} />
+      <CollapsibleList
+        title="Assumptions"
+        items={data.assumptions}
+        loading={isStreaming}
+      />
       <CollapsibleList
         title="Open Questions"
         items={data.open_questions}
         icon={<AlertTriangle className="h-4 w-4 text-amber-500" />}
+        loading={isStreaming}
       />
     </div>
   );
@@ -1791,14 +1916,29 @@ function TestsPanel({ data }: { data: TestOutput }) {
   );
 }
 
-function ReviewPanel({ data }: { data: PlanReviewOutput }) {
+function ReviewPanel({
+  data,
+  isStreaming,
+}: {
+  data: PlanReviewOutput;
+  isStreaming?: boolean;
+}) {
+  const hasSummary = data.summary.trim().length > 0;
   return (
     <div className="space-y-3">
       <div className="flex items-center gap-2">
-        <ConfidenceBadge level={data.confidence} />
-        <p className="text-sm text-muted-foreground">{data.summary}</p>
+        {data.confidence ? (
+          <ConfidenceBadge level={data.confidence} />
+        ) : isStreaming ? (
+          <Skeleton className="h-5 w-24" />
+        ) : null}
+        {hasSummary ? (
+          <p className="text-sm text-muted-foreground">{data.summary}</p>
+        ) : isStreaming ? (
+          <Skeleton className="h-3 flex-1 max-w-[420px]" />
+        ) : null}
       </div>
-      {data.findings.length > 0 && (
+      {data.findings.length > 0 ? (
         <div className="space-y-2">
           {data.findings.map((f, i) => (
             <div key={i} className="border rounded-md px-3 py-2">
@@ -1820,15 +1960,29 @@ function ReviewPanel({ data }: { data: PlanReviewOutput }) {
             </div>
           ))}
         </div>
-      )}
+      ) : isStreaming ? (
+        <div className="space-y-2">
+          {Array.from({ length: 2 }).map((_, i) => (
+            <div key={i} className="border rounded-md px-3 py-2 space-y-1">
+              <div className="flex items-center gap-2 mb-1">
+                <Skeleton className="h-3.5 w-16" />
+                <Skeleton className="h-3.5 w-32" />
+              </div>
+              <SkeletonLines count={1} />
+            </div>
+          ))}
+        </div>
+      ) : null}
       <CollapsibleList
         title="Address Before Starting"
         items={data.things_to_address}
         icon={<AlertTriangle className="h-4 w-4 text-red-500" />}
+        loading={isStreaming}
       />
       <CollapsibleList
         title="Keep in Mind While Implementing"
         items={data.things_to_watch}
+        loading={isStreaming}
       />
     </div>
   );
@@ -1840,6 +1994,7 @@ interface PrPanelProps {
   submitStatus: "idle" | "squashing" | "pushing" | "creating" | "error";
   submitError: string | null;
   onSubmit: () => void;
+  isStreaming?: boolean;
 }
 
 function PrPanel({
@@ -1848,6 +2003,7 @@ function PrPanel({
   submitStatus,
   submitError,
   onSubmit,
+  isStreaming,
 }: PrPanelProps) {
   const mock = isMockMode();
   const submitting =
@@ -1870,14 +2026,20 @@ function PrPanel({
         error: "Retry: Create Draft PR",
       };
 
+  const hasTitle = data.title.trim().length > 0;
+  const hasDescription = data.description.trim().length > 0;
   return (
     <div className="space-y-3">
       <div className="flex items-center justify-between gap-3">
-        <div>
+        <div className="flex-1 min-w-0">
           <p className="text-xs text-muted-foreground font-medium mb-1">
             PR Title
           </p>
-          <p className="text-sm font-semibold">{data.title}</p>
+          {hasTitle ? (
+            <p className="text-sm font-semibold">{data.title}</p>
+          ) : isStreaming ? (
+            <Skeleton className="h-4 w-3/4" />
+          ) : null}
         </div>
         <CopyButton
           text={`${data.title}\n\n${data.description}`}
@@ -1888,9 +2050,15 @@ function PrPanel({
         <p className="text-xs text-muted-foreground font-medium mb-1">
           Description
         </p>
-        <pre className="text-sm font-sans leading-relaxed whitespace-pre-wrap bg-muted/30 rounded-md p-3 max-h-80 overflow-y-auto">
-          {data.description}
-        </pre>
+        {hasDescription ? (
+          <pre className="text-sm font-sans leading-relaxed whitespace-pre-wrap bg-muted/30 rounded-md p-3 max-h-80 overflow-y-auto">
+            {data.description}
+          </pre>
+        ) : isStreaming ? (
+          <div className="bg-muted/30 rounded-md p-3 space-y-2">
+            <SkeletonLines count={5} />
+          </div>
+        ) : null}
       </div>
 
       {/* Submission area — squash + push + draft PR creation on Bitbucket. */}
@@ -1960,6 +2128,7 @@ function PrPanel({
 
 interface RetroPanelProps {
   data: RetrospectiveOutput;
+  isStreaming?: boolean;
 }
 
 const SKILL_LABEL: Record<SkillType, string> = {
@@ -1975,7 +2144,7 @@ interface ActiveApply {
   draft: string;
 }
 
-function RetroPanel({ data }: RetroPanelProps) {
+function RetroPanel({ data, isStreaming }: RetroPanelProps) {
   const [active, setActive] = useState<ActiveApply | null>(null);
   const [applied, setApplied] = useState<Set<number>>(new Set());
   const [busy, setBusy] = useState(false);
@@ -2017,22 +2186,30 @@ function RetroPanel({ data }: RetroPanelProps) {
     }
   }
 
+  const hasSummary = data.summary.trim().length > 0;
   return (
     <div className="space-y-3">
-      <p className="text-sm leading-relaxed">{data.summary}</p>
+      {hasSummary ? (
+        <p className="text-sm leading-relaxed">{data.summary}</p>
+      ) : isStreaming ? (
+        <SkeletonLines count={2} />
+      ) : null}
       <CollapsibleList
         title="What Went Well"
         items={data.what_went_well}
         icon={<CheckCircle2 className="h-4 w-4 text-green-500" />}
+        loading={isStreaming}
       />
       <CollapsibleList
         title="What Could Improve"
         items={data.what_could_improve}
         icon={<AlertTriangle className="h-4 w-4 text-amber-500" />}
+        loading={isStreaming}
       />
       <CollapsibleList
         title="Patterns Identified"
         items={data.patterns_identified}
+        loading={isStreaming}
       />
       {data.agent_skill_suggestions.length > 0 && (
         <div className="border rounded-md overflow-hidden">
@@ -2949,12 +3126,17 @@ export function ImplementTicketScreen({
     prSubmitStatus,
     prSubmitError,
     retrospective,
+    partialGrooming,
+    partialImpact,
+    partialPlan,
+    partialReview,
+    partialPrDescription,
+    partialRetrospective,
     groomingBlockers,
 
     groomingEdits,
     clarifyingQuestions,
     clarifyingQuestionsInitial,
-    ambiguitiesInitial,
     groomingHighlights,
     showHighlights,
     filesRead,
@@ -2964,13 +3146,8 @@ export function ImplementTicketScreen({
     jiraUpdateError,
     groomingProgress,
     groomingStreamText,
-    impactStreamText,
     triageStreamText,
-    planStreamText,
     testsStreamText,
-    reviewStreamText,
-    prStreamText,
-    retroStreamText,
     orchestratorThread,
     orchestratorPendingProposal,
     orchestratorStreamText,
@@ -3561,6 +3738,61 @@ export function ImplementTicketScreen({
     );
   }
 
+  // Coalesce final + partial agent outputs into a guaranteed-non-null
+  // object so each panel can render its full structure on stage entry,
+  // even before any data has streamed. Empty fields render as skeleton
+  // glow (`isStreaming` flag flips false the moment the final output
+  // lands, swapping the placeholders for real content).
+  const groomingForDisplay: GroomingOutput = grooming ?? {
+    ticket_summary: partialGrooming?.ticket_summary ?? "",
+    ticket_type: partialGrooming?.ticket_type ?? "task",
+    acceptance_criteria: partialGrooming?.acceptance_criteria ?? [],
+    relevant_areas: partialGrooming?.relevant_areas ?? [],
+    dependencies: partialGrooming?.dependencies ?? [],
+    estimated_complexity: partialGrooming?.estimated_complexity ?? "low",
+    grooming_notes: partialGrooming?.grooming_notes ?? "",
+    suggested_edits: partialGrooming?.suggested_edits ?? [],
+    clarifying_questions: partialGrooming?.clarifying_questions ?? [],
+  };
+  const impactForDisplay: ImpactOutput = impact ?? {
+    risk_level: partialImpact?.risk_level ?? "low",
+    risk_justification: partialImpact?.risk_justification ?? "",
+    affected_areas: partialImpact?.affected_areas ?? [],
+    potential_regressions: partialImpact?.potential_regressions ?? [],
+    cross_cutting_concerns: partialImpact?.cross_cutting_concerns ?? [],
+    files_needing_consistent_updates:
+      partialImpact?.files_needing_consistent_updates ?? [],
+    recommendations: partialImpact?.recommendations ?? "",
+  };
+  const planForDisplay: ImplementationPlan = plan ?? {
+    summary: partialPlan?.summary ?? "",
+    files: partialPlan?.files ?? [],
+    order_of_operations: partialPlan?.order_of_operations ?? [],
+    edge_cases: partialPlan?.edge_cases ?? [],
+    do_not_change: partialPlan?.do_not_change ?? [],
+    assumptions: partialPlan?.assumptions ?? [],
+    open_questions: partialPlan?.open_questions ?? [],
+  };
+  const reviewForDisplay: PlanReviewOutput = review ?? {
+    confidence: partialReview?.confidence ?? "needs_attention",
+    summary: partialReview?.summary ?? "",
+    findings: partialReview?.findings ?? [],
+    things_to_address: partialReview?.things_to_address ?? [],
+    things_to_watch: partialReview?.things_to_watch ?? [],
+  };
+  const prDescriptionForDisplay: PrDescriptionOutput = prDescription ?? {
+    title: partialPrDescription?.title ?? "",
+    description: partialPrDescription?.description ?? "",
+  };
+  const retrospectiveForDisplay: RetrospectiveOutput = retrospective ?? {
+    what_went_well: partialRetrospective?.what_went_well ?? [],
+    what_could_improve: partialRetrospective?.what_could_improve ?? [],
+    patterns_identified: partialRetrospective?.patterns_identified ?? [],
+    agent_skill_suggestions:
+      partialRetrospective?.agent_skill_suggestions ?? [],
+    summary: partialRetrospective?.summary ?? "",
+  };
+
   function renderStageContent(stage: Stage) {
     const err = errors[stage];
     if (err) {
@@ -3586,20 +3818,29 @@ export function ImplementTicketScreen({
     }
 
     if (stage === "grooming") {
-      if (!grooming)
-        return (
-          <div className="space-y-3">
-            <GroomingProgressBanner
-              message={groomingProgress || "Running grooming analysis…"}
-              streamText={groomingStreamText}
-            />
-          </div>
-        );
-
+      // Always render the panel — empty fields show skeleton glow rows,
+      // and they fill in as the grooming agent streams. The probe banner
+      // (worktree pull / file discovery) only shows when we're still in
+      // pre-stream setup AND haven't received any partial data yet.
+      const inPreStream =
+        !grooming && !partialGrooming && groomingProgress.length > 0;
       return (
         <div className="space-y-3">
+          {inPreStream && (
+            <GroomingProgressBanner
+              message={groomingProgress}
+              streamText={groomingStreamText}
+            />
+          )}
+          {!grooming && !inPreStream && (
+            <p className="text-xs text-muted-foreground italic flex items-center gap-1.5">
+              <Loader2 className="h-3 w-3 animate-spin" />
+              Streaming grooming analysis…
+            </p>
+          )}
           <GroomingPanel
-            data={grooming}
+            data={groomingForDisplay}
+            isStreaming={!grooming}
             baseline={groomingBaseline}
             descriptionSections={selectedIssue?.descriptionSections}
             description={selectedIssue?.description}
@@ -3609,7 +3850,6 @@ export function ImplementTicketScreen({
             suggestedEdits={groomingEdits}
             clarifyingQuestions={clarifyingQuestions}
             clarifyingQuestionsInitial={clarifyingQuestionsInitial}
-            ambiguitiesInitial={ambiguitiesInitial}
             highlights={groomingHighlights}
             showHighlights={showHighlights}
             onToggleHighlights={() => store().toggleHighlights()}
@@ -3624,22 +3864,21 @@ export function ImplementTicketScreen({
           {groomingBlockers.length > 0 && (
             <BlockerBanner blockers={groomingBlockers} />
           )}
-          {renderCheckpoint("grooming")}
+          {grooming && renderCheckpoint("grooming")}
         </div>
       );
     }
     if (stage === "impact") {
-      if (!impact)
-        return (
-          <StreamingLoader
-            label="Running impact analysis…"
-            streamText={impactStreamText}
-          />
-        );
       return (
         <>
-          <ImpactPanel data={impact} />
-          {renderCheckpoint(stage)}
+          {!impact && (
+            <p className="text-xs text-muted-foreground italic flex items-center gap-1.5 mb-2">
+              <Loader2 className="h-3 w-3 animate-spin" />
+              Streaming impact analysis…
+            </p>
+          )}
+          <ImpactPanel data={impactForDisplay} isStreaming={!impact} />
+          {impact && renderCheckpoint(stage)}
         </>
       );
     }
@@ -3661,11 +3900,16 @@ export function ImplementTicketScreen({
         );
       }
       if (planFinalizing) {
+        // Render the plan panel always — empty fields glow as skeletons
+        // and fill in as the plan agent streams.
         return (
-          <StreamingLoader
-            label="Finalising implementation plan…"
-            streamText={planStreamText}
-          />
+          <div className="space-y-2">
+            <p className="text-xs text-muted-foreground italic flex items-center gap-1.5">
+              <Loader2 className="h-3 w-3 animate-spin" />
+              Streaming implementation plan…
+            </p>
+            <PlanPanel data={planForDisplay} isStreaming={!plan} />
+          </div>
         );
       }
       return (
@@ -3777,53 +4021,54 @@ export function ImplementTicketScreen({
       );
     }
     if (stage === "review") {
-      if (!review)
-        return (
-          <StreamingLoader
-            label="Reviewing code changes…"
-            streamText={reviewStreamText}
-          />
-        );
       return (
         <>
-          <ReviewPanel data={review} />
-          {renderCheckpoint(stage)}
+          {!review && (
+            <p className="text-xs text-muted-foreground italic flex items-center gap-1.5 mb-2">
+              <Loader2 className="h-3 w-3 animate-spin" />
+              Streaming code review…
+            </p>
+          )}
+          <ReviewPanel data={reviewForDisplay} isStreaming={!review} />
+          {review && renderCheckpoint(stage)}
         </>
       );
     }
     if (stage === "pr") {
-      if (!prDescription)
-        return (
-          <StreamingLoader
-            label="Generating PR description…"
-            streamText={prStreamText}
-          />
-        );
       return (
         <>
+          {!prDescription && (
+            <p className="text-xs text-muted-foreground italic flex items-center gap-1.5 mb-2">
+              <Loader2 className="h-3 w-3 animate-spin" />
+              Streaming PR description…
+            </p>
+          )}
           <PrPanel
-            data={prDescription}
+            data={prDescriptionForDisplay}
             createdPr={createdPr}
             submitStatus={prSubmitStatus}
             submitError={prSubmitError}
             onSubmit={() => store().submitDraftPr()}
+            isStreaming={!prDescription}
           />
-          {renderCheckpoint(stage)}
+          {prDescription && renderCheckpoint(stage)}
         </>
       );
     }
     if (stage === "retro") {
-      if (!retrospective)
-        return (
-          <StreamingLoader
-            label="Running retrospective…"
-            streamText={retroStreamText}
-          />
-        );
       return (
         <>
-          <RetroPanel data={retrospective} />
-          {currentStage !== "complete" && renderCheckpoint(stage)}
+          {!retrospective && (
+            <p className="text-xs text-muted-foreground italic flex items-center gap-1.5 mb-2">
+              <Loader2 className="h-3 w-3 animate-spin" />
+              Streaming retrospective…
+            </p>
+          )}
+          <RetroPanel
+            data={retrospectiveForDisplay}
+            isStreaming={!retrospective}
+          />
+          {retrospective && currentStage !== "complete" && renderCheckpoint(stage)}
         </>
       );
     }

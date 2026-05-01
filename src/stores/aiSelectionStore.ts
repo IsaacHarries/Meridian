@@ -219,7 +219,14 @@ export const useAiSelectionStore = create<State & Actions>((set, get) => ({
 
   loadModels: async (provider) => {
     const { modelsByProvider, modelsLoading } = get();
-    if (modelsByProvider[provider] || modelsLoading[provider]) return;
+    const cached = modelsByProvider[provider];
+    // Empty cache for "local" is treated as a cache miss — the URL/server can
+    // change at runtime when the user configures Ollama in Settings, and we
+    // don't want a previous "URL not set yet" attempt to permanently shadow
+    // the real list (would otherwise leave the dropdown stuck on
+    // "no models available" or, mid-flight, "loading…").
+    const cacheIsUsable = cached && (provider !== "local" || cached.length > 0);
+    if (cacheIsUsable || modelsLoading[provider]) return;
     set({ modelsLoading: { ...modelsLoading, [provider]: true } });
     try {
       let list: [string, string][] = [];

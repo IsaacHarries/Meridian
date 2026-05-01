@@ -7,10 +7,19 @@
 // before invoking the sidecar; this adapter only consumes the resolved
 // access token and issues the chat completion request.
 //
+// Tool calls follow the OpenAI function-calling shape on the wire:
+//   - Outbound `tools: [{ type: "function", function: { name, description,
+//     parameters: <JSON Schema> } }]`
+//   - Inbound assistant `tool_calls: [{ id, type: "function", function: {
+//     name, arguments: "<JSON string>" } }]`
+//   - ToolMessage replies become `{ role: "tool", tool_call_id, content }`
+//
 // Streaming uses the same endpoint with `stream: true` — Copilot returns a
 // `text/event-stream` body of `data: {choices:[{delta:{content:"…"}}]}`
-// frames terminated by `data: [DONE]`. The SSE parser is split into pure
-// helpers so it can be unit-tested without mocking fetch.
+// frames terminated by `data: [DONE]`. Tool-call deltas arrive across
+// multiple frames keyed by `index`; we forward them as `tool_call_chunks`
+// so LangChain's `AIMessageChunk.concat` can merge them into a final
+// `tool_calls` array on the accumulated chunk.
 //
 // Reference implementation: src-tauri/src/llms/copilot.rs (complete_multi_copilot).
 
@@ -18,6 +27,7 @@ import {
   BaseChatModel,
   type BaseChatModelCallOptions,
   type BaseChatModelParams,
+  type BindToolsInput,
 } from "@langchain/core/language_models/chat_models";
 import {
   AIMessage,
@@ -25,9 +35,13 @@ import {
   type BaseMessage,
   HumanMessage,
   SystemMessage,
+  ToolMessage,
 } from "@langchain/core/messages";
+import type { BaseLanguageModelInput } from "@langchain/core/language_models/base";
 import { ChatGenerationChunk, type ChatResult } from "@langchain/core/outputs";
 import type { CallbackManagerForLLMRun } from "@langchain/core/callbacks/manager";
+import type { Runnable, RunnableConfig } from "@langchain/core/runnables";
+import { convertToOpenAITool } from "@langchain/core/utils/function_calling";
 
 const COPILOT_API_BASE = "https://api.githubcopilot.com";
 const COPILOT_INTEGRATION_ID = "vscode-chat";
@@ -35,7 +49,53 @@ const COPILOT_EDITOR_VERSION = "vscode/1.95.0";
 const COPILOT_EDITOR_PLUGIN_VERSION = "copilot-chat/0.22.0";
 const COPILOT_USER_AGENT = "GitHubCopilotChat/0.22.0";
 
-type WireMessage = { role: "system" | "user" | "assistant"; content: string };
+// ── Wire types ────────────────────────────────────────────────────────────────
+
+type WireToolCall = {
+  id: string;
+  type: "function";
+  function: { name: string; arguments: string };
+};
+
+type WireMessage =
+  | { role: "system"; content: string }
+  | { role: "user"; content: string }
+  | { role: "assistant"; content: string; tool_calls?: WireToolCall[] }
+  | { role: "tool"; tool_call_id: string; content: string };
+
+export type OpenAITool = {
+  type: "function";
+  function: {
+    name: string;
+    description?: string;
+    parameters?: Record<string, unknown>;
+  };
+};
+
+// ── Message conversion ────────────────────────────────────────────────────────
+
+function aiMessageText(m: AIMessage): string {
+  if (typeof m.content === "string") return m.content;
+  if (Array.isArray(m.content)) {
+    return m.content
+      .map((b) => (typeof b === "string" ? b : (b as { text?: string }).text ?? ""))
+      .join("");
+  }
+  return "";
+}
+
+function aiMessageToolCalls(m: AIMessage): WireToolCall[] | undefined {
+  const calls = m.tool_calls;
+  if (!calls || calls.length === 0) return undefined;
+  return calls.map((c, i) => ({
+    id: c.id ?? `call_${i}`,
+    type: "function",
+    function: {
+      name: c.name,
+      arguments: JSON.stringify(c.args ?? {}),
+    },
+  }));
+}
 
 export function toCopilotMessages(messages: BaseMessage[]): WireMessage[] {
   const out: WireMessage[] = [];
@@ -46,7 +106,18 @@ export function toCopilotMessages(messages: BaseMessage[]): WireMessage[] {
     } else if (m instanceof HumanMessage) {
       out.push({ role: "user", content: m.text });
     } else if (m instanceof AIMessage) {
-      out.push({ role: "assistant", content: m.text });
+      const toolCalls = aiMessageToolCalls(m);
+      const wire: WireMessage = toolCalls
+        ? { role: "assistant", content: aiMessageText(m), tool_calls: toolCalls }
+        : { role: "assistant", content: aiMessageText(m) };
+      out.push(wire);
+    } else if (m instanceof ToolMessage) {
+      const content = typeof m.content === "string" ? m.content : JSON.stringify(m.content);
+      out.push({
+        role: "tool",
+        tool_call_id: (m as ToolMessage).tool_call_id ?? "",
+        content,
+      });
     } else {
       out.push({ role: "user", content: m.text });
     }
@@ -55,6 +126,10 @@ export function toCopilotMessages(messages: BaseMessage[]): WireMessage[] {
     out.unshift({ role: "system", content: systemBuffer });
   }
   return out;
+}
+
+export function toOpenAITools(tools: BindToolsInput[]): OpenAITool[] {
+  return tools.map((t) => convertToOpenAITool(t) as OpenAITool);
 }
 
 // ── SSE parsing (pure helpers, exported for tests) ────────────────────────────
@@ -98,11 +173,21 @@ export function parseSseFrames(buffer: string): {
   return { events, remainder: normalised.slice(cursor) };
 }
 
+export type ParsedToolCallChunk = {
+  index: number;
+  id?: string;
+  name?: string;
+  args?: string;
+};
+
 export type CompletionDelta = {
-  /** Content tokens to surface to the caller. May be empty for the final
-   *  usage-only frame OpenAI-style endpoints emit when stream_options
-   *  asks for usage. */
+  /** Content tokens to surface to the caller. May be empty when the frame
+   *  carries only tool-call deltas or only usage metadata. */
   content: string;
+  /** Tool-call deltas in this frame. OpenAI streams tool calls as a stream
+   *  of partial entries keyed by `index`; we forward them so concat can
+   *  merge them into a final `tool_calls` array. */
+  toolCallChunks?: ParsedToolCallChunk[];
   /** Token counts, present on the final frame when the server includes them. */
   usage?: { promptTokens: number; completionTokens: number };
   /** True if the payload was the literal `[DONE]` sentinel — the loop must stop. */
@@ -118,7 +203,17 @@ export function extractCompletionDelta(payload: string): CompletionDelta | null 
   if (payload === "[DONE]") return { content: "", done: true };
 
   let parsed: {
-    choices?: Array<{ delta?: { content?: string } }>;
+    choices?: Array<{
+      delta?: {
+        content?: string;
+        tool_calls?: Array<{
+          index?: number;
+          id?: string;
+          type?: string;
+          function?: { name?: string; arguments?: string };
+        }>;
+      };
+    }>;
     usage?: { prompt_tokens?: number; completion_tokens?: number };
   };
   try {
@@ -127,7 +222,8 @@ export function extractCompletionDelta(payload: string): CompletionDelta | null 
     return null;
   }
 
-  const content = parsed.choices?.[0]?.delta?.content ?? "";
+  const delta = parsed.choices?.[0]?.delta;
+  const content = delta?.content ?? "";
   const usage = parsed.usage
     ? {
         promptTokens: parsed.usage.prompt_tokens ?? 0,
@@ -135,7 +231,17 @@ export function extractCompletionDelta(payload: string): CompletionDelta | null 
       }
     : undefined;
 
-  return { content, usage, done: false };
+  let toolCallChunks: ParsedToolCallChunk[] | undefined;
+  if (delta?.tool_calls && delta.tool_calls.length > 0) {
+    toolCallChunks = delta.tool_calls.map((tc, i) => ({
+      index: tc.index ?? i,
+      id: tc.id,
+      name: tc.function?.name,
+      args: tc.function?.arguments,
+    }));
+  }
+
+  return { content, toolCallChunks, usage, done: false };
 }
 
 // ── Chat model ────────────────────────────────────────────────────────────────
@@ -146,7 +252,12 @@ export interface CopilotChatModelInput extends BaseChatModelParams {
   maxTokens?: number;
 }
 
-export class CopilotChatModel extends BaseChatModel<BaseChatModelCallOptions> {
+export interface CopilotCallOptions extends BaseChatModelCallOptions {
+  /** OpenAI-shaped `tools` array, set by `bindTools`. */
+  openaiTools?: OpenAITool[];
+}
+
+export class CopilotChatModel extends BaseChatModel<CopilotCallOptions> {
   private accessToken: string;
   private model: string;
   private maxTokens: number;
@@ -162,6 +273,21 @@ export class CopilotChatModel extends BaseChatModel<BaseChatModelCallOptions> {
     return "copilot";
   }
 
+  override bindTools(
+    tools: BindToolsInput[],
+    kwargs?: Partial<CopilotCallOptions>,
+  ): Runnable<BaseLanguageModelInput, AIMessageChunk, CopilotCallOptions> {
+    const openaiTools = toOpenAITools(tools);
+    return this.withConfig({
+      ...((kwargs ?? {}) as RunnableConfig),
+      openaiTools,
+    } as Partial<CopilotCallOptions>) as unknown as Runnable<
+      BaseLanguageModelInput,
+      AIMessageChunk,
+      CopilotCallOptions
+    >;
+  }
+
   private commonHeaders(accept: string): Record<string, string> {
     return {
       authorization: `Bearer ${this.accessToken}`,
@@ -174,18 +300,37 @@ export class CopilotChatModel extends BaseChatModel<BaseChatModelCallOptions> {
     };
   }
 
-  async _generate(
+  private buildBody(
     messages: BaseMessage[],
-    _options: this["ParsedCallOptions"],
-    runManager?: CallbackManagerForLLMRun,
-  ): Promise<ChatResult> {
+    options: this["ParsedCallOptions"],
+    stream: boolean,
+  ): Record<string, unknown> {
     const wire = toCopilotMessages(messages);
-    const body = {
+    const body: Record<string, unknown> = {
       model: this.model,
       messages: wire,
       max_tokens: this.maxTokens,
-      stream: false,
+      stream,
     };
+    const tools = (options as CopilotCallOptions).openaiTools;
+    if (tools && tools.length > 0) {
+      body.tools = tools;
+    }
+    if (stream) {
+      // Ask the server to include token counts on the final frame. Servers
+      // that don't recognise the option ignore it, so this stays compatible
+      // with older Copilot deployments.
+      body.stream_options = { include_usage: true };
+    }
+    return body;
+  }
+
+  async _generate(
+    messages: BaseMessage[],
+    options: this["ParsedCallOptions"],
+    runManager?: CallbackManagerForLLMRun,
+  ): Promise<ChatResult> {
+    const body = this.buildBody(messages, options, false);
 
     const res = await fetch(`${COPILOT_API_BASE}/chat/completions`, {
       method: "POST",
@@ -199,24 +344,63 @@ export class CopilotChatModel extends BaseChatModel<BaseChatModelCallOptions> {
     }
 
     const data = (await res.json()) as {
-      choices?: Array<{ message?: { content?: string } }>;
+      choices?: Array<{
+        message?: {
+          content?: string | null;
+          tool_calls?: Array<{
+            id?: string;
+            type?: string;
+            function?: { name?: string; arguments?: string };
+          }>;
+        };
+      }>;
       usage?: { prompt_tokens?: number; completion_tokens?: number };
     };
 
-    const text = data.choices?.[0]?.message?.content ?? "";
-    if (!text) {
+    const message = data.choices?.[0]?.message ?? {};
+    const text = message.content ?? "";
+    const rawCalls = message.tool_calls ?? [];
+
+    if (!text && rawCalls.length === 0) {
       throw new Error(
         `Unexpected Copilot response shape: ${JSON.stringify(data)}`,
       );
     }
 
-    runManager?.handleLLMNewToken(text).catch(() => {});
+    const toolCalls = rawCalls
+      .filter((c) => c.function?.name)
+      .map((c, i) => {
+        let args: Record<string, unknown> = {};
+        const raw = c.function?.arguments ?? "";
+        if (raw) {
+          try {
+            args = JSON.parse(raw);
+          } catch {
+            // Leave args as {} when the model emitted malformed JSON; the
+            // tool layer will report the problem more cleanly than we can
+            // here.
+          }
+        }
+        return {
+          id: c.id ?? `call_${i}`,
+          name: c.function?.name as string,
+          args,
+          type: "tool_call" as const,
+        };
+      });
+
+    if (text) {
+      runManager?.handleLLMNewToken(text).catch(() => {});
+    }
 
     return {
       generations: [
         {
           text,
-          message: new AIMessage({ content: text }),
+          message: new AIMessage({
+            content: text,
+            tool_calls: toolCalls.length > 0 ? toolCalls : undefined,
+          }),
         },
       ],
       llmOutput: {
@@ -233,20 +417,10 @@ export class CopilotChatModel extends BaseChatModel<BaseChatModelCallOptions> {
 
   async *_streamResponseChunks(
     messages: BaseMessage[],
-    _options: this["ParsedCallOptions"],
+    options: this["ParsedCallOptions"],
     runManager?: CallbackManagerForLLMRun,
   ): AsyncGenerator<ChatGenerationChunk> {
-    const wire = toCopilotMessages(messages);
-    const body = {
-      model: this.model,
-      messages: wire,
-      max_tokens: this.maxTokens,
-      stream: true,
-      // Ask the server to include token counts on the final frame. Servers
-      // that don't recognise the option ignore it, so this stays compatible
-      // with older Copilot deployments.
-      stream_options: { include_usage: true },
-    };
+    const body = this.buildBody(messages, options, true);
 
     const res = await fetch(`${COPILOT_API_BASE}/chat/completions`, {
       method: "POST",
@@ -266,6 +440,32 @@ export class CopilotChatModel extends BaseChatModel<BaseChatModelCallOptions> {
     const decoder = new TextDecoder();
     let buffer = "";
     let finalUsage: CompletionDelta["usage"];
+
+    const handleDelta = (delta: CompletionDelta): ChatGenerationChunk | null => {
+      const hasContent = !!delta.content;
+      const hasToolCallChunks = !!(delta.toolCallChunks && delta.toolCallChunks.length > 0);
+      if (!hasContent && !hasToolCallChunks) return null;
+
+      if (hasContent) {
+        runManager?.handleLLMNewToken(delta.content).catch(() => {});
+      }
+
+      const toolCallChunks = delta.toolCallChunks?.map((c) => ({
+        index: c.index,
+        id: c.id,
+        name: c.name,
+        args: c.args,
+        type: "tool_call_chunk" as const,
+      }));
+
+      return new ChatGenerationChunk({
+        text: delta.content,
+        message: new AIMessageChunk({
+          content: delta.content,
+          tool_call_chunks: toolCallChunks,
+        }),
+      });
+    };
 
     try {
       while (true) {
@@ -289,13 +489,8 @@ export class CopilotChatModel extends BaseChatModel<BaseChatModelCallOptions> {
             return yield* emitFinal(finalUsage);
           }
           if (delta.usage) finalUsage = delta.usage;
-          if (delta.content) {
-            runManager?.handleLLMNewToken(delta.content).catch(() => {});
-            yield new ChatGenerationChunk({
-              text: delta.content,
-              message: new AIMessageChunk({ content: delta.content }),
-            });
-          }
+          const chunk = handleDelta(delta);
+          if (chunk) yield chunk;
         }
       }
 
@@ -307,13 +502,8 @@ export class CopilotChatModel extends BaseChatModel<BaseChatModelCallOptions> {
           const delta = extractCompletionDelta(payload);
           if (!delta || delta.done) continue;
           if (delta.usage) finalUsage = delta.usage;
-          if (delta.content) {
-            runManager?.handleLLMNewToken(delta.content).catch(() => {});
-            yield new ChatGenerationChunk({
-              text: delta.content,
-              message: new AIMessageChunk({ content: delta.content }),
-            });
-          }
+          const chunk = handleDelta(delta);
+          if (chunk) yield chunk;
         }
       }
 

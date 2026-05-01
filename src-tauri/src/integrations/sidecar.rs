@@ -617,6 +617,51 @@ struct WorkflowRewindRequest<'a> {
     model: Option<&'a ModelSelection>,
 }
 
+#[derive(Serialize)]
+struct WorkflowCancelRequest<'a> {
+    id: &'a str,
+    #[serde(rename = "type")]
+    msg_type: &'static str,
+}
+
+/// Cancel an in-flight workflow run. Aborts the AbortController in the
+/// sidecar's `activeRuns` registry and removes the pending channel on the
+/// Rust side so any further events from the (potentially still-running)
+/// model call are discarded. The model call itself isn't guaranteed to
+/// halt — LangChain providers don't all honour AbortSignal — but the
+/// sidecar stops emitting events for the run once aborted, so the
+/// frontend won't see any more output from this `run_id`. No-op if the
+/// run already finished.
+pub async fn cancel_workflow(
+    state: &SidecarState,
+    run_id: String,
+) -> Result<(), String> {
+    let stdin_arc = {
+        let guard = state.0.lock().await;
+        match guard.as_ref() {
+            Some(p) => p.stdin.clone(),
+            // Sidecar isn't running — nothing to cancel.
+            None => return Ok(()),
+        }
+    };
+
+    let req = WorkflowCancelRequest {
+        id: &run_id,
+        msg_type: "workflow.cancel",
+    };
+    let mut line = serde_json::to_string(&req).map_err(|e| format!("Serialize error: {e}"))?;
+    line.push('\n');
+
+    let mut w = stdin_arc.lock().await;
+    w.write_all(line.as_bytes())
+        .await
+        .map_err(|e| format!("Stdin write error: {e}"))?;
+    w.flush()
+        .await
+        .map_err(|e| format!("Stdin flush error: {e}"))?;
+    Ok(())
+}
+
 /// Rewind a paused workflow to the checkpoint just before `to_node` ran,
 /// then resume forward. Same return shape as `run_workflow`. `model` (when
 /// supplied) refreshes the workflow's model selection — used to keep OAuth
@@ -628,10 +673,11 @@ pub async fn rewind_workflow(
     thread_id: String,
     to_node: String,
     model: Option<ModelSelection>,
+    run_id: Option<String>,
 ) -> Result<WorkflowResult, String> {
     let (stdin, pending) = ensure_sidecar(app, state).await?;
 
-    let id = new_request_id();
+    let id = run_id.unwrap_or_else(new_request_id);
     let (tx, mut rx) = mpsc::unbounded_channel::<SidecarOutboundEvent>();
     pending.lock().await.insert(id.clone(), tx);
 
@@ -669,10 +715,11 @@ pub async fn resume_workflow(
     thread_id: String,
     resume_value: serde_json::Value,
     model: Option<ModelSelection>,
+    run_id: Option<String>,
 ) -> Result<WorkflowResult, String> {
     let (stdin, pending) = ensure_sidecar(app, state).await?;
 
-    let id = new_request_id();
+    let id = run_id.unwrap_or_else(new_request_id);
     let (tx, mut rx) = mpsc::unbounded_channel::<SidecarOutboundEvent>();
     pending.lock().await.insert(id.clone(), tx);
 
@@ -711,10 +758,14 @@ pub async fn run_workflow(
     input: serde_json::Value,
     model: ModelSelection,
     worktree_path: Option<String>,
+    run_id: Option<String>,
 ) -> Result<WorkflowResult, String> {
     let (stdin, pending) = ensure_sidecar(app, state).await?;
 
-    let id = new_request_id();
+    // Caller-supplied runId lets the frontend track which run a stream of
+    // Tauri events came from, so it can drop stale events from a prior
+    // run that the user cancelled / rewound past.
+    let id = run_id.unwrap_or_else(new_request_id);
     let (tx, mut rx) = mpsc::unbounded_channel::<SidecarOutboundEvent>();
     pending.lock().await.insert(id.clone(), tx);
 
@@ -762,6 +813,7 @@ async fn drive_workflow_loop(
                     event_name,
                     serde_json::json!({
                         "kind": "progress",
+                        "runId": id,
                         "node": node,
                         "status": status,
                         "data": data,
@@ -773,6 +825,7 @@ async fn drive_workflow_loop(
                     event_name,
                     serde_json::json!({
                         "kind": "stream",
+                        "runId": id,
                         "node": node,
                         "delta": delta,
                     }),
@@ -788,6 +841,7 @@ async fn drive_workflow_loop(
                     event_name,
                     serde_json::json!({
                         "kind": "interrupt",
+                        "runId": id,
                         "threadId": thread_id,
                         "reason": reason,
                         "payload": payload,

@@ -3,7 +3,8 @@ import { HumanMessage, SystemMessage } from "@langchain/core/messages";
 import { z } from "zod";
 import type { BaseChatModel } from "@langchain/core/language_models/chat_models";
 import { buildModel } from "../models/factory.js";
-import type { ModelSelection } from "../protocol.js";
+import type { ModelSelection, OutboundEvent } from "../protocol.js";
+import { streamLLMJson } from "./streaming.js";
 
 // ── Input / output schemas ────────────────────────────────────────────────────
 
@@ -75,11 +76,16 @@ export const GroomingOutputSchema = z.object({
   ]),
   acceptance_criteria: z.array(z.string()),
   relevant_areas: z.array(RelevantAreaSchema),
-  ambiguities: z.array(z.string()),
   dependencies: z.array(z.string()),
   estimated_complexity: z.enum(["low", "medium", "high"]),
   grooming_notes: z.string(),
   suggested_edits: z.array(SuggestedEditSchema),
+  // Open items the agent surfaces for the engineer to clarify in chat
+  // before grooming finalises. Subsumes both "actual questions" and
+  // "things in the ticket that read ambiguously" — they were previously
+  // two separate fields that overlapped in practice. Older models that
+  // still emit a top-level `ambiguities` array will have it silently
+  // stripped by Zod's default unknown-key handling on z.object.
   clarifying_questions: z.array(z.string()),
 });
 
@@ -107,7 +113,6 @@ Return ONLY valid JSON (no markdown fences) with this schema:
   "relevant_areas": [
     {"area": "<module or layer>", "reason": "<why relevant>", "files_to_check": ["<path>"]}
   ],
-  "ambiguities": ["<unclear thing>", ...],
   "dependencies": ["<other tickets or systems>", ...],
   "estimated_complexity": "low|medium|high",
   "grooming_notes": "<anything else worth flagging>",
@@ -122,11 +127,12 @@ Return ONLY valid JSON (no markdown fences) with this schema:
     }
   ],
   "clarifying_questions": [
-    "<question you need answered before you can complete the analysis or a suggestion>"
+    "<question or unclear ticket detail the engineer needs to address before grooming finalises — phrased as a question>"
   ]
 }
 
 Important:
+- Use clarifying_questions for BOTH genuine questions AND ambiguities in the ticket text. If something in the ticket reads unclear, phrase it as a question (e.g. \"Is X expected to do Y or Z?\") rather than emitting a separate \"ambiguity\" — the engineer answers it the same way either way.
 - Only raise a clarifying_question when you genuinely cannot determine the answer from the code or ticket
 - Prefer drafting a concrete suggestion (even if tentative) over asking a question
 - If the ticket title (summary) is vague, too generic, or does not clearly convey the scope \
@@ -246,46 +252,49 @@ function tryParseJsonLenient(text: string): unknown {
   }
 }
 
-async function analyseNode(state: GroomingState): Promise<Partial<GroomingState>> {
-  const model: BaseChatModel = buildModel(state.model);
-  const system = buildSystemPrompt(state.input.templates);
-  const user = buildUserPrompt(state.input);
+function makeAnalyseNode(
+  emit?: (event: OutboundEvent) => void,
+  workflowId?: string,
+) {
+  return async function analyseNode(
+    state: GroomingState,
+  ): Promise<Partial<GroomingState>> {
+    const model: BaseChatModel = buildModel(state.model);
+    const system = buildSystemPrompt(state.input.templates);
+    const user = buildUserPrompt(state.input);
 
-  const response = await model.invoke([
-    new SystemMessage(system),
-    new HumanMessage(user),
-  ]);
+    const { raw, usage } = await streamLLMJson({
+      llm: model,
+      messages: [new SystemMessage(system), new HumanMessage(user)],
+      emit,
+      workflowId,
+      nodeName: "analyse",
+      cleanText: stripJsonFences,
+    });
 
-  const rawResponse = typeof response.content === "string"
-    ? response.content
-    : response.text;
-
-  const usage = response.usage_metadata
-    ? {
-        inputTokens: response.usage_metadata.input_tokens,
-        outputTokens: response.usage_metadata.output_tokens,
-      }
-    : undefined;
-
-  // Parse + validate against the schema. On failure we surface parseError so
-  // the caller can decide how to handle it (retry, surface to user, etc.).
-  const cleaned = stripJsonFences(rawResponse);
-  try {
-    const parsed = tryParseJsonLenient(cleaned);
-    const validated = GroomingOutputSchema.parse(parsed);
-    return { rawResponse, parsedOutput: validated, usage };
-  } catch (err) {
-    return {
-      rawResponse,
-      parseError: err instanceof Error ? err.message : String(err),
-      usage,
-    };
-  }
+    // Parse + validate against the schema. On failure we surface parseError so
+    // the caller can decide how to handle it (retry, surface to user, etc.).
+    const cleaned = stripJsonFences(raw);
+    try {
+      const parsed = tryParseJsonLenient(cleaned);
+      const validated = GroomingOutputSchema.parse(parsed);
+      return { rawResponse: raw, parsedOutput: validated, usage };
+    } catch (err) {
+      return {
+        rawResponse: raw,
+        parseError: err instanceof Error ? err.message : String(err),
+        usage,
+      };
+    }
+  };
 }
 
-export function buildGroomingGraph() {
+export function buildGroomingGraph(opts?: {
+  emit?: (event: OutboundEvent) => void;
+  workflowId?: string;
+}) {
   return new StateGraph(GroomingStateAnnotation)
-    .addNode("analyse", analyseNode)
+    .addNode("analyse", makeAnalyseNode(opts?.emit, opts?.workflowId))
     .addEdge(START, "analyse")
     .addEdge("analyse", END)
     .compile();

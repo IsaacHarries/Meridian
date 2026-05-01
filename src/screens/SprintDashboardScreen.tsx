@@ -23,6 +23,7 @@ import { Button } from "@/components/ui/button";
 import { WorkflowPanelHeader, APP_HEADER_TITLE } from "@/components/appHeaderLayout";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { SlashCommandInput } from "@/components/SlashCommandInput";
 import {
   createGlobalCommands,
@@ -1316,15 +1317,20 @@ function DevCard({
               </p>
               <ul className="space-y-1">
                 {remaining.map((issue) => (
-                  <li key={issue.key} className="flex items-center gap-2 text-xs">
+                  <li key={issue.key} className="flex items-center gap-2 text-xs min-w-0">
                     <JiraTicketLink ticketKey={issue.key} url={issue.url} />
-                    <span className="truncate">{issue.summary}</span>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <span className="truncate min-w-0 flex-1">{issue.summary}</span>
+                      </TooltipTrigger>
+                      <TooltipContent>{issue.summary}</TooltipContent>
+                    </Tooltip>
                     {issue.storyPoints != null && (
                       <span className="text-muted-foreground/60 shrink-0">
                         {issue.storyPoints}pt
                       </span>
                     )}
-                    <Badge variant="secondary" className="text-[10px] shrink-0 ml-auto">
+                    <Badge variant="secondary" className="text-[10px] shrink-0">
                       {issue.status}
                     </Badge>
                   </li>
@@ -1341,10 +1347,17 @@ function DevCard({
                 {done.map((issue) => (
                   <li
                     key={issue.key}
-                    className="flex items-center gap-2 text-xs text-muted-foreground"
+                    className="flex items-center gap-2 text-xs text-muted-foreground min-w-0"
                   >
                     <JiraTicketLink ticketKey={issue.key} url={issue.url} />
-                    <span className="truncate line-through">{issue.summary}</span>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <span className="truncate line-through min-w-0 flex-1">
+                          {issue.summary}
+                        </span>
+                      </TooltipTrigger>
+                      <TooltipContent>{issue.summary}</TooltipContent>
+                    </Tooltip>
                     {issue.storyPoints != null && (
                       <span className="shrink-0">{issue.storyPoints}pt</span>
                     )}
@@ -1417,7 +1430,9 @@ function TeamWorkloadSection({
         <div
           className={cn(
             "grid gap-4 items-start",
-            unstartedTickets.length > 0 ? "lg:grid-cols-[1fr_360px]" : "lg:grid-cols-1",
+            unstartedTickets.length > 0
+              ? "lg:grid-cols-[minmax(0,1fr)_360px]"
+              : "lg:grid-cols-1",
           )}
         >
           <div className="space-y-3">
@@ -1447,9 +1462,14 @@ function TeamWorkloadSection({
               </CardHeader>
               <CardContent className="space-y-1">
                 {unstartedTickets.map((t) => (
-                  <div key={t.key} className="flex items-center gap-2 text-xs">
+                  <div key={t.key} className="flex items-center gap-2 text-xs min-w-0">
                     <JiraTicketLink ticketKey={t.key} url={t.url} />
-                    <span className="truncate">{t.summary}</span>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <span className="truncate min-w-0 flex-1">{t.summary}</span>
+                      </TooltipTrigger>
+                      <TooltipContent>{t.summary}</TooltipContent>
+                    </Tooltip>
                     {t.storyPoints != null && (
                       <span className="text-muted-foreground/60 shrink-0">
                         {t.storyPoints}pt

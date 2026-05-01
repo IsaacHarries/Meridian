@@ -423,7 +423,7 @@ async function runGrooming(args: {
 
   emit({ id: workflowId, type: "progress", node: "analyse", status: "started" });
 
-  const graph = buildGroomingGraph();
+  const graph = buildGroomingGraph({ emit, workflowId });
   const finalState = await graph.invoke({
     input: parsed.data,
     model,

@@ -68,6 +68,7 @@ import {
 } from "@/lib/tauri";
 import { JiraTicketLink } from "@/components/JiraTicketLink";
 import { usePrReviewStore } from "@/stores/prReviewStore";
+import { priorityRank, priorityColor } from "@/lib/priority";
 import { enrichMessageWithUrls } from "@/lib/urlFetch";
 import {
   getPrismLanguageForPath,
@@ -330,11 +331,14 @@ function DiffLineRow({
   let textCls = "text-muted-foreground";
 
   if (raw.startsWith("+") && !raw.startsWith("+++")) {
+    // Row background flags the line as added; the +/- glyph itself stays
+    // coloured (see DiffLineCode + diff-prefix-add CSS) but the body text
+    // uses normal foreground / syntax-highlight colours.
     rowCls = "bg-green-50 dark:bg-green-950/30";
-    textCls = "text-green-700 dark:text-green-400";
+    textCls = "";
   } else if (raw.startsWith("-") && !raw.startsWith("---")) {
     rowCls = "bg-red-50 dark:bg-red-950/30";
-    textCls = "text-red-700 dark:text-red-400";
+    textCls = "";
   } else if (raw.startsWith("@@")) {
     rowCls = "bg-muted/40";
     textCls = "text-muted-foreground";
@@ -412,10 +416,32 @@ function DiffLineCode({
   const baseCls =
     "select-text cursor-text font-mono text-xs leading-5 pl-2 pr-4 whitespace-pre min-w-0 flex-1";
 
+  // Detect the +/- prefix so we can render it in its own coloured span. The
+  // body of the line then uses the row's textCls (normally neutral so syntax
+  // highlighting shows through).
+  const first = raw.charAt(0);
+  const isAdd = first === "+" && !raw.startsWith("+++");
+  const isDel = first === "-" && !raw.startsWith("---");
+  const prefixCls = isAdd
+    ? "diff-prefix-add"
+    : isDel
+    ? "diff-prefix-del"
+    : "";
+  const body = isAdd || isDel ? raw.slice(1) : raw;
+
   if (matches && matches.length > 0) {
+    // Shift match offsets by 1 when we've split off a prefix character so
+    // search highlights still align with the original raw content.
+    const adjusted: MatchRange[] = (isAdd || isDel)
+      ? matches
+          .map((m) => ({ ...m, start: m.start - 1, end: m.end - 1 }))
+          .filter((m) => m.end > 0)
+          .map((m) => ({ ...m, start: Math.max(0, m.start) }))
+      : matches;
     return (
       <span className={`${baseCls} ${textCls}`}>
-        {renderWithHighlights(raw, matches)}
+        {prefixCls && <span className={prefixCls}>{first}</span>}
+        {renderWithHighlights(body || " ", adjusted)}
       </span>
     );
   }
@@ -430,7 +456,12 @@ function DiffLineCode({
     );
   }
 
-  return <span className={`${baseCls} ${textCls}`}>{raw || " "}</span>;
+  return (
+    <span className={`${baseCls} ${textCls}`}>
+      {prefixCls && <span className={prefixCls}>{first}</span>}
+      {body || " "}
+    </span>
+  );
 }
 
 // ── Inline comment compose box ────────────────────────────────────────────────
@@ -2193,11 +2224,16 @@ interface PrSelectorProps {
   cachedPrIds: Set<number>;
   /** Set of PR ids where new commits have arrived since the last review */
   stalePrIds: Set<number>;
+  /** Linked JIRA issues keyed by issue key — used for the priority badge / sort */
+  linkedIssuesByKey: Map<string, import("@/lib/tauri").JiraIssue>;
 }
 
-function PrSelector({ prsForReview, allOpenPrs, loading, onSelect, onRefresh, jiraBaseUrl, myAccountId, cachedPrIds, stalePrIds }: PrSelectorProps) {
+type PrSortMode = "priority" | "age" | "updated";
+
+function PrSelector({ prsForReview, allOpenPrs, loading, onSelect, onRefresh, jiraBaseUrl, myAccountId, cachedPrIds, stalePrIds, linkedIssuesByKey }: PrSelectorProps) {
   const [showAll, setShowAll] = useState(false);
   const [hideApproved, setHideApproved] = useState(true);
+  const [sortMode, setSortMode] = useState<PrSortMode>("updated");
 
   const baseList = showAll ? allOpenPrs : prsForReview;
 
@@ -2205,15 +2241,49 @@ function PrSelector({ prsForReview, allOpenPrs, loading, onSelect, onRefresh, ji
   const isApproved = (pr: BitbucketPr) =>
     !!myAccountId && pr.reviewers.some((r) => r.user.accountId === myAccountId && r.approved);
 
+  // True when the current user has marked the PR as Needs Changes
+  const iRequestedChanges = (pr: BitbucketPr) =>
+    !!myAccountId &&
+    pr.reviewers.some(
+      (r) =>
+        r.user.accountId === myAccountId &&
+        r.state.toLowerCase() === "changes_requested",
+    );
+
+  const priorityFor = (pr: BitbucketPr): string | null =>
+    pr.jiraIssueKey ? linkedIssuesByKey.get(pr.jiraIssueKey)?.priority ?? null : null;
+
   const approvedCount = baseList.filter(isApproved).length;
-  const list = hideApproved ? baseList.filter((pr) => !isApproved(pr)) : baseList;
+  const filtered = hideApproved ? baseList.filter((pr) => !isApproved(pr)) : baseList;
+
+  const list = useMemo(() => {
+    const sorted = [...filtered];
+    if (sortMode === "priority") {
+      // Lower rank = higher priority. Tie-break newest-updated first so new
+      // activity floats up within a priority bucket.
+      sorted.sort((a, b) => {
+        const cmp = priorityRank(priorityFor(a)) - priorityRank(priorityFor(b));
+        if (cmp !== 0) return cmp;
+        return b.updatedOn.localeCompare(a.updatedOn);
+      });
+    } else if (sortMode === "age") {
+      // Oldest first — surfaces stale PRs that have been waiting longest.
+      sorted.sort((a, b) => a.createdOn.localeCompare(b.createdOn));
+    } else {
+      // "updated" — most recently updated first.
+      sorted.sort((a, b) => b.updatedOn.localeCompare(a.updatedOn));
+    }
+    return sorted;
+  }, [filtered, sortMode, linkedIssuesByKey]);
 
   function PrRow({ pr }: { pr: BitbucketPr }) {
     const iApproved = isApproved(pr);
+    const iNeedsChanges = iRequestedChanges(pr);
     const hasCache = cachedPrIds.has(pr.id);
     const isStale = stalePrIds.has(pr.id);
     const approvalCount = pr.reviewers.filter((r) => r.approved).length;
     const reviewerCount = pr.reviewers.length;
+    const priority = priorityFor(pr);
 
     return (
       <button
@@ -2226,6 +2296,19 @@ function PrSelector({ prsForReview, allOpenPrs, loading, onSelect, onRefresh, ji
           {iApproved && (
             <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-400">
               <CheckCircle2 className="h-3 w-3" /> Approved
+            </span>
+          )}
+          {iNeedsChanges && (
+            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300 border border-amber-300/40 dark:border-amber-700/40">
+              <ThumbsDown className="h-3 w-3" /> Needs Changes
+            </span>
+          )}
+          {priority && (
+            <span
+              className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium border border-border bg-muted/40 ${priorityColor(priority)}`}
+              title={`JIRA priority: ${priority}`}
+            >
+              {priority}
             </span>
           )}
           {hasCache && (
@@ -2289,6 +2372,18 @@ function PrSelector({ prsForReview, allOpenPrs, loading, onSelect, onRefresh, ji
           {showAll ? "All open PRs" : "PRs assigned to you for review"}
         </h2>
         <div className="flex items-center gap-2 flex-wrap">
+          <label className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
+            <span>Sort:</span>
+            <select
+              value={sortMode}
+              onChange={(e) => setSortMode(e.target.value as PrSortMode)}
+              className="bg-background border border-border rounded-md px-2 py-1 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+            >
+              <option value="updated">Recently updated</option>
+              <option value="age">PR age (oldest first)</option>
+              <option value="priority">JIRA priority</option>
+            </select>
+          </label>
           {/* Hide approved toggle — only meaningful when the user has an accountId */}
           {myAccountId && approvedCount > 0 && (
             <button
@@ -2366,6 +2461,7 @@ export function PrReviewScreen({ credStatus, onBack }: PrReviewScreenProps) {
     loadingPrs,
     jiraBaseUrl,
     myAccountId,
+    linkedIssuesByKey,
   } = usePrReviewStore();
 
   // Derive the current session fields from the Map (empty defaults while loading)
@@ -2760,15 +2856,25 @@ export function PrReviewScreen({ credStatus, onBack }: PrReviewScreenProps) {
 
   const lensTabLabel = (key: keyof ReviewReport["lenses"], icon: React.ReactNode, label: string) => {
     if (!displayReport?.lenses) return <>{icon}<span className="hidden sm:inline ml-1">{label}</span></>;
-    const count = safeLens(displayReport.lenses[key]).findings.filter((f) => f.severity === "blocking").length;
+    const findings = safeLens(displayReport.lenses[key]).findings;
+    const hasBlocking = findings.some((f) => f.severity === "blocking");
+    const hasNonBlocking = findings.some((f) => f.severity === "non_blocking");
+    const dotColor = hasBlocking ? "bg-red-500" : hasNonBlocking ? "bg-amber-500" : null;
+    const dotTitle = hasBlocking
+      ? "Has blocking findings"
+      : hasNonBlocking
+        ? "Has non-blocking findings"
+        : undefined;
     return (
       <span className="flex items-center gap-1">
         {icon}
         <span className="hidden sm:inline">{label}</span>
-        {count > 0 && (
-          <span className="rounded-full bg-red-100 text-red-700 dark:bg-red-900 dark:text-red-300 text-xs px-1.5 leading-none py-0.5">
-            {count}
-          </span>
+        {dotColor && (
+          <span
+            className={`h-2 w-2 rounded-full inline-block ${dotColor}`}
+            title={dotTitle}
+            aria-label={dotTitle}
+          />
         )}
       </span>
     );
@@ -2880,6 +2986,7 @@ export function PrReviewScreen({ credStatus, onBack }: PrReviewScreenProps) {
                   .filter(([, s]) => s.report !== null && s.diffStale)
                   .map(([id]) => id)
               )}
+              linkedIssuesByKey={linkedIssuesByKey}
             />
           </div>
         ) : (

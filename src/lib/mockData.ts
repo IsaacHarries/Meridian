@@ -159,7 +159,7 @@ export const DEMO_ISSUE_1: JiraIssue = {
         "It scans the file for ATX-style headings (`# h1`, `## h2`, `### h3`) and prints a nested markdown list " +
         "where each item links to the corresponding anchor. The tool must also support an `--in-place` flag that " +
         "rewrites the source file, replacing any existing `<!-- TOC -->…<!-- /TOC -->` block with the fresh TOC.\n\n" +
-        "This is a greenfield project — the worktree directory is empty. You will need to create all files from scratch.",
+        "This is a **greenfield** project — the worktree directory is empty. You will need to create all files from scratch.",
     },
     {
       heading: "Acceptance Criteria",
@@ -185,12 +185,6 @@ export const DEMO_ISSUE_1: JiraIssue = {
         "Structure: `src/cli.ts` (entry point + arg parsing), `src/parser.ts` (heading extraction + slug), " +
         "`src/toc.ts` (TOC string assembly + in-place rewrite), `tests/parser.test.ts`, `tests/toc.test.ts`.",
     },
-    {
-      heading: "Reference Layout",
-      content:
-        "The expected TOC output structure should look like this:\n\n" +
-        "![TOC layout reference](https://placehold.co/640x320/1e293b/cbd5e1?text=Generated+TOC+%E2%80%94+nested+list+with+anchor+links)",
-    },
   ],
   status: "To Do",
   statusCategory: "new",
@@ -214,7 +208,7 @@ export const DEMO_ISSUE_1: JiraIssue = {
     "- Non-existent file → exit 1, error to stderr\n" +
     "- No headings found → output `<!-- No headings found -->`\n" +
     "- `--in-place` flag rewrites the file with a `<!-- TOC -->…<!-- /TOC -->` block\n" +
-    "- `package.json`, `tsconfig.json`, and unit tests (node:test) are included",
+    "- `package.json`, `tsconfig.json`, and unit tests (`node:test`) are included",
   stepsToReproduce: null,
   observedBehavior: null,
   expectedBehavior: null,
@@ -234,9 +228,9 @@ export const DEMO_ISSUE_2: JiraIssue = {
       content:
         "Build a standalone Node.js/TypeScript REST API server for managing tasks. " +
         "The server runs on port 3000 and exposes a `/tasks` resource. It uses an in-memory store " +
-        "(no database — a plain Map or array) so the project is fully self-contained and runnable from a blank worktree. " +
+        "(no database — a plain `Map` or array) so the project is fully self-contained and runnable from a blank worktree. " +
         "The API must follow REST conventions, return JSON, and handle all error cases gracefully.\n\n" +
-        "This is a greenfield project — the worktree directory is empty. Create all files from scratch.",
+        "This is a **greenfield** project — the worktree directory is empty. Create all files from scratch.",
     },
     {
       heading: "Acceptance Criteria",
@@ -319,16 +313,16 @@ export const DEMO_ISSUE_2: JiraIssue = {
   resolutionDate: null,
   completedInSprint: null,
   acceptanceCriteria:
-    "- POST /tasks creates a task with UUID, timestamps, and defaults\n" +
-    "- GET /tasks supports filtering by status, priority, tag + pagination\n" +
-    "- GET /tasks/:id returns 404 for unknown IDs\n" +
-    "- PATCH /tasks/:id performs partial updates\n" +
-    "- DELETE /tasks/:id returns 204\n" +
-    "- POST /tasks/:id/complete sets completedAt and status=done\n" +
+    "- `POST /tasks` creates a task with UUID, timestamps, and defaults\n" +
+    "- `GET /tasks` supports filtering by `status`, `priority`, `tag` + pagination\n" +
+    "- `GET /tasks/:id` returns 404 for unknown IDs\n" +
+    "- `PATCH /tasks/:id` performs partial updates\n" +
+    "- `DELETE /tasks/:id` returns 204\n" +
+    "- `POST /tasks/:id/complete` sets `completedAt` and `status=done`\n" +
     "- All validation errors return 400 with descriptive message\n" +
-    "- Response envelope includes total, page, limit, totalPages\n" +
-    "- package.json, tsconfig.json, and integration tests (node:test) included\n" +
-    "- App factory pattern: app.ts (no listen) + server.ts (entry point)",
+    "- Response envelope includes `total`, `page`, `limit`, `totalPages`\n" +
+    "- `package.json`, `tsconfig.json`, and integration tests (`node:test`) included\n" +
+    "- App factory pattern: `app.ts` (no listen) + `server.ts` (entry point)",
   stepsToReproduce: null,
   observedBehavior: null,
   expectedBehavior: null,

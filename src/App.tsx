@@ -4,6 +4,7 @@ import { OpenMeetingsProvider } from "@/context/OpenMeetingsContext";
 import { OpenTimeTrackingProvider } from "@/context/OpenTimeTrackingContext";
 import { RecordingContextTagsProvider } from "@/context/RecordingContextTagsContext";
 import { ThemeProvider } from "@/providers/ThemeProvider";
+import { TooltipProvider } from "@/components/ui/tooltip";
 import { Loader2 } from "lucide-react";
 import { Toaster } from "sonner";
 import { type CredentialStatus, credentialStatusComplete, getCredentialStatus, getNonSecretConfig, setLocalLlmUrlCache, jiraComplete, bitbucketComplete } from "@/lib/tauri";
@@ -427,24 +428,26 @@ export default function Root() {
 
   return (
     <ThemeProvider>
-      <GlobalBackground />
-      <div
-        className="relative z-[1] transition-opacity duration-300"
-        style={{ opacity: hideUI ? 0 : 1, pointerEvents: hideUI ? "none" : undefined }}
-      >
-        <AppInner />
-      </div>
-      <GlobalForeground />
-      <GlobalFxDrawer hideUI={hideUI} onToggleHideUI={() => setHideUI(h => !h)} />
-      <Toaster
-        position="top-right"
-        theme="dark"
-        richColors
-        closeButton
-        toastOptions={{
-          style: { fontFamily: "inherit" },
-        }}
-      />
+      <TooltipProvider delayDuration={300}>
+        <GlobalBackground />
+        <div
+          className="relative z-[1] transition-opacity duration-300"
+          style={{ opacity: hideUI ? 0 : 1, pointerEvents: hideUI ? "none" : undefined }}
+        >
+          <AppInner />
+        </div>
+        <GlobalForeground />
+        <GlobalFxDrawer hideUI={hideUI} onToggleHideUI={() => setHideUI(h => !h)} />
+        <Toaster
+          position="top-right"
+          theme="dark"
+          richColors
+          closeButton
+          toastOptions={{
+            style: { fontFamily: "inherit" },
+          }}
+        />
+      </TooltipProvider>
     </ThemeProvider>
   );
 }

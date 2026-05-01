@@ -1,10 +1,10 @@
 // Grooming Chat workflow.
 //
 // Multi-turn chat at the grooming checkpoint. The agent refines suggested
-// edits, asks clarifying questions, and adjusts the ambiguities list as the
-// engineer answers. Returns a JSON object the frontend parses to apply state
-// updates (suggested edits + open questions + ambiguities). Streams reply
-// tokens live to the workflow event channel.
+// edits and asks/retracts clarifying questions as the engineer answers.
+// Returns a JSON object the frontend parses to apply state updates
+// (suggested edits + open questions). Streams reply tokens live to the
+// workflow event channel.
 
 import { z } from "zod";
 import { ChatHistoryItemSchema } from "./chat-with-tools.js";
@@ -75,13 +75,11 @@ export function buildGroomingChatSystemPrompt(input: GroomingChatInput): string 
     `      "reasoning": "<why>"\n` +
     `    }\n` +
     `  ],\n` +
-    `  "updated_questions": ["<any remaining open questions you still need answered>"],\n` +
-    `  "updated_ambiguities": ["<remaining unresolved ambiguities — drop ones the engineer has clarified>"]\n` +
+    `  "updated_questions": ["<remaining open clarifying questions — drop ones the engineer has answered, add any new ones that have surfaced. Cover both genuine questions AND ambiguous ticket details (phrase ambiguities as questions). Return the FULL current list every turn — it replaces the previous list, it does not merge.>"]\n` +
     `}\n\n` +
     `Rules:\n` +
     `- updated_edits may be empty if no changes are needed this turn\n` +
     `- To remove a suggestion, omit its id from updated_edits (the frontend will not delete it — include it with a note in reasoning if it should be withdrawn)\n` +
-    `- updated_ambiguities MUST reflect the conversation so far. If the engineer has clarified a previously listed ambiguity, drop it from this list. If new ambiguities surface, add them. Return the FULL current list every turn — it replaces the previous list, it does not merge.\n` +
     `- If you change the suggested text or current text of an existing edit, the engineer's previous approval is automatically reset and they must re-approve — your edit is a fresh proposal.\n` +
     `- Keep the message focused and concise\n` +
     `- Even if the engineer says only 'yes', 'ok', or 'thanks', you must still return the full JSON object` +

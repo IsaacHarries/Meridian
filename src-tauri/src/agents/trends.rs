@@ -397,6 +397,7 @@ pub async fn generate_multi_sprint_trends(
         input,
         model,
         None,
+        None,
     )
     .await?;
 

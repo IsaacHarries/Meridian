@@ -42,7 +42,6 @@ function makeGrooming(overrides: Partial<GroomingOutput> = {}): GroomingOutput {
     ticket_type: "Story",
     acceptance_criteria: ["AC 1"],
     relevant_areas: [],
-    ambiguities: [],
     dependencies: [],
     estimated_complexity: "low",
     grooming_notes: "",

@@ -45,6 +45,7 @@ import {
   parseAgentJson,
   readGroomingFile,
   grepGroomingFiles,
+  cancelImplementationPipelineWorkflow,
   runImplementationPipelineWorkflow,
   resumeImplementationPipelineWorkflow,
   PIPELINE_EVENT_NAME,
@@ -117,6 +118,30 @@ const NODE_TO_STAGE: Record<string, Stage> = {
   do_retrospective: "retro",
 };
 
+/** Map a user-facing Stage to the next visible stage when the user clicks
+ *  Proceed at that stage's checkpoint. Used to advance viewingStage
+ *  optimistically — the moment Proceed is clicked the screen jumps to
+ *  the next stage's panel and the partial-output stream starts filling
+ *  it in, instead of leaving the user staring at the prior panel for
+ *  the duration of the workflow round-trip. */
+const NEXT_STAGE_AFTER_PROCEED: Partial<Record<Stage, Exclude<Stage, "select">>> = {
+  grooming: "impact",
+  impact: "triage",
+  // Triage on approve runs do_plan → do_guidance → implementation. Land
+  // on `plan` so the plan-finalising panel shows the partial plan
+  // streaming in before implementation kicks off.
+  triage: "plan",
+  // Plan stage isn't checkpointed independently — the proceed comes
+  // from triage. Listed for completeness in case the flow ever changes.
+  plan: "implementation",
+  implementation: "tests_plan",
+  tests_plan: "tests",
+  tests: "review",
+  review: "pr",
+  pr: "retro",
+  retro: "complete",
+};
+
 /** Map a user-facing Stage to the sidecar node we need to rewind to in
  *  order to re-run just that stage. */
 const STAGE_TO_REWIND_NODE: Partial<Record<Stage, string>> = {
@@ -175,6 +200,7 @@ function applyInterruptToState(
       case "grooming": {
         const data = payload as GroomingOutput;
         updates.grooming = data;
+        updates.partialGrooming = null;
         // Mirror the post-grooming UI setup the old per-stage path did:
         // build editable suggestions, surface clarifying questions as a
         // welcome chat message, snapshot the initial Q/A state for the
@@ -184,24 +210,16 @@ function applyInterruptToState(
           status: "pending" as SuggestedEditStatus,
         }));
         const questions = data.clarifying_questions ?? [];
-        const ambiguities = data.ambiguities ?? [];
-        const openItems = [
-          ...questions.map((q) => ({ label: "Question", text: q })),
-          ...ambiguities.map((a) => ({ label: "Ambiguity", text: a })),
-        ];
         const initialChat: TriageMessage[] =
-          openItems.length > 0
+          questions.length > 0
             ? [
                 {
                   role: "assistant",
                   content:
-                    openItems.length === 1
-                      ? `I have one item to clarify before we finalise the grooming:\n\n**${openItems[0].label}:** ${openItems[0].text}`
-                      : `I have a few items to clarify before we finalise the grooming:\n\n${openItems
-                          .map(
-                            (item, i) =>
-                              `${i + 1}. **${item.label}:** ${item.text}`,
-                          )
+                    questions.length === 1
+                      ? `I have one question before we finalise the grooming:\n\n${questions[0]}`
+                      : `I have a few questions before we finalise the grooming:\n\n${questions
+                          .map((q, i) => `${i + 1}. ${q}`)
                           .join("\n\n")}`,
                 },
               ]
@@ -209,11 +227,9 @@ function applyInterruptToState(
         updates.groomingEdits = edits;
         updates.clarifyingQuestions = questions;
         updates.clarifyingQuestionsInitial = questions;
-        updates.ambiguitiesInitial = ambiguities;
         updates.groomingHighlights = {
           editIds: [],
           questions: false,
-          ambiguities: false,
         };
         updates.groomingChat = initialChat;
         updates.groomingBlockers = s.selectedIssue
@@ -225,6 +241,7 @@ function applyInterruptToState(
       }
       case "impact":
         updates.impact = payload as ImpactOutput;
+        updates.partialImpact = null;
         break;
       case "triage": {
         const turn = payload as TriageTurnOutput;
@@ -246,10 +263,16 @@ function applyInterruptToState(
         // to anything other than null hides both the chat input and the
         // Finalise Plan button.
         updates.pendingApproval = null;
+        updates.partialTriageTurn = null;
         break;
       }
       case "implementation":
         updates.implementation = payload as ImplementationOutput;
+        // Plan + guidance are intermediate silent stages — their
+        // partial-stream snapshots are no longer relevant once
+        // implementation has produced an interrupt.
+        updates.partialPlan = null;
+        updates.partialGuidance = null;
         break;
       case "replan":
         updates.replanCheckpoint = payload as ReplanCheckpointPayload;
@@ -262,9 +285,11 @@ function applyInterruptToState(
         break;
       case "code_review":
         updates.review = payload as PlanReviewOutput;
+        updates.partialReview = null;
         break;
       case "pr_description":
         updates.prDescription = payload as PrDescriptionOutput;
+        updates.partialPrDescription = null;
         break;
     }
     return updates;
@@ -313,6 +338,9 @@ function applyWorkflowResult(
       currentStage: "complete" as Stage,
       pendingApproval: null,
       proceeding: false,
+      // The workflow completed — the retrospective is the final stage
+      // and its partial snapshot is no longer needed.
+      partialRetrospective: null,
     }));
   }
 }
@@ -333,6 +361,21 @@ const NODE_TO_STREAM_FIELD: Record<string, keyof ImplementTicketState> = {
   do_retrospective: "retroStreamText",
 };
 
+/** Per-node partial-output field — populated by `streamLLMJson` `progress`
+ *  events with `data.partial`. The screen prefers the partial over the
+ *  final output while the stage is still streaming so the structured
+ *  panel renders incrementally instead of all at once on completion. */
+const NODE_TO_PARTIAL_FIELD: Record<string, keyof ImplementTicketState> = {
+  grooming: "partialGrooming",
+  impact: "partialImpact",
+  triage: "partialTriageTurn",
+  do_plan: "partialPlan",
+  do_guidance: "partialGuidance",
+  code_review: "partialReview",
+  pr_description: "partialPrDescription",
+  do_retrospective: "partialRetrospective",
+};
+
 async function ensurePipelineListener(): Promise<void> {
   if (pipelineUnlisten) return;
   pipelineUnlisten = await listen<PipelineEvent>(PIPELINE_EVENT_NAME, (event) => {
@@ -347,7 +390,37 @@ async function ensurePipelineListener(): Promise<void> {
       setState((s) => updater(s));
     };
 
+    // Stale-event guard: each pipeline event carries the runId of the
+    // workflow.start/resume/rewind call that produced it. If the user
+    // has since cancelled / superseded that run (e.g. via Retry at an
+    // earlier stage), `currentRunId` won't match and the event is
+    // dropped — otherwise the orphan run's late-arriving interrupt
+    // would jump the UI back to a later stage. We do allow events
+    // through when currentRunId is null, since some store consumers
+    // (e.g. session-restore) may not have set it yet.
+    const eventRunId = (e as { runId?: string }).runId;
+    const expectedRunId = useImplementTicketStore.getState().currentRunId;
+    if (expectedRunId && eventRunId && eventRunId !== expectedRunId) {
+      return;
+    }
+
     if (e.kind === "progress" && e.status === "started") {
+      // Live partial-JSON streaming from any node that uses
+      // `streamLLMJson` in the sidecar — surfaces a partial output as
+      // the model emits tokens so the UI can render fields incrementally
+      // instead of waiting for the full reply (mirrors PR Review's
+      // `partialReport`).
+      const partialData = e.data as { partial?: unknown } | undefined;
+      const partialField = NODE_TO_PARTIAL_FIELD[e.node];
+      if (
+        partialField &&
+        partialData?.partial &&
+        typeof partialData.partial === "object"
+      ) {
+        setState({ [partialField]: partialData.partial } as Partial<ImplementTicketState>);
+        return;
+      }
+
       // Per-file implementation progress: update the implementationProgress
       // field so the loading UI can show "Writing src/cli.ts (3/8)…".
       const data = e.data as
@@ -637,7 +710,6 @@ export type PipelineSession = Pick<
   | "groomingEdits"
   | "clarifyingQuestions"
   | "clarifyingQuestionsInitial"
-  | "ambiguitiesInitial"
   | "groomingHighlights"
   | "filesRead"
   | "groomingChat"
@@ -673,11 +745,33 @@ interface ImplementTicketState {
   /** Checkpoint thread id of the running pipeline workflow; resume calls
    *  pass this back to the sidecar so it can rehydrate state. */
   pipelineThreadId: string | null;
+  /** UUID for the current logical run (one start, one resume, or one
+   *  rewind call). The sidecar tags every emitted event with this id;
+   *  the pipeline event listener drops events whose runId doesn't match
+   *  so a stale run we've cancelled (via retryStage at an earlier stage)
+   *  can't jump the UI back to a later stage when its model call
+   *  eventually finishes in the background. Reset to a fresh UUID on
+   *  each start / proceed / retry. */
+  currentRunId: string | null;
   /** Final structured pipeline state when the workflow completes. */
   pipelineFinalState: unknown | null;
 
   // ── Agent outputs ────────────────────────────────────────────────────────────
   grooming: GroomingOutput | null;
+  /** Live partial agent outputs streamed by the sidecar's `streamLLMJson`
+   *  helper while the model is mid-response. Each clears when the
+   *  corresponding final output lands (or on stage retry). The screen
+   *  prefers the partial when the final isn't there yet so the structured
+   *  panel renders incrementally — same pattern as PR Review's
+   *  `partialReport`. */
+  partialGrooming: Partial<GroomingOutput> | null;
+  partialImpact: Partial<ImpactOutput> | null;
+  partialTriageTurn: Partial<TriageTurnOutput> | null;
+  partialPlan: Partial<ImplementationPlan> | null;
+  partialGuidance: Partial<GuidanceOutput> | null;
+  partialReview: Partial<PlanReviewOutput> | null;
+  partialPrDescription: Partial<PrDescriptionOutput> | null;
+  partialRetrospective: Partial<RetrospectiveOutput> | null;
   impact: ImpactOutput | null;
   triageHistory: TriageMessage[];
   /** Structured per-turn triage output, parallel to assistant turns in
@@ -724,14 +818,11 @@ interface ImplementTicketState {
   /** Snapshot of clarifying questions at first grooming run. Used to render
    * resolved (answered) ones as strikethrough while keeping them visible. */
   clarifyingQuestionsInitial: string[];
-  /** Snapshot of ambiguities at first grooming run. Same purpose as above. */
-  ambiguitiesInitial: string[];
   /** Tracks which items were just updated by the chat turn — drives the glow
    * animation until the user interacts or toggles highlights off. */
   groomingHighlights: {
     editIds: string[];
     questions: boolean;
-    ambiguities: boolean;
   };
   /** User toggle to hide the update-glow highlights. Persisted. */
   showHighlights: boolean;
@@ -887,6 +978,14 @@ export const INITIAL: Omit<
   pendingApproval: null,
   proceeding: false,
   grooming: null,
+  partialGrooming: null,
+  partialImpact: null,
+  partialTriageTurn: null,
+  partialPlan: null,
+  partialGuidance: null,
+  partialReview: null,
+  partialPrDescription: null,
+  partialRetrospective: null,
   impact: null,
   triageHistory: [],
   triageTurns: [],
@@ -911,8 +1010,7 @@ export const INITIAL: Omit<
   groomingEdits: [],
   clarifyingQuestions: [],
   clarifyingQuestionsInitial: [],
-  ambiguitiesInitial: [],
-  groomingHighlights: { editIds: [], questions: false, ambiguities: false },
+  groomingHighlights: { editIds: [], questions: false },
   showHighlights: true,
   filesRead: [],
   groomingChat: [],
@@ -944,6 +1042,7 @@ export const INITIAL: Omit<
   isSessionActive: false,
   activeSessionId: "",
   pipelineThreadId: null,
+  currentRunId: null,
   pipelineFinalState: null,
   sessions: new Map(),
 };
@@ -988,7 +1087,6 @@ export function snapshotSession(s: ImplementTicketState): PipelineSession {
     groomingEdits: s.groomingEdits,
     clarifyingQuestions: s.clarifyingQuestions,
     clarifyingQuestionsInitial: s.clarifyingQuestionsInitial,
-    ambiguitiesInitial: s.ambiguitiesInitial,
     groomingHighlights: s.groomingHighlights,
     filesRead: s.filesRead,
     groomingChat: s.groomingChat,
@@ -1070,14 +1168,13 @@ export const useImplementTicketStore = create<ImplementTicketState>()(
           // else is tied to a single analysis run and must reset.
           Object.assign(outputResets, {
             grooming: null,
+            partialGrooming: null,
             groomingEdits: [],
             clarifyingQuestions: [],
             clarifyingQuestionsInitial: [],
-            ambiguitiesInitial: [],
             groomingHighlights: {
               editIds: [],
               questions: false,
-              ambiguities: false,
             },
             groomingBlockers: [],
             groomingProgress: "",
@@ -1086,13 +1183,18 @@ export const useImplementTicketStore = create<ImplementTicketState>()(
           });
           break;
         case "impact":
-          Object.assign(outputResets, { impact: null, impactStreamText: "" });
+          Object.assign(outputResets, {
+            impact: null,
+            partialImpact: null,
+            impactStreamText: "",
+          });
           break;
         case "triage":
           Object.assign(outputResets, {
             triageHistory: [],
             triageTurns: [],
             triageStreamText: "",
+            partialTriageTurn: null,
           });
           break;
         case "plan":
@@ -1100,6 +1202,8 @@ export const useImplementTicketStore = create<ImplementTicketState>()(
             plan: null,
             guidance: null,
             planStreamText: "",
+            partialPlan: null,
+            partialGuidance: null,
           });
           break;
         case "implementation":
@@ -1125,17 +1229,23 @@ export const useImplementTicketStore = create<ImplementTicketState>()(
           Object.assign(outputResets, { tests: null, testsStreamText: "" });
           break;
         case "review":
-          Object.assign(outputResets, { review: null, reviewStreamText: "" });
+          Object.assign(outputResets, {
+            review: null,
+            partialReview: null,
+            reviewStreamText: "",
+          });
           break;
         case "pr":
           Object.assign(outputResets, {
             prDescription: null,
+            partialPrDescription: null,
             prStreamText: "",
           });
           break;
         case "retro":
           Object.assign(outputResets, {
             retrospective: null,
+            partialRetrospective: null,
             retroStreamText: "",
           });
           break;
@@ -1156,10 +1266,30 @@ export const useImplementTicketStore = create<ImplementTicketState>()(
       const rewindNode = STAGE_TO_REWIND_NODE[stage];
       if (threadId && rewindNode) {
         try {
-          set({ proceeding: true });
+          // Cancel any in-flight run for this pipeline before we
+          // rewind. Retry at an earlier stage explicitly invalidates
+          // the prior run — without cancelling, the orphan model call
+          // keeps streaming events into the listener and can jump the
+          // UI back to a later stage when its interrupt finally lands.
+          // The runId guard provides defence-in-depth, but cancelling
+          // also stops the sidecar from emitting any further events
+          // for the orphan run.
+          const priorRunId = get().currentRunId;
+          if (priorRunId) {
+            try {
+              await cancelImplementationPipelineWorkflow(priorRunId);
+            } catch (e) {
+              // Cancel is best-effort — the prior run may already be
+              // done, or the sidecar may have restarted.
+              console.warn("[Meridian] cancel prior pipeline run failed:", e);
+            }
+          }
+          const runId = crypto.randomUUID();
+          set({ proceeding: true, currentRunId: runId });
           const result = await rewindImplementationPipelineWorkflow(
             threadId,
             rewindNode,
+            runId,
           );
           applyWorkflowResult((updater) => set((s) => updater(s)), result);
         } catch (e) {
@@ -1173,7 +1303,7 @@ export const useImplementTicketStore = create<ImplementTicketState>()(
       // ran via the new path) — fall back to a fresh pipeline start.
       const issue = get().selectedIssue;
       if (issue) {
-        set({ pipelineThreadId: null });
+        set({ pipelineThreadId: null, currentRunId: null });
         await get().startPipeline(issue);
       }
     },
@@ -1221,7 +1351,7 @@ export const useImplementTicketStore = create<ImplementTicketState>()(
 
     clearAllGroomingHighlights: () =>
       set({
-        groomingHighlights: { editIds: [], questions: false, ambiguities: false },
+        groomingHighlights: { editIds: [], questions: false },
       }),
 
     toggleHighlights: () => set((s) => ({ showHighlights: !s.showHighlights })),
@@ -1384,6 +1514,7 @@ export const useImplementTicketStore = create<ImplementTicketState>()(
            workflow itself will at least surface the missing config */
       }
 
+      const runId = crypto.randomUUID();
       const args: PipelineWorkflowArgs = {
         ticketText: text + (repoContext || ""),
         ticketKey: fullIssue.key,
@@ -1396,9 +1527,10 @@ export const useImplementTicketStore = create<ImplementTicketState>()(
           review: skills.review ?? null,
           testing: (skills as Record<string, string | undefined>).testing ?? null,
         },
+        runId,
       };
 
-      set({ proceeding: true });
+      set({ proceeding: true, currentRunId: runId });
       try {
         const result = await runImplementationPipelineWorkflow(args);
         applyWorkflowResult((updater) => set((s) => updater(s)), result);
@@ -1418,10 +1550,12 @@ export const useImplementTicketStore = create<ImplementTicketState>()(
       // interrupt arrives over the event channel and is mapped onto the
       // triage state slices by `applyInterruptToState`.
       const userMsg: TriageMessage = { role: "user", content: input };
+      const runId = crypto.randomUUID();
       set((s) => ({
         triageHistory: [...s.triageHistory, userMsg],
         proceeding: true,
         pendingApproval: null,
+        currentRunId: runId,
       }));
       try {
         const threadId = get().pipelineThreadId;
@@ -1430,10 +1564,14 @@ export const useImplementTicketStore = create<ImplementTicketState>()(
             "Pipeline workflow has no active thread — cannot send triage reply.",
           );
         }
-        const result = await resumeImplementationPipelineWorkflow(threadId, {
-          action: "reply",
-          message: input,
-        });
+        const result = await resumeImplementationPipelineWorkflow(
+          threadId,
+          {
+            action: "reply",
+            message: input,
+          },
+          runId,
+        );
         applyWorkflowResult((updater) => set((s) => updater(s)), result);
       } catch (e) {
         set({ proceeding: false });
@@ -1446,7 +1584,17 @@ export const useImplementTicketStore = create<ImplementTicketState>()(
       // workflow then runs the plan + guidance nodes silently and interrupts
       // at the implementation checkpoint, where the user reviews the plan
       // before the implementation agent starts writing code.
-      set({ pendingApproval: null, proceeding: true });
+      const runId = crypto.randomUUID();
+      set({
+        pendingApproval: null,
+        proceeding: true,
+        currentRunId: runId,
+        // Optimistically advance the visible stage to "plan" so the
+        // plan-finalising panel renders immediately — same pattern as
+        // proceedFromStage. The plan partial fills in as it streams.
+        currentStage: "plan",
+        viewingStage: "plan",
+      });
       try {
         // Create the feature branch BEFORE implementation runs — once the
         // workflow advances past triage it'll execute plan → guidance →
@@ -1470,9 +1618,11 @@ export const useImplementTicketStore = create<ImplementTicketState>()(
         if (!threadId) {
           throw new Error("Pipeline workflow has no active thread — cannot finalize plan.");
         }
-        const result = await resumeImplementationPipelineWorkflow(threadId, {
-          action: "approve",
-        });
+        const result = await resumeImplementationPipelineWorkflow(
+          threadId,
+          { action: "approve" },
+          runId,
+        );
         applyWorkflowResult((updater) => set((s) => updater(s)), result);
         get().markComplete("triage");
       } catch (e) {
@@ -1584,7 +1734,32 @@ export const useImplementTicketStore = create<ImplementTicketState>()(
 
     // ── Proceed from checkpoint ────────────────────────────────────────────────
     proceedFromStage: async (stage, action = { action: "approve" }) => {
-      set({ pendingApproval: null, proceeding: true });
+      // Advance the visible stage immediately on Proceed so the user
+      // jumps to the next stage's panel and watches its partial output
+      // stream in, rather than seeing the loading icon on the prior
+      // stage for the duration of the workflow round-trip. Only applies
+      // to forward-moving actions: revise loops back to plan; abort and
+      // reply stay where they are.
+      const nextStage =
+        action.action === "approve" ? NEXT_STAGE_AFTER_PROCEED[stage] : null;
+      // Mint a fresh runId for this resume call so the listener can
+      // distinguish events of this run from any prior run that may
+      // still be in-flight (the most common case being the user
+      // clicking through stages quickly enough that resume N+1's
+      // events overlap with resume N's tail).
+      const runId = crypto.randomUUID();
+      const advanceUpdates: Partial<ImplementTicketState> = {
+        pendingApproval: null,
+        proceeding: true,
+        currentRunId: runId,
+      };
+      if (nextStage) {
+        advanceUpdates.currentStage = nextStage;
+        if (nextStage !== "complete") {
+          advanceUpdates.viewingStage = nextStage as Exclude<Stage, "select">;
+        }
+      }
+      set(advanceUpdates);
       try {
         // Side-effects that the old per-stage proceed flow handled around the
         // implementation/tests boundary. The workflow itself doesn't commit;
@@ -1610,7 +1785,11 @@ export const useImplementTicketStore = create<ImplementTicketState>()(
             "Pipeline workflow has no active thread — cannot resume. Restart the pipeline.",
           );
         }
-        const result = await resumeImplementationPipelineWorkflow(threadId, action);
+        const result = await resumeImplementationPipelineWorkflow(
+          threadId,
+          action,
+          runId,
+        );
         applyWorkflowResult((updater) => set((s) => updater(s)), result);
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -1681,7 +1860,6 @@ export const useImplementTicketStore = create<ImplementTicketState>()(
           message: string;
           updated_edits: Omit<SuggestedEdit, "status">[];
           updated_questions: string[];
-          updated_ambiguities?: string[];
         }>(response);
 
         // If the full JSON failed to parse (most often because the response
@@ -1713,7 +1891,6 @@ export const useImplementTicketStore = create<ImplementTicketState>()(
         if (parsed) {
           const highlightEditIds: string[] = [];
           let questionsChanged = false;
-          let ambiguitiesChanged = false;
 
           if (parsed.updated_edits && parsed.updated_edits.length > 0) {
             set((st) => {
@@ -1751,31 +1928,12 @@ export const useImplementTicketStore = create<ImplementTicketState>()(
             }
             set({ clarifyingQuestions: parsed.updated_questions });
           }
-          if (parsed.updated_ambiguities !== undefined && get().grooming) {
-            const prior = get().grooming?.ambiguities ?? [];
-            if (
-              prior.length !== parsed.updated_ambiguities.length ||
-              prior.some((a, i) => a !== parsed.updated_ambiguities![i])
-            ) {
-              ambiguitiesChanged = true;
-            }
-            set((st) => ({
-              grooming: st.grooming
-                ? { ...st.grooming, ambiguities: parsed.updated_ambiguities! }
-                : st.grooming,
-            }));
-          }
 
-          if (
-            highlightEditIds.length > 0 ||
-            questionsChanged ||
-            ambiguitiesChanged
-          ) {
+          if (highlightEditIds.length > 0 || questionsChanged) {
             set({
               groomingHighlights: {
                 editIds: highlightEditIds,
                 questions: questionsChanged,
-                ambiguities: ambiguitiesChanged,
               },
             });
           }
@@ -2197,6 +2355,21 @@ function serializableState(s: ImplementTicketState) {
     retroStreamText: "",
     checkpointStreamText: "",
     proceeding: false,
+    // Partial agent outputs are also mid-run scratch state — drop on
+    // serialise so a restored session shows the final outputs only.
+    partialGrooming: null,
+    partialImpact: null,
+    partialTriageTurn: null,
+    partialPlan: null,
+    partialGuidance: null,
+    partialReview: null,
+    partialPrDescription: null,
+    partialRetrospective: null,
+    // currentRunId only refers to a live in-flight run. A restored
+    // session has no live run — drop it so the listener doesn't
+    // accidentally accept events from an unrelated run that happens to
+    // share the persisted id.
+    currentRunId: null,
   };
 }
 
