@@ -13,19 +13,20 @@
  */
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Plus, X, ListTodo, Tag, ChevronDown } from "lucide-react";
+import { Plus, X, ListTodo, Tag, ChevronDown, GitPullRequest } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import { useTasksStore } from "@/stores/tasksStore";
 import { useMeetingsStore } from "@/stores/meetingsStore";
+import { usePrTasksStore } from "@/stores/prTasksStore";
 import { useOpenMeetings } from "@/context/OpenMeetingsContext";
 import {
   extractNotesTaskItems,
   setTaskCheckedAtPath,
   type NotesTaskItem,
 } from "@/lib/tiptapTasks";
-import type { TaskRecord } from "@/lib/tauri";
+import { type TaskRecord, openUrl } from "@/lib/tauri";
 import { toast } from "sonner";
 
 interface MeetingGroup {
@@ -50,6 +51,18 @@ export function TasksPanel() {
   const meetings = useMeetingsStore((s) => s.meetings);
   const selectMeeting = useMeetingsStore((s) => s.selectMeeting);
   const saveNotesForMeeting = useMeetingsStore((s) => s.saveNotesForMeeting);
+
+  const prTaskGroups = usePrTasksStore((s) => s.entries);
+  const resolvePrTaskAction = usePrTasksStore((s) => s.resolveTask);
+  const refreshPrTasks = usePrTasksStore((s) => s.refresh);
+
+  // Refresh PR tasks every time the user opens the panel — the
+  // background poll only runs hourly, so opening the panel after a
+  // while otherwise risks showing stale data. The store guards against
+  // overlapping refreshes itself.
+  useEffect(() => {
+    if (panelOpen) void refreshPrTasks();
+  }, [panelOpen, refreshPrTasks]);
 
   const openMeetings = useOpenMeetings();
 
@@ -130,8 +143,14 @@ export function TasksPanel() {
     return groups;
   }, [meetings]);
 
+  const prTasksCount = useMemo(
+    () => prTaskGroups.reduce((sum, g) => sum + g.tasks.length, 0),
+    [prTaskGroups],
+  );
+
   const totalCount = outstandingManual.length +
-    meetingGroups.reduce((sum, g) => sum + g.items.length, 0);
+    meetingGroups.reduce((sum, g) => sum + g.items.length, 0) +
+    prTasksCount;
 
   if (!panelOpen) return null;
 
@@ -168,6 +187,14 @@ export function TasksPanel() {
   function openMeeting(meetingId: string) {
     void selectMeeting(meetingId);
     openMeetings();
+  }
+
+  async function checkPrTask(prId: number, taskId: number) {
+    try {
+      await resolvePrTaskAction(prId, taskId);
+    } catch (e) {
+      toast.error("Failed to resolve PR task", { description: String(e) });
+    }
   }
 
   return (
@@ -275,10 +302,60 @@ export function TasksPanel() {
                 ))}
               </Section>
             )}
+
+            {prTaskGroups.length > 0 && (
+              <Section title="From PRs">
+                {prTaskGroups.map((g) => (
+                  <div key={g.pr.id} className="space-y-0.5">
+                    <button
+                      onClick={() => g.pr.url && openUrl(g.pr.url)}
+                      className="w-full flex items-center gap-1.5 text-left px-3 py-1 text-xs font-medium text-muted-foreground hover:text-foreground truncate"
+                      title={`#${g.pr.id} — ${g.pr.title}`}
+                    >
+                      <GitPullRequest className="h-3 w-3 shrink-0" />
+                      <span className="truncate">{g.pr.title}</span>
+                    </button>
+                    {g.tasks.map((t) => (
+                      <PrTaskRow
+                        key={t.id}
+                        text={t.content}
+                        onCheck={() => void checkPrTask(g.pr.id, t.id)}
+                        onOpen={() => g.pr.url && openUrl(g.pr.url)}
+                      />
+                    ))}
+                  </div>
+                ))}
+              </Section>
+            )}
           </div>
         )}
       </div>
     </aside>
+  );
+}
+
+function PrTaskRow({
+  text,
+  onCheck,
+  onOpen,
+}: {
+  text: string;
+  onCheck: () => void;
+  onOpen: () => void;
+}) {
+  return (
+    <div className="flex items-start gap-2 px-3 py-1.5 hover:bg-muted/40">
+      <Checkbox onCheck={onCheck} />
+      <button
+        onClick={onOpen}
+        // Click the text to open the PR on Bitbucket; click the
+        // checkbox to mark the task resolved (handled separately above
+        // so clicks don't fall through).
+        className="flex-1 text-left text-sm leading-tight hover:underline whitespace-pre-wrap break-words"
+      >
+        {text}
+      </button>
+    </div>
   );
 }
 

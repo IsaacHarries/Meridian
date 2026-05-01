@@ -1752,18 +1752,52 @@ function DiffSectionCard({
       id={`diff-file-${sanitizeId(section.path)}`}
       className="border rounded-md border-border"
     >
-      {/* Sticky file header — stays in view while scrolling through the file */}
+      {/* Sticky file header — stays in view while scrolling through the file.
+          Implemented as a div+role="button" rather than a real <button> so
+          the file path inside can be selected and copied. Native <button>
+          elements suppress text selection in most browsers even with
+          `user-select: text` on a child, which broke the path-copy UX. */}
       <div
         className="sticky z-10 border-b border-border rounded-t-md overflow-hidden backdrop-blur-sm"
         style={{ top: stickyTopOffset }}
       >
-        <button
-          className="w-full flex items-center gap-2 px-3 py-2 bg-muted/80 hover:bg-muted/90 transition-colors text-left focus:outline-none"
-          onClick={onToggleExpand}
+        <div
+          role="button"
+          tabIndex={0}
+          aria-expanded={expanded}
+          className="w-full flex items-center gap-2 px-3 py-2 bg-muted/80 hover:bg-muted/90 transition-colors text-left focus:outline-none cursor-pointer"
+          onClick={(e) => {
+            // If the user just finished a click-and-drag text selection
+            // (anchored anywhere inside this header row), the browser
+            // still fires a click on the row's LCA — skip the toggle so
+            // releasing the drag-select doesn't collapse the file.
+            const sel = window.getSelection();
+            if (sel && sel.toString().length > 0) {
+              const row = e.currentTarget as HTMLElement;
+              if (
+                (sel.anchorNode && row.contains(sel.anchorNode)) ||
+                (sel.focusNode && row.contains(sel.focusNode))
+              ) {
+                return;
+              }
+            }
+            onToggleExpand();
+          }}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" || e.key === " ") {
+              e.preventDefault();
+              onToggleExpand();
+            }
+          }}
         >
           <FileCode className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
           <span
             className="flex-1 text-xs font-mono truncate select-text cursor-text"
+            // Stop propagation so click-and-drag on the path doesn't get
+            // misread by the parent. The parent also guards against
+            // toggling when a text selection was just made inside the
+            // row, which catches drag-select cases the browser routes
+            // straight to the parent's click handler.
             onClick={(e) => e.stopPropagation()}
             onMouseDown={(e) => e.stopPropagation()}
             onMouseUp={(e) => e.stopPropagation()}
@@ -1778,10 +1812,37 @@ function DiffSectionCard({
             </span>
           )}
           {expanded ? <ChevronDown className="h-3.5 w-3.5 text-muted-foreground shrink-0 ml-1" /> : <ChevronRight className="h-3.5 w-3.5 text-muted-foreground shrink-0 ml-1" />}
-        </button>
+        </div>
       </div>
       {expanded && (
-        <div className="overflow-x-auto overflow-y-clip [--tw-ring-shadow:0_0_#0000] [--tw-ring-offset-shadow:0_0_#0000]">
+        <div
+          className="overflow-x-auto overflow-y-clip [--tw-ring-shadow:0_0_#0000] [--tw-ring-offset-shadow:0_0_#0000]"
+          // The horizontal scroll container also captures wheel events
+          // for *vertical* scrolling in some browsers, even with
+          // `overflow-y: clip` set, which makes vertical scrolling stall
+          // when the cursor sits over the diff body. Explicitly forward
+          // any wheel event whose dominant axis is vertical to the
+          // nearest ancestor scroller.
+          onWheel={(e) => {
+            if (Math.abs(e.deltaY) <= Math.abs(e.deltaX)) return;
+            const target = e.currentTarget as HTMLElement;
+            // Walk up to find a vertically scrollable ancestor (the
+            // diff pane). data-pr-diff-pane marks the canonical one.
+            let parent: HTMLElement | null = target.parentElement;
+            while (parent) {
+              const style = window.getComputedStyle(parent);
+              const overflowY = style.overflowY;
+              const canScrollY =
+                (overflowY === "auto" || overflowY === "scroll") &&
+                parent.scrollHeight > parent.clientHeight;
+              if (canScrollY) break;
+              parent = parent.parentElement;
+            }
+            if (parent) {
+              parent.scrollTop += e.deltaY;
+            }
+          }}
+        >
           {renderItems.map((item, itemIdx) => {
             if (item.kind === "gap") {
               const isExpanded = expandedGaps.has(item.gapId);

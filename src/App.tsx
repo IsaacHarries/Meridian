@@ -9,6 +9,7 @@ import { Loader2 } from "lucide-react";
 import { Toaster } from "sonner";
 import { type CredentialStatus, credentialStatusComplete, getCredentialStatus, getNonSecretConfig, setLocalLlmUrlCache, jiraComplete, bitbucketComplete } from "@/lib/tauri";
 import { useWorkloadAlertStore, POLL_INTERVAL_MS } from "@/stores/workloadAlertStore";
+import { usePrTasksStore, PR_TASKS_POLL_INTERVAL_MS } from "@/stores/prTasksStore";
 import { BackgroundRenderer, getBackgroundId, useBgChangeListener } from "@/lib/backgrounds";
 import { hydrateImplementStore } from "@/stores/implementTicketStore";
 import { hydratePrReviewStore } from "@/stores/prReviewStore";
@@ -104,6 +105,7 @@ function AppInner() {
   }, []);
 
   const checkWorkload = useWorkloadAlertStore((s) => s.checkWorkload);
+  const refreshPrTasks = usePrTasksStore((s) => s.refresh);
 
   useEffect(() => {
     // Poll the workload store so the Sprint Dashboard landing-card badge stays
@@ -113,6 +115,27 @@ function AppInner() {
     const interval = setInterval(() => void checkWorkload(), POLL_INTERVAL_MS);
     return () => clearInterval(interval);
   }, [credStatus, checkWorkload]);
+
+  useEffect(() => {
+    // Pull the user's Bitbucket PR-tasks into the right-hand Tasks panel.
+    // Background poll runs hourly so we don't hammer the Bitbucket API.
+    // The Tasks panel triggers its own refresh on open and we also
+    // refresh on window focus so freshly-returning-to-the-app users
+    // don't see stale data — those two together cover the "I just came
+    // back" case without needing a tighter polling cadence.
+    if (!credStatus || !bitbucketComplete(credStatus)) return;
+    void refreshPrTasks();
+    const interval = setInterval(
+      () => void refreshPrTasks(),
+      PR_TASKS_POLL_INTERVAL_MS,
+    );
+    const onFocus = () => void refreshPrTasks();
+    window.addEventListener("focus", onFocus);
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener("focus", onFocus);
+    };
+  }, [credStatus, refreshPrTasks]);
 
   const openSettings = useCallback(() => {
     if (screen === "settings") return;
