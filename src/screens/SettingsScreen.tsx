@@ -60,6 +60,7 @@ import {
   Clock,
   Plus,
   Filter,
+  ListTodo,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { HeaderSettingsButton } from "@/components/HeaderSettingsButton";
@@ -5708,6 +5709,7 @@ export function SettingsScreen({ onClose, onNavigate }: SettingsScreenProps) {
       ? [{ id: "agents", label: "Agents", icon: Bot } as NavItem]
       : []),
     { id: "integrations", label: "Integrations", icon: Link2 },
+    { id: "tasks", label: "Tasks", icon: ListTodo },
     { id: "appearance", label: "Appearance", icon: Palette },
     { id: "storage", label: "Storage", icon: HardDrive },
     { id: "time-tracking", label: "Time", icon: Clock },
@@ -5876,13 +5878,20 @@ export function SettingsScreen({ onClose, onNavigate }: SettingsScreenProps) {
                   isConfigured={bitbucketCredentialsSet(credStatus)}
                   onSaved={refresh}
                 />
-                <PrTaskFiltersSection />
                 <ConfigSection
                   jiraBoardId={credStatus.jiraBoardId}
                   bitbucketRepoSlug={credStatus.bitbucketRepoSlug}
                   onSaved={refresh}
                 />
                 <DataTestSection fullyConfigured={fullyConfigured} />
+              </section>
+
+              <section
+                ref={sectionRef("tasks")}
+                className="space-y-4 border-t pt-8"
+              >
+                <h2 className="text-xl font-semibold text-foreground">Tasks</h2>
+                <PrTaskFiltersSection />
               </section>
 
               <section
