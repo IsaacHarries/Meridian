@@ -40,6 +40,7 @@ import { MarkdownBlock } from "@/components/MarkdownBlock";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { WorkflowPanelHeader, APP_HEADER_TITLE } from "@/components/appHeaderLayout";
+import { TokenUsageBadge } from "@/components/TokenUsageBadge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
@@ -2002,6 +2003,12 @@ export function TicketQualityScreen({ credStatus, onBack }: TicketQualityScreenP
               </p>
             </div>
           </>
+        }
+        trailing={
+          <TokenUsageBadge
+            panel="ticket_quality"
+            inFlight={session?.thinking ?? false}
+          />
         }
       />
 

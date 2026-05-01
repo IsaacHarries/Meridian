@@ -6,6 +6,7 @@ import { Badge } from "@/components/ui/badge";
 import { SlashCommandInput } from "@/components/SlashCommandInput";
 import { createGlobalCommands, type SlashCommand } from "@/lib/slashCommands";
 import { WorkflowPanelHeader, APP_HEADER_TITLE } from "@/components/appHeaderLayout";
+import { TokenUsageBadge } from "@/components/TokenUsageBadge";
 import {
   type CredentialStatus,
   type BitbucketPr,
@@ -755,6 +756,9 @@ export function AddressPrCommentsScreen({ credStatus, onBack }: Props) {
             </Button>
             <h1 className={APP_HEADER_TITLE}>Address PR Tasks & Comments</h1>
           </>
+        }
+        trailing={
+          <TokenUsageBadge panel="address_pr" inFlight={chatLoading} />
         }
       />
 

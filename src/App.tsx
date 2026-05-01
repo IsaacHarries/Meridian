@@ -9,9 +9,11 @@ import { Loader2 } from "lucide-react";
 import { Toaster } from "sonner";
 import { type CredentialStatus, credentialStatusComplete, getCredentialStatus, getNonSecretConfig, setLocalLlmUrlCache, jiraComplete, bitbucketComplete } from "@/lib/tauri";
 import { useWorkloadAlertStore, POLL_INTERVAL_MS } from "@/stores/workloadAlertStore";
-import { usePrTasksStore, PR_TASKS_POLL_INTERVAL_MS } from "@/stores/prTasksStore";
+import { usePrTasksStore } from "@/stores/prTasksStore";
+import { getAppPreferences, APP_PREFERENCE_DEFAULTS } from "@/lib/appPreferences";
 import { BackgroundRenderer, getBackgroundId, useBgChangeListener } from "@/lib/backgrounds";
-import { hydrateImplementStore } from "@/stores/implementTicketStore";
+import { hydrateImplementStore, setStreamingPartialsEnabledRuntime } from "@/stores/implementTicketStore";
+import { setRuntimeOverloadPct } from "@/lib/workloadClassifier";
 import { hydratePrReviewStore } from "@/stores/prReviewStore";
 import { hydrateMeetingsStore } from "@/stores/meetingsStore";
 import { hydrateTasksStore, useTasksStore } from "@/stores/tasksStore";
@@ -93,6 +95,15 @@ function AppInner() {
       usePrTasksStore.getState().hydrateFilters(),
     ]);
 
+    // Hydrate runtime flags driven by user preferences. These map to
+    // module-level toggles in their respective stores so the listeners
+    // can consult them on every event without round-tripping through
+    // React state.
+    void getAppPreferences().then((prefs) => {
+      setStreamingPartialsEnabledRuntime(prefs.streamingPartialsEnabled);
+      setRuntimeOverloadPct(prefs.workloadOverloadThresholdPct);
+    });
+
     getCredentialStatus()
       .then((status) => {
         setCredStatus(status);
@@ -122,21 +133,27 @@ function AppInner() {
 
   useEffect(() => {
     // Pull the user's Bitbucket PR-tasks into the right-hand Tasks panel.
-    // Background poll runs hourly so we don't hammer the Bitbucket API.
-    // The Tasks panel triggers its own refresh on open and we also
-    // refresh on window focus so freshly-returning-to-the-app users
-    // don't see stale data — those two together cover the "I just came
-    // back" case without needing a tighter polling cadence.
+    // Polling cadence is user-configurable (Settings → Tasks → poll
+    // interval); we read it once on mount and rebuild the interval if
+    // it changes. The Tasks panel triggers its own refresh on open and
+    // we also refresh on window focus so freshly-returning-to-the-app
+    // users don't see stale data.
     if (!credStatus || !bitbucketComplete(credStatus)) return;
-    void refreshPrTasks();
-    const interval = setInterval(
-      () => void refreshPrTasks(),
-      PR_TASKS_POLL_INTERVAL_MS,
-    );
+    let cancelled = false;
+    let interval: ReturnType<typeof setInterval> | null = null;
     const onFocus = () => void refreshPrTasks();
-    window.addEventListener("focus", onFocus);
+    void getAppPreferences().then((prefs) => {
+      if (cancelled) return;
+      const minutes =
+        prefs.prTasksPollIntervalMinutes ||
+        APP_PREFERENCE_DEFAULTS.prTasksPollIntervalMinutes;
+      void refreshPrTasks();
+      interval = setInterval(() => void refreshPrTasks(), minutes * 60 * 1000);
+      window.addEventListener("focus", onFocus);
+    });
     return () => {
-      clearInterval(interval);
+      cancelled = true;
+      if (interval) clearInterval(interval);
       window.removeEventListener("focus", onFocus);
     };
   }, [credStatus, refreshPrTasks]);

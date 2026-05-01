@@ -37,13 +37,28 @@ function isNeedsReview(issue: JiraIssue): boolean {
  *   waiting on someone else and shouldn't push a dev over capacity.
  * - Every developer (including zero-point ones) is then classified against
  *   that average:
- *     > 140% → overloaded
- *     < 60%  → underutilised  (only when avg > 0)
+ *     > overloadPct% → overloaded   (default 140; user-tunable in Settings)
+ *     < (100 - (overloadPct - 100))%  → underutilised (mirrors above
+ *       threshold around 100%, only when avg > 0)
  *     else   → balanced
  */
+
+/** Cached threshold seeded from preferences at app start. Lets sync
+ *  call sites avoid threading the value through every layer. */
+let runtimeOverloadPct = 140;
+
+export function setRuntimeOverloadPct(value: number): void {
+  runtimeOverloadPct = value;
+}
+
 export function classifyWorkloads(
   issues: JiraIssue[],
   openPrs: BitbucketPr[],
+  /** Overload threshold as a percentage of the team average. The
+   *  underutilised threshold is mirrored around 100% (so 140 →
+   *  >140% overloaded, <60% underutilised; 130 → >130% / <70%).
+   *  Defaults to the runtime value seeded from preferences. */
+  overloadPct: number = runtimeOverloadPct,
 ): DevWorkload[] {
   const map = new Map<string, JiraIssue[]>();
   for (const issue of issues) {
@@ -67,11 +82,17 @@ export function classifyWorkloads(
   if (withWork.length > 1) {
     const avgTickets =
       withWork.reduce((s, d) => s + d.remainingTickets, 0) / withWork.length;
+    // Mirror the over-threshold around 100% to derive the under-
+    // threshold. Clamp to [1, 99] so a misconfigured value (≤100 or
+    // ≥200) can't invert the classification.
+    const safePct = Math.max(101, Math.min(199, overloadPct));
+    const overFactor = safePct / 100;
+    const underFactor = (200 - safePct) / 100;
     // Classification applied to ALL developers (including zero-point ones)
     for (const d of raw) {
-      if (d.remainingTickets > avgTickets * 1.4) {
+      if (d.remainingTickets > avgTickets * overFactor) {
         d.loadStatus = "overloaded";
-      } else if (d.remainingTickets < avgTickets * 0.6 && avgTickets > 0) {
+      } else if (d.remainingTickets < avgTickets * underFactor && avgTickets > 0) {
         d.loadStatus = "underutilised";
       }
     }

@@ -24,6 +24,22 @@ import {
 } from "@/lib/prTaskFilters";
 import { usePrTasksStore } from "@/stores/prTasksStore";
 import {
+  type AppPreferences,
+  APP_PREFERENCE_DEFAULTS,
+  getAppPreferences,
+  setPrReviewDefaultChunkChars,
+  setPrTasksPollIntervalMinutes,
+  setBuildCheckTimeoutSecs,
+  setBuildCheckMaxAttempts,
+  setStreamingPartialsEnabled,
+  setWorkloadOverloadThresholdPct,
+  setDailyTokenBudget,
+  setNotifyPrTaskAdded,
+  setNotifyAgentStageComplete,
+} from "@/lib/appPreferences";
+import { setStreamingPartialsEnabledRuntime } from "@/stores/implementTicketStore";
+import { setRuntimeOverloadPct } from "@/lib/workloadClassifier";
+import {
   BACKGROUNDS,
   CATEGORY_LABELS,
   BackgroundRenderer,
@@ -61,6 +77,9 @@ import {
   Plus,
   Filter,
   ListTodo,
+  Activity,
+  Bell,
+  Gauge,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { HeaderSettingsButton } from "@/components/HeaderSettingsButton";
@@ -3516,6 +3535,419 @@ function PrTaskFilterRow({
   );
 }
 
+// ── App preferences hook ──────────────────────────────────────────────────────
+//
+// Load + write the typed app preferences that the per-feature setting
+// cards below all share. Each card calls `update(key, value)` to commit
+// a single field; the hook persists via the matching setter and reflects
+// the new value back through component state immediately so the UI feels
+// responsive without re-fetching.
+
+function useAppPreferencesEditor() {
+  const [prefs, setPrefs] = useState<AppPreferences | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    void getAppPreferences().then((p) => {
+      if (alive) setPrefs(p);
+    });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  async function update<K extends keyof AppPreferences>(
+    key: K,
+    value: AppPreferences[K],
+  ): Promise<void> {
+    setPrefs((prior) => (prior ? { ...prior, [key]: value } : prior));
+    try {
+      switch (key) {
+        case "prReviewDefaultChunkChars":
+          await setPrReviewDefaultChunkChars(value as number);
+          break;
+        case "prTasksPollIntervalMinutes":
+          await setPrTasksPollIntervalMinutes(value as number);
+          break;
+        case "buildCheckTimeoutSecs":
+          await setBuildCheckTimeoutSecs(value as number);
+          break;
+        case "buildCheckMaxAttempts":
+          await setBuildCheckMaxAttempts(value as number);
+          break;
+        case "streamingPartialsEnabled":
+          await setStreamingPartialsEnabled(value as boolean);
+          // Update the runtime gate immediately so the next pipeline
+          // event respects the new setting without an app restart.
+          setStreamingPartialsEnabledRuntime(value as boolean);
+          break;
+        case "workloadOverloadThresholdPct":
+          await setWorkloadOverloadThresholdPct(value as number);
+          setRuntimeOverloadPct(value as number);
+          break;
+        case "dailyTokenBudget":
+          await setDailyTokenBudget(value as number | null);
+          break;
+        case "notifyPrTaskAdded":
+          await setNotifyPrTaskAdded(value as boolean);
+          break;
+        case "notifyAgentStageComplete":
+          await setNotifyAgentStageComplete(value as boolean);
+          break;
+      }
+      setError(null);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  return { prefs, error, update };
+}
+
+// Tiny helper that renders a labelled number input with a "default: N"
+// hint and a reset-to-default button. Used by every numeric pref card
+// below so the UX stays consistent.
+function NumberPreferenceField({
+  label,
+  helper,
+  value,
+  defaultValue,
+  min,
+  max,
+  step,
+  unit,
+  onChange,
+}: {
+  label: string;
+  helper?: string;
+  value: number;
+  defaultValue: number;
+  min?: number;
+  max?: number;
+  step?: number;
+  unit?: string;
+  onChange: (next: number) => void;
+}) {
+  return (
+    <div className="space-y-1">
+      <Label className="text-sm font-medium">{label}</Label>
+      <div className="flex items-center gap-2">
+        <Input
+          type="number"
+          inputMode="numeric"
+          value={Number.isFinite(value) ? value : ""}
+          min={min}
+          max={max}
+          step={step ?? 1}
+          onChange={(e) => {
+            const n = Number.parseFloat(e.target.value);
+            if (Number.isFinite(n)) onChange(n);
+          }}
+          className="h-8 w-32 text-sm"
+        />
+        {unit && <span className="text-xs text-muted-foreground">{unit}</span>}
+        {value !== defaultValue && (
+          <Button
+            type="button"
+            size="sm"
+            variant="ghost"
+            className="h-7 px-2 text-xs"
+            onClick={() => onChange(defaultValue)}
+            title={`Reset to default (${defaultValue})`}
+          >
+            Reset
+          </Button>
+        )}
+      </div>
+      {helper && (
+        <p className="text-xs text-muted-foreground">
+          {helper} {`Default: ${defaultValue}.`}
+        </p>
+      )}
+    </div>
+  );
+}
+
+function ToggleRow({
+  label,
+  helper,
+  checked,
+  onChange,
+}: {
+  label: string;
+  helper?: string;
+  checked: boolean;
+  onChange: (next: boolean) => void;
+}) {
+  return (
+    <label className="flex items-start gap-3 cursor-pointer select-none">
+      <input
+        type="checkbox"
+        checked={checked}
+        onChange={(e) => onChange(e.target.checked)}
+        className="mt-1 h-4 w-4 cursor-pointer"
+      />
+      <div className="space-y-0.5">
+        <span className="text-sm font-medium">{label}</span>
+        {helper && (
+          <p className="text-xs text-muted-foreground leading-snug">{helper}</p>
+        )}
+      </div>
+    </label>
+  );
+}
+
+// ── Implementation pipeline tunables ──────────────────────────────────────────
+
+function PipelineSettingsSection() {
+  const { prefs, error, update } = useAppPreferencesEditor();
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <CardTitle className="text-base flex items-center gap-2">
+          <Activity className="h-4 w-4 text-muted-foreground" />
+          Implement Ticket Pipeline
+        </CardTitle>
+        <CardDescription className="text-xs mt-0.5">
+          Tunables for the per-stage agents and the build-verify sub-loop.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {!prefs ? (
+          <p className="text-xs text-muted-foreground">Loading…</p>
+        ) : (
+          <>
+            <NumberPreferenceField
+              label="Build-check timeout"
+              helper="Per-attempt wall-clock cap on the build command."
+              value={prefs.buildCheckTimeoutSecs}
+              defaultValue={APP_PREFERENCE_DEFAULTS.buildCheckTimeoutSecs}
+              min={10}
+              max={1800}
+              step={30}
+              unit="seconds"
+              onChange={(n) => void update("buildCheckTimeoutSecs", n)}
+            />
+            <NumberPreferenceField
+              label="Build-check max attempts"
+              helper="Combined build + fix iterations before the pipeline gives up."
+              value={prefs.buildCheckMaxAttempts}
+              defaultValue={APP_PREFERENCE_DEFAULTS.buildCheckMaxAttempts}
+              min={1}
+              max={10}
+              onChange={(n) => void update("buildCheckMaxAttempts", n)}
+            />
+            <ToggleRow
+              label="Stream partial output into stage panels"
+              helper="When on, each stage's structured panel fills in field-by-field as the agent emits JSON. Off renders the whole panel at once when the stage finishes (less busy, slightly later)."
+              checked={prefs.streamingPartialsEnabled}
+              onChange={(b) => void update("streamingPartialsEnabled", b)}
+            />
+          </>
+        )}
+        {error && <p className="text-xs text-destructive">{error}</p>}
+      </CardContent>
+    </Card>
+  );
+}
+
+// ── PR Review tunables ────────────────────────────────────────────────────────
+
+function PrReviewSettingsSection() {
+  const { prefs, error, update } = useAppPreferencesEditor();
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <CardTitle className="text-base flex items-center gap-2">
+          <Gauge className="h-4 w-4 text-muted-foreground" />
+          PR Review
+        </CardTitle>
+        <CardDescription className="text-xs mt-0.5">
+          Limits applied when sending PR diffs to the reviewer agent.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {!prefs ? (
+          <p className="text-xs text-muted-foreground">Loading…</p>
+        ) : (
+          <NumberPreferenceField
+            label="Default chunk size (cloud models)"
+            helper="Maximum characters per chunk before the workflow splits a large diff into a multi-pass review. Local models stay pinned to 12,000 — the constraint there is the model's context window."
+            value={prefs.prReviewDefaultChunkChars}
+            defaultValue={APP_PREFERENCE_DEFAULTS.prReviewDefaultChunkChars}
+            min={4_000}
+            max={200_000}
+            step={4_000}
+            unit="characters"
+            onChange={(n) => void update("prReviewDefaultChunkChars", n)}
+          />
+        )}
+        {error && <p className="text-xs text-destructive">{error}</p>}
+      </CardContent>
+    </Card>
+  );
+}
+
+// ── Sprint Dashboard tunables ────────────────────────────────────────────────
+
+function SprintDashboardSettingsSection() {
+  const { prefs, error, update } = useAppPreferencesEditor();
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <CardTitle className="text-base flex items-center gap-2">
+          <Activity className="h-4 w-4 text-muted-foreground" />
+          Sprint Dashboard
+        </CardTitle>
+        <CardDescription className="text-xs mt-0.5">
+          Workload classification thresholds for the per-developer load
+          status (Overloaded / Balanced / Underutilised).
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {!prefs ? (
+          <p className="text-xs text-muted-foreground">Loading…</p>
+        ) : (
+          <NumberPreferenceField
+            label="Overload threshold"
+            helper="A developer is flagged Overloaded when their remaining ticket count exceeds this percentage of the team average. The Underutilised threshold is mirrored around 100% (e.g. 140 → > 140% overloaded, < 60% underutilised)."
+            value={prefs.workloadOverloadThresholdPct}
+            defaultValue={APP_PREFERENCE_DEFAULTS.workloadOverloadThresholdPct}
+            min={101}
+            max={199}
+            step={5}
+            unit="% of team avg"
+            onChange={(n) => void update("workloadOverloadThresholdPct", n)}
+          />
+        )}
+        {error && <p className="text-xs text-destructive">{error}</p>}
+      </CardContent>
+    </Card>
+  );
+}
+
+// ── Notifications + token budget ─────────────────────────────────────────────
+
+function NotificationsSettingsSection() {
+  const { prefs, error, update } = useAppPreferencesEditor();
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <CardTitle className="text-base flex items-center gap-2">
+          <Bell className="h-4 w-4 text-muted-foreground" />
+          Notifications & Token Budget
+        </CardTitle>
+        <CardDescription className="text-xs mt-0.5">
+          Optional in-app alerts and a soft daily cap on cumulative LLM
+          token usage. The token budget only surfaces a toast — it does
+          not block agent runs.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {!prefs ? (
+          <p className="text-xs text-muted-foreground">Loading…</p>
+        ) : (
+          <>
+            <ToggleRow
+              label="Toast when a new PR-task is detected"
+              helper="Triggered by the Tasks-panel poller when a teammate adds a task to one of your authored PRs."
+              checked={prefs.notifyPrTaskAdded}
+              onChange={(b) => void update("notifyPrTaskAdded", b)}
+            />
+            <ToggleRow
+              label="Toast when an agent finishes a stage"
+              helper="Fires on every interrupt the implement-ticket pipeline emits — useful when you've stepped away mid-run."
+              checked={prefs.notifyAgentStageComplete}
+              onChange={(b) => void update("notifyAgentStageComplete", b)}
+            />
+            <div className="space-y-1">
+              <Label className="text-sm font-medium">Daily token budget</Label>
+              <div className="flex items-center gap-2">
+                <Input
+                  type="number"
+                  inputMode="numeric"
+                  value={prefs.dailyTokenBudget ?? ""}
+                  placeholder="Off"
+                  min={1}
+                  step={10_000}
+                  onChange={(e) => {
+                    const raw = e.target.value.trim();
+                    if (raw === "") {
+                      void update("dailyTokenBudget", null);
+                      return;
+                    }
+                    const n = Number.parseInt(raw, 10);
+                    if (Number.isFinite(n) && n > 0) {
+                      void update("dailyTokenBudget", n);
+                    }
+                  }}
+                  className="h-8 w-40 text-sm"
+                />
+                <span className="text-xs text-muted-foreground">tokens / day</span>
+                {prefs.dailyTokenBudget !== null && (
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="h-7 px-2 text-xs"
+                    onClick={() => void update("dailyTokenBudget", null)}
+                    title="Disable budget"
+                  >
+                    Off
+                  </Button>
+                )}
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Surfaces a one-time toast when cumulative tokens for the
+                local day exceed this value. Leave empty to disable.
+              </p>
+            </div>
+          </>
+        )}
+        {error && <p className="text-xs text-destructive">{error}</p>}
+      </CardContent>
+    </Card>
+  );
+}
+
+// ── Tasks panel poll interval (extends the existing Tasks section) ───────────
+
+function PrTasksPollIntervalSection() {
+  const { prefs, error, update } = useAppPreferencesEditor();
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <CardTitle className="text-base flex items-center gap-2">
+          <ListTodo className="h-4 w-4 text-muted-foreground" />
+          Tasks panel sync
+        </CardTitle>
+        <CardDescription className="text-xs mt-0.5">
+          How often the Tasks panel polls Bitbucket for new PR-tasks.
+          The panel also refreshes on window focus and when you open it,
+          so a longer interval is safe.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        {!prefs ? (
+          <p className="text-xs text-muted-foreground">Loading…</p>
+        ) : (
+          <NumberPreferenceField
+            label="Poll interval"
+            value={prefs.prTasksPollIntervalMinutes}
+            defaultValue={APP_PREFERENCE_DEFAULTS.prTasksPollIntervalMinutes}
+            min={5}
+            max={1440}
+            step={15}
+            unit="minutes"
+            onChange={(n) => void update("prTasksPollIntervalMinutes", n)}
+          />
+        )}
+        {error && <p className="text-xs text-destructive">{error}</p>}
+      </CardContent>
+    </Card>
+  );
+}
+
 // ── Configuration section (non-secret app settings) ──────────────────────────
 
 function ConfigSection({
@@ -5710,6 +6142,8 @@ export function SettingsScreen({ onClose, onNavigate }: SettingsScreenProps) {
       : []),
     { id: "integrations", label: "Integrations", icon: Link2 },
     { id: "tasks", label: "Tasks", icon: ListTodo },
+    { id: "pipeline", label: "Workflows", icon: Activity },
+    { id: "notifications", label: "Notifications", icon: Bell },
     { id: "appearance", label: "Appearance", icon: Palette },
     { id: "storage", label: "Storage", icon: HardDrive },
     { id: "time-tracking", label: "Time", icon: Clock },
@@ -5891,7 +6325,30 @@ export function SettingsScreen({ onClose, onNavigate }: SettingsScreenProps) {
                 className="space-y-4 border-t pt-8"
               >
                 <h2 className="text-xl font-semibold text-foreground">Tasks</h2>
+                <PrTasksPollIntervalSection />
                 <PrTaskFiltersSection />
+              </section>
+
+              <section
+                ref={sectionRef("pipeline")}
+                className="space-y-4 border-t pt-8"
+              >
+                <h2 className="text-xl font-semibold text-foreground">
+                  Workflows
+                </h2>
+                <PipelineSettingsSection />
+                <PrReviewSettingsSection />
+                <SprintDashboardSettingsSection />
+              </section>
+
+              <section
+                ref={sectionRef("notifications")}
+                className="space-y-4 border-t pt-8"
+              >
+                <h2 className="text-xl font-semibold text-foreground">
+                  Notifications
+                </h2>
+                <NotificationsSettingsSection />
               </section>
 
               <section

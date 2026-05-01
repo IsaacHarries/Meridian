@@ -26,11 +26,13 @@ import {
   getPrTasks,
   resolvePrTask,
 } from "@/lib/tauri";
+import { toast } from "sonner";
 import {
   type PrTaskFilter,
   getPrTaskFilters,
   matchesAnyFilter,
 } from "@/lib/prTaskFilters";
+import { getAppPreferences } from "@/lib/appPreferences";
 
 export const PR_TASKS_POLL_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
 
@@ -123,6 +125,38 @@ export const usePrTasksStore = create<PrTasksState>()((set, get) => ({
         // what the user wants to see at the top.
         .sort((a, b) => b.pr.updatedOn.localeCompare(a.pr.updatedOn));
       const filters = get().filters;
+      // Detect newly-arrived task ids so we can fire a toast when the
+      // user has opted in. Compared against the prior raw fetch — by
+      // task id, scoped per PR — so re-polls don't spam.
+      const priorIds = new Set<string>();
+      for (const g of get().rawEntries) {
+        for (const t of g.tasks) priorIds.add(`${g.pr.id}:${t.id}`);
+      }
+      const newTaskCount = rawEntries.reduce((sum, g) => {
+        return (
+          sum + g.tasks.filter((t) => !priorIds.has(`${g.pr.id}:${t.id}`)).length
+        );
+      }, 0);
+      // Only toast when there was a prior fetch — otherwise the very
+      // first refresh after launch would announce every existing task.
+      if (newTaskCount > 0 && get().lastFetchedAt !== null) {
+        try {
+          const appPrefs = await getAppPreferences();
+          if (appPrefs.notifyPrTaskAdded) {
+            toast.message(
+              newTaskCount === 1
+                ? "1 new PR task"
+                : `${newTaskCount} new PR tasks`,
+              {
+                description:
+                  "From PRs you authored — check the Tasks panel.",
+              },
+            );
+          }
+        } catch {
+          // Pref read failure shouldn't break the refresh path.
+        }
+      }
       set({
         rawEntries,
         entries: applyFilters(rawEntries, filters),

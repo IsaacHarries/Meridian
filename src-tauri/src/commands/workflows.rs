@@ -201,6 +201,14 @@ pub async fn run_implementation_pipeline_workflow(
             .unwrap_or(false);
     let build_check_command =
         crate::storage::preferences::get_pref("build_check_command").unwrap_or_default();
+    let build_check_timeout_secs = crate::storage::preferences::get_pref("build_check_timeout_secs")
+        .and_then(|v| v.parse::<u32>().ok())
+        .filter(|&v| v > 0 && v <= 1800)
+        .unwrap_or(300);
+    let build_check_max_attempts = crate::storage::preferences::get_pref("build_check_max_attempts")
+        .and_then(|v| v.parse::<u32>().ok())
+        .filter(|&v| v > 0 && v <= 10)
+        .unwrap_or(3);
 
     // Read the user's grooming format templates from disk and bundle them
     // into the workflow input. Mirrors `run_grooming_workflow` /
@@ -224,6 +232,8 @@ pub async fn run_implementation_pipeline_workflow(
         "prTemplate": args.pr_template,
         "buildVerifyEnabled": build_verify_enabled,
         "buildCheckCommand": build_check_command,
+        "buildCheckTimeoutSecs": build_check_timeout_secs,
+        "buildCheckMaxAttempts": build_check_max_attempts,
     });
 
     crate::integrations::sidecar::run_workflow(
@@ -311,11 +321,21 @@ pub async fn run_pr_review_workflow(
 
     // Local LLMs have much smaller usable context windows than cloud providers.
     // Use the same per-provider budgets the old Rust review_pr used so chunking
-    // behaviour is unchanged for users on local models.
+    // behaviour is unchanged for users on local models. The cloud-side default
+    // is user-overridable (Settings → PR Review → chunk size); local stays
+    // pinned at 12k since the constraint is the model's window, not preference.
     let (chunk_chars, findings_budget) = if model.provider == "ollama" {
         (12_000u32, 4_000u32)
     } else {
-        (80_000u32, 40_000u32)
+        let user_chunk = crate::storage::preferences::get_pref("pr_review_default_chunk_chars")
+            .and_then(|v| v.parse::<u32>().ok())
+            .filter(|&v| v >= 4_000 && v <= 200_000)
+            .unwrap_or(80_000);
+        // Findings budget scales linearly with chunk size — the prior 80k/40k
+        // ratio (0.5x) keeps the synthesis prompt within the same proportion
+        // of the chunk budget at any setting.
+        let findings = (user_chunk / 2).max(4_000);
+        (user_chunk, findings)
     };
 
     // Project-specific Agent Skills are appended to the synthesis system

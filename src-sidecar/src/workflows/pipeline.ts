@@ -126,6 +126,12 @@ export const PipelineInputSchema = z.object({
    *  failure. Off by default; the user toggles it in Settings. */
   buildVerifyEnabled: z.boolean().optional().default(false),
   buildCheckCommand: z.string().optional().default(""),
+  /** Per-attempt timeout for the build command in seconds. Default 300
+   *  (5 min). Capped at 1800 in case the user typoed and entered hours. */
+  buildCheckTimeoutSecs: z.number().int().positive().max(1800).optional().default(300),
+  /** Max combined build+fix attempts before the pipeline gives up and
+   *  surfaces the failure chain at the implementation checkpoint. */
+  buildCheckMaxAttempts: z.number().int().positive().max(10).optional().default(3),
 });
 
 export type PipelineInput = z.infer<typeof PipelineInputSchema>;
@@ -1082,6 +1088,9 @@ function makeImplementationNode(ctx: PipelineGraphContext) {
 
 // ── Build-check sub-loop (Phase 3c) ──────────────────────────────────────────
 
+/** Default cap on build+fix attempts before the pipeline gives up.
+ *  Overridable per-run via `state.input.buildCheckMaxAttempts` — kept
+ *  exported for back-compat with any external import. */
 export const BUILD_CHECK_MAX_ATTEMPTS = 3;
 /** Cap on stdout/stderr forwarded to the fix agent — long build outputs
  *  drown the model in noise. The tail is the most useful part. */
@@ -1121,7 +1130,7 @@ function makeBuildCheckNode(ctx: PipelineGraphContext) {
         workflowId,
         emit,
         command,
-        timeoutSecs: 300,
+        timeoutSecs: state.input.buildCheckTimeoutSecs ?? 300,
       });
       exitCode = result.exitCode;
       output = result.output;
@@ -1247,7 +1256,9 @@ export function routeAfterBuildCheck(
   const v = state.buildVerification;
   if (!v) return "checkpoint_implementation";
   if (v.build_passed) return "checkpoint_implementation";
-  if (v.attempts.length < BUILD_CHECK_MAX_ATTEMPTS) return "build_fix";
+  const maxAttempts =
+    state.input.buildCheckMaxAttempts ?? BUILD_CHECK_MAX_ATTEMPTS;
+  if (v.attempts.length < maxAttempts) return "build_fix";
   return state.planRevisions < PLAN_REVISION_MAX
     ? "replan_check"
     : "checkpoint_implementation";
@@ -1430,8 +1441,10 @@ function checkpointNode(stage: PipelineStage, payloadSelector: (s: PipelineState
  *  Capped by `PLAN_REVISION_MAX`; the routing edges already gate entry. */
 async function replanCheckpointNode(state: PipelineState): Promise<Command> {
   const buildAttempts = state.buildVerification?.attempts ?? [];
+  const maxAttempts =
+    state.input.buildCheckMaxAttempts ?? BUILD_CHECK_MAX_ATTEMPTS;
   const buildExhausted =
-    buildAttempts.length >= BUILD_CHECK_MAX_ATTEMPTS && !state.buildVerification?.build_passed;
+    buildAttempts.length >= maxAttempts && !state.buildVerification?.build_passed;
   const verificationFailures = state.verificationFailures ?? [];
   const reason: PlanRevisionContext["reason"] = buildExhausted
     ? "build_failed"

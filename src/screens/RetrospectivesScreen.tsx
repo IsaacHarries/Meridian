@@ -17,6 +17,7 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { WorkflowPanelHeader, APP_HEADER_TITLE } from "@/components/appHeaderLayout";
+import { TokenUsageBadge } from "@/components/TokenUsageBadge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -861,15 +862,18 @@ export function RetrospectivesScreen({ onBack }: RetrospectivesScreenProps) {
           </>
         }
         trailing={
-          <Button
-            variant="ghost"
-            size="icon"
-            onClick={() => { cache.current.clear(); loadSprintList(); }}
-            disabled={loadingList}
-            title="Refresh sprint list"
-          >
-            <RefreshCw className={`h-4 w-4 ${loadingList ? "animate-spin" : ""}`} />
-          </Button>
+          <div className="flex items-center gap-2">
+            <TokenUsageBadge panel="retrospectives" />
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={() => { cache.current.clear(); loadSprintList(); }}
+              disabled={loadingList}
+              title="Refresh sprint list"
+            >
+              <RefreshCw className={`h-4 w-4 ${loadingList ? "animate-spin" : ""}`} />
+            </Button>
+          </div>
         }
       />
 

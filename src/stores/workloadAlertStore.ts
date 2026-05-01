@@ -12,6 +12,7 @@
 import { create } from "zustand";
 import { getAllActiveSprintIssues, getOpenPrs, type BitbucketPr } from "@/lib/tauri";
 import { getIgnoredDevs } from "@/lib/preferences";
+import { getAppPreferences } from "@/lib/appPreferences";
 import { classifyWorkloads } from "@/lib/workloadClassifier";
 
 export const POLL_INTERVAL_MS = 3 * 60 * 60 * 1000; // 3 hours
@@ -49,10 +50,11 @@ export const useWorkloadAlertStore = create<WorkloadAlertState>()((set, get) => 
     if (get().checking) return get().overloadedDevs;
     set({ checking: true, checkError: null });
     try {
-      const [sprintPairs, openPrs, ignoredDevs] = await Promise.all([
+      const [sprintPairs, openPrs, ignoredDevs, appPrefs] = await Promise.all([
         getAllActiveSprintIssues(),
         getOpenPrs().catch(() => [] as BitbucketPr[]),
         getIgnoredDevs().catch(() => new Set<string>()),
+        getAppPreferences(),
       ]);
 
       // Classify per-sprint (matching how WorkloadBalancerScreen works — it shows
@@ -62,7 +64,11 @@ export const useWorkloadAlertStore = create<WorkloadAlertState>()((set, get) => 
       const underutilisedSet = new Set<string>();
 
       for (const [, sprintIssues] of sprintPairs) {
-        const workloads = classifyWorkloads(sprintIssues, openPrs);
+        const workloads = classifyWorkloads(
+          sprintIssues,
+          openPrs,
+          appPrefs.workloadOverloadThresholdPct,
+        );
         for (const d of workloads) {
           if (d.loadStatus === "overloaded") overloadedSet.add(d.name);
           if (d.loadStatus === "underutilised") underutilisedSet.add(d.name);

@@ -29,6 +29,7 @@ import {
   type SlashCommand,
 } from "@/lib/slashCommands";
 import { WorkflowPanelHeader, APP_HEADER_TITLE } from "@/components/appHeaderLayout";
+import { TokenUsageBadge } from "@/components/TokenUsageBadge";
 import {
   listMicrophones,
   type MicrophoneInfo,
@@ -189,6 +190,7 @@ export function MeetingsScreen({ onBack }: MeetingsScreenProps) {
             <h1 className={APP_HEADER_TITLE}>Meetings</h1>
           </>
         }
+        trailing={<TokenUsageBadge panel="meetings" />}
       />
 
       <div className="flex flex-1 min-h-0">

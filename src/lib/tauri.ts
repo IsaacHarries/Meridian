@@ -1,6 +1,26 @@
 import { invoke } from "@tauri-apps/api/core";
 import { openUrl as tauriOpenUrl } from "@tauri-apps/plugin-opener";
 import { toast } from "sonner";
+import { useTokenUsageStore, type PanelKey } from "@/stores/tokenUsageStore";
+
+/**
+ * Side-effect: report a workflow's token usage into the cross-app
+ * accumulator so the panel's TokenUsageBadge stays current. Each
+ * workflow wrapper that knows its panel context calls this with the
+ * raw `usage` block from the Tauri result. Zero-token results are
+ * skipped so panels that haven't seen real spend don't render a 0/0
+ * badge.
+ */
+function reportPanelUsage(
+  panel: PanelKey,
+  usage: { inputTokens?: number; outputTokens?: number } | null | undefined,
+): void {
+  if (!usage) return;
+  const inputTokens = usage.inputTokens ?? 0;
+  const outputTokens = usage.outputTokens ?? 0;
+  if (inputTokens === 0 && outputTokens === 0) return;
+  useTokenUsageStore.getState().addUsage(panel, { inputTokens, outputTokens });
+}
 
 // ── Local LLM error detection ─────────────────────────────────────────────────
 
@@ -415,7 +435,9 @@ export async function generateSprintRetrospective(
   // existing callers keep their string-returning contract.
   const result = await invokeWithLlmCheck<{
     output?: { markdown?: string } | null;
+    usage?: SidecarUsage;
   }>("run_sprint_retrospective_workflow", { sprintText });
+  reportPanelUsage("retrospectives", result?.usage);
   return result?.output?.markdown ?? "";
 }
 
@@ -428,9 +450,11 @@ export async function generateWorkloadSuggestions(
   }
   const result = await invokeWithLlmCheck<{
     output?: { markdown?: string } | null;
+    usage?: SidecarUsage;
   }>("run_workload_suggestions_workflow", {
     workloadText,
   });
+  reportPanelUsage("sprint_dashboard", result?.usage);
   return result?.output?.markdown ?? "";
 }
 
@@ -442,10 +466,12 @@ export async function chatSprintDashboard(
 ): Promise<string> {
   const result = await invokeWithLlmCheck<{
     output?: { markdown?: string } | null;
+    usage?: SidecarUsage;
   }>("run_sprint_dashboard_chat_workflow", {
     contextText,
     historyJson,
   });
+  reportPanelUsage("sprint_dashboard", result?.usage);
   return result?.output?.markdown ?? "";
 }
 
@@ -457,16 +483,19 @@ export async function chatSprintDashboard(
  */
 export async function runPrReviewWorkflow(
   reviewText: string,
-): Promise<ReviewReport> {
+): Promise<{ report: ReviewReport; usage: SidecarUsage }> {
   if (isMockClaudeMode()) {
     const { MOCK_PR_REVIEW_JSON } = await import("./mockClaudeResponses");
-    return JSON.parse(MOCK_PR_REVIEW_JSON) as ReviewReport;
+    return {
+      report: JSON.parse(MOCK_PR_REVIEW_JSON) as ReviewReport,
+      usage: { inputTokens: 0, outputTokens: 0 },
+    };
   }
   const result = await invokeWithLlmCheck<WorkflowResult<ReviewReport>>(
     "run_pr_review_workflow",
     { reviewText },
   );
-  return result.output;
+  return { report: result.output, usage: result.usage };
 }
 
 /** Signal the backend to stop an in-progress PR review between chunks. */
@@ -766,10 +795,12 @@ export async function chatPrReview(
 ): Promise<string> {
   const result = await invokeWithLlmCheck<{
     output?: { reply?: string } | null;
+    usage?: SidecarUsage;
   }>("run_pr_review_chat_workflow", {
     contextText,
     historyJson,
   });
+  reportPanelUsage("pr_review", result?.usage);
   return result?.output?.reply ?? "";
 }
 
@@ -1646,6 +1677,7 @@ export async function runGroomingWorkflow(
     "run_grooming_workflow",
     { ticketText, fileContents },
   );
+  reportPanelUsage("ticket_quality", result.usage);
   return result.output;
 }
 
@@ -1687,10 +1719,12 @@ export async function runGroomingChatTurn(
   // `parseAgentJson` so we keep the string-returning shape.
   const result = await invokeWithLlmCheck<{
     output?: { reply?: string } | null;
+    usage?: SidecarUsage;
   }>("run_grooming_chat_workflow", {
     contextText,
     historyJson,
   });
+  reportPanelUsage("ticket_quality", result?.usage);
   return result?.output?.reply ?? "";
 }
 
@@ -2020,10 +2054,11 @@ export async function createPullRequest(
  * Returns a JSON array of fix proposals.
  */
 export async function analyzePrComments(reviewText: string): Promise<string> {
-  const result = await invoke<{ output?: { markdown?: string } | null }>(
-    "run_analyze_pr_comments_workflow",
-    { reviewText },
-  );
+  const result = await invoke<{
+    output?: { markdown?: string } | null;
+    usage?: SidecarUsage;
+  }>("run_analyze_pr_comments_workflow", { reviewText });
+  reportPanelUsage("address_pr", result?.usage);
   return result?.output?.markdown ?? "";
 }
 
@@ -2036,10 +2071,11 @@ export async function chatAddressPr(
   contextText: string,
   historyJson: string,
 ): Promise<string> {
-  const result = await invoke<{ output?: { reply?: string } | null }>(
-    "run_address_pr_chat_workflow",
-    { contextText, historyJson },
-  );
+  const result = await invoke<{
+    output?: { reply?: string } | null;
+    usage?: SidecarUsage;
+  }>("run_address_pr_chat_workflow", { contextText, historyJson });
+  reportPanelUsage("address_pr", result?.usage);
   return result?.output?.reply ?? "";
 }
 
@@ -2388,11 +2424,13 @@ export async function summarizeMeeting(
 ): Promise<string> {
   const result = await invokeWithLlmCheck<{
     output?: { markdown?: string } | null;
+    usage?: SidecarUsage;
   }>("run_meeting_summary_workflow", {
     transcriptText,
     currentTitle,
     currentTagsJson: JSON.stringify(currentTags),
   });
+  reportPanelUsage("meetings", result?.usage);
   return result?.output?.markdown ?? "";
 }
 
@@ -2402,10 +2440,12 @@ export async function generateMeetingTitle(
 ): Promise<string> {
   const result = await invokeWithLlmCheck<{
     output?: { markdown?: string } | null;
+    usage?: SidecarUsage;
   }>("run_meeting_title_workflow", {
     contentText,
     currentTagsJson: JSON.stringify(currentTags),
   });
+  reportPanelUsage("meetings", result?.usage);
   return (result?.output?.markdown ?? "").trim();
 }
 
@@ -2415,10 +2455,12 @@ export async function chatMeeting(
 ): Promise<string> {
   const result = await invokeWithLlmCheck<{
     output?: { markdown?: string } | null;
+    usage?: SidecarUsage;
   }>("run_meeting_chat_workflow", {
     contextText,
     historyJson,
   });
+  reportPanelUsage("meetings", result?.usage);
   return result?.output?.markdown ?? "";
 }
 

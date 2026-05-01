@@ -21,6 +21,7 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { WorkflowPanelHeader, APP_HEADER_TITLE } from "@/components/appHeaderLayout";
+import { TokenUsageBadge } from "@/components/TokenUsageBadge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -1629,15 +1630,18 @@ export function SprintDashboardScreen({ credStatus, onBack }: SprintDashboardScr
           </>
         }
         trailing={
-          <Button
-            variant="ghost"
-            size="icon"
-            onClick={load}
-            disabled={loading}
-            title="Refresh"
-          >
-            <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
-          </Button>
+          <div className="flex items-center gap-2">
+            <TokenUsageBadge panel="sprint_dashboard" />
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={load}
+              disabled={loading}
+              title="Refresh"
+            >
+              <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
+            </Button>
+          </div>
         }
       />
 

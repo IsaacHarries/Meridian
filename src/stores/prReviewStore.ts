@@ -41,6 +41,7 @@ import {
   isMockMode,
 } from "@/lib/tauri";
 import { listen } from "@tauri-apps/api/event";
+import { useTokenUsageStore } from "@/stores/tokenUsageStore";
 
 // ── Per-PR cached session ─────────────────────────────────────────────────────
 
@@ -567,7 +568,10 @@ export const usePrReviewStore = create<PrReviewState>()(
         });
 
         try {
-          const parsed = await runPrReviewWorkflow(fullReviewText);
+          const { report: parsed, usage } = await runPrReviewWorkflow(fullReviewText);
+          if (usage) {
+            useTokenUsageStore.getState().addUsage("pr_review", usage);
+          }
           patchSession(selectedPr.id, { report: parsed, partialReport: null });
         } finally {
           if (partialFlushTimer !== null) clearTimeout(partialFlushTimer);

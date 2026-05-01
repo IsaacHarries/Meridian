@@ -60,6 +60,9 @@ import {
   type OrchestratorPendingProposal,
 } from "@/lib/tauri";
 import { listen } from "@tauri-apps/api/event";
+import { toast } from "sonner";
+import { getAppPreferences } from "@/lib/appPreferences";
+import { useTokenUsageStore } from "@/stores/tokenUsageStore";
 
 export type { SkillType };
 
@@ -297,11 +300,16 @@ function applyInterruptToState(
 }
 
 /** Map a workflow result (interrupt or final) onto the store; called after
- *  every workflow.start / workflow.resume call. */
+ *  every workflow.start / workflow.resume call. Also reports the call's
+ *  token usage into the cross-panel token-usage store so the badge in
+ *  the Implement Ticket header reflects cumulative agent cost. */
 function applyWorkflowResult(
   set: (updater: (s: ImplementTicketState) => Partial<ImplementTicketState>) => void,
   result: PipelineWorkflowResult,
 ): void {
+  if (result.usage) {
+    useTokenUsageStore.getState().addUsage("implement_ticket", result.usage);
+  }
   if (result.interrupt) {
     applyInterruptToState(set, result.interrupt.reason, result.interrupt.payload);
     set(() => ({ pipelineThreadId: result.interrupt!.threadId }));
@@ -376,6 +384,19 @@ const NODE_TO_PARTIAL_FIELD: Record<string, keyof ImplementTicketState> = {
   do_retrospective: "partialRetrospective",
 };
 
+/** Module-level flag the pipeline listener consults to decide whether
+ *  to surface streamed partial-JSON events into the per-stage panels.
+ *  Hydrated from preferences at startup; updated live when the user
+ *  toggles the Settings switch. False means skip the partial path
+ *  entirely — the panel still streams text via the existing
+ *  `*StreamText` fields, but the structured panel only renders once
+ *  the final output lands. */
+let streamingPartialsEnabled = true;
+
+export function setStreamingPartialsEnabledRuntime(enabled: boolean): void {
+  streamingPartialsEnabled = enabled;
+}
+
 async function ensurePipelineListener(): Promise<void> {
   if (pipelineUnlisten) return;
   pipelineUnlisten = await listen<PipelineEvent>(PIPELINE_EVENT_NAME, (event) => {
@@ -413,6 +434,7 @@ async function ensurePipelineListener(): Promise<void> {
       const partialData = e.data as { partial?: unknown } | undefined;
       const partialField = NODE_TO_PARTIAL_FIELD[e.node];
       if (
+        streamingPartialsEnabled &&
         partialField &&
         partialData?.partial &&
         typeof partialData.partial === "object"
@@ -480,6 +502,19 @@ async function ensurePipelineListener(): Promise<void> {
       );
       applyInterruptToState(updaterAdapter, e.reason, e.payload);
       setState({ pipelineThreadId: e.threadId });
+      // Optional toast — fires once per interrupt when the user has
+      // opted in. Useful when stepping away mid-run; the document-
+      // hidden guard skips when the panel is in the foreground.
+      if (typeof document !== "undefined" && document.hidden) {
+        const reason = e.reason;
+        void getAppPreferences().then((p) => {
+          if (p.notifyAgentStageComplete) {
+            toast.message(`Stage finished: ${reason}`, {
+              description: "Ready for your review in the Implement Ticket panel.",
+            });
+          }
+        });
+      }
     }
   });
 }
