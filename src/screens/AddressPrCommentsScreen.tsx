@@ -6,7 +6,6 @@ import { Badge } from "@/components/ui/badge";
 import { SlashCommandInput } from "@/components/SlashCommandInput";
 import { createGlobalCommands, type SlashCommand } from "@/lib/slashCommands";
 import { WorkflowPanelHeader, APP_HEADER_TITLE } from "@/components/appHeaderLayout";
-import { TokenUsageBadge } from "@/components/TokenUsageBadge";
 import {
   type CredentialStatus,
   type BitbucketPr,
@@ -26,6 +25,8 @@ import {
   pushPrAddressBranch,
 } from "@/lib/tauri";
 import { listen } from "@tauri-apps/api/event";
+import { useChatHistoryStore } from "@/stores/chatHistoryStore";
+import { useTokenUsageStore } from "@/stores/tokenUsageStore";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -62,6 +63,11 @@ interface ChatMessage {
   role: "user" | "assistant";
   content: string;
 }
+
+/** Stable empty-array ref so the chat-history selector returns the same
+ *  reference between renders when no chat has started yet — avoids
+ *  unnecessary re-renders. */
+const EMPTY_CHAT: ChatMessage[] = [];
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -350,7 +356,25 @@ export function AddressPrCommentsScreen({ credStatus, onBack }: Props) {
   const [commitSha, setCommitSha] = useState("");
 
   // ── Chat ──────────────────────────────────────────────────────────────────
-  const [chatHistory, setChatHistory] = useState<ChatMessage[]>([]);
+  // Chat lives in the chat-history store keyed by PR id, so navigating
+  // away from this screen and coming back to the same PR preserves the
+  // running conversation. Local state holds only ephemerals (input,
+  // busy spinner, scroll anchor).
+  const chatKey = selectedPr ? String(selectedPr.id) : "";
+  const chatHistory = useChatHistoryStore((s) =>
+    chatKey ? s.histories.address_pr?.[chatKey] ?? EMPTY_CHAT : EMPTY_CHAT,
+  );
+  const setStoredChat = useChatHistoryStore((s) => s.setHistory);
+  const setChatHistory = useCallback(
+    (next: ChatMessage[] | ((prev: ChatMessage[]) => ChatMessage[])) => {
+      if (!chatKey) return;
+      const current =
+        useChatHistoryStore.getState().histories.address_pr?.[chatKey] ?? [];
+      const resolved = typeof next === "function" ? next(current) : next;
+      setStoredChat("address_pr", chatKey, resolved);
+    },
+    [chatKey, setStoredChat],
+  );
   const [chatInput, setChatInput] = useState("");
   const [chatLoading, setChatLoading] = useState(false);
 
@@ -391,7 +415,10 @@ export function AddressPrCommentsScreen({ credStatus, onBack }: Props) {
     setStepMessage("Fetching PR comments and diff…");
     setStreamBuffer("");
     setFixPlan([]);
-    setChatHistory([]);
+    // Chat history is keyed by PR id in the store, so switching PRs
+    // automatically swaps the rendered conversation. Don't clear here
+    // — that would erase the prior PR's history that we want preserved
+    // for when the user comes back to it.
 
     try {
       const [fetchedComments, fetchedDiff] = await Promise.all([
@@ -635,7 +662,10 @@ export function AddressPrCommentsScreen({ credStatus, onBack }: Props) {
     () => [
       ...createGlobalCommands({
         history: chatHistory,
-        clearHistory: () => setChatHistory([]),
+        clearHistory: () => {
+          setChatHistory([]);
+          useTokenUsageStore.getState().clearPanelChatLastInput("address_pr");
+        },
         sendMessage: (text: string) => sendChatRaw(text),
         removeLastAssistantMessage: () =>
           setChatHistory((prev) => {
@@ -756,9 +786,6 @@ export function AddressPrCommentsScreen({ credStatus, onBack }: Props) {
             </Button>
             <h1 className={APP_HEADER_TITLE}>Address PR Tasks & Comments</h1>
           </>
-        }
-        trailing={
-          <TokenUsageBadge panel="address_pr" inFlight={chatLoading} />
         }
       />
 
@@ -925,7 +952,6 @@ export function AddressPrCommentsScreen({ credStatus, onBack }: Props) {
                   setSelectedPr(null);
                   setStep("pr-list");
                   setFixPlan([]);
-                  setChatHistory([]);
                 }}
               >
                 Back to PR List
@@ -1033,7 +1059,6 @@ export function AddressPrCommentsScreen({ credStatus, onBack }: Props) {
                   setSelectedPr(null);
                   setStep("pr-list");
                   setFixPlan([]);
-                  setChatHistory([]);
                   setFinalDiff("");
                   loadPrs();
                 }}

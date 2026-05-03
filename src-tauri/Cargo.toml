@@ -37,6 +37,11 @@ speakrs = { version = "0.4", features = ["coreml"] }
 # session dictionary (lock state) and call CGEventSource* (idle time) without
 # hand-rolled FFI boilerplate.
 core-foundation = "0.10"
+# Local SQLite for the cross-meeting search index. `bundled` ships the SQLite
+# source compiled in (FTS5 is enabled by default in the bundled build) so we
+# don't depend on the platform's sqlite version — meetings indexing has to
+# work the same on every macOS the app lands on.
+rusqlite = { version = "0.32", features = ["bundled"] }
 
 [profile.release]
 codegen-units = 1

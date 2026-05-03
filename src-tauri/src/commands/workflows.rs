@@ -132,8 +132,17 @@ pub async fn run_grooming_workflow(
     state: tauri::State<'_, SidecarState>,
     ticket_text: String,
     file_contents: String,
+    ticket_type: Option<String>,
 ) -> Result<WorkflowResult, String> {
-    let ctx = AiContext::stage("implement_ticket", "grooming");
+    // The standalone Ticket Quality screen shows its own
+    // HeaderModelPicker keyed on the `ticket_quality` panel — using
+    // that panel's AI context here means the user's selection in the
+    // dropdown actually drives this call, and the per-model token
+    // bucket the badge displays matches the model the call ran on.
+    // Pre-fix this resolved against the implement_ticket pipeline's
+    // grooming stage, so a panel-level override on Ticket Quality was
+    // silently ignored and tokens bucketed under the wrong model.
+    let ctx = AiContext::panel("ticket_quality");
     let model = resolve_model_for_context(&ctx).await?;
 
     let templates = serde_json::json!({
@@ -145,6 +154,7 @@ pub async fn run_grooming_workflow(
         "ticketText": ticket_text,
         "fileContents": file_contents,
         "templates": templates,
+        "ticketType": ticket_type,
     });
 
     crate::integrations::sidecar::run_workflow(
@@ -166,6 +176,11 @@ pub struct PipelineStartArgs {
     ticket_text: String,
     #[serde(rename = "ticketKey")]
     ticket_key: String,
+    /// JIRA issue type as the frontend sees it ("Bug", "Story", …).
+    /// Threaded into the grooming node so the bug-specific rules block
+    /// in the system prompt is omitted on non-bug runs.
+    #[serde(rename = "ticketType", default)]
+    ticket_type: Option<String>,
     #[serde(rename = "worktreePath")]
     worktree_path: String,
     #[serde(rename = "codebaseContext")]
@@ -225,6 +240,7 @@ pub async fn run_implementation_pipeline_workflow(
     let input = serde_json::json!({
         "ticketText": args.ticket_text,
         "ticketKey": args.ticket_key,
+        "ticketType": args.ticket_type,
         "worktreePath": args.worktree_path,
         "codebaseContext": args.codebase_context.unwrap_or_default(),
         "groomingTemplates": grooming_templates,
@@ -540,6 +556,39 @@ pub async fn run_meeting_chat_workflow(
 }
 
 #[tauri::command]
+pub async fn run_cross_meetings_chat_workflow(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, SidecarState>,
+    context_hits: serde_json::Value,
+    history_json: String,
+    semantic_available: bool,
+) -> Result<WorkflowResult, String> {
+    // Reuse the meetings panel's AI context — same provider/model
+    // selection, same token bucket. The cross-meetings flow is just
+    // a different system prompt over the same panel scope.
+    let ctx = AiContext::panel("meetings");
+    let model = resolve_model_for_context(&ctx).await?;
+
+    let input = serde_json::json!({
+        "contextHits": context_hits,
+        "historyJson": history_json,
+        "semanticAvailable": semantic_available,
+    });
+
+    crate::integrations::sidecar::run_workflow(
+        &app,
+        &state,
+        "cross-meetings-chat-workflow-event",
+        "cross_meetings_chat",
+        input,
+        model,
+        None,
+        None,
+    )
+    .await
+}
+
+#[tauri::command]
 pub async fn run_analyze_pr_comments_workflow(
     app: tauri::AppHandle,
     state: tauri::State<'_, SidecarState>,
@@ -654,7 +703,10 @@ pub async fn run_grooming_chat_workflow(
     context_text: String,
     history_json: String,
 ) -> Result<WorkflowResult, String> {
-    let ctx = AiContext::stage("implement_ticket", "grooming");
+    // Resolve under the same Ticket Quality panel context as the
+    // standalone grooming run — the screen's HeaderModelPicker writes
+    // panel overrides keyed on `ticket_quality`.
+    let ctx = AiContext::panel("ticket_quality");
     let model = resolve_model_for_context(&ctx).await?;
 
     // Pull the user's grooming format templates from the store and pass them

@@ -47,7 +47,6 @@ import { SlashCommandInput } from "@/components/SlashCommandInput";
 import { createGlobalCommands, type SlashCommand } from "@/lib/slashCommands";
 import { ask } from "@tauri-apps/plugin-dialog";
 import { WorkflowPanelHeader, APP_HEADER_TITLE } from "@/components/appHeaderLayout";
-import { TokenUsageBadge } from "@/components/TokenUsageBadge";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import {
   type BitbucketPr,
@@ -2989,7 +2988,6 @@ export function PrReviewScreen({ credStatus, onBack }: PrReviewScreenProps) {
         trailing={
           selectedPr ? (
             <div className="flex shrink-0 items-center gap-2">
-              <TokenUsageBadge panel="pr_review" inFlight={reviewing} />
               <Button
                 variant="outline"
                 size="sm"

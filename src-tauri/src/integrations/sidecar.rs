@@ -25,6 +25,7 @@ use tokio::sync::{mpsc, Mutex};
 use crate::commands::repo::{
     get_repo_diff, glob_repo_files, grep_repo_files, read_repo_file, write_repo_file,
 };
+use crate::storage::preferences::{ai_debug_enabled, append_ai_debug_log_line};
 
 const DEV_BUNDLE: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -209,6 +210,12 @@ struct WorkflowStartRequest<'a> {
     model: &'a ModelSelection,
     #[serde(rename = "worktreePath", skip_serializing_if = "Option::is_none")]
     worktree_path: Option<String>,
+    /// Asks the sidecar to attach its AI-traffic capture handler so each
+    /// model round-trip emits an `ai_traffic` event back to the frontend's
+    /// debug panel. Skipped on the wire when false to keep ordinary runs
+    /// uncluttered.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    debug: bool,
 }
 
 #[derive(Deserialize, Debug, Clone)]
@@ -253,6 +260,11 @@ pub enum SidecarOutboundEvent {
         tool: String,
         input: serde_json::Value,
     },
+    AiTraffic {
+        id: String,
+        #[serde(flatten)]
+        payload: serde_json::Value,
+    },
 }
 
 #[derive(Deserialize, Debug, Clone, Serialize, Default)]
@@ -271,7 +283,8 @@ impl SidecarOutboundEvent {
             | Self::Interrupt { id, .. }
             | Self::Result { id, .. }
             | Self::Error { id, .. }
-            | Self::ToolCallbackRequest { id, .. } => id,
+            | Self::ToolCallbackRequest { id, .. }
+            | Self::AiTraffic { id, .. } => id,
         }
     }
 
@@ -600,6 +613,10 @@ struct WorkflowResumeRequest<'a> {
     /// invoking the graph. Used to refresh OAuth credentials on long runs.
     #[serde(skip_serializing_if = "Option::is_none")]
     model: Option<&'a ModelSelection>,
+    /// Mirrors WorkflowStartRequest.debug — capture is per-invocation
+    /// because each resume creates a fresh AsyncLocalStorage scope.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    debug: bool,
 }
 
 #[derive(Serialize)]
@@ -615,6 +632,8 @@ struct WorkflowRewindRequest<'a> {
     /// invoking the graph. Used to refresh OAuth credentials on long runs.
     #[serde(skip_serializing_if = "Option::is_none")]
     model: Option<&'a ModelSelection>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    debug: bool,
 }
 
 #[derive(Serialize)]
@@ -687,6 +706,7 @@ pub async fn rewind_workflow(
         thread_id: &thread_id,
         to_node: &to_node,
         model: model.as_ref(),
+        debug: ai_debug_enabled(),
     };
     let mut line = serde_json::to_string(&req).map_err(|e| format!("Serialize error: {e}"))?;
     line.push('\n');
@@ -729,6 +749,7 @@ pub async fn resume_workflow(
         thread_id: &thread_id,
         resume_value: &resume_value,
         model: model.as_ref(),
+        debug: ai_debug_enabled(),
     };
     let mut line = serde_json::to_string(&req).map_err(|e| format!("Serialize error: {e}"))?;
     line.push('\n');
@@ -776,6 +797,7 @@ pub async fn run_workflow(
         input,
         model: &model,
         worktree_path,
+        debug: ai_debug_enabled(),
     };
     let mut line = serde_json::to_string(&req).map_err(|e| format!("Serialize error: {e}"))?;
     line.push('\n');
@@ -878,6 +900,28 @@ async fn drive_workflow_loop(
             SidecarOutboundEvent::Error { message, .. } => {
                 pending.lock().await.remove(id);
                 return Err(message);
+            }
+            SidecarOutboundEvent::AiTraffic { payload, .. } => {
+                // Broadcast on a single shared event channel rather than the
+                // per-workflow one — the debug panel listens once and sees
+                // every workflow's traffic without subscribing to each
+                // event_name separately. The runId is already inside the
+                // payload so the panel can attribute each row to its run.
+                let mut envelope = payload;
+                if let Some(obj) = envelope.as_object_mut() {
+                    obj.insert(
+                        "runId".to_string(),
+                        serde_json::Value::String(id.to_string()),
+                    );
+                }
+                // Mirror to the on-disk JSONL log when capture is on, so
+                // Claude Code (or any external tailer / grep) can read it
+                // out-of-band. The renderer's debug panel still works the
+                // same; the file is purely a passive sink.
+                if let Ok(line) = serde_json::to_string(&envelope) {
+                    append_ai_debug_log_line(&line);
+                }
+                let _ = app.emit("ai-traffic-event", envelope);
             }
         }
     }

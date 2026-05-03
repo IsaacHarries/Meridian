@@ -13,6 +13,11 @@ import { usePrTasksStore } from "@/stores/prTasksStore";
 import { getAppPreferences, APP_PREFERENCE_DEFAULTS } from "@/lib/appPreferences";
 import { BackgroundRenderer, getBackgroundId, useBgChangeListener } from "@/lib/backgrounds";
 import { hydrateImplementStore, setStreamingPartialsEnabledRuntime } from "@/stores/implementTicketStore";
+import { useAiDebugStore } from "@/stores/aiDebugStore";
+import { startAiDebugListener } from "@/lib/aiDebugListener";
+import { AiDebugDock } from "@/components/AiDebugDock";
+import { AiDebugPanel } from "@/components/AiDebugPanel";
+import { isAiDebugWindow } from "@/lib/aiDebugWindow";
 import { setRuntimeOverloadPct } from "@/lib/workloadClassifier";
 import { hydratePrReviewStore } from "@/stores/prReviewStore";
 import { hydrateMeetingsStore } from "@/stores/meetingsStore";
@@ -102,7 +107,16 @@ function AppInner() {
     void getAppPreferences().then((prefs) => {
       setStreamingPartialsEnabledRuntime(prefs.streamingPartialsEnabled);
       setRuntimeOverloadPct(prefs.workloadOverloadThresholdPct);
+      useAiDebugStore.getState().hydrate({
+        enabled: prefs.aiDebugEnabled,
+        dockMode: prefs.aiDebugDockMode,
+      });
     });
+
+    // Boot the AI traffic listener. Idempotent — it'll no-op if
+    // already started (e.g. on hot-reload). When debug is off the
+    // sidecar emits no events, so this is essentially free.
+    void startAiDebugListener();
 
     getCredentialStatus()
       .then((status) => {
@@ -456,6 +470,29 @@ function GlobalFxDrawer({ hideUI, onToggleHideUI }: { hideUI: boolean; onToggleH
 }
 
 
+function AiDebugWindowRoot() {
+  // Popped-out debug window: subscribes to the same Tauri event
+  // channel and renders only the panel. The dock-mode picker isn't
+  // shown here since the user is already in the popped-out variant
+  // and re-docking happens from the main window.
+  useEffect(() => {
+    void getAppPreferences().then((prefs) => {
+      useAiDebugStore.getState().hydrate({
+        enabled: prefs.aiDebugEnabled,
+        dockMode: prefs.aiDebugDockMode,
+      });
+    });
+    void startAiDebugListener();
+  }, []);
+  return (
+    <ThemeProvider>
+      <div className="h-screen w-screen overflow-hidden bg-background">
+        <AiDebugPanel />
+      </div>
+    </ThemeProvider>
+  );
+}
+
 export default function Root() {
   const [hideUI, setHideUI] = useState(false);
 
@@ -470,6 +507,8 @@ export default function Root() {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, []);
 
+  if (isAiDebugWindow()) return <AiDebugWindowRoot />;
+
   return (
     <ThemeProvider>
       <TooltipProvider delayDuration={300}>
@@ -478,7 +517,9 @@ export default function Root() {
           className="relative z-[1] transition-opacity duration-300"
           style={{ opacity: hideUI ? 0 : 1, pointerEvents: hideUI ? "none" : undefined }}
         >
-          <AppInner />
+          <AiDebugDock>
+            <AppInner />
+          </AiDebugDock>
         </div>
         <GlobalForeground />
         <GlobalFxDrawer hideUI={hideUI} onToggleHideUI={() => setHideUI(h => !h)} />

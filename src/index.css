@@ -180,6 +180,20 @@
   background-color: rgb(250 204 21 / 0.35);
 }
 
+/* @-mention nodes inside the rich notes editor. Visually distinguished
+   from plain text so the user can see at a glance which names are
+   structured mentions (searchable via the @name filter) vs plain prose
+   that happens to start with @. */
+.ProseMirror .mention {
+  display: inline-block;
+  background-color: hsl(var(--primary) / 0.12);
+  color: hsl(var(--primary));
+  border-radius: 0.25rem;
+  padding: 0 0.3em;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
 /* Inline links — make them visibly clickable while editing without changing
    the cursor behaviour. */
 .ProseMirror a {

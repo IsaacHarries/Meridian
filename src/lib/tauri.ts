@@ -1,7 +1,52 @@
 import { invoke } from "@tauri-apps/api/core";
 import { openUrl as tauriOpenUrl } from "@tauri-apps/plugin-opener";
 import { toast } from "sonner";
-import { useTokenUsageStore, type PanelKey } from "@/stores/tokenUsageStore";
+import {
+  useTokenUsageStore,
+  modelKey,
+  type PanelKey,
+} from "@/stores/tokenUsageStore";
+import {
+  useAiSelectionStore,
+  type PanelId as AiPanelId,
+} from "@/stores/aiSelectionStore";
+
+/** Map a usage-store panel key to the AI-selection-store panel id.
+ *  The two enums largely overlap; bridge the few diverging keys here
+ *  so attribution to a model is consistent. Returns null for panels
+ *  the AI selection store doesn't manage (e.g. `trends`) — those
+ *  reports won't be bucketed by model. */
+function panelKeyToAiPanelId(panel: PanelKey): AiPanelId | null {
+  switch (panel) {
+    case "implement_ticket":
+    case "pr_review":
+    case "ticket_quality":
+    case "sprint_dashboard":
+    case "retrospectives":
+    case "meetings":
+      return panel;
+    case "address_pr":
+      return "address_pr_comments";
+    case "trends":
+      return null;
+  }
+}
+
+/** Resolve the model that workflows on `panel` are currently using.
+ *  Returns undefined when the AI selection store hasn't hydrated or
+ *  the panel isn't tracked, so callers can skip the per-model bucket
+ *  without crashing. */
+function currentModelKeyFor(panel: PanelKey): string | undefined {
+  try {
+    const aiPanel = panelKeyToAiPanelId(panel);
+    if (!aiPanel) return undefined;
+    const r = useAiSelectionStore.getState().resolve(aiPanel);
+    if (!r.model) return undefined;
+    return modelKey(r.provider, r.model);
+  } catch {
+    return undefined;
+  }
+}
 
 /**
  * Side-effect: report a workflow's token usage into the cross-app
@@ -9,7 +54,8 @@ import { useTokenUsageStore, type PanelKey } from "@/stores/tokenUsageStore";
  * workflow wrapper that knows its panel context calls this with the
  * raw `usage` block from the Tauri result. Zero-token results are
  * skipped so panels that haven't seen real spend don't render a 0/0
- * badge.
+ * badge. Buckets the same usage into the per-model total so the
+ * HeaderModelPicker dropdown can display per-model spend.
  */
 function reportPanelUsage(
   panel: PanelKey,
@@ -19,7 +65,32 @@ function reportPanelUsage(
   const inputTokens = usage.inputTokens ?? 0;
   const outputTokens = usage.outputTokens ?? 0;
   if (inputTokens === 0 && outputTokens === 0) return;
-  useTokenUsageStore.getState().addUsage(panel, { inputTokens, outputTokens });
+  useTokenUsageStore
+    .getState()
+    .addUsage(
+      panel,
+      { inputTokens, outputTokens },
+      currentModelKeyFor(panel),
+    );
+}
+
+/**
+ * Side-effect: record this call's input-token count as the panel's
+ * "current conversation size". Use ONLY for chat-style workflows
+ * whose prompt replays accumulated history (orchestrator, triage,
+ * grooming chat, dashboard chat, meeting chat, PR-review chat,
+ * address-PR chat). The HeaderModelPicker's context ring on a panel
+ * with a chat thread reads this so the user can see the running
+ * thread's size and decide whether to compress.
+ */
+function reportPanelChatContext(
+  panel: PanelKey,
+  usage: { inputTokens?: number } | null | undefined,
+): void {
+  if (!usage) return;
+  const inputTokens = usage.inputTokens ?? 0;
+  if (inputTokens <= 0) return;
+  useTokenUsageStore.getState().setPanelChatLastInput(panel, inputTokens);
 }
 
 // ── Local LLM error detection ─────────────────────────────────────────────────
@@ -472,6 +543,7 @@ export async function chatSprintDashboard(
     historyJson,
   });
   reportPanelUsage("sprint_dashboard", result?.usage);
+  reportPanelChatContext("sprint_dashboard", result?.usage);
   return result?.output?.markdown ?? "";
 }
 
@@ -537,6 +609,11 @@ export type PipelineResumeAction =
 export interface PipelineWorkflowArgs {
   ticketText: string;
   ticketKey: string;
+  /** JIRA issue type ("Bug", "Story", "Task", …). Threaded through to
+   *  the grooming node so the bug-specific rules block in the system
+   *  prompt is omitted on non-bug tickets — saves ~1k tokens per run
+   *  and keeps the cache-prefix tight for the common Story/Task case. */
+  ticketType?: string;
   worktreePath: string;
   codebaseContext?: string;
   skills?: {
@@ -774,16 +851,25 @@ export async function chatWithOrchestrator(
       usage: { inputTokens: 0, outputTokens: 0 },
     };
   }
-  return invokeWithLlmCheck<OrchestratorTurnResult>("chat_with_orchestrator", {
-    threadId: args.threadId,
-    pipelineThreadId: args.pipelineThreadId,
-    message: args.message,
-    messageKind: args.messageKind ?? "user",
-    currentStage: args.currentStage,
-    contextText: args.contextText,
-    clearPendingProposal: args.clearPendingProposal ?? false,
-    dropSummariesForStages: args.dropSummariesForStages ?? [],
-  });
+  const result = await invokeWithLlmCheck<OrchestratorTurnResult>(
+    "chat_with_orchestrator",
+    {
+      threadId: args.threadId,
+      pipelineThreadId: args.pipelineThreadId,
+      message: args.message,
+      messageKind: args.messageKind ?? "user",
+      currentStage: args.currentStage,
+      contextText: args.contextText,
+      clearPendingProposal: args.clearPendingProposal ?? false,
+      dropSummariesForStages: args.dropSummariesForStages ?? [],
+    },
+  );
+  reportPanelUsage("implement_ticket", result.usage);
+  // The orchestrator replays the entire chat thread + stage summaries
+  // on every turn, so this call's input-token count IS the panel's
+  // current conversation context size.
+  reportPanelChatContext("implement_ticket", result.usage);
+  return result;
 }
 
 /** Conversational follow-up chat about a completed PR review. Streams reply
@@ -801,6 +887,7 @@ export async function chatPrReview(
     historyJson,
   });
   reportPanelUsage("pr_review", result?.usage);
+  reportPanelChatContext("pr_review", result?.usage);
   return result?.output?.reply ?? "";
 }
 
@@ -1179,6 +1266,14 @@ export async function moveDataDirectory(from: string, to: string): Promise<void>
 
 export async function relaunchApp(): Promise<void> {
   return invoke<void>("relaunch_app");
+}
+
+export async function getAiDebugLogPath(): Promise<string> {
+  return invoke<string>("get_ai_debug_log_path_cmd");
+}
+
+export async function clearAiDebugLogFile(): Promise<void> {
+  return invoke<void>("clear_ai_debug_log_cmd");
 }
 
 export async function getFutureSprints(limit: number): Promise<JiraSprint[]> {
@@ -1668,6 +1763,7 @@ export interface WorkflowResult<T> {
 export async function runGroomingWorkflow(
   ticketText: string,
   fileContents: string,
+  ticketType?: string,
 ): Promise<GroomingOutput> {
   if (isMockClaudeMode()) {
     const { MOCK_GROOMING_JSON } = await import("./mockClaudeResponses");
@@ -1675,7 +1771,7 @@ export async function runGroomingWorkflow(
   }
   const result = await invokeWithLlmCheck<WorkflowResult<GroomingOutput>>(
     "run_grooming_workflow",
-    { ticketText, fileContents },
+    { ticketText, fileContents, ticketType },
   );
   reportPanelUsage("ticket_quality", result.usage);
   return result.output;
@@ -1725,6 +1821,7 @@ export async function runGroomingChatTurn(
     historyJson,
   });
   reportPanelUsage("ticket_quality", result?.usage);
+  reportPanelChatContext("ticket_quality", result?.usage);
   return result?.output?.reply ?? "";
 }
 
@@ -2076,6 +2173,7 @@ export async function chatAddressPr(
     usage?: SidecarUsage;
   }>("run_address_pr_chat_workflow", { contextText, historyJson });
   reportPanelUsage("address_pr", result?.usage);
+  reportPanelChatContext("address_pr", result?.usage);
   return result?.output?.reply ?? "";
 }
 
@@ -2461,7 +2559,175 @@ export async function chatMeeting(
     historyJson,
   });
   reportPanelUsage("meetings", result?.usage);
+  reportPanelChatContext("meetings", result?.usage);
   return result?.output?.markdown ?? "";
+}
+
+// ── Cross-meetings RAG search + chat ─────────────────────────────────────────
+
+/** One hit returned by `searchMeetings`. Mirrors the Rust SegmentHit. */
+export interface MeetingSearchHit {
+  segmentId: number;
+  meetingId: string;
+  meetingTitle: string;
+  meetingStartedAt: string;
+  segmentIdx: number;
+  speaker: string | null;
+  startMs: number;
+  endMs: number;
+  text: string;
+  matchedKeyword: boolean;
+  matchedSemantic: boolean;
+  score: number;
+}
+
+export interface MeetingSearchResponse {
+  hits: MeetingSearchHit[];
+  semanticUnavailable: boolean;
+  semanticMessage: string | null;
+  embeddingModel: string;
+}
+
+/** Hybrid keyword + semantic search across every indexed meeting. */
+export async function searchMeetings(
+  query: string,
+  opts?: {
+    limit?: number;
+    semantic?: boolean;
+    /** Minimum fused score (0–1) a hit must clear to be returned.
+     *  Filters out the long tail of weakly-similar chunks that
+     *  embedding search would otherwise surface as "citations".
+     *  Defaults to a sensible value on the Rust side. */
+    minScore?: number;
+    /** Restrict the search to segments belonging to these meeting ids.
+     *  Used by the `#tag` query syntax: the caller resolves tags →
+     *  meeting ids client-side, then passes them through so the FTS5 +
+     *  cosine queries only consider the right slice of the index. An
+     *  empty array yields no results (used to express "this tag has
+     *  no meetings"); omit the option entirely to search everything. */
+    meetingIds?: string[];
+  },
+): Promise<MeetingSearchResponse> {
+  const raw = await invoke<{
+    hits: Array<{
+      segment_id: number;
+      meeting_id: string;
+      meeting_title: string;
+      meeting_started_at: string;
+      segment_idx: number;
+      speaker: string | null;
+      start_ms: number;
+      end_ms: number;
+      text: string;
+      matched_keyword: boolean;
+      matched_semantic: boolean;
+      score: number;
+    }>;
+    semantic_unavailable: boolean;
+    semantic_message: string | null;
+    embedding_model: string;
+  }>("search_meetings", {
+    query,
+    limit: opts?.limit,
+    semantic: opts?.semantic,
+    minScore: opts?.minScore,
+    meetingIds: opts?.meetingIds,
+  });
+  return {
+    hits: raw.hits.map((h) => ({
+      segmentId: h.segment_id,
+      meetingId: h.meeting_id,
+      meetingTitle: h.meeting_title,
+      meetingStartedAt: h.meeting_started_at,
+      segmentIdx: h.segment_idx,
+      speaker: h.speaker,
+      startMs: h.start_ms,
+      endMs: h.end_ms,
+      text: h.text,
+      matchedKeyword: h.matched_keyword,
+      matchedSemantic: h.matched_semantic,
+      score: h.score,
+    })),
+    semanticUnavailable: raw.semantic_unavailable,
+    semanticMessage: raw.semantic_message,
+    embeddingModel: raw.embedding_model,
+  };
+}
+
+/** Cross-meetings RAG chat. Pre-pass retrieval lives in Rust; this
+ *  wrapper just relays the hits + history to the sidecar workflow. */
+export async function chatCrossMeetings(
+  hits: MeetingSearchHit[],
+  historyJson: string,
+  semanticAvailable: boolean,
+): Promise<string> {
+  // Convert to the snake_case shape the Rust command expects (and
+  // which forwards verbatim to the sidecar's Zod schema).
+  const contextHits = hits.map((h) => ({
+    segmentId: h.segmentId,
+    meetingId: h.meetingId,
+    meetingTitle: h.meetingTitle,
+    meetingStartedAt: h.meetingStartedAt,
+    speaker: h.speaker,
+    startMs: h.startMs,
+    endMs: h.endMs,
+    text: h.text,
+  }));
+  const result = await invokeWithLlmCheck<{
+    output?: { markdown?: string } | null;
+    usage?: SidecarUsage;
+  }>("run_cross_meetings_chat_workflow", {
+    contextHits,
+    historyJson,
+    semanticAvailable,
+  });
+  reportPanelUsage("meetings", result?.usage);
+  reportPanelChatContext("meetings", result?.usage);
+  return result?.output?.markdown ?? "";
+}
+
+export interface MeetingsIndexStatus {
+  totalSegments: number;
+  embeddedSegments: number;
+  meetingsIndexed: number;
+}
+
+export async function getMeetingsIndexStatus(): Promise<MeetingsIndexStatus> {
+  const raw = await invoke<{
+    total_segments: number;
+    embedded_segments: number;
+    meetings_indexed: number;
+  }>("meetings_index_status");
+  return {
+    totalSegments: raw.total_segments,
+    embeddedSegments: raw.embedded_segments,
+    meetingsIndexed: raw.meetings_indexed,
+  };
+}
+
+export async function reindexAllMeetings(): Promise<number> {
+  return invoke<number>("reindex_all_meetings");
+}
+
+export async function clearMeetingsEmbeddings(): Promise<void> {
+  return invoke<void>("clear_meetings_embeddings");
+}
+
+export type OllamaProbeStatus =
+  | "available"
+  | "unreachable"
+  | "model_missing"
+  | "not_configured";
+
+export interface OllamaProbe {
+  status: OllamaProbeStatus;
+  model: string;
+  dimensions: number | null;
+  message: string | null;
+}
+
+export async function probeOllama(model?: string): Promise<OllamaProbe> {
+  return invoke<OllamaProbe>("probe_ollama_cmd", { model });
 }
 
 // ── Manual tasks ──────────────────────────────────────────────────────────────

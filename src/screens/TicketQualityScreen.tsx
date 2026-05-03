@@ -7,6 +7,14 @@ import {
   useCallback,
 } from "react";
 import { listen } from "@tauri-apps/api/event";
+import {
+  useTokenUsageStore,
+  modelKey,
+  type RateLimitSnapshot,
+} from "@/stores/tokenUsageStore";
+import { useAiSelectionStore } from "@/stores/aiSelectionStore";
+import { useChatHistoryStore } from "@/stores/chatHistoryStore";
+import { compileTicketText } from "@/stores/implementTicketStore";
 import { JiraTicketLink } from "@/components/JiraTicketLink";
 import { SlashCommandInput } from "@/components/SlashCommandInput";
 import { createGlobalCommands, type SlashCommand } from "@/lib/slashCommands";
@@ -40,7 +48,6 @@ import { MarkdownBlock } from "@/components/MarkdownBlock";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { WorkflowPanelHeader, APP_HEADER_TITLE } from "@/components/appHeaderLayout";
-import { TokenUsageBadge } from "@/components/TokenUsageBadge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
@@ -124,26 +131,12 @@ interface GroomSession {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-function compileTicketText(issue: JiraIssue): string {
-  const lines: string[] = [];
-  lines.push(`Ticket: ${issue.key}`);
-  lines.push(`Title: ${issue.summary}`);
-  lines.push(`Type: ${issue.issueType}`);
-  if (issue.storyPoints != null) lines.push(`Story points: ${issue.storyPoints}`);
-  if (issue.priority) lines.push(`Priority: ${issue.priority}`);
-  lines.push(`Status: ${issue.status}`);
-  if (issue.epicSummary) lines.push(`Epic: ${issue.epicSummary}${issue.epicKey ? ` (${issue.epicKey})` : ""}`);
-  if (issue.labels.length > 0) lines.push(`Labels: ${issue.labels.join(", ")}`);
-  if (issue.assignee) lines.push(`Assignee: ${issue.assignee.displayName}`);
-  lines.push("");
-  if (issue.description) { lines.push("Description:"); lines.push(issue.description); }
-  else { lines.push("Description: (none)"); }
-  if (issue.acceptanceCriteria) { lines.push(""); lines.push("Acceptance Criteria:"); lines.push(issue.acceptanceCriteria); }
-  if (issue.stepsToReproduce) { lines.push(""); lines.push("Steps to Reproduce:"); lines.push(issue.stepsToReproduce); }
-  if (issue.observedBehavior) { lines.push(""); lines.push("Observed Behavior:"); lines.push(issue.observedBehavior); }
-  if (issue.expectedBehavior) { lines.push(""); lines.push("Expected Behavior:"); lines.push(issue.expectedBehavior); }
-  return lines.join("\n");
-}
+// `compileTicketText` is imported from the implement-ticket store so the
+// grooming agent sees the same ticket shape regardless of which panel
+// triggered it. The previous in-file copy didn't handle JIRA's modern
+// `descriptionSections` payload, so tickets with structured Atlassian
+// document content (e.g. DEMO-2) reached the agent as
+// "Description: (none)" even when the app rendered the body fine.
 
 function statusAge(issue: JiraIssue): string {
   const days = Math.floor((Date.now() - new Date(issue.updated).getTime()) / 86_400_000);
@@ -276,6 +269,24 @@ function buildOpeningMessage(issue: JiraIssue, output: GroomingOutput): string {
 
 // ── Field diagnostics ─────────────────────────────────────────────────────────
 
+/** JIRA Cloud v3 returns descriptions either as a flat markdown string
+ *  on `description` or as a structured array on `descriptionSections`.
+ *  Modern tickets favour sections; the legacy field is left null. We
+ *  flatten sections back to a preview string so the Fields-received
+ *  diagnostics can treat them as "present" and show a non-empty
+ *  preview, instead of falsely reporting the description missing. */
+function effectiveDescription(issue: JiraIssue): string | null {
+  if (issue.description && issue.description.trim().length > 0) {
+    return issue.description;
+  }
+  if (issue.descriptionSections && issue.descriptionSections.length > 0) {
+    return issue.descriptionSections
+      .map((s) => (s.heading ? `${s.heading}: ${s.content}` : s.content))
+      .join("\n\n");
+  }
+  return null;
+}
+
 function FieldDiagnostics({ issue }: { issue: JiraIssue }) {
   const [open, setOpen] = useState(false);
   // Match the per-ticket-type filter used by TicketFieldsPanel — steps /
@@ -283,7 +294,7 @@ function FieldDiagnostics({ issue }: { issue: JiraIssue }) {
   // on a Story/Task creates noise.
   const isBug = issue.issueType.toLowerCase() === "bug";
   const fields = [
-    { label: "Description", value: issue.description },
+    { label: "Description", value: effectiveDescription(issue) },
     { label: "Acceptance Criteria", value: issue.acceptanceCriteria },
     ...(isBug
       ? [
@@ -723,16 +734,50 @@ function FieldEditor({
           )}
         </div>
         {pendingDraft ? (
-          <Button
-            size="sm"
-            variant="ghost"
-            className="h-6 px-2 text-xs gap-1"
-            onClick={() => onDeclineSuggestion(pendingDraft.id)}
-            title="Dismiss the whole AI suggestion without applying any changes"
-          >
-            <X className="h-3 w-3" />
-            Decline all
-          </Button>
+          <div className="flex gap-1">
+            <Button
+              size="sm"
+              variant="ghost"
+              className="h-6 px-2 text-xs gap-1"
+              onClick={() => {
+                // Apply every diff entry in one shot — same composition
+                // path the per-entry "Accept" buttons use, just with
+                // every changeable entry pre-resolved as accepted.
+                if (!pendingDraft) return;
+                const entries = computeUnifiedDiff(
+                  editorContent,
+                  preserveImagesFromOriginal(
+                    pendingDraft.current ?? baseline,
+                    pendingDraft.editedSuggested,
+                  ),
+                );
+                const decisions = new Map<number, "accepted" | "declined">();
+                entries.forEach((e, i) => {
+                  if (e.kind !== "unchanged") decisions.set(i, "accepted");
+                });
+                const composed = composeFromDecisions(entries, decisions);
+                setEditorContent(composed);
+                setError(null);
+                setDiffDecisions(new Map());
+                setMode("edit");
+                onAcceptSuggestion(pendingDraft.id);
+              }}
+              title="Accept every proposed change at once"
+            >
+              <Check className="h-3 w-3" />
+              Accept all
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              className="h-6 px-2 text-xs gap-1"
+              onClick={() => onDeclineSuggestion(pendingDraft.id)}
+              title="Dismiss the whole AI suggestion without applying any changes"
+            >
+              <X className="h-3 w-3" />
+              Decline all
+            </Button>
+          </div>
         ) : editable && mode === "view" ? (
           <Button
             size="sm"
@@ -1545,6 +1590,16 @@ export function TicketQualityScreen({ credStatus, onBack }: TicketQualityScreenP
   const [recentlyUpdated, setRecentlyUpdated] = useState<Set<string>>(new Set());
   const recentlyUpdatedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // Mirror the live session chat into the chat-history store so it
+  // survives navigating away from this screen. Rehydrated in
+  // `loadTicket` when the same ticket is re-opened.
+  useEffect(() => {
+    if (!session) return;
+    useChatHistoryStore
+      .getState()
+      .setHistory("ticket_quality", session.issue.key, session.chat);
+  }, [session]);
+
   // ── Resizable pane widths ─────────────────────────────────────────────────
   const [leftWidth, setLeftWidth] = useState(340);
   const [chatWidth, setChatWidth] = useState(360);
@@ -1629,9 +1684,15 @@ export function TicketQualityScreen({ credStatus, onBack }: TicketQualityScreenP
       console.warn("[Meridian] getIssue failed, using sprint-list snapshot:", e);
       freshIssue = issue;
     }
+    // Rehydrate any prior chat for this ticket so navigating away and
+    // back doesn't wipe the conversation. The drafts intentionally
+    // start fresh — JIRA may have moved on since the user last looked.
+    const priorChat = useChatHistoryStore
+      .getState()
+      .getHistory("ticket_quality", freshIssue.key) as GroomChatMessage[];
     setSession({
       issue: freshIssue,
-      chat: [],
+      chat: priorChat,
       drafts: [],
       thinking: false,
       applying: false,
@@ -1672,9 +1733,53 @@ export function TicketQualityScreen({ credStatus, onBack }: TicketQualityScreenP
       kind?: string;
       node?: string;
       status?: "started" | "completed";
-      data?: { partial?: Partial<GroomingOutput> };
+      data?: {
+        partial?: Partial<GroomingOutput>;
+        usagePartial?: { inputTokens?: number; outputTokens?: number };
+        rateLimits?: { provider?: string; snapshot?: RateLimitSnapshot };
+      };
     }>("grooming-workflow-event", (event) => {
       if (event.payload.kind !== "progress") return;
+
+      // Live token-usage stream — the standalone grooming workflow
+      // uses streamLLMJson in the sidecar which emits these events as
+      // input/output tokens accumulate. Routing them through the
+      // tokenUsageStore keeps the HeaderModelPicker count climbing
+      // while the agent is still talking, instead of jumping in one
+      // shot at the end.
+      const usagePartial = event.payload.data?.usagePartial;
+      if (usagePartial && typeof usagePartial === "object") {
+        let mk: string | undefined;
+        try {
+          const r = useAiSelectionStore.getState().resolve("ticket_quality");
+          if (r.model) mk = modelKey(r.provider, r.model);
+        } catch {
+          /* hydration race — fall back to panel-only bucket */
+        }
+        useTokenUsageStore.getState().setCurrentCallUsage(
+          "ticket_quality",
+          {
+            inputTokens: usagePartial.inputTokens ?? 0,
+            outputTokens: usagePartial.outputTokens ?? 0,
+          },
+          mk,
+        );
+        return;
+      }
+
+      // Anthropic rate-limit headers from the OAuth fetch interceptor.
+      const rateLimits = event.payload.data?.rateLimits;
+      if (
+        rateLimits?.provider &&
+        rateLimits.snapshot &&
+        typeof rateLimits.snapshot === "object"
+      ) {
+        useTokenUsageStore
+          .getState()
+          .setRateLimits(rateLimits.provider, rateLimits.snapshot);
+        return;
+      }
+
       const partial = event.payload.data?.partial;
       if (!partial || typeof partial !== "object") return;
       pendingPartial = partial;
@@ -1732,6 +1837,7 @@ export function TicketQualityScreen({ credStatus, onBack }: TicketQualityScreenP
       const output = await runGroomingWorkflow(
         ticketWithContext,
         fileContentsBlock,
+        freshIssue.issueType,
       );
       const drafts = suggestedEditsToDraftChanges(output.suggested_edits, freshIssue);
       const openingMsg = buildOpeningMessage(freshIssue, output);
@@ -1915,6 +2021,7 @@ export function TicketQualityScreen({ credStatus, onBack }: TicketQualityScreenP
         history,
         clearHistory: () => {
           setSession((prev) => (prev ? { ...prev, chat: [] } : prev));
+          useTokenUsageStore.getState().clearPanelChatLastInput("ticket_quality");
         },
         sendMessage: (text: string) => sendChatMessage(text),
         removeLastAssistantMessage: () => {
@@ -2003,12 +2110,6 @@ export function TicketQualityScreen({ credStatus, onBack }: TicketQualityScreenP
               </p>
             </div>
           </>
-        }
-        trailing={
-          <TokenUsageBadge
-            panel="ticket_quality"
-            inFlight={session?.thinking ?? false}
-          />
         }
       />
 

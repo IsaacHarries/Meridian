@@ -62,7 +62,12 @@ import {
 import { listen } from "@tauri-apps/api/event";
 import { toast } from "sonner";
 import { getAppPreferences } from "@/lib/appPreferences";
-import { useTokenUsageStore } from "@/stores/tokenUsageStore";
+import {
+  useTokenUsageStore,
+  modelKey,
+  type RateLimitSnapshot,
+} from "@/stores/tokenUsageStore";
+import { useAiSelectionStore } from "@/stores/aiSelectionStore";
 
 export type { SkillType };
 
@@ -308,7 +313,33 @@ function applyWorkflowResult(
   result: PipelineWorkflowResult,
 ): void {
   if (result.usage) {
-    useTokenUsageStore.getState().addUsage("implement_ticket", result.usage);
+    let mk: string | undefined;
+    try {
+      const ai = useAiSelectionStore.getState();
+      const stage = useImplementTicketStore.getState().currentStage;
+      // tests_plan shares an AI selection with tests in
+      // aiSelectionStore — collapse here so resolve() accepts it.
+      const validStage =
+        stage === "grooming" ||
+        stage === "impact" ||
+        stage === "triage" ||
+        stage === "plan" ||
+        stage === "implementation" ||
+        stage === "review" ||
+        stage === "pr" ||
+        stage === "retro"
+          ? stage
+          : stage === "tests_plan" || stage === "tests"
+            ? "tests"
+            : null;
+      const r = ai.resolve("implement_ticket", validStage);
+      if (r.model) mk = modelKey(r.provider, r.model);
+    } catch {
+      /* fall back to panel-only bucket */
+    }
+    useTokenUsageStore
+      .getState()
+      .addUsage("implement_ticket", result.usage, mk);
   }
   if (result.interrupt) {
     applyInterruptToState(set, result.interrupt.reason, result.interrupt.payload);
@@ -426,6 +457,75 @@ async function ensurePipelineListener(): Promise<void> {
     }
 
     if (e.kind === "progress" && e.status === "started") {
+      // Anthropic rate-limit headers forwarded from the sidecar's
+      // OAuth fetch interceptor. Updates the per-provider snapshot so
+      // the HeaderModelPicker can render % remaining + reset time.
+      const rateData = e.data as
+        | {
+            rateLimits?: { provider?: string; snapshot?: RateLimitSnapshot };
+          }
+        | undefined;
+      if (
+        rateData?.rateLimits?.provider &&
+        rateData.rateLimits.snapshot &&
+        typeof rateData.rateLimits.snapshot === "object"
+      ) {
+        useTokenUsageStore
+          .getState()
+          .setRateLimits(rateData.rateLimits.provider, rateData.rateLimits.snapshot);
+        return;
+      }
+
+      // Live token-usage stream — keeps the panel header's
+      // TokenUsageBadge climbing as the model emits chunks instead of
+      // staying frozen until the call's final usage lands. Buckets
+      // the running total against the active panel model so the
+      // HeaderModelPicker dropdown shows per-model spend live.
+      const usageData = e.data as
+        | { usagePartial?: { inputTokens?: number; outputTokens?: number } }
+        | undefined;
+      if (
+        usageData?.usagePartial &&
+        typeof usageData.usagePartial === "object"
+      ) {
+        const inputTokens = usageData.usagePartial.inputTokens ?? 0;
+        const outputTokens = usageData.usagePartial.outputTokens ?? 0;
+        // Per-stage model resolution — implement-ticket is the one
+        // panel where each stage can override its provider/model, so
+        // bucket against whatever model is active for the current
+        // stage.
+        let mk: string | undefined;
+        try {
+          const ai = useAiSelectionStore.getState();
+          const stageHint = useImplementTicketStore.getState().currentStage;
+          const validStage =
+            stageHint === "grooming" ||
+            stageHint === "impact" ||
+            stageHint === "triage" ||
+            stageHint === "plan" ||
+            stageHint === "implementation" ||
+            stageHint === "review" ||
+            stageHint === "pr" ||
+            stageHint === "retro"
+              ? stageHint
+              : stageHint === "tests_plan" || stageHint === "tests"
+                ? "tests"
+                : null;
+          const r = ai.resolve("implement_ticket", validStage);
+          if (r.model) mk = modelKey(r.provider, r.model);
+        } catch {
+          /* hydration race — fall back to panel-only bucket */
+        }
+        useTokenUsageStore
+          .getState()
+          .setCurrentCallUsage(
+            "implement_ticket",
+            { inputTokens, outputTokens },
+            mk,
+          );
+        return;
+      }
+
       // Live partial-JSON streaming from any node that uses
       // `streamLLMJson` in the sidecar — surfaces a partial output as
       // the model emits tokens so the UI can render fields incrementally
@@ -1153,7 +1253,15 @@ export const useImplementTicketStore = create<ImplementTicketState>()(
 
     _set: (partial) => set(partial as Partial<ImplementTicketState>),
 
-    resetSession: () => set((s) => ({ ...INITIAL, sessions: s.sessions })),
+    resetSession: () => {
+      set((s) => ({ ...INITIAL, sessions: s.sessions }));
+      // The orchestrator chat thread is per-session — picking a new
+      // ticket starts a fresh thread, so the recorded chat-context
+      // size on the panel is no longer meaningful. Clear it so the
+      // header context ring resets to empty until the new thread's
+      // first turn lands.
+      useTokenUsageStore.getState().clearPanelChatLastInput("implement_ticket");
+    },
 
     /**
      * Reload agent skills from disk and write to state. Called at the start of
@@ -1553,6 +1661,7 @@ export const useImplementTicketStore = create<ImplementTicketState>()(
       const args: PipelineWorkflowArgs = {
         ticketText: text + (repoContext || ""),
         ticketKey: fullIssue.key,
+        ticketType: fullIssue.issueType,
         worktreePath,
         codebaseContext,
         skills: {
@@ -2329,13 +2438,31 @@ export function applyOrchestratorResult(
  *  Cheap to assemble; saves the orchestrator from having to call
  *  `get_pipeline_state` for routine "what stage am I on / what did the
  *  current agent produce" questions. */
+/** Strip per-edit `reasoning` fields from grooming output before
+ *  stringifying it into the orchestrator's context. Reasoning is the
+ *  agent's own justification for each suggested edit — useful at
+ *  draft time, but on subsequent chat turns it's the original agent
+ *  explaining itself to a future copy of itself. Dropping it cuts the
+ *  largest chunk of churn out of every replay turn. */
+function stripGroomingReasoning(g: GroomingOutput): unknown {
+  return {
+    ...g,
+    suggested_edits: g.suggested_edits.map((e) => {
+      const { reasoning: _r, ...rest } = e;
+      return rest;
+    }),
+  };
+}
+
 export function buildOrchestratorContextText(s: ImplementTicketState): string {
   const parts: string[] = [];
   if (s.currentStage && s.currentStage !== "select") {
     parts.push(`Current stage: ${s.currentStage}`);
   }
   if (s.grooming) {
-    parts.push(`=== GROOMING OUTPUT ===\n${JSON.stringify(s.grooming, null, 2)}`);
+    parts.push(
+      `=== GROOMING OUTPUT ===\n${JSON.stringify(stripGroomingReasoning(s.grooming), null, 2)}`,
+    );
   }
   if (s.impact) {
     parts.push(`=== IMPACT OUTPUT ===\n${JSON.stringify(s.impact, null, 2)}`);

@@ -4,7 +4,6 @@ import { listen } from "@tauri-apps/api/event";
 import { cn } from "@/lib/utils";
 import { PipelineProgress } from "@/components/PipelineProgress";
 import { HeaderSettingsButton } from "@/components/HeaderSettingsButton";
-import { TokenUsageBadge } from "@/components/TokenUsageBadge";
 import { HeaderRecordButton } from "@/components/HeaderRecordButton";
 import { HeaderTimeTracker } from "@/components/HeaderTimeTracker";
 import { HeaderModelPicker } from "@/components/HeaderModelPicker";
@@ -4148,11 +4147,6 @@ export function ImplementTicketScreen({
                 ? null
                 : (viewingStage as ImplementStageId)
             }
-            className="relative z-30"
-          />
-          <TokenUsageBadge
-            panel="implement_ticket"
-            inFlight={proceeding}
             className="relative z-30"
           />
           <HeaderTimeTracker className="relative z-30" />

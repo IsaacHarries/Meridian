@@ -41,7 +41,12 @@ import {
   isMockMode,
 } from "@/lib/tauri";
 import { listen } from "@tauri-apps/api/event";
-import { useTokenUsageStore } from "@/stores/tokenUsageStore";
+import {
+  useTokenUsageStore,
+  modelKey,
+  type RateLimitSnapshot,
+} from "@/stores/tokenUsageStore";
+import { useAiSelectionStore } from "@/stores/aiSelectionStore";
 
 // ── Per-PR cached session ─────────────────────────────────────────────────────
 
@@ -532,11 +537,50 @@ export const usePrReviewStore = create<PrReviewState>()(
           status?: "started" | "completed";
           data?: {
             partialReport?: Partial<ReviewReport>;
+            usagePartial?: { inputTokens?: number; outputTokens?: number };
+            rateLimits?: { provider?: string; snapshot?: RateLimitSnapshot };
             done?: number;
             total?: number;
           };
         }>("pr-review-workflow-event", (event) => {
           if (event.payload.kind !== "progress") return;
+
+          const rateLimits = event.payload.data?.rateLimits;
+          if (
+            rateLimits?.provider &&
+            rateLimits.snapshot &&
+            typeof rateLimits.snapshot === "object"
+          ) {
+            useTokenUsageStore
+              .getState()
+              .setRateLimits(rateLimits.provider, rateLimits.snapshot);
+            return;
+          }
+
+          // Live token-usage stream from the synthesis node — keeps
+          // the HeaderModelPicker dropdown count climbing as chunks
+          // arrive, instead of waiting for the final result.
+          const usagePartial = event.payload.data?.usagePartial;
+          if (usagePartial && typeof usagePartial === "object") {
+            let mk: string | undefined;
+            try {
+              const r = useAiSelectionStore
+                .getState()
+                .resolve("pr_review");
+              if (r.model) mk = modelKey(r.provider, r.model);
+            } catch {
+              /* hydration race — panel-only bucket */
+            }
+            useTokenUsageStore.getState().setCurrentCallUsage(
+              "pr_review",
+              {
+                inputTokens: usagePartial.inputTokens ?? 0,
+                outputTokens: usagePartial.outputTokens ?? 0,
+              },
+              mk,
+            );
+            return;
+          }
 
           const partial = event.payload.data?.partialReport;
           if (partial && typeof partial === "object") {
@@ -570,7 +614,14 @@ export const usePrReviewStore = create<PrReviewState>()(
         try {
           const { report: parsed, usage } = await runPrReviewWorkflow(fullReviewText);
           if (usage) {
-            useTokenUsageStore.getState().addUsage("pr_review", usage);
+            let mk: string | undefined;
+            try {
+              const r = useAiSelectionStore.getState().resolve("pr_review");
+              if (r.model) mk = modelKey(r.provider, r.model);
+            } catch {
+              /* fall back to panel-only bucket */
+            }
+            useTokenUsageStore.getState().addUsage("pr_review", usage, mk);
           }
           patchSession(selectedPr.id, { report: parsed, partialReport: null });
         } finally {
@@ -724,6 +775,9 @@ export const usePrReviewStore = create<PrReviewState>()(
       const { selectedPr } = get();
       if (!selectedPr) return;
       patchSession(selectedPr.id, { reviewChat: [], reviewChatStreamText: "" });
+      // Drop the recorded chat-context size so the header context ring
+      // resets along with the conversation it reflects.
+      useTokenUsageStore.getState().clearPanelChatLastInput("pr_review");
     },
 
     dropLastReviewAssistantTurn: () => {

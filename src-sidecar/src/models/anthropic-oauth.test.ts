@@ -113,4 +113,45 @@ describe("anthropic-oauth body rewriter", () => {
     expect(out.messages[0]).toEqual({ role: "user", content: "Sys" });
     expect(out.messages[1]).toEqual({ role: "assistant", content: "previous" });
   });
+
+  it("preserves cache_control markers when prepending system to the first user message", () => {
+    const out = rewriteForOAuth({
+      model: "x",
+      system: [
+        {
+          type: "text",
+          text: "long stable preamble",
+          cache_control: { type: "ephemeral" },
+        },
+      ],
+      messages: [{ role: "user", content: "What changed?" }],
+    });
+
+    // Caching path forces the first user message into block form so the
+    // ephemeral marker rides along with the cached text.
+    expect(Array.isArray(out.messages[0].content)).toBe(true);
+    const blocks = out.messages[0].content as Array<{
+      type: string;
+      text: string;
+      cache_control?: { type: "ephemeral" };
+    }>;
+    expect(blocks[0]).toEqual({
+      type: "text",
+      text: "long stable preamble",
+      cache_control: { type: "ephemeral" },
+    });
+    expect(blocks[1]).toEqual({ type: "text", text: "What changed?" });
+  });
+
+  it("falls back to string concat when no block opted into caching", () => {
+    const out = rewriteForOAuth({
+      model: "x",
+      system: [{ type: "text", text: "Be precise." }],
+      messages: [{ role: "user", content: "ok" }],
+    });
+
+    // Non-caching callers still see the legacy concatenated-string shape
+    // — minimises diff for the common path and keeps prior tests green.
+    expect(out.messages[0].content).toBe("Be precise.\n\nok");
+  });
 });

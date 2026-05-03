@@ -21,6 +21,10 @@ const KEY = {
   dailyTokenBudget: "daily_token_budget",
   notifyPrTaskAdded: "notify_pr_task_added",
   notifyAgentStageComplete: "notify_agent_stage_complete",
+  aiDebugEnabled: "ai_debug_enabled",
+  aiDebugDockMode: "ai_debug_dock_mode",
+  meetingsEmbeddingModel: "meetings_embedding_model",
+  meetingsSearchMinScore: "meetings_search_min_score",
 } as const;
 
 // ── Defaults ──────────────────────────────────────────────────────────────────
@@ -41,7 +45,36 @@ export const APP_PREFERENCE_DEFAULTS = {
   dailyTokenBudget: null as number | null,
   notifyPrTaskAdded: false,
   notifyAgentStageComplete: false,
+  /** Capture every LLM round-trip (prompt + response + usage) and emit
+   *  an event the in-app debug panel renders. Off by default — capture
+   *  costs IPC bandwidth and only matters when the user is actively
+   *  inspecting prompts. */
+  aiDebugEnabled: false,
+  /** Where the debug panel docks: edge of the main window or a popped-
+   *  out separate window. Persisted so the layout sticks across
+   *  app restarts. */
+  aiDebugDockMode: "bottom" as AiDebugDockMode,
+  /** Ollama embedding model used by the cross-meetings RAG search.
+   *  `nomic-embed-text` is a sensible default — 768 dims, English-
+   *  optimised, runs on consumer hardware. Users can switch via
+   *  Settings → Meetings; doing so clears existing embeddings (they
+   *  live in different vector spaces) and triggers a re-embed. */
+  meetingsEmbeddingModel: "nomic-embed-text",
+  /** Cross-meetings search relevance threshold. Hits with a fused
+   *  score below this value are filtered out before reaching the
+   *  user. Calibrated against raw cosine similarity from
+   *  nomic-embed-text on English conversational prose:
+   *    ≥ 0.70  paraphrase / direct match
+   *    ≥ 0.55  likely relevant
+   *    ≥ 0.45  loosely related
+   *    < 0.45  noise
+   *  0.61 lands just above "likely relevant" — strict enough to cut
+   *  tail noise, lenient enough to allow on-topic non-paraphrase
+   *  matches through. */
+  meetingsSearchMinScore: 0.61,
 } as const;
+
+export type AiDebugDockMode = "bottom" | "right" | "left" | "window" | "hidden";
 
 export type AppPreferences = {
   prReviewDefaultChunkChars: number;
@@ -53,6 +86,10 @@ export type AppPreferences = {
   dailyTokenBudget: number | null;
   notifyPrTaskAdded: boolean;
   notifyAgentStageComplete: boolean;
+  aiDebugEnabled: boolean;
+  aiDebugDockMode: AiDebugDockMode;
+  meetingsEmbeddingModel: string;
+  meetingsSearchMinScore: number;
 };
 
 // ── Parsing helpers ───────────────────────────────────────────────────────────
@@ -137,7 +174,52 @@ export async function getAppPreferences(): Promise<AppPreferences> {
       prefs[KEY.notifyAgentStageComplete],
       APP_PREFERENCE_DEFAULTS.notifyAgentStageComplete,
     ),
+    aiDebugEnabled: parseBool(
+      prefs[KEY.aiDebugEnabled],
+      APP_PREFERENCE_DEFAULTS.aiDebugEnabled,
+    ),
+    aiDebugDockMode: parseDockMode(
+      prefs[KEY.aiDebugDockMode],
+      APP_PREFERENCE_DEFAULTS.aiDebugDockMode,
+    ),
+    meetingsEmbeddingModel:
+      (prefs[KEY.meetingsEmbeddingModel] || "").trim() ||
+      APP_PREFERENCE_DEFAULTS.meetingsEmbeddingModel,
+    meetingsSearchMinScore: parseClampedFloat(
+      prefs[KEY.meetingsSearchMinScore],
+      APP_PREFERENCE_DEFAULTS.meetingsSearchMinScore,
+      0,
+      1,
+    ),
   };
+}
+
+function parseClampedFloat(
+  raw: string | undefined,
+  fallback: number,
+  min: number,
+  max: number,
+): number {
+  if (!raw) return fallback;
+  const n = Number.parseFloat(raw);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(max, Math.max(min, n));
+}
+
+function parseDockMode(
+  raw: string | undefined,
+  fallback: AiDebugDockMode,
+): AiDebugDockMode {
+  if (
+    raw === "bottom" ||
+    raw === "right" ||
+    raw === "left" ||
+    raw === "window" ||
+    raw === "hidden"
+  ) {
+    return raw;
+  }
+  return fallback;
 }
 
 // ── Setters ───────────────────────────────────────────────────────────────────
@@ -172,4 +254,18 @@ export async function setNotifyPrTaskAdded(value: boolean): Promise<void> {
 }
 export async function setNotifyAgentStageComplete(value: boolean): Promise<void> {
   await setPreference(KEY.notifyAgentStageComplete, value ? "true" : "false");
+}
+export async function setAiDebugEnabled(value: boolean): Promise<void> {
+  await setPreference(KEY.aiDebugEnabled, value ? "true" : "false");
+}
+export async function setAiDebugDockMode(value: AiDebugDockMode): Promise<void> {
+  await setPreference(KEY.aiDebugDockMode, value);
+}
+export async function setMeetingsEmbeddingModel(value: string): Promise<void> {
+  await setPreference(KEY.meetingsEmbeddingModel, value);
+}
+export async function setMeetingsSearchMinScore(value: number): Promise<void> {
+  const clamped = Math.min(1, Math.max(0, value));
+  // Format with 2 decimals to keep the on-disk pref readable.
+  await setPreference(KEY.meetingsSearchMinScore, clamped.toFixed(2));
 }

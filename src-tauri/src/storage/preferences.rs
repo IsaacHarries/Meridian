@@ -32,6 +32,49 @@ pub fn prefs_path() -> PathBuf {
         })
 }
 
+/// Path of the optional JSONL mirror of captured AI traffic. Sits next
+/// to preferences in the app data dir so it's easy to find and easy
+/// for an external tool (or Claude Code itself) to tail.
+pub fn ai_debug_log_path() -> PathBuf {
+    let prefs = prefs_path();
+    prefs
+        .parent()
+        .map(|p| p.join("ai-debug.jsonl"))
+        .unwrap_or_else(|| PathBuf::from("ai-debug.jsonl"))
+}
+
+/// Append one line to the AI debug log. The caller passes the raw
+/// JSON they want recorded — this function adds the trailing newline,
+/// creates the file (and parent dir) if missing, and silently swallows
+/// I/O errors so a transient disk hiccup never propagates back into
+/// the LLM hot path. Off-the-shelf log rotation isn't included; the
+/// user can clear via the panel's "Clear log" button or by deleting
+/// the file directly.
+pub fn append_ai_debug_log_line(line: &str) {
+    let path = ai_debug_log_path();
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    use std::io::Write;
+    if let Ok(mut f) = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
+        let _ = writeln!(f, "{}", line);
+    }
+}
+
+/// Truncate the debug log to zero length without deleting the file —
+/// keeps any open file handles or external tailers happy.
+pub fn clear_ai_debug_log() -> Result<(), String> {
+    let path = ai_debug_log_path();
+    if !path.exists() {
+        return Ok(());
+    }
+    fs::write(&path, b"").map_err(|e| format!("Cannot clear ai-debug log: {e}"))
+}
+
 // ── Read / write ──────────────────────────────────────────────────────────────
 
 pub fn load_map() -> HashMap<String, String> {
@@ -66,6 +109,16 @@ pub fn get_pref(key: &str) -> Option<String> {
         .cloned()
 }
 
+/// True when the user has flipped the AI traffic debug toggle on.
+/// Read every time a workflow starts so the toggle takes effect for
+/// the next run without restarting the app.
+pub fn ai_debug_enabled() -> bool {
+    matches!(
+        get_pref("ai_debug_enabled").as_deref(),
+        Some("true" | "1" | "yes")
+    )
+}
+
 // ── Data directory ────────────────────────────────────────────────────────────
 
 /// Returns the user-configured data directory, or the app data dir as fallback.
@@ -92,6 +145,18 @@ pub fn resolve_data_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
 #[tauri::command]
 pub fn get_data_dir(app: tauri::AppHandle) -> Result<String, String> {
     Ok(resolve_data_dir(&app)?.to_string_lossy().into_owned())
+}
+
+/// Tauri command: where the AI debug JSONL mirror lives.
+#[tauri::command]
+pub fn get_ai_debug_log_path_cmd() -> String {
+    ai_debug_log_path().to_string_lossy().into_owned()
+}
+
+/// Tauri command: clear the AI debug JSONL mirror.
+#[tauri::command]
+pub fn clear_ai_debug_log_cmd() -> Result<(), String> {
+    clear_ai_debug_log()
 }
 
 /// Tauri command: true when the given directory exists and contains at least

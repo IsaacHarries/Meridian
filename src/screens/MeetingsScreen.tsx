@@ -29,7 +29,6 @@ import {
   type SlashCommand,
 } from "@/lib/slashCommands";
 import { WorkflowPanelHeader, APP_HEADER_TITLE } from "@/components/appHeaderLayout";
-import { TokenUsageBadge } from "@/components/TokenUsageBadge";
 import {
   listMicrophones,
   type MicrophoneInfo,
@@ -38,16 +37,29 @@ import {
   type SpeakerCandidate,
 } from "@/lib/tauri";
 import { fuzzyScore } from "@/lib/fuzzySearch";
+import {
+  parseTaggedQuery,
+  meetingMatchesTags,
+  meetingMatchesNames,
+} from "@/lib/taggedQuery";
+import {
+  participantsForMeeting,
+  gatherNamePool,
+  gatherTagPool,
+} from "@/lib/meetingPeople";
+import { TokenSuggestPopover } from "@/components/TokenSuggestPopover";
 import { extractTiptapPlainText } from "@/lib/tiptapText";
 import { getPreferences } from "@/lib/preferences";
 import {
   useMeetingsStore,
   formatTimestamp,
+  normalizeTag,
   type NewMeetingMode,
 } from "@/stores/meetingsStore";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 import { ask } from "@tauri-apps/plugin-dialog";
+import { CrossMeetingsChatPanel } from "@/components/CrossMeetingsChatPanel";
 
 
 interface MeetingsScreenProps {
@@ -170,13 +182,16 @@ export function MeetingsScreen({ onBack }: MeetingsScreenProps) {
     }
   }
 
-  // Always show the chat panel for any opened meeting. If the meeting has no
-  // content yet (empty notes / no transcript) the agent will simply tell the
-  // user it has nothing to work with — surfacing the panel early lets the user
-  // type the moment notes exist, instead of waiting for the layout to shift.
-  // Search mode takes over the main area, so the chat panel hides during it.
-  const showChatPanel =
-    !!selected && !(active || creating) && !searchOpen;
+  // Chat panel is always available unless a fullscreen mode is active.
+  // When a meeting is selected it shows the per-meeting Q&A (with a
+  // /search slash command for cross-meetings RAG); when no meeting
+  // is open it falls back to the dedicated cross-meetings panel so
+  // the user can ask "find that conversation about X" the moment they
+  // land on the panel, without first picking a meeting. The search
+  // overlay only takes over the main area — the chat aside stays
+  // visible alongside it so the user can pivot between scanning
+  // results and asking the agent without losing the conversation.
+  const showChatPanel = !(active || creating);
 
   return (
     <div className="h-screen flex flex-col overflow-hidden">
@@ -190,7 +205,6 @@ export function MeetingsScreen({ onBack }: MeetingsScreenProps) {
             <h1 className={APP_HEADER_TITLE}>Meetings</h1>
           </>
         }
-        trailing={<TokenUsageBadge panel="meetings" />}
       />
 
       <div className="flex flex-1 min-h-0">
@@ -258,9 +272,19 @@ export function MeetingsScreen({ onBack }: MeetingsScreenProps) {
               <EmptyState />
             )}
           </main>
-          {showChatPanel && selected && (
+          {showChatPanel && (
             <aside className="w-[420px] shrink-0 border-l bg-background/40 flex flex-col min-h-0">
-              <MeetingChatPanel record={selected} />
+              {selected ? (
+                <MeetingChatPanel record={selected} />
+              ) : (
+                <CrossMeetingsChatPanel
+                  compact
+                  onOpenMeeting={(id) => {
+                    setCreating(false);
+                    void selectMeeting(id);
+                  }}
+                />
+              )}
             </aside>
           )}
         </div>
@@ -513,19 +537,59 @@ function SearchResultsView({
   onOpenMeeting: (id: string) => void;
   inputRef: React.RefObject<HTMLInputElement>;
 }) {
-  // Index is purely a function of meetings — memo so typing in the search
-  // input doesn't re-tokenise on every keystroke.
-  const snippets = useMemo(() => buildMeetingSnippets(meetings), [meetings]);
-  const results = useMemo(
-    () => searchMeetingSnippets(query, snippets),
-    [query, snippets],
+  // Pull `#tag` and `@name` filters out of the raw query first so the
+  // rest of the pipeline sees a clean prose residual. Both halves
+  // recompute every keystroke; the parse itself is microsecond-cheap.
+  const { tags, names, residual } = useMemo(
+    () => parseTaggedQuery(query),
+    [query],
   );
+
+  // Apply the tag + name filters to the meeting universe before snippet-
+  // building so a single long transcript without matching metadata can't
+  // crowd the index. When neither filter is specified this is identity.
+  const tagFilteredMeetings = useMemo(() => {
+    if (tags.length === 0 && names.length === 0) return meetings;
+    return meetings.filter(
+      (m) =>
+        meetingMatchesTags(m.tags, tags) &&
+        meetingMatchesNames(participantsForMeeting(m), names),
+    );
+  }, [meetings, tags, names]);
+
+  const snippets = useMemo(
+    () => buildMeetingSnippets(tagFilteredMeetings),
+    [tagFilteredMeetings],
+  );
+
+  // Three modes:
+  //   - residual + filters : fuzzy search the residual within the filtered meetings
+  //   - residual only      : fuzzy search every meeting (existing behaviour)
+  //   - filters only       : list the filtered meetings as title-only synthetic
+  //                          snippets so the user can pick one even without prose
+  const hasFilter = tags.length > 0 || names.length > 0;
+  const results = useMemo<ScoredSnippet[]>(() => {
+    if (residual) return searchMeetingSnippets(residual, snippets);
+    if (!hasFilter) return [];
+    return tagFilteredMeetings.map((m) => ({
+      meetingId: m.id,
+      meetingTitle: m.title || "Untitled meeting",
+      meetingStartedAt: m.startedAt,
+      meetingKind: (m.kind ?? "transcript") as MeetingKind,
+      source: "title" as const,
+      text: m.title || "Untitled meeting",
+      score: 0,
+    }));
+  }, [residual, hasFilter, snippets, tagFilteredMeetings]);
 
   const hitCountByMeeting = useMemo(() => {
     const m = new Map<string, number>();
     for (const r of results) m.set(r.meetingId, (m.get(r.meetingId) ?? 0) + 1);
     return m;
   }, [results]);
+
+  const tagPool = useMemo(() => gatherTagPool(meetings), [meetings]);
+  const namePool = useMemo(() => gatherNamePool(meetings), [meetings]);
 
   return (
     <div className="flex flex-col min-h-full">
@@ -536,8 +600,15 @@ function SearchResultsView({
             ref={inputRef}
             value={query}
             onChange={(e) => onQueryChange(e.target.value)}
-            placeholder="Search meetings, notes, transcripts…"
+            placeholder="Search meetings, notes, transcripts… (filter with #tag and @name)"
             className="h-9 border-0 shadow-none focus-visible:ring-0 focus-visible:ring-offset-0 px-1 text-sm"
+          />
+          <TokenSuggestPopover
+            value={query}
+            onChange={onQueryChange}
+            inputRef={inputRef}
+            tagPool={tagPool}
+            namePool={namePool}
           />
           <kbd className="hidden sm:inline-flex items-center gap-0.5 text-[10px] font-mono px-1.5 py-0.5 rounded border text-muted-foreground bg-muted">
             esc
@@ -556,7 +627,10 @@ function SearchResultsView({
               Type to search across {meetings.length} meeting
               {meetings.length === 1 ? "" : "s"} — titles, notes, and transcripts.
             </p>
-            <p className="text-xs">Fuzzy matching · click a result to open the full meeting.</p>
+            <p className="text-xs">
+              Fuzzy matching · prefix <span className="font-mono">#tag</span> or{" "}
+              <span className="font-mono">@name</span> to filter · click a result to open.
+            </p>
           </div>
         ) : results.length === 0 ? (
           <div className="flex flex-col items-center justify-center text-center gap-2 py-16 text-muted-foreground">
@@ -565,6 +639,21 @@ function SearchResultsView({
               No results for{" "}
               <span className="font-mono text-foreground">{query.trim()}</span>.
             </p>
+            {hasFilter && tagFilteredMeetings.length === 0 && (
+              <p className="text-xs">
+                No meetings match{" "}
+                {[
+                  ...tags.map((t) => `#${t}`),
+                  ...names.map((n) => `@${n}`),
+                ].map((tok, i, arr) => (
+                  <span key={tok}>
+                    <span className="font-mono text-foreground">{tok}</span>
+                    {i < arr.length - 1 ? " " : ""}
+                  </span>
+                ))}
+                .
+              </p>
+            )}
           </div>
         ) : (
           <>
@@ -572,6 +661,20 @@ function SearchResultsView({
               {results.length} match{results.length === 1 ? "" : "es"} across{" "}
               {hitCountByMeeting.size} meeting
               {hitCountByMeeting.size === 1 ? "" : "s"}
+              {hasFilter && (
+                <>
+                  {" "}filtered by{" "}
+                  {[
+                    ...tags.map((t) => `#${t}`),
+                    ...names.map((n) => `@${n}`),
+                  ].map((tok, i, arr) => (
+                    <span key={tok}>
+                      <span className="font-mono text-foreground">{tok}</span>
+                      {i < arr.length - 1 ? " " : ""}
+                    </span>
+                  ))}
+                </>
+              )}
             </p>
             {results.map((r, i) => (
               <SearchResultCard
@@ -1039,6 +1142,7 @@ function MeetingDetailView({ record }: { record: MeetingRecord }) {
   const summaryPartial = useMeetingsStore(
     (s) => s.summaryStreamPartial[record.id],
   );
+  const selectMeeting = useMeetingsStore((s) => s.selectMeeting);
   const summarizeSelected = useMeetingsStore((s) => s.summarizeSelected);
   const generateTitleForSelected = useMeetingsStore((s) => s.generateTitleForSelected);
   const renameMeeting = useMeetingsStore((s) => s.renameMeeting);
@@ -1210,8 +1314,17 @@ function MeetingDetailView({ record }: { record: MeetingRecord }) {
             );
             if (confirmed) void deleteSelectedMeeting();
           }}
+          title="Delete meeting"
         >
           <Trash2 className="h-4 w-4" />
+        </Button>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => void selectMeeting(null)}
+          title="Close meeting"
+        >
+          <X className="h-4 w-4" />
         </Button>
       </div>
 
@@ -1574,9 +1687,18 @@ function MeetingChatPanel({ record }: { record: MeetingRecord }) {
   const busy = useMeetingsStore((s) => s.busy);
   const streamText = useMeetingsStore((s) => s.chatStreamText);
   const sendChatMessage = useMeetingsStore((s) => s.sendChatMessage);
+  const sendCrossMeetingsSearch = useMeetingsStore(
+    (s) => s.sendCrossMeetingsSearch,
+  );
   const summarizeSelected = useMeetingsStore((s) => s.summarizeSelected);
   const clearSelectedChat = useMeetingsStore((s) => s.clearSelectedChat);
   const dropLastAssistantTurn = useMeetingsStore((s) => s.dropLastAssistantTurn);
+  // Live pools for `/search #tag @name` autocomplete inside the chat
+  // input. Pulled fresh from the meetings store so newly tagged or
+  // mentioned names show up without remounting the panel.
+  const allMeetings = useMeetingsStore((s) => s.meetings);
+  const tagPool = useMemo(() => gatherTagPool(allMeetings), [allMeetings]);
+  const namePool = useMemo(() => gatherNamePool(allMeetings), [allMeetings]);
   const [input, setInput] = useState("");
   const bottomRef = useRef<HTMLDivElement>(null);
   const isBusy = busy.has(record.id);
@@ -1668,6 +1790,26 @@ function MeetingChatPanel({ record }: { record: MeetingRecord }) {
           );
         },
       },
+      {
+        name: "search",
+        description: "Search every indexed meeting and answer with citations",
+        args: "<query>",
+        execute: async ({ args, setInput, toast: t }) => {
+          const q = args.trim();
+          if (!q) {
+            // Prefill the input so the user types the body and submits.
+            setInput("/search ");
+            return;
+          }
+          try {
+            await sendCrossMeetingsSearch(q);
+          } catch (e) {
+            t.error("Cross-meetings search failed", {
+              description: e instanceof Error ? e.message : String(e),
+            });
+          }
+        },
+      },
     ];
 
     return [
@@ -1684,6 +1826,7 @@ function MeetingChatPanel({ record }: { record: MeetingRecord }) {
     history,
     clearSelectedChat,
     sendChatMessage,
+    sendCrossMeetingsSearch,
     dropLastAssistantTurn,
     summarizeSelected,
     speakerLines,
@@ -1707,7 +1850,10 @@ function MeetingChatPanel({ record }: { record: MeetingRecord }) {
         {history.length === 0 ? (
           <p className="text-xs text-muted-foreground italic text-center pt-6">
             Ask anything about this meeting — what was discussed, decisions made,
-            action items, or details you want to recall. Type <span className="font-mono">/</span> to see commands.
+            action items, or details you want to recall. Type <span className="font-mono">/</span> to see commands;
+            use <span className="font-mono">/search &lt;query&gt;</span> to search across every indexed meeting
+            (filter with <span className="font-mono">#tag</span> or <span className="font-mono">@name</span>, e.g.{" "}
+            <span className="font-mono">/search #standup @alice blockers</span>).
           </p>
         ) : (
           history.map((msg, i) => (
@@ -1761,6 +1907,8 @@ function MeetingChatPanel({ record }: { record: MeetingRecord }) {
           commands={commands}
           busy={isBusy}
           placeholder="Ask about this meeting. Enter to send. / for commands."
+          tagPool={tagPool}
+          namePool={namePool}
         />
       </div>
     </>
@@ -1815,8 +1963,13 @@ function TagEditor({
   }
 
   function addTag(raw: string) {
-    const t = raw.trim().toLowerCase();
+    const t = normalizeTag(raw);
     if (!t) return;
+    if (/\s/.test(raw.trim())) {
+      toast.info("Tags can't contain spaces", {
+        description: `Saved as "${t}".`,
+      });
+    }
     addTagToVocab(t);
     if (!tags.includes(t)) onChange([...tags, t]);
   }

@@ -35,6 +35,7 @@ import {
   parseSlashInput,
   resolveCommand,
 } from "@/lib/slashCommands";
+import { TokenSuggestPopover } from "@/components/TokenSuggestPopover";
 
 export interface SlashCommandInputProps {
   value: string;
@@ -61,6 +62,17 @@ export interface SlashCommandInputProps {
    * Classname passed through to the textarea (not the outer wrapper).
    */
   textareaClassName?: string;
+  /**
+   * When provided, enables a `#tag` autocomplete popover that fires
+   * while typing a `#` token. Pass the pool of available tag names.
+   */
+  tagPool?: string[];
+  /**
+   * When provided, enables an `@name` autocomplete popover that fires
+   * while typing an `@` token. Pass the pool of available participant
+   * names (typically union of speakers + notes mentions).
+   */
+  namePool?: string[];
 }
 
 export function SlashCommandInput({
@@ -73,6 +85,8 @@ export function SlashCommandInput({
   sendKey = "enter",
   rows = 2,
   textareaClassName,
+  tagPool,
+  namePool,
 }: SlashCommandInputProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [paletteOpen, setPaletteOpen] = useState(false);
@@ -349,6 +363,16 @@ export function SlashCommandInput({
           )}
         </Button>
       </div>
+
+      {(tagPool || namePool) && (
+        <TokenSuggestPopover
+          value={value}
+          onChange={onChange}
+          inputRef={textareaRef}
+          tagPool={tagPool ?? []}
+          namePool={namePool ?? []}
+        />
+      )}
     </div>
   );
 }

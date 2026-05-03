@@ -1,5 +1,6 @@
 pub mod credentials;
 pub mod crypto;
+pub mod meeting_index;
 pub mod preferences;
 pub mod store_cache;
 pub mod tasks;

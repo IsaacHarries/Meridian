@@ -37,6 +37,8 @@ import {
   summarizeMeeting,
   generateMeetingTitle,
   chatMeeting,
+  searchMeetings,
+  chatCrossMeetings,
   diarizeMeeting,
   renameMeetingSpeaker,
   createNotesMeeting as createNotesMeetingCmd,
@@ -47,6 +49,13 @@ import { getPreferences, setPreference } from "@/lib/preferences";
 import { loadCache, saveCache } from "@/lib/storeCache";
 import { extractTiptapPlainText } from "@/lib/tiptapText";
 import { subscribeWorkflowStream } from "@/lib/workflowStream";
+import { useTokenUsageStore } from "@/stores/tokenUsageStore";
+import {
+  parseTaggedQuery,
+  meetingMatchesTags,
+  meetingMatchesNames,
+} from "@/lib/taggedQuery";
+import { participantsForMeeting } from "@/lib/meetingPeople";
 
 export const MEETINGS_STORE_KEY = "meridian-meetings-store";
 
@@ -210,6 +219,14 @@ interface MeetingsState {
    */
   generateTitleForSelected: () => Promise<void>;
   sendChatMessage: (input: string) => Promise<void>;
+  /**
+   * Run a cross-meetings RAG search inside the selected meeting's chat.
+   * The user's `/search <query>` turn is appended verbatim, then the
+   * hybrid retrieval result is fed to the cross-meetings chat workflow
+   * and the answer (with citations) is appended as the assistant turn.
+   * No-op when no meeting is selected.
+   */
+  sendCrossMeetingsSearch: (query: string) => Promise<void>;
 
   diarizeSelected: () => Promise<void>;
   renameSpeaker: (speakerId: string, displayName: string | null) => Promise<void>;
@@ -224,6 +241,22 @@ interface MeetingsState {
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
+
+/**
+ * Coerce a raw user-entered tag into the canonical form: lowercase,
+ * trimmed, internal whitespace stripped (everything from the first
+ * whitespace onwards is dropped). Returns the empty string when the
+ * input collapses to nothing — callers should guard with a no-op.
+ *
+ * Tags are restricted to single tokens so `#tag` query syntax can
+ * use a simple `\S+` parser without ambiguity around where the tag
+ * ends and the rest of the query begins.
+ */
+export function normalizeTag(raw: string): string {
+  const trimmed = raw.trim().toLowerCase();
+  const firstWhitespace = trimmed.search(/\s/);
+  return firstWhitespace === -1 ? trimmed : trimmed.slice(0, firstWhitespace);
+}
 
 function buildTranscriptText(record: MeetingRecord): string {
   if (record.segments.length === 0) return "(no transcript available)";
@@ -336,7 +369,9 @@ export const useMeetingsStore = create<MeetingsState>()((set, get) => ({
   },
 
   addTagToVocab: (tag) => {
-    const normalized = tag.trim().toLowerCase();
+    // Tags must be single tokens (no whitespace) so `#tag` query syntax
+    // can rely on a simple word-boundary parser.
+    const normalized = normalizeTag(tag);
     if (!normalized) return;
     set((s) => {
       if (s.tagVocab.includes(normalized)) return s;
@@ -398,6 +433,10 @@ export const useMeetingsStore = create<MeetingsState>()((set, get) => ({
   },
 
   selectMeeting: async (id) => {
+    // Switching meetings swaps the visible chat to the new record's
+    // own history, so the previous meeting's recorded chat-context
+    // size no longer represents what's on screen. Reset it.
+    useTokenUsageStore.getState().clearPanelChatLastInput("meetings");
     if (id === null) {
       set({ selectedId: null });
       return;
@@ -726,6 +765,93 @@ export const useMeetingsStore = create<MeetingsState>()((set, get) => ({
     }
   },
 
+  sendCrossMeetingsSearch: async (query) => {
+    const { selectedId, meetings } = get();
+    if (!selectedId) return;
+    const record = meetings.find((m) => m.id === selectedId);
+    if (!record) return;
+    const trimmed = query.trim();
+    if (!trimmed) return;
+
+    // Pull `#tag` and `@name` filters out of the query. The residual
+    // is what the hybrid retrieval actually searches for; the filters
+    // narrow the meeting universe.
+    const { tags, names, residual } = parseTaggedQuery(trimmed);
+    const hasFilter = tags.length > 0 || names.length > 0;
+    const meetingIds = hasFilter
+      ? meetings
+          .filter(
+            (m) =>
+              meetingMatchesTags(m.tags, tags) &&
+              meetingMatchesNames(participantsForMeeting(m), names),
+          )
+          .map((m) => m.id)
+      : undefined;
+
+    const userMsg: MeetingChatMessage = {
+      role: "user",
+      content: `/search ${trimmed}`,
+    };
+    const nextHistory: MeetingChatMessage[] = [
+      ...(record.chatHistory ?? []),
+      userMsg,
+    ];
+    const optimistic = { ...record, chatHistory: nextHistory };
+    set((s) => ({
+      meetings: replaceOrInsert(s.meetings, optimistic),
+      busy: new Set(s.busy).add(selectedId),
+    }));
+
+    try {
+      let assistantContent: string;
+      const filterTokens = [
+        ...tags.map((t) => `#${t}`),
+        ...names.map((n) => `@${n}`),
+      ];
+      if (!residual) {
+        assistantContent = hasFilter
+          ? `Add a query alongside ${filterTokens.map((t) => `\`${t}\``).join(" ")}, e.g. \`/search ${filterTokens[0]} what was decided\`.`
+          : "Add a query after `/search`.";
+      } else if (meetingIds && meetingIds.length === 0) {
+        assistantContent = `No meetings match ${filterTokens.map((t) => `\`${t}\``).join(" ")}.`;
+      } else {
+        const search = await searchMeetings(residual, { limit: 16, meetingIds });
+        if (search.hits.length === 0) {
+          assistantContent = hasFilter
+            ? `No matches in ${meetingIds!.length} filtered meeting${meetingIds!.length === 1 ? "" : "s"}. Try rephrasing or removing a filter.`
+            : "No matches across your indexed meetings. Try rephrasing, or lower the relevance threshold in Settings → Meetings.";
+        } else {
+          const reply = await chatCrossMeetings(
+            search.hits,
+            JSON.stringify(nextHistory),
+            !search.semanticUnavailable,
+          );
+          assistantContent = reply.trim();
+          if (search.semanticUnavailable) {
+            const note =
+              search.semanticMessage ??
+              "Semantic search unavailable — keyword matches only.";
+            assistantContent = `${assistantContent}\n\n_${note}_`;
+          }
+        }
+      }
+      const assistantMsg: MeetingChatMessage = {
+        role: "assistant",
+        content: assistantContent,
+      };
+      const finalHistory = [...nextHistory, assistantMsg];
+      const updated: MeetingRecord = { ...record, chatHistory: finalHistory };
+      await saveMeeting(updated);
+      set((s) => ({ meetings: replaceOrInsert(s.meetings, updated) }));
+    } finally {
+      set((s) => {
+        const nextBusy = new Set(s.busy);
+        nextBusy.delete(selectedId);
+        return { busy: nextBusy };
+      });
+    }
+  },
+
   diarizeSelected: async () => {
     const { selectedId } = get();
     if (!selectedId) return;
@@ -762,6 +888,7 @@ export const useMeetingsStore = create<MeetingsState>()((set, get) => ({
     const updated: MeetingRecord = { ...record, chatHistory: [] };
     await saveMeeting(updated);
     set((s) => ({ meetings: replaceOrInsert(s.meetings, updated) }));
+    useTokenUsageStore.getState().clearPanelChatLastInput("meetings");
   },
 
   dropLastAssistantTurn: async () => {

@@ -186,6 +186,9 @@ async function streamSynthesis(args: {
   let accumulated: AIMessageChunk | undefined;
   let lastFlushAt = 0;
   let lastEmittedSize = -1;
+  let lastUsageEmitAt = 0;
+  let lastEmittedInput = -1;
+  let lastEmittedOutput = -1;
 
   const tryFlush = (force: boolean) => {
     if (!emit || !workflowId) return;
@@ -209,6 +212,34 @@ async function streamSynthesis(args: {
     });
   };
 
+  // Forward the running input/output token counts to the frontend so
+  // the PR Review TokenUsageBadge updates live during synthesis. Same
+  // throttle as the partial-report flush.
+  const tryEmitUsage = () => {
+    if (!emit || !workflowId) return;
+    const meta = accumulated?.usage_metadata as
+      | { input_tokens?: number; output_tokens?: number }
+      | undefined;
+    if (!meta) return;
+    const inputTokens = meta.input_tokens ?? 0;
+    const outputTokens = meta.output_tokens ?? 0;
+    if (inputTokens === lastEmittedInput && outputTokens === lastEmittedOutput) {
+      return;
+    }
+    const now = Date.now();
+    if (now - lastUsageEmitAt < PARTIAL_FLUSH_MS) return;
+    lastUsageEmitAt = now;
+    lastEmittedInput = inputTokens;
+    lastEmittedOutput = outputTokens;
+    emit({
+      id: workflowId,
+      type: "progress",
+      node,
+      status: "started",
+      data: { usagePartial: { inputTokens, outputTokens } },
+    });
+  };
+
   for await (const chunk of stream) {
     accumulated = accumulated ? accumulated.concat(chunk) : chunk;
     const deltaText = extractText(chunk.content);
@@ -216,6 +247,7 @@ async function streamSynthesis(args: {
       raw += deltaText;
       tryFlush(false);
     }
+    tryEmitUsage();
   }
   tryFlush(true);
 

@@ -6,8 +6,28 @@ import type { ModelSelection } from "../protocol.js";
 import { ClaudeOAuthChatModel } from "./anthropic-oauth.js";
 import { GeminiCodeAssistChatModel } from "./gemini-codeassist.js";
 import { CopilotChatModel } from "./copilot.js";
+import { AiTrafficHandler, getAiCaptureCtx } from "../ai-capture.js";
 
 export function buildModel(selection: ModelSelection): BaseChatModel {
+  const { model, credentials } = selection;
+  const built = buildModelInner(selection);
+
+  // Attach the AI-traffic capture handler when the active workflow run
+  // requested debug capture. AsyncLocalStorage propagates the scope
+  // across all the async machinery between here and the model call,
+  // so this single hook covers every workflow without each runner
+  // having to wire it manually.
+  const ctx = getAiCaptureCtx();
+  if (ctx?.captureEnabled) {
+    const existing = built.callbacks ?? [];
+    const handlers = Array.isArray(existing) ? existing : [];
+    built.callbacks = [...handlers, new AiTrafficHandler(ctx, credentials.provider, model)];
+  }
+
+  return built;
+}
+
+function buildModelInner(selection: ModelSelection): BaseChatModel {
   const { model, credentials } = selection;
 
   switch (credentials.provider) {

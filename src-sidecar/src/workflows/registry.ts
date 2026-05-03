@@ -48,6 +48,10 @@ import {
   MeetingChatInputSchema,
 } from "./meeting-chat.js";
 import {
+  runCrossMeetingsChat,
+  CrossMeetingsChatInputSchema,
+} from "./cross-meetings-chat.js";
+import {
   runAnalyzePrComments,
   AnalyzePrCommentsInputSchema,
 } from "./analyze-pr-comments.js";
@@ -80,6 +84,7 @@ import {
   GroomingFileProbeInputSchema,
 } from "./grooming-file-probe.js";
 import { makeRepoTools } from "../tools/repo-tools.js";
+import { withAiCaptureCtx } from "../ai-capture.js";
 
 export type Emitter = (event: OutboundEvent) => void;
 
@@ -104,6 +109,7 @@ const workflows: Record<string, WorkflowRunner> = {
   meeting_title: runMeetingTitleWorkflow,
   sprint_dashboard_chat: runSprintDashboardChatWorkflow,
   meeting_chat: runMeetingChatWorkflow,
+  cross_meetings_chat: runCrossMeetingsChatWorkflow,
   analyze_pr_comments: runAnalyzePrCommentsWorkflow,
   pr_review_chat: runPrReviewChatWorkflow,
   address_pr_chat: runAddressPrChatWorkflow,
@@ -128,13 +134,22 @@ export async function runWorkflow(msg: WorkflowStart, emit: Emitter): Promise<vo
   activeRuns.set(msg.id, controller);
 
   try {
-    await runner({
-      workflowId: msg.id,
-      input: msg.input,
-      model: msg.model,
-      emit,
-      signal: controller.signal,
-    });
+    await withAiCaptureCtx(
+      {
+        workflowId: msg.id,
+        workflowName: msg.workflow,
+        emit,
+        captureEnabled: !!msg.debug,
+      },
+      () =>
+        runner({
+          workflowId: msg.id,
+          input: msg.input,
+          model: msg.model,
+          emit,
+          signal: controller.signal,
+        }),
+    );
   } catch (err) {
     emit({
       id: msg.id,
@@ -152,6 +167,18 @@ export async function runWorkflow(msg: WorkflowStart, emit: Emitter): Promise<vo
  * single stage without restarting the whole pipeline.
  */
 export async function rewindWorkflow(msg: WorkflowRewind, emit: Emitter): Promise<void> {
+  return withAiCaptureCtx(
+    {
+      workflowId: msg.id,
+      workflowName: "implementation_pipeline",
+      emit,
+      captureEnabled: !!msg.debug,
+    },
+    () => rewindWorkflowInner(msg, emit),
+  );
+}
+
+async function rewindWorkflowInner(msg: WorkflowRewind, emit: Emitter): Promise<void> {
   const tools = makeRepoTools({ workflowId: msg.id, emit });
   const graph = buildPipelineGraph({ tools, workflowId: msg.id, emit });
   const currentConfig = { configurable: { thread_id: msg.threadId } };
@@ -249,6 +276,18 @@ export async function rewindWorkflow(msg: WorkflowRewind, emit: Emitter): Promis
 }
 
 export async function resumeWorkflow(msg: WorkflowResume, emit: Emitter): Promise<void> {
+  return withAiCaptureCtx(
+    {
+      workflowId: msg.id,
+      workflowName: "implementation_pipeline",
+      emit,
+      captureEnabled: !!msg.debug,
+    },
+    () => resumeWorkflowInner(msg, emit),
+  );
+}
+
+async function resumeWorkflowInner(msg: WorkflowResume, emit: Emitter): Promise<void> {
   // The implementation pipeline is the only workflow that interrupts. Resume
   // by re-invoking the compiled graph with a Command({resume: ...}) and the
   // saved thread_id; the SQLite checkpointer rehydrates the prior state.
@@ -639,6 +678,24 @@ async function runMeetingChatWorkflow(args: {
     nodeName: "reply",
     schema: MeetingChatInputSchema,
     run: runMeetingChat,
+  });
+}
+
+// ── Cross-Meetings Chat runner ───────────────────────────────────────────────
+
+async function runCrossMeetingsChatWorkflow(args: {
+  workflowId: string;
+  input: unknown;
+  model: ModelSelection;
+  emit: Emitter;
+  signal: AbortSignal;
+}): Promise<void> {
+  return runMarkdownWorkflow({
+    ...args,
+    workflowName: "cross_meetings_chat",
+    nodeName: "reply",
+    schema: CrossMeetingsChatInputSchema,
+    run: runCrossMeetingsChat,
   });
 }
 

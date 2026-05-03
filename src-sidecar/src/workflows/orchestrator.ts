@@ -29,6 +29,7 @@
 //     the chat thread as an inline marker (e.g. "Pipeline reached impact —
 //     reviewing…") rather than a user bubble.
 
+import { createHash } from "node:crypto";
 import { Annotation, END, START, StateGraph } from "@langchain/langgraph";
 import {
   AIMessage,
@@ -317,6 +318,18 @@ const OrchestratorStateAnnotation = Annotation.Root({
   /** Per-turn context blob from the frontend (rendered stage output, etc.).
    *  Replaced each turn — never stored across invocations. */
   pendingContextText: Annotation<string | undefined>({
+    reducer: (_current, update) => update,
+    default: () => undefined,
+  }),
+  /** SHA-256 of the most recent `pendingContextText` actually rendered
+   *  into a system prompt. The chat node compares the incoming context
+   *  hash against this and skips the (often multi-k) context block on
+   *  turns where the stage state hasn't changed — the prior thread
+   *  already carries it, and the agent can pull fresh state via the
+   *  `get_pipeline_state` tool when it actually needs to. Persisted
+   *  with the rest of the orchestrator state so the dedup survives
+   *  process restarts. */
+  lastContextHash: Annotation<string | undefined>({
     reducer: (_current, update) => update,
     default: () => undefined,
   }),
@@ -788,7 +801,25 @@ async function runOrchestratorToolLoop(args: {
   // assistant text rather than re-injecting them as ToolMessages).
   // Skip entries whose stage already has a summary in the system prompt —
   // their content is captured in the summary.
-  const messages: BaseMessage[] = [new SystemMessage(systemPrompt)];
+  //
+  // For Anthropic providers, the system prompt is marked
+  // `cache_control: ephemeral` so the orchestrator's stable preamble +
+  // current-stage context block (~3-5k tokens, replayed verbatim every
+  // turn) hits the prompt cache and bills at ~10% of normal input. The
+  // OAuth subscription path preserves this marker through its
+  // system → first-user-message rewrite. Other providers ignore the
+  // unrecognised field, so this is safe to set unconditionally.
+  const messages: BaseMessage[] = [
+    new SystemMessage({
+      content: [
+        {
+          type: "text",
+          text: systemPrompt,
+          cache_control: { type: "ephemeral" },
+        },
+      ],
+    }),
+  ];
   for (const m of priorThread) {
     if (m.stage && summarisedStages.has(m.stage)) continue;
     if (m.kind === "user") messages.push(new HumanMessage(m.content));
@@ -943,11 +974,24 @@ function makeChatNode(ctx: OrchestratorNodeContext) {
       ...(pipelineTools as unknown as OrchestratorTools),
     ];
 
+    // Dedup: if the incoming context blob is byte-for-byte the same as
+    // the last one we rendered, skip embedding it again. The prior
+    // thread already grounds the conversation; the agent can re-read
+    // fresh state via `get_pipeline_state` if it needs to verify.
+    const incomingHash = state.pendingContextText
+      ? createHash("sha256").update(state.pendingContextText).digest("hex")
+      : undefined;
+    const skipContext =
+      !!incomingHash && incomingHash === state.lastContextHash;
+    const effectiveContextText = skipContext
+      ? undefined
+      : state.pendingContextText;
+
     const systemPrompt = buildOrchestratorSystem({
       currentStage: state.currentStage,
       stageSummaries: state.stageSummaries,
       userNotes: state.userNotes,
-      pendingContextText: state.pendingContextText,
+      pendingContextText: effectiveContextText,
       pendingProposal: state.pendingProposal,
     });
 
@@ -1002,6 +1046,9 @@ function makeChatNode(ctx: OrchestratorNodeContext) {
       // already cleared it pre-invocation if `clearPendingProposal` was set.)
       pendingProposal: proposalCollector.current ?? state.pendingProposal,
       usage: outcome.usage,
+      // Remember the hash of the context we actually used so the next
+      // turn can decide whether to send the context again.
+      lastContextHash: skipContext ? state.lastContextHash : incomingHash,
     };
   };
 }

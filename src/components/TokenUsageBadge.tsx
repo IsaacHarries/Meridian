@@ -26,10 +26,16 @@ export function TokenUsageBadge({
   className?: string;
 }) {
   const state = useTokenUsageStore((s) => s.panels[panel]);
-  const { cumulative } = state;
+  const { cumulative, currentCall } = state;
   const inFlight =
     typeof inFlightOverride === "boolean" ? inFlightOverride : state.inFlight;
-  const total = cumulative.inputTokens + cumulative.outputTokens;
+  // The displayed total is cumulative + the running in-flight call so
+  // the badge climbs live during streaming. When the call's final
+  // usage lands, currentCall collapses to zero and the same number is
+  // absorbed into cumulative — the displayed total stays stable.
+  const displayInput = cumulative.inputTokens + currentCall.inputTokens;
+  const displayOutput = cumulative.outputTokens + currentCall.outputTokens;
+  const total = displayInput + displayOutput;
   // No work done yet AND nothing in-flight → render nothing so the
   // header stays clean.
   if (total === 0 && !inFlight) return null;
@@ -40,7 +46,11 @@ export function TokenUsageBadge({
         inFlight && "border-primary/40",
         className,
       )}
-      title={`Input: ${cumulative.inputTokens.toLocaleString()} · Output: ${cumulative.outputTokens.toLocaleString()}`}
+      title={`Input: ${displayInput.toLocaleString()} · Output: ${displayOutput.toLocaleString()}${
+        currentCall.inputTokens + currentCall.outputTokens > 0
+          ? ` (current call: +${(currentCall.inputTokens + currentCall.outputTokens).toLocaleString()})`
+          : ""
+      }`}
       aria-label={
         inFlight
           ? "AI processing — accumulated tokens"
@@ -53,9 +63,9 @@ export function TokenUsageBadge({
         <Sparkles className="h-2.5 w-2.5 text-muted-foreground/70" />
       )}
       <span className="tabular-nums">
-        {formatTokens(cumulative.inputTokens)}
+        {formatTokens(displayInput)}
         {" → "}
-        {formatTokens(cumulative.outputTokens)}
+        {formatTokens(displayOutput)}
       </span>
     </span>
   );

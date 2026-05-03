@@ -12,7 +12,15 @@ interface DocNode {
   type?: string;
   content?: DocNode[];
   text?: string;
-  attrs?: { level?: number; checked?: boolean };
+  attrs?: {
+    level?: number;
+    checked?: boolean;
+    /** Mention extension stores the canonical name under `label`,
+     *  with `id` carrying the same value for now (we don't have a
+     *  separate id space for participants). */
+    label?: string;
+    id?: string | null;
+  };
   marks?: Mark[];
 }
 
@@ -99,6 +107,14 @@ function listItemText(item: DocNode): string {
 }
 
 function inline(node: DocNode): string {
+  // Mentions are atom nodes — they don't carry `text`, but they do
+  // carry the participant's display name on `attrs.label`. Render as
+  // `@<name>` so the AI agent sees a familiar form and so plain-text
+  // search hits the same syntax the user typed.
+  if (node.type === "mention") {
+    const label = node.attrs?.label?.trim();
+    return label ? `@${label}` : "";
+  }
   if (typeof node.text === "string") {
     let t = node.text;
     if (node.marks) {
@@ -123,4 +139,56 @@ function inline(node: DocNode): string {
     return node.content.map(inline).join("");
   }
   return "";
+}
+
+/**
+ * Walk a TipTap notes document JSON string and collect every `mention`
+ * node's label. Each label appears once even if mentioned multiple
+ * times in the same doc (deduped, preserving first-occurrence order).
+ *
+ * Legacy plain-text notes have no Mention nodes — they return an empty
+ * list. Per the design conversation, we don't regex-match `@\w+` in
+ * plain text on purpose: the user wants to opt in by re-typing notes
+ * with the new `@mention` UI, not surface stray mid-word `@`s.
+ */
+export function extractMentionLabels(value: string | null | undefined): string[] {
+  if (!value) return [];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    return [];
+  }
+  if (
+    !parsed ||
+    typeof parsed !== "object" ||
+    (parsed as DocNode).type !== "doc"
+  ) {
+    return [];
+  }
+  const out: string[] = [];
+  const seen = new Set<string>();
+  walkForMentions(parsed as DocNode, out, seen);
+  return out;
+}
+
+function walkForMentions(
+  node: DocNode,
+  out: string[],
+  seen: Set<string>,
+) {
+  if (node.type === "mention") {
+    const label = node.attrs?.label?.trim();
+    if (label) {
+      const key = label.toLowerCase();
+      if (!seen.has(key)) {
+        seen.add(key);
+        out.push(label);
+      }
+    }
+    return;
+  }
+  if (Array.isArray(node.content)) {
+    for (const c of node.content) walkForMentions(c, out, seen);
+  }
 }

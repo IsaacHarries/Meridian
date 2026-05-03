@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo } from "react";
+import { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import { listen } from "@tauri-apps/api/event";
 import {
   open as openDialog,
@@ -36,7 +36,19 @@ import {
   setDailyTokenBudget,
   setNotifyPrTaskAdded,
   setNotifyAgentStageComplete,
+  setAiDebugEnabled,
+  setMeetingsEmbeddingModel,
+  setMeetingsSearchMinScore,
 } from "@/lib/appPreferences";
+import { useAiDebugStore } from "@/stores/aiDebugStore";
+import {
+  reindexAllMeetings,
+  clearMeetingsEmbeddings,
+  getMeetingsIndexStatus,
+  probeOllama,
+  type MeetingsIndexStatus,
+  type OllamaProbe,
+} from "@/lib/tauri";
 import { setStreamingPartialsEnabledRuntime } from "@/stores/implementTicketStore";
 import { setRuntimeOverloadPct } from "@/lib/workloadClassifier";
 import {
@@ -80,6 +92,7 @@ import {
   Activity,
   Bell,
   Gauge,
+  Search,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { HeaderSettingsButton } from "@/components/HeaderSettingsButton";
@@ -3595,6 +3608,22 @@ function useAppPreferencesEditor() {
         case "notifyAgentStageComplete":
           await setNotifyAgentStageComplete(value as boolean);
           break;
+        case "aiDebugEnabled":
+          await setAiDebugEnabled(value as boolean);
+          // Mirror into the runtime store so the panel header reflects
+          // the change immediately without waiting for a hydrate cycle.
+          useAiDebugStore.setState({ enabled: value as boolean });
+          break;
+        case "meetingsEmbeddingModel":
+          await setMeetingsEmbeddingModel(value as string);
+          // Switching models invalidates existing embeddings — they're
+          // not comparable across models. Clear; the backfill loop
+          // will re-embed under the new model on its next tick.
+          await clearMeetingsEmbeddings();
+          break;
+        case "meetingsSearchMinScore":
+          await setMeetingsSearchMinScore(value as number);
+          break;
       }
       setError(null);
     } catch (e) {
@@ -3903,6 +3932,262 @@ function NotificationsSettingsSection() {
               </p>
             </div>
           </>
+        )}
+        {error && <p className="text-xs text-destructive">{error}</p>}
+      </CardContent>
+    </Card>
+  );
+}
+
+// ── Cross-Meetings Search (Meetings section) ─────────────────────────────────
+//
+// Surfaces the local-Ollama RAG index state and lets the user pick
+// which embedding model to use. Switching models clears existing
+// embeddings (they're vector-space-incompatible) so the backfill loop
+// re-embeds under the new model — handled in the prefs editor.
+
+function CrossMeetingsSearchSection() {
+  const { prefs, error, update } = useAppPreferencesEditor();
+  const [status, setStatus] = useState<MeetingsIndexStatus | null>(null);
+  const [probe, setProbe] = useState<OllamaProbe | null>(null);
+  const [reindexing, setReindexing] = useState(false);
+  const [draftModel, setDraftModel] = useState<string>("");
+
+  // Keep the input box in sync with the persisted value when the user
+  // first opens the screen (or after a successful save).
+  useEffect(() => {
+    if (prefs?.meetingsEmbeddingModel) {
+      setDraftModel(prefs.meetingsEmbeddingModel);
+    }
+  }, [prefs?.meetingsEmbeddingModel]);
+
+  // Refresh the index counts + Ollama probe on mount and whenever the
+  // model changes (so the "X / Y embedded" line reflects the active
+  // model's coverage rather than a previous model's).
+  const refresh = useCallback(async () => {
+    try {
+      const [s, p] = await Promise.all([
+        getMeetingsIndexStatus(),
+        probeOllama(prefs?.meetingsEmbeddingModel),
+      ]);
+      setStatus(s);
+      setProbe(p);
+    } catch {
+      /* probe is best-effort */
+    }
+  }, [prefs?.meetingsEmbeddingModel]);
+
+  useEffect(() => {
+    void refresh();
+    const id = setInterval(refresh, 10_000);
+    return () => clearInterval(id);
+  }, [refresh]);
+
+  async function handleSaveModel() {
+    const next = draftModel.trim();
+    if (!next || next === prefs?.meetingsEmbeddingModel) return;
+    await update("meetingsEmbeddingModel", next);
+    void refresh();
+  }
+
+  async function handleReindex() {
+    setReindexing(true);
+    try {
+      await reindexAllMeetings();
+      void refresh();
+    } finally {
+      setReindexing(false);
+    }
+  }
+
+  const probeColor =
+    probe?.status === "available"
+      ? "text-emerald-500"
+      : probe?.status === "model_missing"
+        ? "text-amber-500"
+        : probe?.status === "unreachable"
+          ? "text-red-500"
+          : "text-muted-foreground";
+  const probeLabel =
+    probe?.status === "available"
+      ? `Ollama ready · ${probe.dimensions ?? "?"} dims`
+      : probe?.status === "model_missing"
+        ? "Model not installed"
+        : probe?.status === "unreachable"
+          ? "Ollama not reachable"
+          : probe?.status === "not_configured"
+            ? "Ollama URL not configured"
+            : "Probing…";
+
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <CardTitle className="text-base flex items-center gap-2">
+          <Search className="h-4 w-4 text-muted-foreground" />
+          Cross-meetings search
+        </CardTitle>
+        <CardDescription className="text-xs mt-0.5">
+          Indexes every meeting's transcript locally. Keyword search via SQLite
+          FTS5 always works; semantic (embedding) search runs against a local
+          Ollama model — embeddings backfill in the background whenever Ollama
+          is reachable, so you can record meetings with Ollama off and still get
+          semantic hits later.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {!prefs ? (
+          <p className="text-xs text-muted-foreground">Loading…</p>
+        ) : (
+          <>
+            <div className="space-y-1.5">
+              <Label className="text-sm font-medium">Embedding model</Label>
+              <div className="flex items-center gap-2">
+                <Input
+                  value={draftModel}
+                  onChange={(e) => setDraftModel(e.target.value)}
+                  placeholder={APP_PREFERENCE_DEFAULTS.meetingsEmbeddingModel}
+                  className="h-8 text-sm font-mono"
+                />
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  onClick={() => void handleSaveModel()}
+                  disabled={
+                    !draftModel.trim() ||
+                    draftModel.trim() === prefs.meetingsEmbeddingModel
+                  }
+                >
+                  Save
+                </Button>
+              </div>
+              <p className="text-[11px] text-muted-foreground">
+                Default: <code className="text-foreground">nomic-embed-text</code>.
+                Anything Ollama can serve as an embedding model works (e.g.{" "}
+                <code className="text-foreground">mxbai-embed-large</code>,{" "}
+                <code className="text-foreground">snowflake-arctic-embed</code>).
+                Saving a new value clears existing embeddings and re-runs the
+                backfill under the new model.
+              </p>
+            </div>
+
+            <div className="rounded-md border bg-muted/30 p-3 space-y-1.5">
+              <div className="flex items-center gap-2 text-xs">
+                <span
+                  className={cn(
+                    "h-2 w-2 rounded-full",
+                    probe?.status === "available"
+                      ? "bg-emerald-500"
+                      : probe?.status === "model_missing"
+                        ? "bg-amber-500"
+                        : probe?.status === "unreachable"
+                          ? "bg-red-500"
+                          : "bg-muted-foreground",
+                  )}
+                />
+                <span className={cn("font-medium", probeColor)}>{probeLabel}</span>
+                {probe?.message && (
+                  <span className="text-muted-foreground">— {probe.message}</span>
+                )}
+              </div>
+              {status && (
+                <p className="text-xs text-muted-foreground">
+                  {status.embeddedSegments.toLocaleString()} of{" "}
+                  {status.totalSegments.toLocaleString()} segments embedded
+                  {status.totalSegments > 0 && (
+                    <>
+                      {" "}({((status.embeddedSegments / status.totalSegments) * 100).toFixed(0)}%)
+                    </>
+                  )}{" "}
+                  · {status.meetingsIndexed.toLocaleString()} meeting
+                  {status.meetingsIndexed === 1 ? "" : "s"} indexed
+                </p>
+              )}
+            </div>
+
+            <div className="space-y-1.5">
+              <div className="flex items-center justify-between">
+                <Label className="text-sm font-medium">
+                  Search relevance threshold
+                </Label>
+                <span className="text-xs font-mono text-muted-foreground">
+                  {prefs.meetingsSearchMinScore.toFixed(2)}
+                </span>
+              </div>
+              <input
+                type="range"
+                min={0}
+                max={1}
+                step={0.01}
+                value={prefs.meetingsSearchMinScore}
+                onChange={(e) =>
+                  void update(
+                    "meetingsSearchMinScore",
+                    Number.parseFloat(e.target.value),
+                  )
+                }
+                className="w-full accent-primary"
+              />
+              <p className="text-[11px] text-muted-foreground">
+                Cosine similarity floor — hits below this score are
+                hidden from search results and the chat agent.
+                Calibrated for nomic-embed-text on English prose:
+                <span className="text-emerald-500"> ≥ 0.70 paraphrase</span>{" "}
+                ·
+                <span className="text-yellow-500"> ≥ 0.55 likely relevant</span>{" "}
+                ·
+                <span className="text-orange-500"> ≥ 0.45 loosely related</span>{" "}
+                ·
+                <span className="text-red-500"> &lt; 0.45 noise</span>.
+                Default: {APP_PREFERENCE_DEFAULTS.meetingsSearchMinScore.toFixed(2)}.
+                Raise to be stricter; lower for broader recall.
+              </p>
+            </div>
+
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => void handleReindex()}
+              disabled={reindexing}
+            >
+              {reindexing ? "Reindexing…" : "Reindex all meetings"}
+            </Button>
+          </>
+        )}
+        {error && <p className="text-xs text-destructive">{error}</p>}
+      </CardContent>
+    </Card>
+  );
+}
+
+// ── AI traffic debug capture (Development section) ───────────────────────────
+
+function AiDebugSection() {
+  const { prefs, error, update } = useAppPreferencesEditor();
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <CardTitle className="text-base flex items-center gap-2">
+          <FlaskConical className="h-4 w-4 text-muted-foreground" />
+          AI traffic debug capture
+        </CardTitle>
+        <CardDescription className="text-xs mt-0.5">
+          When enabled, every LLM round-trip (system prompt, messages,
+          response, token usage, latency) is captured into the in-app
+          debug panel. Use this to inspect prompts, find waste, and
+          tune workflows. Off by default — capture sends prompt JSON
+          across the IPC channel for every call.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        {!prefs ? (
+          <p className="text-xs text-muted-foreground">Loading…</p>
+        ) : (
+          <ToggleRow
+            label="Log AI traffic to debug panel"
+            helper="Takes effect on the next workflow run — currently in-flight runs aren't retroactively captured."
+            checked={prefs.aiDebugEnabled}
+            onChange={(b) => void update("aiDebugEnabled", b)}
+          />
         )}
         {error && <p className="text-xs text-destructive">{error}</p>}
       </CardContent>
@@ -6390,6 +6675,7 @@ export function SettingsScreen({ onClose, onNavigate }: SettingsScreenProps) {
                   Meetings
                 </h2>
                 <MeetingsSection />
+                <CrossMeetingsSearchSection />
                 <NoteTemplatesSection />
               </section>
 
@@ -6411,6 +6697,7 @@ export function SettingsScreen({ onClose, onNavigate }: SettingsScreenProps) {
                 <h2 className="text-xl font-semibold text-foreground">
                   Development
                 </h2>
+                <AiDebugSection />
                 <MockModeSection onToggle={handleMockToggle} />
                 <MockClaudeModeSection onToggle={handleMockToggle} />
               </section>

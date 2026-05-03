@@ -28,6 +28,11 @@ import Placeholder from "@tiptap/extension-placeholder";
 // StarterKit's options object rather than re-importing. Highlight is the
 // only mark we still bring in standalone.
 import Highlight from "@tiptap/extension-highlight";
+import Mention from "@tiptap/extension-mention";
+import { mentionSuggestionRenderer } from "@/components/mentionSuggestionRenderer";
+import { gatherNamePool } from "@/lib/meetingPeople";
+import { useMeetingsStore } from "@/stores/meetingsStore";
+import type { MentionSuggestionItem } from "@/components/MentionSuggestionList";
 import {
   Bold,
   Italic,
@@ -151,6 +156,44 @@ export function RichNotesEditor({
       Highlight.configure({ multicolor: true }),
       Placeholder.configure({
         placeholder: placeholder ?? "Type your meeting notes here…",
+      }),
+      Mention.configure({
+        // Mark mention nodes so we can style them in CSS without a
+        // dedicated React component (the styling lives in index.css).
+        HTMLAttributes: { class: "mention" },
+        // The default `renderText` already returns `@${label}`, which
+        // matches the form `extractTiptapPlainText` produces for the
+        // AI agent and the indexer.
+        suggestion: {
+          // Filter the live name pool by the user's typed query, then
+          // append a synthetic "create new" row so a brand-new name
+          // can be inserted from the popover without leaving the keyboard.
+          // Reading the store inside the callback keeps the pool live —
+          // newly tagged speakers and notes mentions show up without
+          // remounting the editor.
+          items: ({ query }: { query: string }): MentionSuggestionItem[] => {
+            const pool = gatherNamePool(useMeetingsStore.getState().meetings);
+            const q = query.trim().toLowerCase();
+            const matches = q
+              ? pool.filter((p) => p.toLowerCase().includes(q))
+              : pool;
+            const out: MentionSuggestionItem[] = matches
+              .slice(0, 8)
+              .map((label) => ({ label }));
+            // Offer "create new" only when the typed text is non-empty
+            // and isn't already in the pool (case-insensitive). Trimmed
+            // to avoid creating a `@` mention with trailing spaces.
+            const trimmed = query.trim();
+            if (
+              trimmed &&
+              !pool.some((p) => p.toLowerCase() === trimmed.toLowerCase())
+            ) {
+              out.push({ label: trimmed, isCreate: true });
+            }
+            return out;
+          },
+          render: mentionSuggestionRenderer,
+        },
       }),
     ],
     content: parseInitialContent(value),

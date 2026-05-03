@@ -100,6 +100,11 @@ export const PipelineInputSchema = z.object({
   ticketKey: z.string(),
   worktreePath: z.string(),
   codebaseContext: z.string().optional().default(""),
+  /** JIRA issue type lower-cased ("bug", "story", …). Threaded through
+   *  to the grooming node so it can omit the bug-specific rules block
+   *  for non-bug runs. Optional; defaults to bug-rules-included when
+   *  absent (see grooming.ts shouldIncludeBugRules). */
+  ticketType: z.string().nullish(),
   groomingTemplates: z
     .object({
       acceptance_criteria: z.string().nullish(),
@@ -558,7 +563,10 @@ function makeGroomingNode(ctx: PipelineGraphContext) {
   ): Promise<Partial<PipelineState>> {
     const model = buildModel(state.model);
     const system = appendSkill(
-      buildGroomingSystem(state.input.groomingTemplates ?? undefined),
+      buildGroomingSystem(
+        state.input.groomingTemplates ?? undefined,
+        state.input.ticketType,
+      ),
       state.input.skills?.grooming,
       "GROOMING CONVENTIONS",
     );
@@ -566,6 +574,7 @@ function makeGroomingNode(ctx: PipelineGraphContext) {
       ticketText: state.input.ticketText,
       fileContents: state.input.codebaseContext,
       templates: state.input.groomingTemplates ?? undefined,
+      ticketType: state.input.ticketType,
     });
 
     const { parsed, usage } = await streamAndParse({

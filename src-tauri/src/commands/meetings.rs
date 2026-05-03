@@ -1122,7 +1122,15 @@ fn write_meeting(app: &tauri::AppHandle, record: &MeetingRecord) -> Result<(), S
     let path = meeting_path(app, &record.id)?;
     let json = serde_json::to_string_pretty(record)
         .map_err(|e| format!("Serialise meeting: {e}"))?;
-    fs::write(&path, json).map_err(|e| format!("Write {}: {e}", path.display()))
+    fs::write(&path, json).map_err(|e| format!("Write {}: {e}", path.display()))?;
+    // Mirror every write — save_meeting, create_notes, update_notes,
+    // diarise, summarise, etc. all funnel through here, so wiring
+    // here means every code path that touches a meeting keeps the
+    // index in sync without each call site having to remember.
+    if let Err(e) = crate::storage::meeting_index::index_meeting(record) {
+        eprintln!("[meeting-index] failed to index {}: {e}", record.id);
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -1218,7 +1226,58 @@ pub fn delete_meeting(app: tauri::AppHandle, id: String) -> Result<(), String> {
     if path.exists() {
         fs::remove_file(&path).map_err(|e| format!("remove {}: {e}", path.display()))?;
     }
+    if let Err(e) = crate::storage::meeting_index::delete_meeting_from_index(&id) {
+        eprintln!("[meeting-index] failed to remove {id} from index: {e}");
+    }
     Ok(())
+}
+
+/// Drop and rebuild the entire search index from the on-disk JSON
+/// meetings. Settings → Meetings exposes this as a button — useful
+/// after switching embedding model (existing embeddings get cleared
+/// here as a side-effect of re-indexing) or recovering from a
+/// corrupted index file.
+#[tauri::command]
+pub fn reindex_all_meetings(app: tauri::AppHandle) -> Result<i64, String> {
+    let dir = meetings_dir(&app)?;
+    let mut count: i64 = 0;
+    for entry in fs::read_dir(&dir).map_err(|e| format!("read_dir: {e}"))? {
+        let entry = entry.map_err(|e| format!("entry: {e}"))?;
+        let name = entry.file_name();
+        let s = name.to_string_lossy();
+        if !s.ends_with(".json") {
+            continue;
+        }
+        if let Ok(content) = fs::read_to_string(entry.path()) {
+            if let Ok(record) = serde_json::from_str::<MeetingRecord>(&content) {
+                if let Err(e) = crate::storage::meeting_index::index_meeting(&record) {
+                    eprintln!(
+                        "[meeting-index] reindex failed for {}: {e}",
+                        record.id
+                    );
+                    continue;
+                }
+                count += 1;
+            }
+        }
+    }
+    Ok(count)
+}
+
+/// Read the current index status — total / embedded segment counts.
+/// Settings polls this so the user can watch the backfill progress.
+#[tauri::command]
+pub fn meetings_index_status() -> Result<crate::storage::meeting_index::IndexStatus, String> {
+    crate::storage::meeting_index::index_status()
+}
+
+/// Wipe every embedding (but keep keyword index intact). Triggered
+/// when the user changes the embedding-model preference — embeddings
+/// from different models live in different vector spaces and can't
+/// be mixed.
+#[tauri::command]
+pub fn clear_meetings_embeddings() -> Result<(), String> {
+    crate::storage::meeting_index::clear_all_embeddings()
 }
 
 #[tauri::command]

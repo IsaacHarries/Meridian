@@ -19,6 +19,13 @@ export const GroomingInputSchema = z.object({
       steps_to_reproduce: z.string().nullish(),
     })
     .nullish(),
+  /** JIRA issue type, lower-cased ("bug", "story", "task", …). When the
+   *  caller knows it, the system prompt gates the bug-specific rules
+   *  block (~1k tokens) so non-bug runs don't carry them. Optional and
+   *  defaulting to including the rules — keeps behaviour correct when
+   *  an older caller forgets to pass it; a wasted-token bug is the
+   *  worst-case rather than a missing-rules bug. */
+  ticketType: z.string().nullish(),
 });
 
 export type GroomingInput = z.infer<typeof GroomingInputSchema>;
@@ -93,7 +100,10 @@ export type GroomingOutput = z.infer<typeof GroomingOutputSchema>;
 
 // ── System prompt ─────────────────────────────────────────────────────────────
 
-const BASE_SYSTEM = `You are a grooming agent helping a senior engineer understand and refine a JIRA ticket. \
+// Core system prompt — applies to every ticket type. Stays cache-stable
+// across runs so the prompt-cache hit rate doesn't get fragmented by the
+// optional bug-rules block below.
+const BASE_SYSTEM_CORE = `You are a grooming agent helping a senior engineer understand and refine a JIRA ticket. \
 You have been given the ticket details and relevant source code from the codebase. \
 Your job is twofold:
 1. Analyse the ticket and produce a structured grooming summary
@@ -145,6 +155,15 @@ do not change titles that are already specific
 the same field (e.g. multiple acceptance criteria points), consolidate them into a single \
 edit with all content merged. Never produce two suggested_edits with the same \`field\`.
 
+When you cannot determine a field's content from the ticket text alone, draft \
+a plausible value from the relevant source code provided below — only fall \
+back to a clarifying_question if even the code does not give enough context.`;
+
+// Optional block appended only when grooming a Bug. Carries the
+// description/steps/observed/expected discipline the bug workflow
+// needs but which is dead weight (~1k tokens) on Story/Task/Spike runs.
+const BUG_RULES = `
+
 === BUG-SPECIFIC RULES (ticket_type == "bug") ===
 When the ticket is a Bug, the following fields MUST all be populated. For \
 every one that is missing OR empty, emit a suggested_edit:
@@ -170,11 +189,17 @@ similar, extract it into \`expected_behavior\` and remove it from the descriptio
 
 In short: after your suggested edits are applied, the description should read \
 as a summary of the bug, and each of steps_to_reproduce / observed_behavior / \
-expected_behavior should hold its own dedicated content.
+expected_behavior should hold its own dedicated content.`;
 
-When you cannot determine a field's content from the ticket text alone, draft \
-a plausible value from the relevant source code provided below — only fall \
-back to a clarifying_question if even the code does not give enough context.`;
+/** Decide whether to attach the bug-specific rules block. Returns true
+ *  when the caller-supplied type identifies the ticket as a bug, OR
+ *  when no type was provided (preserves correctness for callers that
+ *  haven't been updated to pass `ticketType` yet — the worst case is a
+ *  bit of wasted prompt rather than missing rules on a real bug). */
+function shouldIncludeBugRules(ticketType: string | null | undefined): boolean {
+  if (ticketType == null) return true;
+  return ticketType.trim().toLowerCase() === "bug";
+}
 
 function templatesBlock(templates?: GroomingInput["templates"]): string {
   if (!templates) return "";
@@ -197,8 +222,12 @@ function templatesBlock(templates?: GroomingInput["templates"]): string {
   return out;
 }
 
-export function buildSystemPrompt(templates?: GroomingInput["templates"]): string {
-  return BASE_SYSTEM + templatesBlock(templates);
+export function buildSystemPrompt(
+  templates?: GroomingInput["templates"],
+  ticketType?: string | null,
+): string {
+  const bugBlock = shouldIncludeBugRules(ticketType) ? BUG_RULES : "";
+  return BASE_SYSTEM_CORE + bugBlock + templatesBlock(templates);
 }
 
 export function buildUserPrompt(input: GroomingInput): string {
@@ -260,7 +289,10 @@ function makeAnalyseNode(
     state: GroomingState,
   ): Promise<Partial<GroomingState>> {
     const model: BaseChatModel = buildModel(state.model);
-    const system = buildSystemPrompt(state.input.templates);
+    const system = buildSystemPrompt(
+      state.input.templates,
+      state.input.ticketType,
+    );
     const user = buildUserPrompt(state.input);
 
     const { raw, usage } = await streamLLMJson({

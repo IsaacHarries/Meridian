@@ -21,6 +21,32 @@ import type {
 } from "@langchain/core/messages";
 import { parsePartialJson } from "@langchain/core/output_parsers";
 import type { OutboundEvent } from "../protocol.js";
+import {
+  type AnthropicRateLimitSnapshot,
+  subscribeAnthropicRateLimits,
+} from "../models/anthropic-oauth.js";
+
+/** Subscribe to Anthropic rate-limit header updates while a workflow
+ *  is in flight and forward each snapshot as a `progress` event with
+ *  `data.rateLimits`. The frontend listens, stores per provider, and
+ *  surfaces the remaining-percentage in the HeaderModelPicker. Returns
+ *  an unsubscribe fn the caller awaits in a finally block. */
+function attachRateLimitForwarding(
+  emit: ((event: OutboundEvent) => void) | undefined,
+  workflowId: string | undefined,
+  nodeName: string | undefined,
+): () => void {
+  if (!emit || !workflowId || !nodeName) return () => {};
+  return subscribeAnthropicRateLimits((snap: AnthropicRateLimitSnapshot) => {
+    emit({
+      id: workflowId,
+      type: "progress",
+      node: nodeName,
+      status: "started",
+      data: { rateLimits: { provider: "claude", snapshot: snap } },
+    });
+  });
+}
 
 const PARTIAL_FLUSH_MS = 80;
 
@@ -57,6 +83,8 @@ export async function streamLLMText(args: {
   nodeName?: string;
 }): Promise<StreamLLMTextResult> {
   const { llm, messages, emit, workflowId, nodeName } = args;
+  const detachRateLimits = attachRateLimitForwarding(emit, workflowId, nodeName);
+  try {
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const stream = (await (llm as any).stream(
@@ -65,20 +93,53 @@ export async function streamLLMText(args: {
 
   let text = "";
   let accumulated: AIMessageChunk | undefined;
+  let lastUsageEmitAt = 0;
+  let lastEmittedInput = -1;
+  let lastEmittedOutput = -1;
+
+  const tryEmitUsage = () => {
+    if (!emit || !workflowId || !nodeName) return;
+    const meta = accumulated?.usage_metadata as
+      | { input_tokens?: number; output_tokens?: number }
+      | undefined;
+    if (!meta) return;
+    const inputTokens = meta.input_tokens ?? 0;
+    const outputTokens = meta.output_tokens ?? 0;
+    // Skip emits when the running total hasn't moved since the last
+    // event we forwarded — providers occasionally re-attach the same
+    // usage_metadata to multiple chunks.
+    if (inputTokens === lastEmittedInput && outputTokens === lastEmittedOutput) {
+      return;
+    }
+    const now = Date.now();
+    if (now - lastUsageEmitAt < PARTIAL_FLUSH_MS) return;
+    lastUsageEmitAt = now;
+    lastEmittedInput = inputTokens;
+    lastEmittedOutput = outputTokens;
+    emit({
+      id: workflowId,
+      type: "progress",
+      node: nodeName,
+      status: "started",
+      data: { usagePartial: { inputTokens, outputTokens } },
+    });
+  };
 
   for await (const chunk of stream) {
     accumulated = accumulated ? accumulated.concat(chunk) : chunk;
     const delta = extractText(chunk.content);
-    if (!delta) continue;
-    text += delta;
-    if (emit && workflowId && nodeName) {
-      emit({
-        id: workflowId,
-        type: "stream",
-        node: nodeName,
-        delta,
-      });
+    if (delta) {
+      text += delta;
+      if (emit && workflowId && nodeName) {
+        emit({
+          id: workflowId,
+          type: "stream",
+          node: nodeName,
+          delta,
+        });
+      }
     }
+    tryEmitUsage();
   }
 
   const meta = accumulated?.usage_metadata as
@@ -92,6 +153,9 @@ export async function streamLLMText(args: {
       outputTokens: meta?.output_tokens ?? 0,
     },
   };
+  } finally {
+    detachRateLimits();
+  }
 }
 
 export interface StreamLLMJsonResult {
@@ -119,6 +183,8 @@ export async function streamLLMJson(args: {
   cleanText?: (raw: string) => string;
 }): Promise<StreamLLMJsonResult> {
   const { llm, messages, emit, workflowId, nodeName, cleanText } = args;
+  const detachRateLimits = attachRateLimitForwarding(emit, workflowId, nodeName);
+  try {
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const stream = (await (llm as any).stream(
@@ -129,6 +195,9 @@ export async function streamLLMJson(args: {
   let accumulated: AIMessageChunk | undefined;
   let lastFlushAt = 0;
   let lastEmittedSize = -1;
+  let lastUsageEmitAt = 0;
+  let lastEmittedInput = -1;
+  let lastEmittedOutput = -1;
 
   const tryFlush = (force: boolean) => {
     if (!emit || !workflowId || !nodeName) return;
@@ -152,6 +221,35 @@ export async function streamLLMJson(args: {
     });
   };
 
+  // Emit running input/output token counts as the model streams so the
+  // panel's TokenUsageBadge can update live instead of staying frozen
+  // until the call's final usage lands. Throttled the same as partial
+  // JSON flushes to avoid event-channel chatter.
+  const tryEmitUsage = () => {
+    if (!emit || !workflowId || !nodeName) return;
+    const meta = accumulated?.usage_metadata as
+      | { input_tokens?: number; output_tokens?: number }
+      | undefined;
+    if (!meta) return;
+    const inputTokens = meta.input_tokens ?? 0;
+    const outputTokens = meta.output_tokens ?? 0;
+    if (inputTokens === lastEmittedInput && outputTokens === lastEmittedOutput) {
+      return;
+    }
+    const now = Date.now();
+    if (now - lastUsageEmitAt < PARTIAL_FLUSH_MS) return;
+    lastUsageEmitAt = now;
+    lastEmittedInput = inputTokens;
+    lastEmittedOutput = outputTokens;
+    emit({
+      id: workflowId,
+      type: "progress",
+      node: nodeName,
+      status: "started",
+      data: { usagePartial: { inputTokens, outputTokens } },
+    });
+  };
+
   for await (const chunk of stream) {
     accumulated = accumulated ? accumulated.concat(chunk) : chunk;
     const delta = extractText(chunk.content);
@@ -159,6 +257,7 @@ export async function streamLLMJson(args: {
       raw += delta;
       tryFlush(false);
     }
+    tryEmitUsage();
   }
   tryFlush(true);
 
@@ -173,4 +272,7 @@ export async function streamLLMJson(args: {
       outputTokens: meta?.output_tokens ?? 0,
     },
   };
+  } finally {
+    detachRateLimits();
+  }
 }

@@ -21,7 +21,6 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { WorkflowPanelHeader, APP_HEADER_TITLE } from "@/components/appHeaderLayout";
-import { TokenUsageBadge } from "@/components/TokenUsageBadge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -52,6 +51,8 @@ import { classifyWorkloads } from "@/lib/workloadClassifier";
 import { getIgnoredDevs, setIgnoredDevs } from "@/lib/preferences";
 import { useWorkloadAlertStore } from "@/stores/workloadAlertStore";
 import { subscribeWorkflowStream } from "@/lib/workflowStream";
+import { useChatHistoryStore } from "@/stores/chatHistoryStore";
+import { useTokenUsageStore } from "@/stores/tokenUsageStore";
 
 interface SprintDashboardScreenProps {
   credStatus: CredentialStatus;
@@ -1630,18 +1631,15 @@ export function SprintDashboardScreen({ credStatus, onBack }: SprintDashboardScr
           </>
         }
         trailing={
-          <div className="flex items-center gap-2">
-            <TokenUsageBadge panel="sprint_dashboard" />
-            <Button
-              variant="ghost"
-              size="icon"
-              onClick={load}
-              disabled={loading}
-              title="Refresh"
-            >
-              <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
-            </Button>
-          </div>
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={load}
+            disabled={loading}
+            title="Refresh"
+          >
+            <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
+          </Button>
         }
       />
 
@@ -1734,6 +1732,7 @@ export function SprintDashboardScreen({ credStatus, onBack }: SprintDashboardScr
         <aside className="w-[420px] shrink-0 border-l bg-background/40 flex flex-col min-h-0">
           <SprintChatPanel
             key={sprintChatKey}
+            sprintKey={sprintChatKey}
             data={data}
             aiAvailable={aiAvailable}
           />
@@ -1744,6 +1743,11 @@ export function SprintDashboardScreen({ credStatus, onBack }: SprintDashboardScr
 }
 
 // ── Chat panel ────────────────────────────────────────────────────────────────
+
+/** Stable empty-turns ref so the SprintChatPanel selector returns the
+ *  same array reference when no history exists yet (avoiding render
+ *  loops). */
+const EMPTY_TURNS: ChatTurn[] = [];
 
 function buildSprintContext(data: DashboardData): string {
   const workloads = buildWorkloads(data.issues, data.openPrs);
@@ -1798,11 +1802,29 @@ function buildSprintContext(data: DashboardData): string {
 function SprintChatPanel({
   data,
   aiAvailable,
+  sprintKey,
 }: {
   data: DashboardData | null;
   aiAvailable: boolean;
+  sprintKey: string;
 }) {
-  const [history, setHistory] = useState<ChatTurn[]>([]);
+  // Conversation lives in the chat-history store keyed by sprint, so
+  // navigating away from the dashboard and back preserves the thread.
+  const history = useChatHistoryStore(
+    (s) => s.histories.sprint_dashboard?.[sprintKey] ?? EMPTY_TURNS,
+  );
+  const setStoredHistory = useChatHistoryStore((s) => s.setHistory);
+  const setHistory = useCallback(
+    (next: ChatTurn[] | ((prev: ChatTurn[]) => ChatTurn[])) => {
+      const current =
+        useChatHistoryStore.getState().histories.sprint_dashboard?.[sprintKey] ??
+        [];
+      const resolved = typeof next === "function" ? next(current) : next;
+      setStoredHistory("sprint_dashboard", sprintKey, resolved);
+    },
+    [setStoredHistory, sprintKey],
+  );
+  const clearChatContext = useTokenUsageStore((s) => s.clearPanelChatLastInput);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
   const [streamText, setStreamText] = useState("");
@@ -1900,7 +1922,10 @@ function SprintChatPanel({
     () => [
       ...createGlobalCommands({
         history,
-        clearHistory: () => setHistory([]),
+        clearHistory: () => {
+          setHistory([]);
+          clearChatContext("sprint_dashboard");
+        },
         sendMessage,
         removeLastAssistantMessage: () =>
           setHistory((h) =>

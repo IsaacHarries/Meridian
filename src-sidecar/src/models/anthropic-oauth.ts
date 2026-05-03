@@ -20,6 +20,107 @@
 import { createHash } from "node:crypto";
 import { ChatAnthropic, type AnthropicInput } from "@langchain/anthropic";
 
+// ── Rate-limit capture ────────────────────────────────────────────────────────
+//
+// Anthropic's API responses include `anthropic-ratelimit-*` headers
+// describing remaining requests / tokens / input-tokens / output-tokens
+// for the current rate-limit window plus an ISO timestamp for when each
+// resets. The OAuth fetch interceptor parses them off every response
+// and writes the latest snapshot to a module-level cache; any caller
+// that wants to forward them to the frontend (workflow runners, the
+// streaming helpers) can read `getAnthropicRateLimitSnapshot()` and
+// emit a progress event.
+//
+// The Claude.ai subscription endpoint may or may not return these
+// headers depending on plan tier. When absent, the snapshot stays
+// `null` and downstream consumers know to skip the rate-limit UI.
+
+export interface AnthropicRateLimitSnapshot {
+  /** ISO timestamp of when this snapshot was captured. */
+  capturedAt: string;
+  requestsRemaining: number | null;
+  requestsLimit: number | null;
+  requestsResetAt: string | null;
+  tokensRemaining: number | null;
+  tokensLimit: number | null;
+  tokensResetAt: string | null;
+  inputTokensRemaining: number | null;
+  inputTokensLimit: number | null;
+  outputTokensRemaining: number | null;
+  outputTokensLimit: number | null;
+}
+
+let latestRateLimits: AnthropicRateLimitSnapshot | null = null;
+
+/** Subscribers wired by the streaming helpers — fired whenever a new
+ *  snapshot lands so the frontend can update its dropdown live. */
+type RateLimitListener = (snap: AnthropicRateLimitSnapshot) => void;
+const rateLimitListeners = new Set<RateLimitListener>();
+
+export function getAnthropicRateLimitSnapshot(): AnthropicRateLimitSnapshot | null {
+  return latestRateLimits;
+}
+
+export function subscribeAnthropicRateLimits(fn: RateLimitListener): () => void {
+  rateLimitListeners.add(fn);
+  return () => {
+    rateLimitListeners.delete(fn);
+  };
+}
+
+function parseIntOrNull(raw: string | null): number | null {
+  if (!raw) return null;
+  const n = Number.parseInt(raw, 10);
+  return Number.isFinite(n) ? n : null;
+}
+
+function captureRateLimitHeaders(headers: Headers): void {
+  // Skip the parse + listener notification entirely when the response
+  // lacks the rate-limit headers (e.g. error responses, certain plan
+  // tiers) so we don't keep emitting stale snapshots.
+  if (!headers.get("anthropic-ratelimit-requests-limit")
+      && !headers.get("anthropic-ratelimit-tokens-limit")) {
+    return;
+  }
+  const snap: AnthropicRateLimitSnapshot = {
+    capturedAt: new Date().toISOString(),
+    requestsRemaining: parseIntOrNull(
+      headers.get("anthropic-ratelimit-requests-remaining"),
+    ),
+    requestsLimit: parseIntOrNull(
+      headers.get("anthropic-ratelimit-requests-limit"),
+    ),
+    requestsResetAt: headers.get("anthropic-ratelimit-requests-reset"),
+    tokensRemaining: parseIntOrNull(
+      headers.get("anthropic-ratelimit-tokens-remaining"),
+    ),
+    tokensLimit: parseIntOrNull(
+      headers.get("anthropic-ratelimit-tokens-limit"),
+    ),
+    tokensResetAt: headers.get("anthropic-ratelimit-tokens-reset"),
+    inputTokensRemaining: parseIntOrNull(
+      headers.get("anthropic-ratelimit-input-tokens-remaining"),
+    ),
+    inputTokensLimit: parseIntOrNull(
+      headers.get("anthropic-ratelimit-input-tokens-limit"),
+    ),
+    outputTokensRemaining: parseIntOrNull(
+      headers.get("anthropic-ratelimit-output-tokens-remaining"),
+    ),
+    outputTokensLimit: parseIntOrNull(
+      headers.get("anthropic-ratelimit-output-tokens-limit"),
+    ),
+  };
+  latestRateLimits = snap;
+  for (const fn of rateLimitListeners) {
+    try {
+      fn(snap);
+    } catch {
+      /* listener errors must not break the fetch path */
+    }
+  }
+}
+
 const BILLING_SALT = "59cf53e54c78";
 const CC_VERSION = "2.1.90";
 const CC_ENTRYPOINT = "cli";
@@ -57,7 +158,13 @@ type AnthropicMessage = {
 type AnthropicRequestBody = {
   model?: string;
   messages: AnthropicMessage[];
-  system?: string | Array<{ type: string; text: string }>;
+  system?:
+    | string
+    | Array<{
+        type: string;
+        text: string;
+        cache_control?: { type: "ephemeral" };
+      }>;
   tools?: unknown[];
   [key: string]: unknown;
 };
@@ -80,7 +187,50 @@ function firstUserMessageText(messages: AnthropicMessage[]): string {
   return "";
 }
 
-function prependToFirstUserMessage(
+type AnthropicTextBlock = {
+  type: "text";
+  text: string;
+  cache_control?: { type: "ephemeral" };
+};
+
+/** Extract the user's system prompt as a list of content blocks,
+ *  preserving any `cache_control` markers the caller set so prompt
+ *  caching survives the system → first-user-message rewrite required
+ *  by the Claude.ai subscription endpoint. */
+function userSystemAsBlocks(
+  system: AnthropicRequestBody["system"],
+): AnthropicTextBlock[] {
+  if (!system) return [];
+  if (typeof system === "string") {
+    return system.length > 0 ? [{ type: "text", text: system }] : [];
+  }
+  if (Array.isArray(system)) {
+    const out: AnthropicTextBlock[] = [];
+    for (const b of system) {
+      if (typeof b !== "object" || b === null) continue;
+      const obj = b as {
+        type?: string;
+        text?: string;
+        cache_control?: { type: "ephemeral" };
+      };
+      if (obj.type !== "text") continue;
+      const block: AnthropicTextBlock = {
+        type: "text",
+        text: obj.text ?? "",
+      };
+      if (obj.cache_control) block.cache_control = obj.cache_control;
+      out.push(block);
+    }
+    return out;
+  }
+  return [];
+}
+
+/** Prepend the user's system text as a single string to the first
+ *  user message. Used when no `cache_control` markers are present —
+ *  preserves the simpler wire format the OAuth endpoint has always
+ *  received in the non-caching case. */
+function prependStringToFirstUserMessage(
   messages: AnthropicMessage[],
   prefix: string,
 ): AnthropicMessage[] {
@@ -101,16 +251,28 @@ function prependToFirstUserMessage(
   return out;
 }
 
-function userSystemAsString(system: AnthropicRequestBody["system"]): string {
-  if (!system) return "";
-  if (typeof system === "string") return system;
-  if (Array.isArray(system)) {
-    return system
-      .filter((b) => typeof b === "object" && b && (b as { type?: string }).type === "text")
-      .map((b) => (b as { text?: string }).text ?? "")
-      .join("\n\n");
+/** Prepend the user's (now-block-shaped) system content to the first
+ *  user message, preserving cache_control markers on each block so
+ *  Anthropic still serves cached portions back at ~10% billing. */
+function prependBlocksToFirstUserMessage(
+  messages: AnthropicMessage[],
+  blocks: AnthropicTextBlock[],
+): AnthropicMessage[] {
+  if (blocks.length === 0) return messages;
+  const out = messages.map((m) => ({ ...m }));
+  const idx = out.findIndex((m) => m.role === "user");
+  if (idx === -1) {
+    return [{ role: "user", content: blocks }, ...out];
   }
-  return "";
+  const original = out[idx];
+  const existing: Array<unknown> =
+    typeof original.content === "string"
+      ? [{ type: "text", text: original.content }]
+      : Array.isArray(original.content)
+        ? original.content
+        : [];
+  out[idx] = { ...original, content: [...blocks, ...existing] };
+  return out;
 }
 
 // Fields the Claude.ai subscription endpoint accepts via OAuth. Everything
@@ -135,14 +297,29 @@ const OAUTH_BODY_ALLOWLIST: ReadonlySet<string> = new Set([
  * stream/tools/tool_choice) plus the billing-header `system[]` array.
  */
 export function rewriteForOAuth(body: AnthropicRequestBody): AnthropicRequestBody {
-  const userSystem = userSystemAsString(body.system);
+  // Extract the caller's system as content blocks so any `cache_control`
+  // markers (set by the orchestrator on its stable preamble + stage
+  // context) survive the move into the first user message.
+  const userSystemBlocks = userSystemAsBlocks(body.system);
+  const hasCacheControl = userSystemBlocks.some((b) => b.cache_control);
   // Compute billing fingerprint from the *original* first user message
   // (before we prepend the user system into it).
   const originalFirstUser = firstUserMessageText(body.messages);
 
-  const messages = userSystem.trim()
-    ? prependToFirstUserMessage(body.messages, userSystem)
-    : body.messages;
+  // When no caller block opted into caching, prepend the system as
+  // plain concatenated text so the wire format stays the simple string
+  // shape callers (and tests) have always seen. Caching callers force
+  // the block path so `cache_control` survives the rewrite.
+  const messages = (() => {
+    if (userSystemBlocks.length === 0) return body.messages;
+    if (hasCacheControl) {
+      return prependBlocksToFirstUserMessage(body.messages, userSystemBlocks);
+    }
+    const joined = userSystemBlocks.map((b) => b.text).join("\n\n");
+    return joined.trim()
+      ? prependStringToFirstUserMessage(body.messages, joined)
+      : body.messages;
+  })();
 
   const out: AnthropicRequestBody = {
     system: [
@@ -225,6 +402,7 @@ function makeOAuthFetch(accessToken: string): typeof fetch {
       if (!res.ok) {
         console.error(`[claude-oauth] ${res.status} ${res.statusText}`);
       }
+      captureRateLimitHeaders(res.headers);
       return res;
     } catch (err) {
       console.error(

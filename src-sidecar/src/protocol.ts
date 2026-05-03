@@ -32,6 +32,12 @@ export type WorkflowStart = {
   input: unknown;   // workflow-specific payload, validated by the workflow's Zod schema
   model: ModelSelection;
   worktreePath?: string;
+  /** When true, the sidecar attaches an AI-traffic callback to every
+   *  model built during this run and emits an `ai_traffic` event for
+   *  each round-trip. Off by default — capture is opt-in via a
+   *  developer toggle in Settings so prompt JSON doesn't ride the IPC
+   *  channel for runs nobody is debugging. */
+  debug?: boolean;
 };
 
 export type WorkflowResume = {
@@ -42,6 +48,9 @@ export type WorkflowResume = {
   /** When present, the sidecar overwrites `state.model` with this before
    *  invoking the graph. Used to keep OAuth tokens fresh on long runs. */
   model?: ModelSelection;
+  /** Same semantics as WorkflowStart.debug — re-supplied on every
+   *  resume because each invocation establishes a fresh capture scope. */
+  debug?: boolean;
 };
 
 export type WorkflowCancel = {
@@ -60,6 +69,8 @@ export type WorkflowRewind = {
   /** When present, the sidecar overwrites `state.model` with this before
    *  resuming forward from the checkpoint. */
   model?: ModelSelection;
+  /** Mirrors WorkflowStart.debug. */
+  debug?: boolean;
 };
 
 export type ToolCallbackResponse = {
@@ -127,10 +138,45 @@ export type ErrorEvent = {
   cause?: string;
 };
 
+/** Snapshot of a single LLM round-trip — request prompt, response text,
+ *  per-call usage, latency. Emitted only when AI debug capture is on
+ *  (a developer toggle in Settings) so production runs don't pay the
+ *  cost of serialising prompts they'll never look at. Forwarded to the
+ *  frontend's debug panel for inspection. */
+export type AiTrafficEvent = {
+  id: string;
+  type: "ai_traffic";
+  /** Wall-clock milliseconds when the request started. */
+  startedAt: number;
+  /** Total round-trip latency in ms. */
+  latencyMs: number;
+  /** Provider + model the request actually hit. Carries the same
+   *  shape the workflow received so a debug viewer can show which
+   *  model produced each turn. Credentials are scrubbed before this
+   *  event leaves the sidecar. */
+  provider: string;
+  model: string;
+  /** Workflow / node identifier — surface in the panel so the user
+   *  can see which agent issued the call. */
+  workflow: string;
+  node?: string;
+  /** Serialised messages array sent to the model. Each entry is
+   *  `{ role, content }` where content may be string or array of
+   *  content blocks. The handler stringifies content blocks so the
+   *  frontend doesn't need provider-specific knowledge to render. */
+  messages: Array<{ role: string; content: string }>;
+  /** Final reply text. May be empty for tool-only turns. */
+  response: string;
+  usage: { inputTokens: number; outputTokens: number };
+  /** Optional error message if the call failed. */
+  error?: string;
+};
+
 export type OutboundEvent =
   | ProgressEvent
   | StreamEvent
   | InterruptEvent
   | ToolCallbackRequest
   | ResultEvent
-  | ErrorEvent;
+  | ErrorEvent
+  | AiTrafficEvent;

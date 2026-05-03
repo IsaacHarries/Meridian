@@ -7,6 +7,7 @@ pub mod fetch_url;
 pub mod grooming_templates;
 pub mod jira;
 pub mod meetings;
+pub mod meetings_search;
 pub mod preferences;
 pub mod pr_template;
 pub mod repo;
@@ -60,11 +61,14 @@ pub use time_tracking::{
     start_time_tracking_poller,
 };
 pub use meetings::{
-    active_meeting_id, create_notes_meeting, delete_meeting, diarize_meeting,
-    download_whisper_model, get_meetings_dir, list_meetings, list_microphones, list_whisper_models,
-    load_meeting, pause_meeting_recording, rename_meeting_speaker, resume_meeting_recording,
-    save_meeting, start_meeting_recording, stop_meeting_recording, update_meeting_notes,
+    active_meeting_id, clear_meetings_embeddings, create_notes_meeting, delete_meeting,
+    diarize_meeting, download_whisper_model, get_meetings_dir, list_meetings, list_microphones,
+    list_whisper_models, load_meeting, meetings_index_status, pause_meeting_recording,
+    reindex_all_meetings, rename_meeting_speaker, resume_meeting_recording, save_meeting,
+    start_meeting_recording, stop_meeting_recording, update_meeting_notes,
 };
+pub use llms::embeddings::probe_ollama_cmd;
+pub use meetings_search::{get_meeting_segment, search_meetings};
 pub use llms::claude::{cancel_review, get_claude_models};
 pub use llms::copilot::{
     add_custom_copilot_model, get_copilot_models, get_custom_copilot_models,
@@ -77,7 +81,8 @@ pub use llms::gemini::{
 pub use llms::local_llm::{get_local_models, test_local_llm_stored, validate_local_llm};
 pub use preferences::{delete_preference, get_preferences, set_preference};
 pub use crate::storage::preferences::{
-    data_directory_has_content, get_data_dir, move_data_directory, relaunch_app,
+    clear_ai_debug_log_cmd, data_directory_has_content, get_ai_debug_log_path_cmd, get_data_dir,
+    move_data_directory, relaunch_app,
 };
 pub use grooming_templates::{
     get_grooming_template_path, load_grooming_template, reveal_grooming_templates_dir,
@@ -114,7 +119,8 @@ pub use workflows::{
     run_address_pr_chat_workflow,
     run_analyze_pr_comments_workflow, run_grooming_chat_workflow,
     run_grooming_file_probe_workflow, run_grooming_workflow,
-    run_implementation_pipeline_workflow, run_meeting_chat_workflow,
+    run_cross_meetings_chat_workflow, run_implementation_pipeline_workflow,
+    run_meeting_chat_workflow,
     run_meeting_summary_workflow, run_meeting_title_workflow, run_pr_review_chat_workflow,
     run_pr_review_workflow, run_sprint_dashboard_chat_workflow,
     run_sprint_retrospective_workflow, run_workload_suggestions_workflow,

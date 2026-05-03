@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Cpu, Loader2, Lock, RotateCcw } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -12,10 +12,29 @@ import {
   STAGE_LABELS,
   PANEL_LABELS,
 } from "@/stores/aiSelectionStore";
+import {
+  useTokenUsageStore,
+  modelKey,
+  formatTokens,
+  type TokenUsage,
+  type PanelKey,
+} from "@/stores/tokenUsageStore";
+import { getAppPreferences } from "@/lib/appPreferences";
+import { ContextProgressRing } from "@/components/ContextProgressRing";
+import { getModelContextWindow } from "@/lib/modelContext";
 
 const PROVIDER_OPTIONS: AiProvider[] = ["claude", "gemini", "copilot", "local"];
 
 type Scope = "stage" | "panel";
+
+/** Bridge the aiSelectionStore's PanelId enum to the tokenUsageStore's
+ *  PanelKey enum. The two diverge on `address_pr_comments` vs
+ *  `address_pr` (history: aiSelectionStore was first to settle, the
+ *  token bucket store followed with a shorter id). */
+function panelIdToKey(panel: PanelId): PanelKey {
+  if (panel === "address_pr_comments") return "address_pr";
+  return panel;
+}
 
 export function HeaderModelPicker({
   panel,
@@ -156,6 +175,98 @@ export function HeaderModelPicker({
     return display || resolved.model;
   })();
 
+  // Token usage for the active provider, summed across every model
+  // we've ever bucketed for it this session. Per-provider (rather
+  // than per-model) is what actually matters: Claude.ai OAuth shares
+  // a single quota window across all Claude models, so switching from
+  // Haiku to Sonnet doesn't reset anything. The dropdown rows below
+  // keep per-model breakdowns as a diagnostic, but the trigger reads
+  // the aggregate. Sums any in-flight streaming totals so the count
+  // climbs live during a request.
+  const modelCumulative = useTokenUsageStore((s) => s.modelCumulative);
+  const modelCurrentCall = useTokenUsageStore((s) => s.modelCurrentCall);
+  const providerPrefix = `${resolved.provider}:`;
+  const activeUsage = useMemo<TokenUsage>(() => {
+    let inputTokens = 0;
+    let outputTokens = 0;
+    for (const [key, u] of Object.entries(modelCumulative)) {
+      if (!key.startsWith(providerPrefix)) continue;
+      inputTokens += u.inputTokens;
+      outputTokens += u.outputTokens;
+    }
+    for (const [key, u] of Object.entries(modelCurrentCall)) {
+      if (!key.startsWith(providerPrefix)) continue;
+      inputTokens += u.inputTokens;
+      outputTokens += u.outputTokens;
+    }
+    return { inputTokens, outputTokens };
+  }, [providerPrefix, modelCumulative, modelCurrentCall]);
+  const activeUsageTotal = activeUsage.inputTokens + activeUsage.outputTokens;
+
+  // Daily token budget — pulled fresh whenever the dropdown opens so a
+  // setting just changed in another tab is reflected the next time the
+  // user looks. The session-usage progress bar uses this to render the
+  // "X% of daily budget" indicator; absent budget = bar still shown
+  // against an undefined ceiling so the user sees raw consumption.
+  const [dailyBudget, setDailyBudget] = useState<number | null>(null);
+  useEffect(() => {
+    if (!open) return;
+    let alive = true;
+    void getAppPreferences().then((p) => {
+      if (alive) setDailyBudget(p.dailyTokenBudget);
+    });
+    return () => {
+      alive = false;
+    };
+  }, [open]);
+  const sessionTotal = activeUsage.inputTokens + activeUsage.outputTokens;
+  const budgetPct =
+    dailyBudget && dailyBudget > 0
+      ? Math.min(100, (sessionTotal / dailyBudget) * 100)
+      : null;
+
+  // Context-window utilisation for the active model.
+  //
+  // When the panel has a chat thread that replays history each turn
+  // (orchestrator chat, triage, grooming chat, etc.) we prefer the
+  // panel's last chat-call input — that's the running conversation
+  // size, which is what drives compress-or-not decisions. A small
+  // one-shot stage call shouldn't reset the displayed value to its
+  // own tiny input.
+  //
+  // When no chat context is recorded for this panel (yet, or never —
+  // e.g. one-shot panels), fall back to the per-model last-input so
+  // the ring still reflects something useful.
+  //
+  // The running prompt size during a streaming call still wins over
+  // both, so the ring fills live as a fresh call is in flight.
+  const modelLastInputTokens = useTokenUsageStore(
+    (s) => s.modelLastInputTokens,
+  );
+  const panelChatLastInputTokens = useTokenUsageStore(
+    (s) => s.panelChatLastInputTokens,
+  );
+  const activeMk = resolved.model
+    ? modelKey(resolved.provider, resolved.model)
+    : null;
+  const activeContextUsed = (() => {
+    if (!activeMk) return 0;
+    const liveInput = modelCurrentCall[activeMk]?.inputTokens ?? 0;
+    if (liveInput > 0) return liveInput;
+    // Prefer the panel's chat-thread last-input over the per-model
+    // last-input, so on every chat panel the ring tracks the running
+    // conversation (which is the actual driver of "should I compress?"
+    // decisions). Cleared back to zero when chat history is wiped.
+    const chatInput = panelChatLastInputTokens[panelIdToKey(panel)];
+    if (typeof chatInput === "number" && chatInput > 0) {
+      return chatInput;
+    }
+    return modelLastInputTokens[activeMk] ?? 0;
+  })();
+  const activeContextMax = resolved.model
+    ? getModelContextWindow(resolved.provider, resolved.model)
+    : 0;
+
   return (
     <div className={cn("relative", className)}>
       <Button
@@ -182,6 +293,29 @@ export function HeaderModelPicker({
         <span className="text-[11px] text-muted-foreground leading-tight max-w-[120px] truncate">
           {buttonLabel}
         </span>
+        <span
+          className={cn(
+            "text-[10px] leading-tight tabular-nums ml-1 pl-1.5 border-l border-border/60",
+            activeUsageTotal > 0 ? "text-muted-foreground" : "text-muted-foreground/50",
+          )}
+          title={
+            activeUsageTotal > 0
+              ? `Tokens used by ${PROVIDER_LABELS[resolved.provider]} this session: ${activeUsage.inputTokens.toLocaleString()} in / ${activeUsage.outputTokens.toLocaleString()} out (across all models — open dropdown for per-model breakdown)`
+              : `No tokens used by ${PROVIDER_LABELS[resolved.provider]} yet this session`
+          }
+        >
+          {formatTokens(activeUsage.inputTokens)}
+          {" → "}
+          {formatTokens(activeUsage.outputTokens)}
+        </span>
+        {activeContextMax > 0 && (
+          <span className="ml-1 inline-flex items-center">
+            <ContextProgressRing
+              used={activeContextUsed}
+              max={activeContextMax}
+            />
+          </span>
+        )}
       </Button>
 
       {open &&
@@ -196,7 +330,7 @@ export function HeaderModelPicker({
               right: anchor.right,
               zIndex: 100,
             }}
-            className="w-80 rounded-lg border bg-popover text-popover-foreground shadow-lg"
+            className="w-96 rounded-lg border bg-popover text-popover-foreground shadow-lg"
           >
             <div className="px-3 py-2.5 border-b">
               <p className="text-xs font-semibold">
@@ -213,6 +347,55 @@ export function HeaderModelPicker({
                       : "Using default fallback order."}
               </p>
             </div>
+
+            {/* Session usage — always visible. Sums every model the
+                active provider has spent tokens on this session. When
+                the user has set a daily token budget the bar fills
+                against that ceiling; otherwise it just shows raw
+                progress with no upper bound. */}
+            <div className="px-3 py-2 border-b">
+              <div className="flex items-center justify-between gap-2 mb-1">
+                <p className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                  Session usage · {PROVIDER_LABELS[resolved.provider]}
+                </p>
+                <span className="text-[10px] tabular-nums text-muted-foreground">
+                  {formatTokens(activeUsage.inputTokens)}
+                  {" → "}
+                  {formatTokens(activeUsage.outputTokens)}
+                </span>
+              </div>
+              {budgetPct != null ? (
+                <>
+                  <div className="h-1 w-full rounded-full bg-muted overflow-hidden">
+                    <div
+                      className={cn(
+                        "h-full rounded-full transition-all",
+                        budgetPct >= 100
+                          ? "bg-destructive"
+                          : budgetPct >= 80
+                            ? "bg-amber-500"
+                            : "bg-primary/70",
+                      )}
+                      style={{ width: `${Math.max(2, budgetPct)}%` }}
+                    />
+                  </div>
+                  <p className="text-[10px] text-muted-foreground mt-1">
+                    {budgetPct.toFixed(0)}% of daily budget (
+                    {formatTokens(dailyBudget!)} tokens)
+                  </p>
+                </>
+              ) : sessionTotal > 0 ? (
+                <p className="text-[10px] text-muted-foreground mt-0.5">
+                  No daily budget set —{" "}
+                  <span className="opacity-70">configure one in Settings → Notifications</span>
+                </p>
+              ) : (
+                <p className="text-[10px] text-muted-foreground/70 mt-0.5">
+                  No tokens used yet this session.
+                </p>
+              )}
+            </div>
+
 
             {stageScopable && (
               <div className="px-3 pt-2.5 pb-2 border-b">
@@ -293,19 +476,50 @@ export function HeaderModelPicker({
                     const active =
                       resolved.provider === draftProvider &&
                       resolved.model === id;
+                    const mk = modelKey(draftProvider, id);
+                    const cum = modelCumulative[mk] ?? {
+                      inputTokens: 0,
+                      outputTokens: 0,
+                    };
+                    const live = modelCurrentCall[mk] ?? {
+                      inputTokens: 0,
+                      outputTokens: 0,
+                    };
+                    const inTok = cum.inputTokens + live.inputTokens;
+                    const outTok = cum.outputTokens + live.outputTokens;
+                    const totalTok = inTok + outTok;
                     return (
                       <button
                         key={id}
                         type="button"
                         className={cn(
-                          "w-full rounded px-2 py-1.5 text-left text-xs",
+                          "w-full rounded px-2 py-1.5 text-left text-xs flex items-center gap-2",
                           active
                             ? "bg-primary text-primary-foreground"
                             : "hover:bg-muted/70",
                         )}
                         onClick={() => void selectModel(id)}
+                        title={
+                          totalTok > 0
+                            ? `${inTok.toLocaleString()} in · ${outTok.toLocaleString()} out`
+                            : "No tokens used yet this session"
+                        }
                       >
-                        {label}
+                        <span className="flex-1 min-w-0 truncate">{label}</span>
+                        {totalTok > 0 && (
+                          <span
+                            className={cn(
+                              "shrink-0 tabular-nums text-[10px]",
+                              active
+                                ? "text-primary-foreground/80"
+                                : "text-muted-foreground",
+                            )}
+                          >
+                            {formatTokens(inTok)}
+                            {" → "}
+                            {formatTokens(outTok)}
+                          </span>
+                        )}
                       </button>
                     );
                   })}
