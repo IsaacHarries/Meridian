@@ -133,7 +133,24 @@ export class AiTrafficHandler extends BaseCallbackHandler {
       .filter(Boolean)
       .join("\n\n");
 
-    // Usage shape varies across providers — try a few common spots.
+    // Usage shape varies across providers AND between streamed vs.
+    // non-streamed responses:
+    //   - LangChain's standardised path puts the per-call usage under
+    //     `generations[0][0].message.usage_metadata` (a ChatGeneration
+    //     with the AIMessage). This is where streamed Anthropic /
+    //     Gemini / etc. responses surface their counts.
+    //   - The legacy `output.llmOutput` path (`tokenUsage` for
+    //     OpenAI-shaped providers, `usage` for the older Anthropic
+    //     wire shape) is populated for some non-streaming providers
+    //     and was historically the only thing this handler read —
+    //     which is why every captured event showed `inputTokens: 0`
+    //     even though the model returned real counts.
+    // We try the message-level metadata first, then fall back to the
+    // llmOutput shapes, and finally to 0 if neither is populated.
+    const firstGen = generations[0] as
+      | { message?: { usage_metadata?: { input_tokens?: number; output_tokens?: number } } }
+      | undefined;
+    const messageUsage = firstGen?.message?.usage_metadata;
     const llmOutput = (output.llmOutput ?? {}) as {
       tokenUsage?: { promptTokens?: number; completionTokens?: number };
       usage?: { input_tokens?: number; output_tokens?: number };
@@ -141,8 +158,16 @@ export class AiTrafficHandler extends BaseCallbackHandler {
     const usageA = llmOutput.tokenUsage;
     const usageB = llmOutput.usage;
     const usage = {
-      inputTokens: usageA?.promptTokens ?? usageB?.input_tokens ?? 0,
-      outputTokens: usageA?.completionTokens ?? usageB?.output_tokens ?? 0,
+      inputTokens:
+        messageUsage?.input_tokens ??
+        usageA?.promptTokens ??
+        usageB?.input_tokens ??
+        0,
+      outputTokens:
+        messageUsage?.output_tokens ??
+        usageA?.completionTokens ??
+        usageB?.output_tokens ??
+        0,
     };
 
     this.ctx.emit({

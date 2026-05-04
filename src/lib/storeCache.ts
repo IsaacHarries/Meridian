@@ -1,20 +1,6 @@
-/**
- * File-backed persistence helpers for Zustand stores.
- *
- * Uses Tauri's file system (app data directory) instead of localStorage,
- * which is limited to 5–10 MB in WebKit. Each store is serialised to a
- * separate JSON file — no practical size limit.
- *
- * Usage pattern:
- *   1. Call `loadCache(key, reviver)` on app boot to hydrate the store.
- *   2. Subscribe to the store and call `saveCache(key, state, replacer)` on changes.
- *      The save is debounced so rapid state changes don't hammer the file system.
- *   3. Call `deleteCache(key)` or `clearAllCaches()` from the Settings "Clear Cache" button.
- */
+import { clearAllStoreCaches, deleteStoreCache, getStoreCacheInfo, loadStoreCache, saveStoreCache } from "@/lib/tauri/store-cache";
 
-import { saveStoreCache, loadStoreCache, deleteStoreCache, clearAllStoreCaches, getStoreCacheInfo } from "@/lib/tauri";
-
-export { deleteStoreCache, clearAllStoreCaches, getStoreCacheInfo };
+export { clearAllStoreCaches, deleteStoreCache, getStoreCacheInfo };
 
 // ── Serialisation helpers ──────────────────────────────────────────────────────
 

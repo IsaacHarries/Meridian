@@ -10,20 +10,17 @@
  * panel sits (bottom split, right/left sidebar, or popped-out window).
  */
 
-import { useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
-import { ChevronDown, ChevronRight, FileText, Trash2, X } from "lucide-react";
-import {
-  useAiDebugStore,
-  totalCapturedTokens,
-  type AiTrafficEvent,
-} from "@/stores/aiDebugStore";
-import { formatTokens } from "@/stores/tokenUsageStore";
+import { clearAiDebugLogFile, getAiDebugLogPath } from "@/lib/tauri/misc";
 import { cn } from "@/lib/utils";
 import {
-  getAiDebugLogPath,
-  clearAiDebugLogFile,
-} from "@/lib/tauri";
+    totalCapturedTokens,
+    useAiDebugStore,
+    type AiTrafficEvent,
+} from "@/stores/aiDebugStore";
+import { formatTokens } from "@/stores/tokenUsageStore";
+import { ChevronDown, ChevronRight, FileText, Trash2, X } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 
 interface AiDebugPanelProps {
@@ -244,21 +241,15 @@ function TrafficDetail({ event }: { event: AiTrafficEvent }) {
   );
 }
 
+const ROLE_CLASSES: Record<string, string> = {
+  system: "bg-amber-500/10 border-amber-500/30",
+  user: "bg-blue-500/10 border-blue-500/30",
+  assistant: "bg-emerald-500/10 border-emerald-500/30",
+  tool: "bg-purple-500/10 border-purple-500/30",
+};
+
 function MessageBlock({ role, content }: { role: string; content: string }) {
-  const roleClass = (() => {
-    switch (role) {
-      case "system":
-        return "bg-amber-500/10 border-amber-500/30";
-      case "user":
-        return "bg-blue-500/10 border-blue-500/30";
-      case "assistant":
-        return "bg-emerald-500/10 border-emerald-500/30";
-      case "tool":
-        return "bg-purple-500/10 border-purple-500/30";
-      default:
-        return "bg-muted/40 border-border";
-    }
-  })();
+  const roleClass = ROLE_CLASSES[role] ?? "bg-muted/40 border-border";
   return (
     <div className={cn("border rounded p-2", roleClass)}>
       <div className="text-[9px] uppercase tracking-wide text-muted-foreground mb-1">

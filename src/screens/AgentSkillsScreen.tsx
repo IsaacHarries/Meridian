@@ -1,15 +1,10 @@
-import { useState, useEffect } from "react";
-import { ArrowLeft, Save, Trash2, BookOpen, Code2, Wrench, Eye } from "lucide-react";
-import { Button } from "@/components/ui/button";
-import { WorkflowPanelHeader, APP_HEADER_TITLE } from "@/components/appHeaderLayout";
-import { Textarea } from "@/components/ui/textarea";
+import { APP_HEADER_TITLE, WorkflowPanelHeader } from "@/components/appHeaderLayout";
 import { Badge } from "@/components/ui/badge";
-import {
-  type SkillType,
-  loadAgentSkills,
-  saveAgentSkill,
-  deleteAgentSkill,
-} from "@/lib/tauri";
+import { Button } from "@/components/ui/button";
+import { Textarea } from "@/components/ui/textarea";
+import { type SkillType, deleteAgentSkill, loadAgentSkills, saveAgentSkill } from "@/lib/tauri/templates";
+import { ArrowLeft, BookOpen, Code2, Eye, Save, Trash2, Wrench } from "lucide-react";
+import { useEffect, useState } from "react";
 
 interface Props {
   onBack: () => void;

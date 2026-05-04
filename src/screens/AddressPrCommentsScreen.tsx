@@ -1,324 +1,30 @@
-import { useEffect, useState, useRef, useCallback, useMemo } from "react";
-import { ArrowLeft, GitPullRequest, MessageSquare, CheckSquare, RefreshCw, GitBranch, Loader2, Check, X, ChevronDown, ChevronRight, ThumbsUp, ThumbsDown, AlertTriangle, GitCommit, Upload } from "lucide-react";
+import { APP_HEADER_TITLE, WorkflowPanelHeader } from "@/components/appHeaderLayout";
 import { Button } from "@/components/ui/button";
-import { Textarea } from "@/components/ui/textarea";
-import { Badge } from "@/components/ui/badge";
-import { SlashCommandInput } from "@/components/SlashCommandInput";
-import { createGlobalCommands, type SlashCommand } from "@/lib/slashCommands";
-import { WorkflowPanelHeader, APP_HEADER_TITLE } from "@/components/appHeaderLayout";
-import {
-  type CredentialStatus,
-  type BitbucketPr,
-  type BitbucketComment,
-  bitbucketComplete,
-  aiProviderComplete,
-  getMyOpenPrs,
-  getPrComments,
-  getPrDiff,
-  checkoutPrAddressBranch,
-  readPrAddressFile,
-  writePrAddressFile,
-  analyzePrComments,
-  chatAddressPr,
-  getPrAddressDiff,
-  commitPrAddressChanges,
-  pushPrAddressBranch,
-} from "@/lib/tauri";
-import { listen } from "@tauri-apps/api/event";
+import { type SlashCommand, createGlobalCommands } from "@/lib/slashCommands";
+import { type BitbucketComment, type BitbucketPr, getMyOpenPrs, getPrComments, getPrDiff } from "@/lib/tauri/bitbucket";
+import { currentModelKeyFor } from "@/lib/tauri/core";
+import { type CredentialStatus, aiProviderComplete, bitbucketComplete } from "@/lib/tauri/credentials";
+import { analyzePrComments, chatAddressPr } from "@/lib/tauri/workflows";
+import { checkoutPrAddressBranch, commitPrAddressChanges, getPrAddressDiff, pushPrAddressBranch, readPrAddressFile, writePrAddressFile } from "@/lib/tauri/worktree";
 import { useChatHistoryStore } from "@/stores/chatHistoryStore";
 import { useTokenUsageStore } from "@/stores/tokenUsageStore";
-
-// ── Types ─────────────────────────────────────────────────────────────────────
-
-interface FixProposal {
-  commentId: number;
-  file: string | null;
-  fromLine: number | null;
-  toLine: number | null;
-  reviewerName: string;
-  commentSummary: string;
-  proposedFix: string;
-  confidence: "High" | "Medium" | "Needs human judgment";
-  affectedFiles: string[];
-  newContent: string | null;
-  skippable: boolean;
-  // UI-only state
-  approved: boolean;
-  skipped: boolean;
-  annotation: string;
-}
-
-type WorkflowStep =
-  | "pr-list"       // Selecting which PR to work on
-  | "checkout"      // Checking out the branch
-  | "analyzing"     // Agent reading diff + comments
-  | "fix-plan"      // User reviews fix plan
-  | "applying"      // Agent applies approved fixes
-  | "diff-review"   // User reviews diff before commit
-  | "committing"    // User enters commit message
-  | "pushing"       // Pushing to origin
-  | "done";         // Complete
-
-interface ChatMessage {
-  role: "user" | "assistant";
-  content: string;
-}
-
-/** Stable empty-array ref so the chat-history selector returns the same
- *  reference between renders when no chat has started yet — avoids
- *  unnecessary re-renders. */
-const EMPTY_CHAT: ChatMessage[] = [];
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-function prAge(createdOn: string): string {
-  const ms = Date.now() - new Date(createdOn).getTime();
-  const days = Math.floor(ms / 86_400_000);
-  if (days === 0) return "today";
-  if (days === 1) return "1d ago";
-  return `${days}d ago`;
-}
-
-function confidenceBadgeVariant(confidence: FixProposal["confidence"]) {
-  if (confidence === "High") return "success";
-  if (confidence === "Medium") return "warning";
-  return "destructive";
-}
-
-function buildFixPlanFromPartial(arr: unknown[]): FixProposal[] {
-  return arr
-    .filter((item): item is Record<string, unknown> =>
-      item != null && typeof item === "object",
-    )
-    .map((item) => ({
-      commentId: Number(item.commentId ?? 0),
-      file: (item.file as string) ?? null,
-      fromLine: item.fromLine != null ? Number(item.fromLine) : null,
-      toLine: item.toLine != null ? Number(item.toLine) : null,
-      reviewerName: String(item.reviewerName ?? "Reviewer"),
-      commentSummary: String(item.commentSummary ?? ""),
-      proposedFix: String(item.proposedFix ?? ""),
-      confidence: (item.confidence as FixProposal["confidence"]) ?? "Medium",
-      affectedFiles: Array.isArray(item.affectedFiles)
-        ? (item.affectedFiles as string[])
-        : item.file ? [item.file as string] : [],
-      newContent: (item.newContent as string) ?? null,
-      skippable: Boolean(item.skippable),
-      approved: (item.confidence as string) !== "Needs human judgment",
-      skipped: false,
-      annotation: "",
-    }));
-}
-
-function parseFixPlan(raw: string): FixProposal[] {
-  try {
-    const cleaned = raw
-      .trim()
-      .replace(/^```json\s*/i, "")
-      .replace(/^```\s*/i, "")
-      .replace(/\s*```$/i, "")
-      .trim();
-    const arr = JSON.parse(cleaned);
-    if (!Array.isArray(arr)) return [];
-    return arr.map((item: Record<string, unknown>) => ({
-      commentId: Number(item.commentId ?? 0),
-      file: (item.file as string) ?? null,
-      fromLine: item.fromLine != null ? Number(item.fromLine) : null,
-      toLine: item.toLine != null ? Number(item.toLine) : null,
-      reviewerName: String(item.reviewerName ?? "Reviewer"),
-      commentSummary: String(item.commentSummary ?? ""),
-      proposedFix: String(item.proposedFix ?? ""),
-      confidence: (item.confidence as FixProposal["confidence"]) ?? "Medium",
-      affectedFiles: Array.isArray(item.affectedFiles)
-        ? (item.affectedFiles as string[])
-        : item.file ? [item.file as string] : [],
-      newContent: (item.newContent as string) ?? null,
-      skippable: Boolean(item.skippable),
-      approved: (item.confidence as string) !== "Needs human judgment",
-      skipped: false,
-      annotation: "",
-    }));
-  } catch {
-    return [];
-  }
-}
-
-// ── Subcomponents ─────────────────────────────────────────────────────────────
-
-function PrListPanel({
-  prs,
-  loading,
-  error,
-  onSelect,
-  onRefresh,
-}: {
-  prs: BitbucketPr[];
-  loading: boolean;
-  error: string | null;
-  onSelect: (pr: BitbucketPr) => void;
-  onRefresh: () => void;
-}) {
-  return (
-    <div className="space-y-3">
-      <div className="flex items-center justify-between">
-        <p className="text-sm text-muted-foreground">
-          Select one of your open PRs to address tasks and reviewer comments.
-        </p>
-        <Button variant="ghost" size="icon" onClick={onRefresh} disabled={loading}>
-          <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
-        </Button>
-      </div>
-
-      {error && (
-        <div className="flex items-center gap-2 rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-          <AlertTriangle className="h-4 w-4 shrink-0" />
-          {error}
-        </div>
-      )}
-
-      {loading ? (
-        <div className="flex items-center justify-center py-10">
-          <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
-        </div>
-      ) : prs.length === 0 ? (
-        <div className="text-center py-10 text-muted-foreground text-sm">
-          No open PRs found.
-        </div>
-      ) : (
-        <div className="space-y-2">
-          {prs.map((pr) => (
-            <button
-              key={pr.id}
-              onClick={() => onSelect(pr)}
-              className="w-full text-left rounded-lg border bg-card/60 hover:bg-accent/60 transition-colors p-3 space-y-1"
-            >
-              <div className="flex items-start justify-between gap-2">
-                <span className="text-sm font-medium leading-snug flex-1">{pr.title}</span>
-                <div className="flex items-center gap-1.5 shrink-0">
-                  {pr.taskCount > 0 && (
-                    <Badge variant="outline" className="text-[10px] gap-1">
-                      <CheckSquare className="h-2.5 w-2.5" />
-                      {pr.taskCount} task{pr.taskCount !== 1 ? "s" : ""}
-                    </Badge>
-                  )}
-                  {pr.commentCount > 0 && (
-                    <Badge variant="outline" className="text-[10px] gap-1">
-                      <MessageSquare className="h-2.5 w-2.5" />
-                      {pr.commentCount} comment{pr.commentCount !== 1 ? "s" : ""}
-                    </Badge>
-                  )}
-                </div>
-              </div>
-              <div className="flex items-center gap-3 text-xs text-muted-foreground">
-                <span className="flex items-center gap-1">
-                  <GitBranch className="h-3 w-3" />
-                  {pr.sourceBranch}
-                </span>
-                <span>{prAge(pr.createdOn)}</span>
-                {pr.jiraIssueKey && <span className="font-mono">{pr.jiraIssueKey}</span>}
-              </div>
-            </button>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function FixPlanCard({
-  fix,
-  index,
-  onToggleApprove,
-  onToggleSkip,
-  onAnnotationChange,
-}: {
-  fix: FixProposal;
-  index: number;
-  onToggleApprove: (i: number) => void;
-  onToggleSkip: (i: number) => void;
-  onAnnotationChange: (i: number, text: string) => void;
-}) {
-  const [expanded, setExpanded] = useState(true);
-
-  return (
-    <div className={`rounded-lg border ${fix.skipped ? "opacity-40" : ""} ${fix.approved && !fix.skipped ? "border-primary/30 bg-primary/5" : "border-border bg-card/60"}`}>
-      <button
-        className="w-full flex items-start gap-2 p-3 text-left"
-        onClick={() => setExpanded((p) => !p)}
-      >
-        {expanded ? <ChevronDown className="h-4 w-4 shrink-0 mt-0.5 text-muted-foreground" /> : <ChevronRight className="h-4 w-4 shrink-0 mt-0.5 text-muted-foreground" />}
-        <div className="flex-1 min-w-0 space-y-0.5">
-          <div className="flex items-center gap-2 flex-wrap">
-            <span className="text-xs font-mono text-muted-foreground shrink-0">#{fix.commentId}</span>
-            <Badge variant={confidenceBadgeVariant(fix.confidence)} className="text-[10px]">
-              {fix.confidence}
-            </Badge>
-            {fix.file && (
-              <span className="text-xs font-mono text-muted-foreground truncate">{fix.file}</span>
-            )}
-          </div>
-          <p className="text-sm font-medium leading-snug">{fix.commentSummary}</p>
-          <p className="text-xs text-muted-foreground">by {fix.reviewerName}</p>
-        </div>
-        <div className="flex items-center gap-1 shrink-0" onClick={(e) => e.stopPropagation()}>
-          <Button
-            size="sm"
-            variant={fix.approved && !fix.skipped ? "default" : "outline"}
-            className="h-6 w-6 p-0"
-            onClick={() => onToggleApprove(index)}
-            title="Approve this fix"
-          >
-            <ThumbsUp className="h-3 w-3" />
-          </Button>
-          <Button
-            size="sm"
-            variant={fix.skipped ? "destructive" : "outline"}
-            className="h-6 w-6 p-0"
-            onClick={() => onToggleSkip(index)}
-            title="Skip this fix"
-          >
-            <ThumbsDown className="h-3 w-3" />
-          </Button>
-        </div>
-      </button>
-
-      {expanded && (
-        <div className="px-3 pb-3 space-y-2 border-t pt-2">
-          <div>
-            <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide mb-1">Proposed fix</p>
-            <p className="text-sm leading-relaxed">{fix.proposedFix}</p>
-          </div>
-          {fix.affectedFiles.length > 0 && (
-            <div>
-              <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide mb-1">Files</p>
-              <div className="flex flex-wrap gap-1">
-                {fix.affectedFiles.map((f) => (
-                  <code key={f} className="text-xs bg-muted rounded px-1.5 py-0.5">{f}</code>
-                ))}
-              </div>
-            </div>
-          )}
-          {fix.confidence === "Needs human judgment" && (
-            <div className="rounded border border-amber-500/30 bg-amber-500/10 px-2 py-1.5 text-xs text-amber-600 dark:text-amber-400 flex items-start gap-1.5">
-              <AlertTriangle className="h-3.5 w-3.5 shrink-0 mt-0.5" />
-              This fix requires human judgment. Annotate below with instructions if you want the agent to attempt it.
-            </div>
-          )}
-          <div>
-            <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide mb-1">Additional instructions (optional)</p>
-            <Textarea
-              value={fix.annotation}
-              onChange={(e) => onAnnotationChange(index, e.target.value)}
-              placeholder="Leave blank to follow the proposed fix as-is, or add notes to guide the agent…"
-              className="text-xs min-h-[60px] resize-none"
-              disabled={fix.skipped}
-            />
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
+import { listen } from "@tauri-apps/api/event";
+import { AlertTriangle, ArrowLeft, GitPullRequest } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+    type ChatMessage,
+    EMPTY_CHAT,
+    type FixProposal,
+    type WorkflowStep,
+    buildFixPlanFromPartial,
+    parseFixPlan,
+} from "./address-pr/_shared";
+import { CommitPushStep } from "./address-pr/commit-push-step";
+import { DiffReviewStep } from "./address-pr/diff-review-step";
+import { DoneStep } from "./address-pr/done-step";
+import { FixPlanStep } from "./address-pr/fix-plan-step";
+import { PrListPanel } from "./address-pr/pr-list-panel";
+import { ProgressStep } from "./address-pr/progress-step";
 
 // ── Main screen ───────────────────────────────────────────────────────────────
 
@@ -377,6 +83,7 @@ export function AddressPrCommentsScreen({ credStatus, onBack }: Props) {
   );
   const [chatInput, setChatInput] = useState("");
   const [chatLoading, setChatLoading] = useState(false);
+  const [chatStreamReply, setChatStreamReply] = useState("");
 
   const streamRef = useRef<string>("");
   const chatEndRef = useRef<HTMLDivElement>(null);
@@ -505,9 +212,26 @@ export function AddressPrCommentsScreen({ credStatus, onBack }: Props) {
     // populate live as the model produces them.
     const unlistenPartial = await listen<{
       kind?: string;
-      data?: { partial?: unknown };
+      data?: {
+        partial?: unknown;
+        usagePartial?: { inputTokens?: number; outputTokens?: number };
+      };
     }>("analyze-pr-comments-workflow-event", (event) => {
       if (event.payload.kind !== "progress") return;
+      const usagePartial = event.payload.data?.usagePartial;
+      if (usagePartial && typeof usagePartial === "object") {
+        useTokenUsageStore
+          .getState()
+          .setCurrentCallUsage(
+            "address_pr",
+            {
+              inputTokens: usagePartial.inputTokens ?? 0,
+              outputTokens: usagePartial.outputTokens ?? 0,
+            },
+            currentModelKeyFor("address_pr"),
+          );
+        return;
+      }
       const partial = event.payload.data?.partial;
       if (!Array.isArray(partial)) return;
       setFixPlan(buildFixPlanFromPartial(partial));
@@ -638,13 +362,36 @@ export function AddressPrCommentsScreen({ credStatus, onBack }: Props) {
     );
 
     let response = "";
-    const unlisten = await listen<{ kind?: string; delta?: string }>(
-      "address-pr-chat-workflow-event",
-      (event) => {
-        if (event.payload.kind !== "stream" || !event.payload.delta) return;
-        response += event.payload.delta;
-      },
-    );
+    const unlisten = await listen<{
+      kind?: string;
+      delta?: string;
+      data?: { usagePartial?: { inputTokens?: number; outputTokens?: number } };
+    }>("address-pr-chat-workflow-event", (event) => {
+      const payload = event.payload;
+      if (payload.kind === "stream" && payload.delta) {
+        response += payload.delta;
+        // Surface the streaming reply to the chat UI live so the user
+        // sees the agent typing rather than waiting for the final reply
+        // to land in one shot.
+        setChatStreamReply(response);
+        return;
+      }
+      if (payload.kind === "progress") {
+        const usagePartial = payload.data?.usagePartial;
+        if (usagePartial && typeof usagePartial === "object") {
+          useTokenUsageStore
+            .getState()
+            .setCurrentCallUsage(
+              "address_pr",
+              {
+                inputTokens: usagePartial.inputTokens ?? 0,
+                outputTokens: usagePartial.outputTokens ?? 0,
+              },
+              currentModelKeyFor("address_pr"),
+            );
+        }
+      }
+    });
 
     try {
       const result = await chatAddressPr(contextText, historyJson);
@@ -654,6 +401,7 @@ export function AddressPrCommentsScreen({ credStatus, onBack }: Props) {
       setChatHistory((prev) => [...prev, { role: "assistant", content: `Error: ${String(e)}` }]);
     } finally {
       unlisten();
+      setChatStreamReply("");
       setChatLoading(false);
     }
   }
@@ -823,260 +571,81 @@ export function AddressPrCommentsScreen({ credStatus, onBack }: Props) {
 
         {/* ── Step: Checkout / Analyzing ───────────────────────────────────── */}
         {(step === "checkout" || step === "analyzing" || step === "applying") && (
-          <div className="rounded-xl border bg-card/60 p-6 flex flex-col items-center justify-center gap-4 min-h-[300px]">
-            <Loader2 className="h-8 w-8 animate-spin text-primary" />
-            <div className="text-center space-y-1">
-              <p className="text-sm font-medium">{stepMessage}</p>
-              {step === "analyzing" && streamBuffer && (
-                <div className="mt-3 max-w-2xl text-left bg-muted/50 rounded p-3 text-xs font-mono whitespace-pre-wrap max-h-64 overflow-y-auto">
-                  {streamBuffer}
-                </div>
-              )}
-            </div>
-            {stepError && (
-              <div className="flex items-center gap-2 rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-                <X className="h-4 w-4 shrink-0" />
-                {stepError}
-              </div>
-            )}
-          </div>
+          <ProgressStep
+            step={step}
+            stepMessage={stepMessage}
+            streamBuffer={streamBuffer}
+            stepError={stepError}
+          />
         )}
 
         {/* ── Step: Fix Plan ───────────────────────────────────────────────── */}
         {step === "fix-plan" && selectedPr && (
-          <div className="space-y-4">
-            {/* PR info header */}
-            <div className="rounded-xl border bg-card/60 p-4 flex items-center gap-3">
-              <GitBranch className="h-4 w-4 text-muted-foreground shrink-0" />
-              <div className="flex-1 min-w-0">
-                <p className="text-sm font-medium truncate">{selectedPr.title}</p>
-                <p className="text-xs text-muted-foreground">
-                  {selectedPr.sourceBranch} → {selectedPr.destinationBranch}
-                </p>
-              </div>
-              <Badge variant="outline">{comments.length} comment{comments.length !== 1 ? "s" : ""}</Badge>
-            </div>
-
-            {/* Chat / assistant message */}
-            {chatHistory.length > 0 && (
-              <div className="rounded-xl border bg-card/60 p-4 space-y-3">
-                <div className="space-y-2 max-h-64 overflow-y-auto">
-                  {chatHistory.map((msg, i) => (
-                    <div
-                      key={i}
-                      className={`text-sm rounded-lg px-3 py-2 ${
-                        msg.role === "assistant"
-                          ? "bg-muted/50 text-foreground"
-                          : "bg-primary/10 text-primary ml-auto max-w-[80%]"
-                      }`}
-                    >
-                      <p className="whitespace-pre-wrap leading-relaxed">{msg.content}</p>
-                    </div>
-                  ))}
-                  {chatLoading && (
-                    <div className="bg-muted/50 rounded-lg px-3 py-2">
-                      <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
-                    </div>
-                  )}
-                  <div ref={chatEndRef} />
-                </div>
-                {/* Chat input */}
-                <div className="pt-1 border-t">
-                  <SlashCommandInput
-                    value={chatInput}
-                    onChange={setChatInput}
-                    onSend={(text) => sendChatRaw(text)}
-                    commands={addressChatCommands}
-                    busy={chatLoading}
-                    placeholder="Ask about the fix plan. Enter to send. / for commands."
-                  />
-                </div>
-              </div>
-            )}
-
-            {/* Fix proposals */}
-            {fixPlan.length > 0 ? (
-              <div className="space-y-3">
-                <div className="flex items-center justify-between">
-                  <h3 className="text-sm font-semibold">
-                    {fixPlan.length} Proposed Fix{fixPlan.length !== 1 ? "es" : ""}
-                  </h3>
-                  <div className="flex gap-2 text-xs text-muted-foreground">
-                    <span className="flex items-center gap-1">
-                      <ThumbsUp className="h-3 w-3" />
-                      {fixPlan.filter((f) => f.approved && !f.skipped).length} approved
-                    </span>
-                    <span className="flex items-center gap-1">
-                      <ThumbsDown className="h-3 w-3" />
-                      {fixPlan.filter((f) => f.skipped).length} skipped
-                    </span>
-                  </div>
-                </div>
-
-                {fixPlan.map((fix, i) => (
-                  <FixPlanCard
-                    key={fix.commentId}
-                    fix={fix}
-                    index={i}
-                    onToggleApprove={toggleApprove}
-                    onToggleSkip={toggleSkip}
-                    onAnnotationChange={setAnnotation}
-                  />
-                ))}
-              </div>
-            ) : (
-              <div className="rounded-xl border bg-card/60 p-6 text-center text-muted-foreground text-sm">
-                No automatic fixes could be generated. The comments may require manual attention.
-              </div>
-            )}
-
-            {stepError && (
-              <div className="flex items-center gap-2 rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-                <X className="h-4 w-4 shrink-0" /> {stepError}
-              </div>
-            )}
-
-            <div className="flex items-center gap-3">
-              <Button onClick={handleApplyFixes} disabled={fixPlan.filter((f) => f.approved && !f.skipped).length === 0 && fixPlan.length > 0}>
-                Apply {fixPlan.filter((f) => f.approved && !f.skipped).length} Approved Fix{fixPlan.filter((f) => f.approved && !f.skipped).length !== 1 ? "es" : ""}
-              </Button>
-              <Button
-                variant="outline"
-                onClick={loadDiff}
-              >
-                Skip to Diff Review
-              </Button>
-              <Button
-                variant="ghost"
-                onClick={() => {
-                  setSelectedPr(null);
-                  setStep("pr-list");
-                  setFixPlan([]);
-                }}
-              >
-                Back to PR List
-              </Button>
-            </div>
-          </div>
+          <FixPlanStep
+            selectedPr={selectedPr}
+            comments={comments}
+            chatHistory={chatHistory}
+            chatLoading={chatLoading}
+            chatStreamReply={chatStreamReply}
+            chatInput={chatInput}
+            setChatInput={setChatInput}
+            sendChatRaw={sendChatRaw}
+            addressChatCommands={addressChatCommands}
+            chatEndRef={chatEndRef}
+            fixPlan={fixPlan}
+            toggleApprove={toggleApprove}
+            toggleSkip={toggleSkip}
+            setAnnotation={setAnnotation}
+            stepError={stepError}
+            handleApplyFixes={handleApplyFixes}
+            loadDiff={loadDiff}
+            onBackToList={() => {
+              setSelectedPr(null);
+              setStep("pr-list");
+              setFixPlan([]);
+            }}
+          />
         )}
 
         {/* ── Step: Diff Review ────────────────────────────────────────────── */}
         {step === "diff-review" && (
-          <div className="space-y-4">
-            <div className="rounded-xl border bg-card/60 p-4">
-              <h2 className="text-sm font-semibold mb-3">Review Changes Before Committing</h2>
-              {finalDiff ? (
-                <pre className="text-xs font-mono whitespace-pre-wrap overflow-x-auto max-h-[500px] overflow-y-auto bg-muted/50 rounded p-3">
-                  {finalDiff}
-                </pre>
-              ) : (
-                <p className="text-sm text-muted-foreground">No changes detected in the worktree.</p>
-              )}
-            </div>
-
-            <div className="rounded-xl border bg-card/60 p-4 space-y-3">
-              <h2 className="text-sm font-semibold">Commit Message</h2>
-              <Textarea
-                value={commitMessage}
-                onChange={(e) => setCommitMessage(e.target.value)}
-                placeholder="Enter a commit message…"
-                className="font-mono text-sm min-h-[80px]"
-              />
-              {stepError && (
-                <div className="flex items-center gap-2 rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-                  <X className="h-4 w-4 shrink-0" /> {stepError}
-                </div>
-              )}
-              <div className="flex gap-2">
-                <Button
-                  onClick={handleCommit}
-                  disabled={!commitMessage.trim() || !finalDiff}
-                  className="gap-1.5"
-                >
-                  <GitCommit className="h-4 w-4" />
-                  Commit Changes
-                </Button>
-                <Button
-                  variant="ghost"
-                  onClick={() => setStep("fix-plan")}
-                >
-                  Back to Fix Plan
-                </Button>
-              </div>
-            </div>
-          </div>
+          <DiffReviewStep
+            finalDiff={finalDiff}
+            commitMessage={commitMessage}
+            setCommitMessage={setCommitMessage}
+            stepError={stepError}
+            onCommit={handleCommit}
+            onBack={() => setStep("fix-plan")}
+          />
         )}
 
         {/* ── Step: Committing → Pushing ───────────────────────────────────── */}
         {(step === "committing" || step === "pushing") && (
-          <div className="rounded-xl border bg-card/60 p-6 space-y-4">
-            <div className="flex items-center gap-3">
-              <GitCommit className="h-5 w-5 text-primary shrink-0" />
-              <div>
-                <p className="text-sm font-medium">{stepMessage}</p>
-                {commitSha && (
-                  <p className="text-xs text-muted-foreground font-mono mt-0.5">sha: {commitSha}</p>
-                )}
-              </div>
-            </div>
-
-            {stepError && (
-              <div className="flex items-center gap-2 rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-                <X className="h-4 w-4 shrink-0" /> {stepError}
-              </div>
-            )}
-
-            {step === "pushing" && (
-              <div className="flex gap-2">
-                <Button onClick={handlePush} className="gap-1.5">
-                  <Upload className="h-4 w-4" />
-                  Push to Origin
-                </Button>
-                <Button variant="ghost" onClick={onBack}>
-                  Done for now (don't push yet)
-                </Button>
-              </div>
-            )}
-          </div>
+          <CommitPushStep
+            step={step}
+            stepMessage={stepMessage}
+            commitSha={commitSha}
+            stepError={stepError}
+            onPush={handlePush}
+            onBack={onBack}
+          />
         )}
 
         {/* ── Step: Done ───────────────────────────────────────────────────── */}
         {step === "done" && (
-          <div className="rounded-xl border bg-card/60 p-8 flex flex-col items-center gap-4 text-center">
-            <div className="rounded-full bg-green-500/15 p-4">
-              <Check className="h-8 w-8 text-green-500" />
-            </div>
-            <div className="space-y-1">
-              <h2 className="text-lg font-semibold">Done!</h2>
-              <p className="text-sm text-muted-foreground">
-                Your fixes have been committed and pushed to{" "}
-                <code className="font-mono">{selectedPr?.sourceBranch}</code>.
-              </p>
-            </div>
-            <div className="flex gap-2">
-              <Button
-                onClick={() => {
-                  setSelectedPr(null);
-                  setStep("pr-list");
-                  setFixPlan([]);
-                  setFinalDiff("");
-                  loadPrs();
-                }}
-              >
-                Address Another PR
-              </Button>
-              <Button variant="ghost" onClick={onBack}>
-                Back to Home
-              </Button>
-            </div>
-          </div>
+          <DoneStep
+            selectedPr={selectedPr}
+            onAddressAnother={() => {
+              setSelectedPr(null);
+              setStep("pr-list");
+              setFixPlan([]);
+              setFinalDiff("");
+              loadPrs();
+            }}
+            onBack={onBack}
+          />
         )}
       </main>
     </div>
   );
 }
-
-
-
-
-

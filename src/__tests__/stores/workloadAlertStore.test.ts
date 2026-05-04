@@ -1,4 +1,5 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { getIgnoredDevs } from "@/lib/preferences";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@/lib/tauri", () => ({
   getAllActiveSprintIssues: vi.fn(),
@@ -8,13 +9,10 @@ vi.mock("@/lib/tauri", () => ({
 vi.mock("@/lib/preferences", () => ({
   getIgnoredDevs: vi.fn(),
 }));
-
-import { getAllActiveSprintIssues, getOpenPrs } from "@/lib/tauri";
-import { getIgnoredDevs } from "@/lib/preferences";
-import type { JiraIssue, JiraSprint, BitbucketPr } from "@/lib/tauri";
-
 // Import after mocks so zustand store picks up mocked modules
 // Each test calls useWorkloadAlertStore.getState() directly — no React needed.
+import { getOpenPrs, type BitbucketPr } from "@/lib/tauri/bitbucket";
+import { getAllActiveSprintIssues, type JiraIssue, type JiraSprint } from "@/lib/tauri/jira";
 import { useWorkloadAlertStore } from "@/stores/workloadAlertStore";
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────

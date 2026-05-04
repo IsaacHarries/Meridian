@@ -1,5 +1,5 @@
+import { openUrl } from "@/lib/tauri/core";
 import { cn } from "@/lib/utils";
-import { openUrl } from "@/lib/tauri";
 
 interface JiraTicketLinkProps {
   ticketKey: string;

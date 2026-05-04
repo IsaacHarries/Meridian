@@ -28,7 +28,7 @@ export function buildModel(selection: ModelSelection): BaseChatModel {
 }
 
 function buildModelInner(selection: ModelSelection): BaseChatModel {
-  const { model, credentials } = selection;
+  const { model, credentials, maxTokens } = selection;
 
   switch (credentials.provider) {
     case "anthropic": {
@@ -36,11 +36,17 @@ function buildModelInner(selection: ModelSelection): BaseChatModel {
         return new ClaudeOAuthChatModel({
           accessToken: credentials.accessToken,
           model,
+          maxTokens,
         });
       }
+      // ChatAnthropic's own default is conservative (~4K) and caused
+      // truncation on long Plan / Code Review stages. When the user
+      // hasn't set an explicit preference yet, pass nothing and let
+      // the SDK pick its default; once they have, use their number.
       return new ChatAnthropic({
         apiKey: credentials.apiKey,
         model,
+        ...(maxTokens != null ? { maxTokens } : {}),
       });
     }
     case "google": {
@@ -54,14 +60,21 @@ function buildModelInner(selection: ModelSelection): BaseChatModel {
           accessToken: credentials.accessToken,
           projectId: credentials.project,
           model,
+          maxTokens,
         });
       }
       return new ChatGoogleGenerativeAI({
         apiKey: credentials.apiKey,
         model,
+        ...(maxTokens != null ? { maxOutputTokens: maxTokens } : {}),
       });
     }
     case "ollama": {
+      // Ollama caps at the loaded model's native context window. We
+      // intentionally don't forward maxTokens here — the local server
+      // is the source of truth, and overriding it produces confusing
+      // mid-response truncation when a user picks a model with less
+      // headroom than the global pref.
       return new ChatOllama({
         baseUrl: credentials.baseUrl,
         model,
@@ -71,6 +84,7 @@ function buildModelInner(selection: ModelSelection): BaseChatModel {
       return new CopilotChatModel({
         accessToken: credentials.accessToken,
         model,
+        maxTokens,
       });
     }
     default: {

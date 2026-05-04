@@ -40,13 +40,66 @@ const DIFF_DESCRIPTION =
   "Useful when the agent needs to verify what changes have already been written.";
 
 export function makeRepoTools(ctx: RepoToolsContext) {
-  const callback = (toolName: string, input: unknown) =>
-    requestToolCallback({
-      workflowId: ctx.workflowId,
-      tool: toolName,
-      input,
-      emit: ctx.emit,
+  // Emit a `progress` event tagged with the tool's first interesting
+  // argument so the frontend can render a live activity strip ("→
+  // read_repo_file src/server.ts"). Without this the only signal the
+  // user has during a long implementation pass is the cumulative token
+  // counter — which moves but doesn't tell them WHICH file the agent
+  // is currently touching.
+  const summariseInput = (toolName: string, input: unknown): string => {
+    if (!input || typeof input !== "object") return "";
+    const obj = input as Record<string, unknown>;
+    if (toolName === "grep_repo_files") {
+      const pattern = typeof obj.pattern === "string" ? obj.pattern : "";
+      const path = typeof obj.path === "string" ? obj.path : undefined;
+      return path ? `${pattern} (in ${path})` : pattern;
+    }
+    if (typeof obj.path === "string") return obj.path;
+    if (typeof obj.pattern === "string") return obj.pattern;
+    return "";
+  };
+
+  const callback = async (toolName: string, input: unknown) => {
+    const arg = summariseInput(toolName, input);
+    ctx.emit({
+      id: ctx.workflowId,
+      type: "progress",
+      node: "tool",
+      status: "started",
+      data: { tool: { name: toolName, arg } },
     });
+    try {
+      const result = await requestToolCallback({
+        workflowId: ctx.workflowId,
+        tool: toolName,
+        input,
+        emit: ctx.emit,
+      });
+      ctx.emit({
+        id: ctx.workflowId,
+        type: "progress",
+        node: "tool",
+        status: "completed",
+        data: { tool: { name: toolName, arg } },
+      });
+      return result;
+    } catch (err) {
+      ctx.emit({
+        id: ctx.workflowId,
+        type: "progress",
+        node: "tool",
+        status: "completed",
+        data: {
+          tool: {
+            name: toolName,
+            arg,
+            error: err instanceof Error ? err.message : String(err),
+          },
+        },
+      });
+      throw err;
+    }
+  };
 
   const readRepoFile = tool(
     async ({ path }: { path: string }) => {

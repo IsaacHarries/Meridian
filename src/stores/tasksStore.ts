@@ -13,15 +13,9 @@
  * the meetings save path.
  */
 
-import { create } from "zustand";
-import {
-  type TaskRecord,
-  listTasks,
-  createTask as createTaskCmd,
-  updateTask as updateTaskCmd,
-  deleteTask as deleteTaskCmd,
-} from "@/lib/tauri";
 import { getPreferences, setPreference } from "@/lib/preferences";
+import { type TaskRecord, createTask as createTaskCmd, deleteTask as deleteTaskCmd, listTasks, updateTask as updateTaskCmd } from "@/lib/tauri/tasks";
+import { create } from "zustand";
 
 const PANEL_OPEN_PREF_KEY = "tasks_panel_open";
 const PANEL_WIDTH_PREF_KEY = "tasks_panel_width";

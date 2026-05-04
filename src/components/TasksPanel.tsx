@@ -12,21 +12,22 @@
  * completed" toggle later; meeting: open the meeting and uncheck inline).
  */
 
-import { useEffect, useMemo, useRef, useState } from "react";
-import { Plus, X, ListTodo, Tag, ChevronDown, GitPullRequest } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { cn } from "@/lib/utils";
-import { useTasksStore } from "@/stores/tasksStore";
-import { useMeetingsStore } from "@/stores/meetingsStore";
-import { usePrTasksStore } from "@/stores/prTasksStore";
 import { useOpenMeetings } from "@/context/OpenMeetingsContext";
+import { openUrl } from "@/lib/tauri/core";
+import { type TaskRecord } from "@/lib/tauri/tasks";
 import {
-  extractNotesTaskItems,
-  setTaskCheckedAtPath,
-  type NotesTaskItem,
+    extractNotesTaskItems,
+    setTaskCheckedAtPath,
+    type NotesTaskItem,
 } from "@/lib/tiptapTasks";
-import { type TaskRecord, openUrl } from "@/lib/tauri";
+import { cn } from "@/lib/utils";
+import { useMeetingsStore } from "@/stores/meetings/store";
+import { usePrTasksStore } from "@/stores/prTasksStore";
+import { useTasksStore } from "@/stores/tasksStore";
+import { ChevronDown, GitPullRequest, ListTodo, Plus, Tag, X } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 
 interface MeetingGroup {

@@ -18,21 +18,15 @@
  * store treats `completed`.
  */
 
-import { create } from "zustand";
-import {
-  type BitbucketPr,
-  type BitbucketTask,
-  getMyOpenPrs,
-  getPrTasks,
-  resolvePrTask,
-} from "@/lib/tauri";
-import { toast } from "sonner";
-import {
-  type PrTaskFilter,
-  getPrTaskFilters,
-  matchesAnyFilter,
-} from "@/lib/prTaskFilters";
 import { getAppPreferences } from "@/lib/appPreferences";
+import {
+    type PrTaskFilter,
+    getPrTaskFilters,
+    matchesAnyFilter,
+} from "@/lib/prTaskFilters";
+import { type BitbucketPr, type BitbucketTask, getMyOpenPrs, getPrTasks, resolvePrTask } from "@/lib/tauri/bitbucket";
+import { toast } from "sonner";
+import { create } from "zustand";
 
 export const PR_TASKS_POLL_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
 

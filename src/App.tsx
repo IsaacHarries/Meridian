@@ -1,60 +1,48 @@
-import { useState, useEffect, useCallback } from "react";
-import { OpenSettingsProvider } from "@/context/OpenSettingsContext";
-import { OpenMeetingsProvider } from "@/context/OpenMeetingsContext";
-import { OpenTimeTrackingProvider } from "@/context/OpenTimeTrackingContext";
-import { RecordingContextTagsProvider } from "@/context/RecordingContextTagsContext";
-import { ThemeProvider } from "@/providers/ThemeProvider";
-import { TooltipProvider } from "@/components/ui/tooltip";
-import { Loader2 } from "lucide-react";
-import { Toaster } from "sonner";
-import { type CredentialStatus, credentialStatusComplete, getCredentialStatus, getNonSecretConfig, setLocalLlmUrlCache, jiraComplete, bitbucketComplete } from "@/lib/tauri";
-import { useWorkloadAlertStore, POLL_INTERVAL_MS } from "@/stores/workloadAlertStore";
-import { usePrTasksStore } from "@/stores/prTasksStore";
-import { getAppPreferences, APP_PREFERENCE_DEFAULTS } from "@/lib/appPreferences";
-import { BackgroundRenderer, getBackgroundId, useBgChangeListener } from "@/lib/backgrounds";
-import { hydrateImplementStore, setStreamingPartialsEnabledRuntime } from "@/stores/implementTicketStore";
-import { useAiDebugStore } from "@/stores/aiDebugStore";
-import { startAiDebugListener } from "@/lib/aiDebugListener";
 import { AiDebugDock } from "@/components/AiDebugDock";
 import { AiDebugPanel } from "@/components/AiDebugPanel";
+import { TasksPanel } from "@/components/TasksPanel";
+import { TooltipProvider } from "@/components/ui/tooltip";
+import { OpenMeetingsProvider } from "@/context/OpenMeetingsContext";
+import { OpenSettingsProvider } from "@/context/OpenSettingsContext";
+import { OpenTimeTrackingProvider } from "@/context/OpenTimeTrackingContext";
+import { PreviewOnboardingProvider } from "@/context/PreviewOnboardingContext";
+import { RecordingContextTagsProvider } from "@/context/RecordingContextTagsContext";
+import { startAiDebugListener } from "@/lib/aiDebugListener";
 import { isAiDebugWindow } from "@/lib/aiDebugWindow";
+import { APP_PREFERENCE_DEFAULTS, getAppPreferences } from "@/lib/appPreferences";
+import { BackgroundRenderer, getBackgroundId, useBgChangeListener } from "@/lib/backgrounds/_registry";
+import { startRateLimitListener } from "@/lib/rateLimitListener";
+import { clearAllEffects, fireBlackHole, fireComet, fireMeteorShower, firePulsar, fireShootingStar, fireWormhole, getBhGravityEnabled, getSpaceEffectKindToggles, setEffectsEnabled, SPACE_FX_BH_GRAVITY_EVENT, SPACE_FX_TOGGLES_EVENT, toggleBhGravityEnabled, toggleSpaceEffectKind, type SpaceEffectKind } from "@/lib/spaceEffects/_shared";
+import { SpaceEffectsOverlay } from "@/lib/spaceEffects/overlay";
+import { setLocalLlmUrlCache } from "@/lib/tauri/core";
+import { bitbucketComplete, credentialStatusComplete, getCredentialStatus, getNonSecretConfig, jiraComplete, type CredentialStatus } from "@/lib/tauri/credentials";
 import { setRuntimeOverloadPct } from "@/lib/workloadClassifier";
-import { hydratePrReviewStore } from "@/stores/prReviewStore";
-import { hydrateMeetingsStore } from "@/stores/meetingsStore";
+import { ThemeProvider } from "@/providers/ThemeProvider";
+import { AddressPrCommentsScreen } from "@/screens/AddressPrCommentsScreen";
+import { AgentSkillsScreen } from "@/screens/AgentSkillsScreen";
+import { GroomTicketScreen } from "@/screens/GroomTicketScreen";
+import { ImplementTicketScreen } from "@/screens/ImplementTicketScreen";
+import { LandingScreen } from "@/screens/LandingScreen";
+import { MeetingsScreen } from "@/screens/MeetingsScreen";
+import { OnboardingScreen } from "@/screens/OnboardingScreen";
+import { PrReviewScreen } from "@/screens/PrReviewScreen";
+import { RetrospectivesScreen } from "@/screens/RetrospectivesScreen";
+import { SettingsScreen } from "@/screens/SettingsScreen";
+import { SprintDashboardScreen } from "@/screens/SprintDashboardScreen";
+import { TimeTrackingScreen } from "@/screens/TimeTrackingScreen";
+import { WorkflowScreen, type WorkflowId } from "@/screens/WorkflowScreen";
+import { useAiDebugStore } from "@/stores/aiDebugStore";
+import { useCredentialStatusStore } from "@/stores/credentialStatusStore";
+import { hydrateImplementStore, setStreamingPartialsEnabledRuntime } from "@/stores/implementTicket/listeners";
+import { hydrateMeetingsStore } from "@/stores/meetings/listeners";
+import { hydratePrReviewStore } from "@/stores/prReview/listeners";
+import { usePrTasksStore } from "@/stores/prTasksStore";
 import { hydrateTasksStore, useTasksStore } from "@/stores/tasksStore";
 import { hydrateTimeTrackingStore } from "@/stores/timeTrackingStore";
-import { TasksPanel } from "@/components/TasksPanel";
-import {
-  SpaceEffectsOverlay,
-  fireShootingStar,
-  fireBlackHole,
-  fireComet,
-  firePulsar,
-  fireMeteorShower,
-  fireWormhole,
-  clearAllEffects,
-  setEffectsEnabled,
-  SPACE_FX_TOGGLES_EVENT,
-  SPACE_FX_BH_GRAVITY_EVENT,
-  getSpaceEffectKindToggles,
-  getBhGravityEnabled,
-  toggleSpaceEffectKind,
-  toggleBhGravityEnabled,
-  type SpaceEffectKind,
-} from "@/lib/spaceEffects";
-import { OnboardingScreen } from "@/screens/OnboardingScreen";
-import { SettingsScreen } from "@/screens/SettingsScreen";
-import { LandingScreen } from "@/screens/LandingScreen";
-import { WorkflowScreen, type WorkflowId } from "@/screens/WorkflowScreen";
-import { SprintDashboardScreen } from "@/screens/SprintDashboardScreen";
-import { RetrospectivesScreen } from "@/screens/RetrospectivesScreen";
-import { TicketQualityScreen } from "@/screens/TicketQualityScreen";
-import { PrReviewScreen } from "@/screens/PrReviewScreen";
-import { ImplementTicketScreen } from "@/screens/ImplementTicketScreen";
-import { AddressPrCommentsScreen } from "@/screens/AddressPrCommentsScreen";
-import { MeetingsScreen } from "@/screens/MeetingsScreen";
-import { TimeTrackingScreen } from "@/screens/TimeTrackingScreen";
-import { AgentSkillsScreen } from "@/screens/AgentSkillsScreen";
+import { POLL_INTERVAL_MS, useWorkloadAlertStore } from "@/stores/workloadAlertStore";
+import { Loader2 } from "lucide-react";
+import { useCallback, useEffect, useState } from "react";
+import { Toaster } from "sonner";
 
 type Screen = "loading" | "onboarding" | "landing" | "settings" | "agent-skills" | WorkflowId;
 
@@ -83,8 +71,18 @@ function isWorkflowId(s: Screen): s is WorkflowId {
 
 function AppInner() {
   const [screen, setScreen] = useState<Screen>("loading");
-  const [credStatus, setCredStatus] = useState<CredentialStatus | null>(null);
+  const [credStatus, setCredStatusLocal] = useState<CredentialStatus | null>(null);
+  const setCredentialStatusInStore = useCredentialStatusStore((s) => s.setStatus);
+  const setCredStatus = useCallback(
+    (next: CredentialStatus | null) => {
+      setCredStatusLocal(next);
+      setCredentialStatusInStore(next);
+    },
+    [setCredentialStatusInStore],
+  );
   const [screenBeforeSettings, setScreenBeforeSettings] = useState<Screen>("landing");
+  const [screenBeforeOnboardingPreview, setScreenBeforeOnboardingPreview] =
+    useState<Screen | null>(null);
 
   useEffect(() => {
     // Hydrate persisted stores from file cache before loading credentials
@@ -117,6 +115,9 @@ function AppInner() {
     // already started (e.g. on hot-reload). When debug is off the
     // sidecar emits no events, so this is essentially free.
     void startAiDebugListener();
+    // Boot the global rate-limit listener so the HeaderModelPicker's
+    // bars update regardless of which workflow produced the snapshot.
+    void startRateLimitListener();
 
     getCredentialStatus()
       .then((status) => {
@@ -197,16 +198,39 @@ function AppInner() {
   }
 
   function completeOnboarding() {
+    // When the wizard is being shown as a developer preview from inside
+    // Settings, return to whichever screen the user came from rather than
+    // forcing them back to the landing card. `screenBeforeOnboardingPreview`
+    // is non-null only when previewOnboarding kicked off the visit.
+    const restoreTo = screenBeforeOnboardingPreview;
     getCredentialStatus()
       .then((status) => {
         setCredStatus(status);
-        setScreen("landing");
+        if (restoreTo) {
+          setScreenBeforeOnboardingPreview(null);
+          setScreen(restoreTo);
+        } else {
+          setScreen("landing");
+        }
       })
-      .catch(() => setScreen("landing"));
+      .catch(() => {
+        if (restoreTo) {
+          setScreenBeforeOnboardingPreview(null);
+          setScreen(restoreTo);
+        } else {
+          setScreen("landing");
+        }
+      });
   }
+
+  const previewOnboarding = useCallback(() => {
+    setScreenBeforeOnboardingPreview(screen);
+    setScreen("onboarding");
+  }, [screen]);
 
   return (
     <OpenSettingsProvider openSettings={openSettings}>
+     <PreviewOnboardingProvider previewOnboarding={previewOnboarding}>
      <OpenMeetingsProvider openMeetings={openMeetings}>
       <OpenTimeTrackingProvider openTimeTracking={openTimeTracking}>
       <RecordingContextTagsProvider tags={recordingContextTagsForScreen(screen)}>
@@ -225,7 +249,7 @@ function AppInner() {
       ) : screen === "retrospectives" ? (
         <RetrospectivesScreen onBack={() => setScreen("landing")} />
       ) : screen === "ticket-quality" && credStatus ? (
-        <TicketQualityScreen credStatus={credStatus} onBack={() => setScreen("landing")} />
+        <GroomTicketScreen credStatus={credStatus} onBack={() => setScreen("landing")} />
       ) : screen === "review-pr" && credStatus ? (
         <PrReviewScreen credStatus={credStatus} onBack={() => setScreen("landing")} />
       ) : screen === "implement-ticket" && credStatus ? (
@@ -249,6 +273,7 @@ function AppInner() {
       </RecordingContextTagsProvider>
       </OpenTimeTrackingProvider>
      </OpenMeetingsProvider>
+     </PreviewOnboardingProvider>
     </OpenSettingsProvider>
   );
 }
@@ -273,12 +298,13 @@ function ScreenWithTasksPanel({ children }: { children: React.ReactNode }) {
   );
 }
 
+const RECORDING_TAGS_BY_SCREEN: Partial<Record<Screen, string[]>> = {
+  "sprint-dashboard": ["standup"],
+  retrospectives: ["retro"],
+};
+
 function recordingContextTagsForScreen(screen: Screen): string[] {
-  switch (screen) {
-    case "sprint-dashboard": return ["standup"];
-    case "retrospectives": return ["retro"];
-    default: return [];
-  }
+  return RECORDING_TAGS_BY_SCREEN[screen] ?? [];
 }
 
 function GlobalBackground() {
@@ -483,6 +509,7 @@ function AiDebugWindowRoot() {
       });
     });
     void startAiDebugListener();
+    void startRateLimitListener();
   }, []);
   return (
     <ThemeProvider>

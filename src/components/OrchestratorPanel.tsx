@@ -3,14 +3,10 @@
 // rendering. Extracted from ImplementTicketScreen so they're testable in
 // isolation.
 
-import { Sparkles, CheckCircle2 } from "lucide-react";
-import { Button } from "@/components/ui/button";
 import { MarkdownBlock } from "@/components/MarkdownBlock";
-import type {
-  OrchestratorMessage,
-  OrchestratorPendingProposal,
-  PlanEditOp,
-} from "@/lib/tauri";
+import { Button } from "@/components/ui/button";
+import { type OrchestratorMessage, type OrchestratorPendingProposal, type PlanEditOp } from "@/lib/tauri/orchestrator";
+import { CheckCircle2, Sparkles } from "lucide-react";
 
 // ── Pure helpers ─────────────────────────────────────────────────────────────
 

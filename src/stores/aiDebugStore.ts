@@ -10,9 +10,21 @@
  * Capacity is bounded — runaway pipelines could otherwise grow the
  * buffer to thousands of multi-k prompt blobs and choke the renderer.
  * Oldest entries drop first.
+ *
+ * Persistence: events ride in sessionStorage so they survive Vite's
+ * HMR module-replacement during development (which would otherwise
+ * recreate the store with an empty events array on any source save)
+ * and incidental React re-mounts. sessionStorage was picked deliberately
+ * over localStorage so the buffer clears when the app actually closes
+ * — matching the contract "never remove entries unless I manually clear
+ * or close the app". The `enabled` / `dockMode` / `panelSize` / `lastVisibleDockMode`
+ * fields are NOT persisted because they're rehydrated from on-disk
+ * preferences on every boot (see App.tsx → hydrate()), and persisting
+ * them here would race that flow.
  */
 
 import { create } from "zustand";
+import { persist, createJSONStorage } from "zustand/middleware";
 import {
   setAiDebugEnabled,
   setAiDebugDockMode,
@@ -69,52 +81,69 @@ interface AiDebugState {
   setPanelSize: (px: number) => void;
 }
 
-export const useAiDebugStore = create<AiDebugState>()((set) => ({
-  events: [],
-  enabled: false,
-  dockMode: "bottom",
-  lastVisibleDockMode: "bottom",
-  panelSize: 320,
-  hydrated: false,
+export const useAiDebugStore = create<AiDebugState>()(
+  persist(
+    (set) => ({
+      events: [],
+      enabled: false,
+      dockMode: "bottom",
+      lastVisibleDockMode: "bottom",
+      panelSize: 320,
+      hydrated: false,
 
-  hydrate: ({ enabled, dockMode }) =>
-    set({
-      enabled,
-      dockMode,
-      // Seed lastVisibleDockMode from whatever the user last saved —
-      // unless they saved "hidden", in which case fall back to bottom
-      // so the menu-toggle still has somewhere meaningful to land.
-      lastVisibleDockMode: dockMode === "hidden" ? "bottom" : dockMode,
-      hydrated: true,
+      hydrate: ({ enabled, dockMode }) =>
+        set({
+          enabled,
+          dockMode,
+          // Seed lastVisibleDockMode from whatever the user last saved —
+          // unless they saved "hidden", in which case fall back to bottom
+          // so the menu-toggle still has somewhere meaningful to land.
+          lastVisibleDockMode: dockMode === "hidden" ? "bottom" : dockMode,
+          hydrated: true,
+        }),
+
+      pushEvent: (event) =>
+        set((s) => {
+          const next = [event, ...s.events];
+          if (next.length > MAX_EVENTS) next.length = MAX_EVENTS;
+          return { events: next };
+        }),
+
+      clear: () => set({ events: [] }),
+
+      setEnabled: async (value) => {
+        set({ enabled: value });
+        await setAiDebugEnabled(value);
+      },
+
+      setDockMode: async (mode) => {
+        set((s) => ({
+          dockMode: mode,
+          // Track the last non-hidden mode so the menu toggle can restore
+          // the panel to the user's preferred dock side instead of the
+          // default. Only updated when transitioning AWAY from hidden.
+          lastVisibleDockMode: mode === "hidden" ? s.lastVisibleDockMode : mode,
+        }));
+        await setAiDebugDockMode(mode);
+      },
+
+      setPanelSize: (px) => set({ panelSize: Math.max(160, Math.floor(px)) }),
     }),
-
-  pushEvent: (event) =>
-    set((s) => {
-      const next = [event, ...s.events];
-      if (next.length > MAX_EVENTS) next.length = MAX_EVENTS;
-      return { events: next };
-    }),
-
-  clear: () => set({ events: [] }),
-
-  setEnabled: async (value) => {
-    set({ enabled: value });
-    await setAiDebugEnabled(value);
-  },
-
-  setDockMode: async (mode) => {
-    set((s) => ({
-      dockMode: mode,
-      // Track the last non-hidden mode so the menu toggle can restore
-      // the panel to the user's preferred dock side instead of the
-      // default. Only updated when transitioning AWAY from hidden.
-      lastVisibleDockMode: mode === "hidden" ? s.lastVisibleDockMode : mode,
-    }));
-    await setAiDebugDockMode(mode);
-  },
-
-  setPanelSize: (px) => set({ panelSize: Math.max(160, Math.floor(px)) }),
-}));
+    {
+      name: "meridian-ai-debug-events",
+      // sessionStorage rather than localStorage — the buffer survives
+      // page reloads / HMR module-replacements within the same app
+      // session but clears when the app actually closes, matching the
+      // user contract.
+      storage: createJSONStorage(() => sessionStorage),
+      // Only persist `events`. `enabled` / `dockMode` / `panelSize` /
+      // `lastVisibleDockMode` are owned by on-disk preferences (see
+      // App.tsx → hydrate()) so persisting them here would race that
+      // flow on every boot.
+      partialize: (state) => ({ events: state.events }),
+    },
+  ),
+);
 
 /** Total tokens captured in the buffer — used by the panel header so
  *  the user can see how much traffic they've collected at a glance. */

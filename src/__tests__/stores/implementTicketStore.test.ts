@@ -1,41 +1,57 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { type JiraIssue } from "@/lib/tauri/jira";
+import { type OrchestratorMessage, type OrchestratorPendingProposal } from "@/lib/tauri/orchestrator";
+import { type GroomingOutput } from "@/lib/tauri/workflows";
+import { applyOrchestratorResult, buildOrchestratorContextText, ensureOrchestratorThreadId, snapshotSession } from "@/stores/implementTicket/helpers";
+import { INITIAL } from "@/stores/implementTicket/initial";
+import { useImplementTicketStore } from "@/stores/implementTicket/store";
+import { type Stage } from "@/stores/implementTicket/types";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
-// Mock all Tauri-dependent modules before importing the store
-vi.mock("@/lib/tauri", () => ({
+// Mock all Tauri-dependent submodules before importing the store. The
+// barrel `@/lib/tauri` was removed in the strip-barrels refactor, so each
+// submodule is mocked individually.
+vi.mock("@/lib/tauri/jira", () => ({
   getIssue: vi.fn(),
-  loadAgentSkills: vi.fn().mockResolvedValue({}),
-  syncWorktree: vi.fn().mockResolvedValue(null),
-  getNonSecretConfig: vi.fn().mockResolvedValue({}),
-  runGroomingFileProbe: vi.fn().mockResolvedValue("{}"),
-  runGroomingWorkflow: vi.fn().mockResolvedValue({
-    ticket_summary: "",
-    ticket_type: "feature",
-    acceptance_criteria: [],
-    relevant_areas: [],
-    dependencies: [],
-    estimated_complexity: "low",
-    grooming_notes: "",
-    suggested_edits: [],
-    clarifying_questions: [],
-  }),
-  runImpactAnalysis: vi.fn().mockResolvedValue("{}"),
-  runTriageTurn: vi.fn().mockResolvedValue("{}"),
-  runGroomingChatTurn: vi.fn().mockResolvedValue("{}"),
-  finalizeImplementationPlan: vi.fn().mockResolvedValue("{}"),
-  runImplementationGuidance: vi.fn().mockResolvedValue("{}"),
-  runImplementationAgent: vi.fn().mockResolvedValue("{}"),
-  runTestSuggestions: vi.fn().mockResolvedValue("{}"),
-  runPlanReview: vi.fn().mockResolvedValue("{}"),
-  runPrDescriptionGen: vi.fn().mockResolvedValue("{}"),
-  runRetrospectiveAgent: vi.fn().mockResolvedValue("{}"),
   updateJiraIssue: vi.fn().mockResolvedValue(undefined),
-  parseAgentJson: vi.fn().mockReturnValue(null),
+  getAllActiveSprintIssues: vi.fn().mockResolvedValue([]),
+}));
+vi.mock("@/lib/tauri/bitbucket", () => ({
+  getOpenPrs: vi.fn().mockResolvedValue([]),
+}));
+vi.mock("@/lib/tauri/templates", () => ({
+  loadAgentSkills: vi.fn().mockResolvedValue({}),
+}));
+vi.mock("@/lib/tauri/credentials", () => ({
+  getNonSecretConfig: vi.fn().mockResolvedValue({}),
+}));
+vi.mock("@/lib/tauri/worktree", () => ({
+  syncWorktree: vi.fn().mockResolvedValue(null),
   readRepoFile: vi.fn().mockResolvedValue(""),
   grepRepoFiles: vi.fn().mockResolvedValue([]),
-  getAllActiveSprintIssues: vi.fn().mockResolvedValue([]),
-  getOpenPrs: vi.fn().mockResolvedValue([]),
-  // Orchestrator wrappers — every mock returns a deterministic shape so
-  // the store-side dispatcher logic can be exercised without a sidecar.
+  commitWorktreeChanges: vi.fn().mockResolvedValue(""),
+  syncGroomingWorktree: vi.fn().mockResolvedValue(null),
+  readGroomingFile: vi.fn().mockResolvedValue(""),
+  grepGroomingFiles: vi.fn().mockResolvedValue([]),
+  createFeatureBranch: vi.fn().mockResolvedValue(undefined),
+  pushWorktreeBranch: vi.fn().mockResolvedValue(undefined),
+  squashWorktreeCommits: vi.fn().mockResolvedValue(undefined),
+  createPullRequest: vi.fn().mockResolvedValue(undefined),
+}));
+vi.mock("@/lib/tauri/workflows", () => ({
+  runGroomingFileProbe: vi.fn().mockResolvedValue("{}"),
+  runGroomingChatTurn: vi.fn().mockResolvedValue("{}"),
+  parseAgentJson: vi.fn().mockReturnValue(null),
+  resumeImplementationPipelineWorkflow: vi
+    .fn()
+    .mockResolvedValue({ output: null, interrupt: null, usage: { inputTokens: 0, outputTokens: 0 } }),
+  rewindImplementationPipelineWorkflow: vi.fn().mockResolvedValue({}),
+  runImplementationPipelineWorkflow: vi
+    .fn()
+    .mockResolvedValue({ output: null, interrupt: null, usage: { inputTokens: 0, outputTokens: 0 } }),
+  cancelImplementationPipelineWorkflow: vi.fn().mockResolvedValue(undefined),
+  PIPELINE_EVENT_NAME: "implementation-pipeline-event",
+}));
+vi.mock("@/lib/tauri/orchestrator", () => ({
   chatWithOrchestrator: vi.fn().mockResolvedValue({
     output: {
       threadId: "orchestrator:PROJ-1",
@@ -45,38 +61,13 @@ vi.mock("@/lib/tauri", () => ({
     },
   }),
   applyPlanEdits: vi.fn().mockResolvedValue({ output: { planFileCount: 0 } }),
-  resumeImplementationPipelineWorkflow: vi
-    .fn()
-    .mockResolvedValue({ output: null, interrupt: null, usage: { inputTokens: 0, outputTokens: 0 } }),
-  rewindImplementationPipelineWorkflow: vi.fn().mockResolvedValue({}),
-  runImplementationPipelineWorkflow: vi
-    .fn()
-    .mockResolvedValue({ output: null, interrupt: null, usage: { inputTokens: 0, outputTokens: 0 } }),
   ORCHESTRATOR_EVENT_NAME: "orchestrator-workflow-event",
-  PIPELINE_EVENT_NAME: "implementation-pipeline-event",
-  commitWorktreeChanges: vi.fn().mockResolvedValue(""),
 }));
 
 vi.mock("@tauri-apps/api/event", () => ({
   listen: vi.fn().mockResolvedValue(() => {}),
   emit: vi.fn(),
 }));
-
-import {
-  useImplementTicketStore,
-  snapshotSession,
-  INITIAL,
-  ensureOrchestratorThreadId,
-  applyOrchestratorResult,
-  buildOrchestratorContextText,
-  type Stage,
-} from "@/stores/implementTicketStore";
-import type {
-  JiraIssue,
-  GroomingOutput,
-  OrchestratorMessage,
-  OrchestratorPendingProposal,
-} from "@/lib/tauri";
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
 
@@ -254,7 +245,7 @@ describe("implementTicketStore", () => {
 
       // startPipeline for P-2 should NOT write P-1 to sessions map
       // We stop before runGroomingStage by mocking getIssue to reject
-      const { getIssue } = await import("@/lib/tauri");
+      const { getIssue } = await import("@/lib/tauri/jira");
       vi.mocked(getIssue).mockRejectedValue(new Error("stop"));
 
       // Manually replicate the guard logic (same condition as startPipeline)
@@ -569,7 +560,7 @@ describe("implementTicketStore", () => {
 
     it("sendOrchestratorMessage refuses when a turn is in flight", async () => {
       useImplementTicketStore.setState({ orchestratorSending: true });
-      const { chatWithOrchestrator } = await import("@/lib/tauri");
+      const { chatWithOrchestrator } = await import("@/lib/tauri/orchestrator");
       vi.mocked(chatWithOrchestrator).mockClear();
       await useImplementTicketStore
         .getState()
@@ -579,7 +570,7 @@ describe("implementTicketStore", () => {
 
     it("triggerOrchestratorReview refuses when a turn is in flight", async () => {
       useImplementTicketStore.setState({ orchestratorSending: true });
-      const { chatWithOrchestrator } = await import("@/lib/tauri");
+      const { chatWithOrchestrator } = await import("@/lib/tauri/orchestrator");
       vi.mocked(chatWithOrchestrator).mockClear();
       await useImplementTicketStore
         .getState()
@@ -592,7 +583,7 @@ describe("implementTicketStore", () => {
         orchestratorSending: false,
         orchestratorReviewedStages: ["impact" as Stage],
       });
-      const { chatWithOrchestrator } = await import("@/lib/tauri");
+      const { chatWithOrchestrator } = await import("@/lib/tauri/orchestrator");
       vi.mocked(chatWithOrchestrator).mockClear();
       await useImplementTicketStore
         .getState()
@@ -609,7 +600,7 @@ describe("implementTicketStore", () => {
           action: "approve",
         },
       });
-      const { chatWithOrchestrator } = await import("@/lib/tauri");
+      const { chatWithOrchestrator } = await import("@/lib/tauri/orchestrator");
       vi.mocked(chatWithOrchestrator).mockClear();
       await useImplementTicketStore
         .getState()
@@ -637,7 +628,7 @@ describe("implementTicketStore", () => {
           toStage: "grooming",
         },
       });
-      const tauri = await import("@/lib/tauri");
+      const tauri = await import("@/lib/tauri/workflows");
       vi.mocked(tauri.rewindImplementationPipelineWorkflow).mockClear();
       await useImplementTicketStore
         .getState()
@@ -656,7 +647,7 @@ describe("implementTicketStore", () => {
           toStage: "implementation",
         },
       });
-      const tauri = await import("@/lib/tauri");
+      const tauri = await import("@/lib/tauri/orchestrator");
       vi.mocked(tauri.chatWithOrchestrator).mockClear();
       await useImplementTicketStore
         .getState()
@@ -685,7 +676,7 @@ describe("implementTicketStore", () => {
           edits,
         },
       });
-      const tauri = await import("@/lib/tauri");
+      const tauri = await import("@/lib/tauri/orchestrator");
       vi.mocked(tauri.applyPlanEdits).mockClear();
       await useImplementTicketStore
         .getState()
@@ -717,10 +708,11 @@ describe("implementTicketStore", () => {
           newStatus: "approved",
         },
       });
-      const tauri = await import("@/lib/tauri");
-      vi.mocked(tauri.applyPlanEdits).mockClear();
-      vi.mocked(tauri.rewindImplementationPipelineWorkflow).mockClear();
-      vi.mocked(tauri.resumeImplementationPipelineWorkflow).mockClear();
+      const orch = await import("@/lib/tauri/orchestrator");
+      const wf = await import("@/lib/tauri/workflows");
+      vi.mocked(orch.applyPlanEdits).mockClear();
+      vi.mocked(wf.rewindImplementationPipelineWorkflow).mockClear();
+      vi.mocked(wf.resumeImplementationPipelineWorkflow).mockClear();
 
       await useImplementTicketStore
         .getState()
@@ -731,9 +723,9 @@ describe("implementTicketStore", () => {
         .groomingEdits.find((x) => x.id === "e1");
       expect(e1?.status).toBe("approved");
       // None of the pipeline-mutating Tauri commands should fire.
-      expect(tauri.applyPlanEdits).not.toHaveBeenCalled();
-      expect(tauri.rewindImplementationPipelineWorkflow).not.toHaveBeenCalled();
-      expect(tauri.resumeImplementationPipelineWorkflow).not.toHaveBeenCalled();
+      expect(orch.applyPlanEdits).not.toHaveBeenCalled();
+      expect(wf.rewindImplementationPipelineWorkflow).not.toHaveBeenCalled();
+      expect(wf.resumeImplementationPipelineWorkflow).not.toHaveBeenCalled();
     });
 
     it("rejection notifies the orchestrator without firing any pipeline command", async () => {
@@ -744,23 +736,24 @@ describe("implementTicketStore", () => {
           action: "approve",
         },
       });
-      const tauri = await import("@/lib/tauri");
-      vi.mocked(tauri.chatWithOrchestrator).mockClear();
-      vi.mocked(tauri.resumeImplementationPipelineWorkflow).mockClear();
+      const orch = await import("@/lib/tauri/orchestrator");
+      const wf = await import("@/lib/tauri/workflows");
+      vi.mocked(orch.chatWithOrchestrator).mockClear();
+      vi.mocked(wf.resumeImplementationPipelineWorkflow).mockClear();
       await useImplementTicketStore
         .getState()
         .resolveOrchestratorProposal("rejected");
-      expect(tauri.resumeImplementationPipelineWorkflow).not.toHaveBeenCalled();
+      expect(wf.resumeImplementationPipelineWorkflow).not.toHaveBeenCalled();
       // chatWithOrchestrator IS called for the resolution-notify turn.
-      expect(tauri.chatWithOrchestrator).toHaveBeenCalled();
-      const callArg = vi.mocked(tauri.chatWithOrchestrator).mock.calls[0][0];
+      expect(orch.chatWithOrchestrator).toHaveBeenCalled();
+      const callArg = vi.mocked(orch.chatWithOrchestrator).mock.calls[0][0];
       expect(callArg.clearPendingProposal).toBe(true);
       expect(callArg.messageKind).toBe("system_note");
     });
 
     it("returns early when there is no outstanding proposal", async () => {
       useImplementTicketStore.setState({ orchestratorPendingProposal: null });
-      const tauri = await import("@/lib/tauri");
+      const tauri = await import("@/lib/tauri/orchestrator");
       vi.mocked(tauri.chatWithOrchestrator).mockClear();
       await useImplementTicketStore
         .getState()

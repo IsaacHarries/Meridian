@@ -37,6 +37,26 @@ export type PanelKey =
 export interface TokenUsage {
   inputTokens: number;
   outputTokens: number;
+  /** Anthropic prompt-cache breakdown — subset of `inputTokens` that
+   *  was billed at the 1.25x cache-write rate. Always 0 for providers
+   *  that don't support prompt caching, and for Anthropic workflows
+   *  that don't opt into it. Tracked separately from `inputTokens` so
+   *  the badge can report whether the write premium is amortising. */
+  cacheCreationInputTokens: number;
+  /** Anthropic prompt-cache breakdown — subset of `inputTokens` that
+   *  was billed at the 0.1x cache-read rate. */
+  cacheReadInputTokens: number;
+}
+
+/** Permissive input shape callers pass to addUsage / setCurrentCallUsage.
+ *  Cache-token fields are optional — workflows that don't opt into
+ *  prompt caching simply don't supply them, and the store treats the
+ *  missing fields as zero contributions. */
+export interface UsageInput {
+  inputTokens: number;
+  outputTokens: number;
+  cacheCreationInputTokens?: number;
+  cacheReadInputTokens?: number;
 }
 
 interface PanelState {
@@ -52,7 +72,12 @@ interface PanelState {
   lastCall: TokenUsage | null;
 }
 
-const EMPTY_USAGE: TokenUsage = { inputTokens: 0, outputTokens: 0 };
+const EMPTY_USAGE: TokenUsage = {
+  inputTokens: 0,
+  outputTokens: 0,
+  cacheCreationInputTokens: 0,
+  cacheReadInputTokens: 0,
+};
 
 /** Stable identifier for a (provider, model) pair. The HeaderModelPicker
  *  uses this to bucket tokens by the model that actually produced them
@@ -126,15 +151,21 @@ interface TokenUsageState {
   setInFlight: (panel: PanelKey, inFlight: boolean) => void;
   /** Add tokens to the panel + day totals. When `model` is supplied
    *  the same usage also accumulates into the per-model bucket so the
-   *  HeaderModelPicker dropdown can show per-model spend. */
-  addUsage: (panel: PanelKey, usage: TokenUsage, model?: ModelKey) => void;
+   *  HeaderModelPicker dropdown can show per-model spend. Cache-token
+   *  fields are optional on the input — callers that don't pass them
+   *  contribute zeros to the cumulative cache totals. */
+  addUsage: (
+    panel: PanelKey,
+    usage: UsageInput,
+    model?: ModelKey,
+  ) => void;
   /** Replace the current-call running total. The badge shows
    *  `cumulative + currentCall` so the user sees tokens climb as the
    *  agent streams; the value is reset to zero when the call's
    *  authoritative final usage lands via `addUsage`. */
   setCurrentCallUsage: (
     panel: PanelKey,
-    usage: TokenUsage,
+    usage: UsageInput,
     model?: ModelKey,
   ) => void;
   /** Wipe a panel's cumulative + lastCall counters. Call when the user
@@ -210,18 +241,27 @@ export const useTokenUsageStore = create<TokenUsageState>()((set, get) => ({
   addUsage: (panel, usage, model) => {
     if (usage.inputTokens === 0 && usage.outputTokens === 0) return;
     set((s) => {
+      const cacheWrite = usage.cacheCreationInputTokens ?? 0;
+      const cacheRead = usage.cacheReadInputTokens ?? 0;
       // Day rollover — wipe the accumulator without touching panels.
       const today = todayIso();
       const dayChanged = s.dailyDate !== today;
       const baseDaily = dayChanged ? { ...EMPTY_USAGE } : s.dailyTotal;
-      const dailyTotal = {
+      const dailyTotal: TokenUsage = {
         inputTokens: baseDaily.inputTokens + usage.inputTokens,
         outputTokens: baseDaily.outputTokens + usage.outputTokens,
+        cacheCreationInputTokens:
+          baseDaily.cacheCreationInputTokens + cacheWrite,
+        cacheReadInputTokens: baseDaily.cacheReadInputTokens + cacheRead,
       };
       const prior = s.panels[panel];
-      const cumulative = {
+      const cumulative: TokenUsage = {
         inputTokens: prior.cumulative.inputTokens + usage.inputTokens,
         outputTokens: prior.cumulative.outputTokens + usage.outputTokens,
+        cacheCreationInputTokens:
+          prior.cumulative.cacheCreationInputTokens + cacheWrite,
+        cacheReadInputTokens:
+          prior.cumulative.cacheReadInputTokens + cacheRead,
       };
       // Per-model bucket — only when the caller knew which model ran.
       // Same collapse logic as the panel: model's currentCall resets
@@ -234,6 +274,9 @@ export const useTokenUsageStore = create<TokenUsageState>()((set, get) => ({
         modelCumulative[model] = {
           inputTokens: priorModel.inputTokens + usage.inputTokens,
           outputTokens: priorModel.outputTokens + usage.outputTokens,
+          cacheCreationInputTokens:
+            priorModel.cacheCreationInputTokens + cacheWrite,
+          cacheReadInputTokens: priorModel.cacheReadInputTokens + cacheRead,
         };
         delete modelCurrentCall[model];
         // Remember this call's prompt size so the context-progress
@@ -282,14 +325,20 @@ export const useTokenUsageStore = create<TokenUsageState>()((set, get) => ({
 
   setCurrentCallUsage: (panel, usage, model) =>
     set((s) => {
+      const normalized: TokenUsage = {
+        inputTokens: usage.inputTokens,
+        outputTokens: usage.outputTokens,
+        cacheCreationInputTokens: usage.cacheCreationInputTokens ?? 0,
+        cacheReadInputTokens: usage.cacheReadInputTokens ?? 0,
+      };
       const next: Partial<TokenUsageState> = {
         panels: {
           ...s.panels,
-          [panel]: { ...s.panels[panel], currentCall: usage },
+          [panel]: { ...s.panels[panel], currentCall: normalized },
         },
       };
       if (model) {
-        next.modelCurrentCall = { ...s.modelCurrentCall, [model]: usage };
+        next.modelCurrentCall = { ...s.modelCurrentCall, [model]: normalized };
       }
       return next;
     }),

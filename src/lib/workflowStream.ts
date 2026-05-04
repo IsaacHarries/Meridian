@@ -3,12 +3,21 @@
 //
 // Usage:
 //   const stream = subscribeWorkflowStream("meeting-chat-workflow-event",
-//     (text) => store._setChatStream(meetingId, text));
+//     (text) => store._setChatStream(meetingId, text),
+//     {
+//       onUsage: (usage) => useTokenUsageStore
+//         .getState()
+//         .setCurrentCallUsage("meetings", usage, modelKey),
+//     });
 //   try { await chatMeeting(...) } finally { stream.dispose(); }
 //
 // The helper throttles updates to avoid flooding React when a fast model
 // produces tokens at >100Hz, accumulating deltas in memory and flushing
 // the latest accumulated text to the callback at most once per 80ms.
+//
+// The optional `onUsage` callback fires whenever the sidecar emits a
+// `progress` event with `data.usagePartial` so panels can update the
+// header TokenUsageBadge live as a streaming workflow runs.
 
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
@@ -20,6 +29,25 @@ export interface WorkflowStreamHandle {
 interface WorkflowStreamPayload {
   kind?: string;
   delta?: string;
+  data?: {
+    usagePartial?: { inputTokens?: number; outputTokens?: number };
+  };
+}
+
+export interface UsagePartial {
+  inputTokens: number;
+  outputTokens: number;
+}
+
+export interface SubscribeOptions {
+  flushMs?: number;
+  /** Fired whenever the sidecar emits a `progress` event with
+   *  `data.usagePartial`. Pass-through to the panel's tokenUsageStore so
+   *  the header TokenUsageBadge climbs live during streaming. Not
+   *  throttled — usagePartial events are already rate-limited by the
+   *  sidecar's streaming helper, and the consumer's setCurrentCallUsage
+   *  is a cheap zustand setter. */
+  onUsage?: (usage: UsagePartial) => void;
 }
 
 const DEFAULT_FLUSH_MS = 80;
@@ -33,9 +61,10 @@ const DEFAULT_FLUSH_MS = 80;
 export async function subscribeWorkflowStream(
   eventName: string,
   onText: (text: string) => void,
-  options: { flushMs?: number } = {},
+  options: SubscribeOptions = {},
 ): Promise<WorkflowStreamHandle> {
   const flushMs = options.flushMs ?? DEFAULT_FLUSH_MS;
+  const onUsage = options.onUsage;
   let acc = "";
   let flushTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -47,10 +76,22 @@ export async function subscribeWorkflowStream(
   const unlisten: UnlistenFn = await listen<WorkflowStreamPayload>(
     eventName,
     (event) => {
-      if (event.payload.kind !== "stream" || !event.payload.delta) return;
-      acc += event.payload.delta;
-      if (flushTimer === null) {
-        flushTimer = setTimeout(flush, flushMs);
+      const payload = event.payload;
+      if (payload.kind === "stream" && payload.delta) {
+        acc += payload.delta;
+        if (flushTimer === null) {
+          flushTimer = setTimeout(flush, flushMs);
+        }
+        return;
+      }
+      if (payload.kind === "progress" && onUsage) {
+        const usage = payload.data?.usagePartial;
+        if (usage && typeof usage === "object") {
+          onUsage({
+            inputTokens: usage.inputTokens ?? 0,
+            outputTokens: usage.outputTokens ?? 0,
+          });
+        }
       }
     },
   );

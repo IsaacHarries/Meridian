@@ -12,21 +12,16 @@ export function priorityRank(p: string | null | undefined): number {
   return p != null ? (PRIORITY_ORDER[p.toLowerCase()] ?? 2) : 99;
 }
 
+const PRIORITY_COLOR: Record<string, string> = {
+  highest: "text-red-600 dark:text-red-400",
+  critical: "text-red-600 dark:text-red-400",
+  high: "text-orange-500 dark:text-orange-400",
+  medium: "text-yellow-500 dark:text-yellow-400",
+  low: "text-blue-500 dark:text-blue-400",
+  lowest: "text-muted-foreground",
+  trivial: "text-muted-foreground",
+};
+
 export function priorityColor(p: string | null | undefined): string {
-  switch (p?.toLowerCase()) {
-    case "highest":
-    case "critical":
-      return "text-red-600 dark:text-red-400";
-    case "high":
-      return "text-orange-500 dark:text-orange-400";
-    case "medium":
-      return "text-yellow-500 dark:text-yellow-400";
-    case "low":
-      return "text-blue-500 dark:text-blue-400";
-    case "lowest":
-    case "trivial":
-      return "text-muted-foreground";
-    default:
-      return "text-muted-foreground";
-  }
+  return PRIORITY_COLOR[p?.toLowerCase() ?? ""] ?? "text-muted-foreground";
 }

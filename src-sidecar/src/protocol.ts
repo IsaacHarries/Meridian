@@ -21,6 +21,12 @@ export type ModelSelection = {
   provider: Provider;
   model: string;
   credentials: ProviderCredentials;
+  /** Per-provider response-token ceiling. The Rust backend reads the
+   *  active value from preferences (Settings → Models → "Max output
+   *  tokens"). When undefined, model adapters fall back to their own
+   *  built-in defaults (which historically were too low and caused
+   *  truncation on long Plan / Test Plan / Code Review responses). */
+  maxTokens?: number;
 };
 
 // ── Inbound messages (Rust → sidecar) ─────────────────────────────────────────
@@ -128,6 +134,17 @@ export type ResultEvent = {
   usage: {
     inputTokens: number;
     outputTokens: number;
+    /** Anthropic prompt-caching breakdown (subset of `inputTokens`).
+     *  Tokens billed at 1.25x because the request wrote them into the
+     *  prompt cache. Optional — workflows that don't opt into caching
+     *  (everything except the implementation pipeline's orchestrator,
+     *  at time of writing) leave this undefined. Other providers ignore
+     *  the cache_control marker, so it stays 0/undefined for them. */
+    cacheCreationInputTokens?: number;
+    /** Anthropic prompt-caching breakdown (subset of `inputTokens`).
+     *  Tokens billed at 0.1x because they came from a cache hit on the
+     *  request's stable prefix. */
+    cacheReadInputTokens?: number;
   };
 };
 
@@ -167,7 +184,12 @@ export type AiTrafficEvent = {
   messages: Array<{ role: string; content: string }>;
   /** Final reply text. May be empty for tool-only turns. */
   response: string;
-  usage: { inputTokens: number; outputTokens: number };
+  usage: {
+    inputTokens: number;
+    outputTokens: number;
+    cacheCreationInputTokens?: number;
+    cacheReadInputTokens?: number;
+  };
   /** Optional error message if the call failed. */
   error?: string;
 };

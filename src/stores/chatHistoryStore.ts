@@ -1,7 +1,7 @@
 /**
  * Per-panel chat history that survives screen navigation within a
  * single app session. Several panels (Sprint Dashboard sprint chat,
- * Ticket Quality grooming chat, Address PR Comments chat) used to keep
+ * Groom Ticket grooming chat, Address PR Comments chat) used to keep
  * their conversation in `useState`, which meant a quick navigation
  * away — even via the header tabs — wiped the running conversation.
  *

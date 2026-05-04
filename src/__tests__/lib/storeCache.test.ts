@@ -1,5 +1,6 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { replacer, reviver, loadCache, saveCache } from "@/lib/storeCache";
+import { loadCache, replacer, reviver, saveCache } from "@/lib/storeCache";
+import { loadStoreCache, saveStoreCache } from "@/lib/tauri/store-cache";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // Mock the Tauri commands that storeCache delegates to
 vi.mock("@/lib/tauri", () => ({
@@ -9,9 +10,6 @@ vi.mock("@/lib/tauri", () => ({
   clearAllStoreCaches: vi.fn().mockResolvedValue(undefined),
   getStoreCacheInfo: vi.fn().mockResolvedValue([]),
 }));
-
-import { saveStoreCache, loadStoreCache } from "@/lib/tauri";
-
 // ── replacer ──────────────────────────────────────────────────────────────────
 
 describe("replacer", () => {

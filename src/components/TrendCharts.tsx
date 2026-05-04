@@ -1,17 +1,17 @@
-import {
-  Bar,
-  BarChart,
-  CartesianGrid,
-  ComposedChart,
-  Legend,
-  Line,
-  ResponsiveContainer,
-  Tooltip,
-  XAxis,
-  YAxis,
-} from "recharts";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import type { SprintStats } from "@/lib/tauri";
+import { type SprintStats } from "@/lib/tauri/trends";
+import {
+    Bar,
+    BarChart,
+    CartesianGrid,
+    ComposedChart,
+    Legend,
+    Line,
+    ResponsiveContainer,
+    Tooltip,
+    XAxis,
+    YAxis,
+} from "recharts";
 
 // Shared chart styling. Colours map to tailwind semantic palette.
 const COLOR_COMMITTED = "#6b7280"; // gray-500

@@ -6,30 +6,6 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::time::Duration;
 
-/// "claude" | "gemini" | "local" | "auto"  (default: "auto" = Claude first, Gemini on quota error)
-pub fn get_ai_provider() -> String {
-    crate::storage::preferences::get_pref("ai_provider")
-        .filter(|p| !p.trim().is_empty())
-        .unwrap_or_else(|| "auto".to_string())
-}
-
-/// Returns the user-configured fallback order, e.g. ["claude", "gemini", "local"].
-pub fn get_provider_order() -> Vec<String> {
-    let raw = crate::storage::preferences::get_pref("ai_provider_order").unwrap_or_default();
-    if raw.trim().is_empty() {
-        return vec![
-            "claude".to_string(),
-            "gemini".to_string(),
-            "copilot".to_string(),
-            "local".to_string(),
-        ];
-    }
-    raw.split(',')
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .collect()
-}
-
 // ── Per-panel / per-stage AI override resolution ──────────────────────────────
 
 /// One override entry: which provider+model to use for a given panel or stage.
@@ -73,88 +49,72 @@ pub fn get_stage_override(stage: &str) -> Option<AiOverride> {
     parse_overrides_map("stage_ai_overrides").remove(stage)
 }
 
-/// The provider list and per-provider model map to use for a given context.
+/// Default provider used by panels/stages with no explicit override.
+/// Persisted under `ai_default_provider` (set during onboarding the first
+/// time a provider is authenticated, and editable in Settings → Default
+/// model). Returns None when nothing is set; callers surface that as a
+/// "configure a default model" error rather than picking one for the user.
+pub fn get_default_provider() -> Option<String> {
+    crate::storage::preferences::get_pref("ai_default_provider")
+        .filter(|p| !p.trim().is_empty())
+}
+
+/// Default model paired with `ai_default_provider`. Returns None when
+/// unset — callers fall through to the per-provider model preference
+/// (`claude_model`, `gemini_model`, …) so a partially-configured default
+/// still surfaces *some* model rather than failing.
+pub fn get_default_model() -> Option<String> {
+    crate::storage::preferences::get_pref("ai_default_model")
+        .filter(|m| !m.trim().is_empty())
+}
+
+/// One resolved (provider, model) pair for a workflow dispatch.
+///
+/// There is no longer a fallback chain — earlier versions of the app
+/// returned `Vec<String>` so the sidecar could try multiple providers on
+/// quota errors, but the user-facing model is now "you pick one provider
+/// per panel/stage; if it isn't authenticated the header badges it". The
+/// type stays a struct (rather than a tuple) so adding a third field
+/// later (e.g. credentials, request budget) doesn't ripple.
 #[derive(Debug, Clone)]
 pub struct ResolvedAi {
-    /// Providers to try in order. Length 1 when global priority is locked.
-    pub providers: Vec<String>,
-    /// Provider → model overrides resolved from stage/panel preferences.
-    pub model_for: HashMap<String, String>,
+    pub provider: String,
+    pub model: String,
 }
 
-/// Resolves the effective provider list and per-provider model overrides for
-/// the given context, applying these rules:
+/// Resolve the effective provider+model for a context.
 ///
-/// - Global priority locked (`ai_provider` != `"auto"`) wins: only the locked
-///   provider is tried. The model comes from a stage/panel override _only_ if
-///   that override's provider matches the locked one — otherwise the locked
-///   provider's default model is used.
-/// - Otherwise (auto): a stage override's provider is preferred, falling back
-///   to a panel override's provider, falling back to the configured order.
-///   The preferred provider is tried first; remaining providers in the order
-///   form the fallback chain. Model overrides for each provider are folded in.
+/// Lookup order: stage override → panel override → global default. The
+/// global default itself uses `ai_default_provider` + `ai_default_model`
+/// when set; if those are missing it falls back to the earliest provider
+/// that has a saved per-provider model so a half-configured app still
+/// produces *some* answer rather than silently picking Claude.
 pub fn resolve(ctx: &AiContext) -> ResolvedAi {
-    let global = get_ai_provider();
-    let order = get_provider_order();
-
-    let stage_ov = ctx.stage.as_deref().and_then(get_stage_override);
-    let panel_ov = ctx.panel.as_deref().and_then(get_panel_override);
-
-    let mut model_for: HashMap<String, String> = HashMap::new();
-
-    if global != "auto" {
-        // Locked. Only honour overrides whose provider matches the locked one.
-        if let Some(s) = stage_ov.as_ref() {
-            if s.provider == global {
-                model_for.insert(global.clone(), s.model.clone());
-            }
-        }
-        if !model_for.contains_key(&global) {
-            if let Some(p) = panel_ov.as_ref() {
-                if p.provider == global {
-                    model_for.insert(global.clone(), p.model.clone());
-                }
-            }
-        }
-        return ResolvedAi { providers: vec![global], model_for };
+    if let Some(s) = ctx.stage.as_deref().and_then(get_stage_override) {
+        return ResolvedAi { provider: s.provider, model: s.model };
     }
-
-    // Auto. Stage override wins over panel override for the preferred provider
-    // and for the model of that provider.
-    let preferred = stage_ov
-        .as_ref()
-        .map(|o| o.provider.clone())
-        .or_else(|| panel_ov.as_ref().map(|o| o.provider.clone()));
-
-    if let Some(s) = stage_ov.as_ref() {
-        model_for.insert(s.provider.clone(), s.model.clone());
+    if let Some(p) = ctx.panel.as_deref().and_then(get_panel_override) {
+        return ResolvedAi { provider: p.provider, model: p.model };
     }
-    if let Some(p) = panel_ov.as_ref() {
-        model_for.entry(p.provider.clone()).or_insert_with(|| p.model.clone());
+    if let Some(provider) = get_default_provider() {
+        let model = get_default_model()
+            .unwrap_or_else(|| model_for_provider_default(&provider));
+        return ResolvedAi { provider, model };
     }
-
-    let providers = if let Some(pref) = preferred {
-        let mut v = vec![pref.clone()];
-        for p in order {
-            if p != pref {
-                v.push(p);
-            }
+    // Fallback: scan known providers for any saved per-provider model.
+    // The sidecar will reject an empty model with a clear error if even
+    // this turns up nothing — that's the right surface for "user hasn't
+    // finished onboarding".
+    for p in ["claude", "gemini", "copilot", "local"] {
+        let model = model_for_provider_default(p);
+        if !model.is_empty() {
+            return ResolvedAi { provider: p.to_string(), model };
         }
-        v
-    } else {
-        order
-    };
-
-    ResolvedAi { providers, model_for }
+    }
+    ResolvedAi { provider: String::new(), model: String::new() }
 }
 
-/// Resolves the model to use for a given provider in a given context. Returns
-/// the provider's user-configured default model (e.g. `claude::get_active_model()`)
-/// when there is no panel/stage override for it.
-pub fn model_for_provider(provider: &str, ctx: &AiContext) -> String {
-    if let Some(m) = resolve(ctx).model_for.get(provider) {
-        return m.clone();
-    }
+fn model_for_provider_default(provider: &str) -> String {
     match provider {
         "claude" => claude::get_active_model(),
         "gemini" => crate::storage::preferences::get_pref("gemini_model")
@@ -168,20 +128,28 @@ pub fn model_for_provider(provider: &str, ctx: &AiContext) -> String {
     }
 }
 
-/// Returns true when an error string indicates the Claude quota / rate limit was
-/// exceeded and it is worth trying a Gemini fallback.
-pub fn is_quota_error(err: &str) -> bool {
-    let e = err.to_lowercase();
-    e.contains("429")
-        || e.contains("rate_limit")
-        || e.contains("overloaded")
-        || e.contains("you've hit your limit")
-        || e.contains("hit your limit")
-        || e.contains("usage_exceeded")
-        || e.contains("usage limit")
-        || e.contains("quota")
-        || e.contains("credit balance")
-        || e.contains("daily message limit")
+/// Resolve the model to use for a given provider in a given context. Used
+/// by code paths that already know which provider they want (e.g. when a
+/// command pre-selects a provider) and just need the matching model id.
+pub fn model_for_provider(provider: &str, ctx: &AiContext) -> String {
+    if let Some(s) = ctx.stage.as_deref().and_then(get_stage_override) {
+        if s.provider == provider {
+            return s.model;
+        }
+    }
+    if let Some(p) = ctx.panel.as_deref().and_then(get_panel_override) {
+        if p.provider == provider {
+            return p.model;
+        }
+    }
+    if let Some(def_provider) = get_default_provider() {
+        if def_provider == provider {
+            if let Some(m) = get_default_model() {
+                return m;
+            }
+        }
+    }
+    model_for_provider_default(provider)
 }
 
 pub async fn llm_client() -> Result<(Client, String), String> {

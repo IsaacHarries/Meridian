@@ -9,11 +9,12 @@
  * Results are held in module-level state so callers can read without re-fetching.
  */
 
-import { create } from "zustand";
-import { getAllActiveSprintIssues, getOpenPrs, type BitbucketPr } from "@/lib/tauri";
-import { getIgnoredDevs } from "@/lib/preferences";
 import { getAppPreferences } from "@/lib/appPreferences";
+import { getIgnoredDevs } from "@/lib/preferences";
+import { getOpenPrs, type BitbucketPr } from "@/lib/tauri/bitbucket";
+import { getAllActiveSprintIssues } from "@/lib/tauri/jira";
 import { classifyWorkloads } from "@/lib/workloadClassifier";
+import { create } from "zustand";
 
 export const POLL_INTERVAL_MS = 3 * 60 * 60 * 1000; // 3 hours
 

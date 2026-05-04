@@ -30,8 +30,15 @@ import {
  *  is in flight and forward each snapshot as a `progress` event with
  *  `data.rateLimits`. The frontend listens, stores per provider, and
  *  surfaces the remaining-percentage in the HeaderModelPicker. Returns
- *  an unsubscribe fn the caller awaits in a finally block. */
-function attachRateLimitForwarding(
+ *  an unsubscribe fn the caller awaits in a finally block.
+ *
+ *  Exported so workflow runners that don't go through `streamLLMText` /
+ *  `streamLLMJson` (notably the implement-ticket orchestrator, which
+ *  drives `llm.stream(messages)` directly so it can run a tool loop)
+ *  can still install a subscriber for their lifetime. Without it, the
+ *  HeaderModelPicker's rate-limit bars sit empty whenever the user is
+ *  only exercising those workflows. */
+export function attachRateLimitForwarding(
   emit: ((event: OutboundEvent) => void) | undefined,
   workflowId: string | undefined,
   nodeName: string | undefined,

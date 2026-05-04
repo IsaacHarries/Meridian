@@ -6,28 +6,35 @@
  * already enforced sidecar-side — when off, the sidecar doesn't emit
  * traffic events, so this listener is a no-op for the cost of the
  * single Tauri event subscription.
+ *
+ * Concurrency guard: React 18 StrictMode mounts effects twice in dev
+ * (mount → cleanup → mount). If both invocations of
+ * `startAiDebugListener` checked a `null` slot before either of their
+ * `await listen()` calls settled, both would race past the guard and
+ * register a listener — the second resolution would just overwrite
+ * the slot, leaking the first listener and producing duplicate events
+ * forever after. We hold the in-flight promises in module-level slots
+ * synchronously so subsequent callers await the same registration
+ * instead of starting a second one.
  */
 
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { useAiDebugStore, type AiTrafficEvent } from "@/stores/aiDebugStore";
 import { openAiDebugWindow } from "@/lib/aiDebugWindow";
 
-let unlistenTraffic: UnlistenFn | null = null;
-let unlistenMenu: UnlistenFn | null = null;
+let trafficListener: Promise<UnlistenFn> | null = null;
+let menuListener: Promise<UnlistenFn> | null = null;
 
 export async function startAiDebugListener(): Promise<void> {
-  if (!unlistenTraffic) {
-    unlistenTraffic = await listen<AiTrafficEvent>(
-      "ai-traffic-event",
-      (event) => {
-        const payload = event.payload;
-        if (!payload || typeof payload !== "object") return;
-        useAiDebugStore.getState().pushEvent(payload);
-      },
-    );
+  if (!trafficListener) {
+    trafficListener = listen<AiTrafficEvent>("ai-traffic-event", (event) => {
+      const payload = event.payload;
+      if (!payload || typeof payload !== "object") return;
+      useAiDebugStore.getState().pushEvent(payload);
+    });
   }
 
-  if (!unlistenMenu) {
+  if (!menuListener) {
     // Native menu integration: View → AI Debug Panel
     // (CmdOrCtrl+Shift+D). The action depends on the current dock mode:
     //
@@ -39,7 +46,7 @@ export async function startAiDebugListener(): Promise<void> {
     //   - "hidden": restore the panel to whichever dock mode the user
     //     last had visible.
     //   - bottom/right/left: hide the panel.
-    unlistenMenu = await listen<string>("menu-action", (event) => {
+    menuListener = listen<string>("menu-action", (event) => {
       if (event.payload !== "ai_debug_toggle") return;
       const store = useAiDebugStore.getState();
       const prevMode = store.dockMode;
@@ -57,15 +64,21 @@ export async function startAiDebugListener(): Promise<void> {
       }
     });
   }
+
+  // Await both so any caller that needs the listeners ready (tests,
+  // teardown helpers) can rely on the returned promise.
+  await Promise.all([trafficListener, menuListener]);
 }
 
 export async function stopAiDebugListener(): Promise<void> {
-  if (unlistenTraffic) {
-    unlistenTraffic();
-    unlistenTraffic = null;
+  if (trafficListener) {
+    const handle = await trafficListener;
+    handle();
+    trafficListener = null;
   }
-  if (unlistenMenu) {
-    unlistenMenu();
-    unlistenMenu = null;
+  if (menuListener) {
+    const handle = await menuListener;
+    handle();
+    menuListener = null;
   }
 }

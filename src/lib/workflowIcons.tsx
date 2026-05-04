@@ -131,7 +131,7 @@ export function RetrospectivesIcon({
 // 5. Groom Tickets — diagonal comb silhouette (filled). Departs from the
 // other line-art icons because the source artwork is a single fill path; uses
 // currentColor so it still inherits text colour from the surrounding card.
-export function TicketQualityIcon({
+export function GroomTicketIcon({
   strokeWidth: _strokeWidth,
   ...rest
 }: IconProps) {
@@ -212,7 +212,7 @@ export const WORKFLOW_ICONS: Record<WorkflowId, React.FC<IconProps>> = {
   "review-pr": ReviewPrIcon,
   "sprint-dashboard": SprintDashboardIcon,
   retrospectives: RetrospectivesIcon,
-  "ticket-quality": TicketQualityIcon,
+  "ticket-quality": GroomTicketIcon,
   "address-pr-comments": AddressCommentsIcon,
   meetings: MeetingsIcon,
   "time-tracking": TimeTrackingIcon,

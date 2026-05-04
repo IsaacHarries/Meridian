@@ -107,23 +107,45 @@ pub async fn resolve_credentials(provider: &str) -> Result<ProviderCredentials, 
 /// payload for the sidecar.
 pub async fn resolve_model_for_context(ctx: &AiContext) -> Result<ModelSelection, String> {
     let resolved = dispatch::resolve(ctx);
-    let internal = resolved
-        .providers
-        .first()
-        .ok_or_else(|| "No provider configured".to_string())?;
-    let sidecar_provider = to_sidecar_provider(internal)?;
-    let model = dispatch::model_for_provider(internal, ctx);
-    if model.trim().is_empty() {
+    if resolved.provider.trim().is_empty() {
+        return Err(
+            "No default AI model is configured. Set one in Settings → Models or finish onboarding."
+                .to_string(),
+        );
+    }
+    let sidecar_provider = to_sidecar_provider(&resolved.provider)?;
+    if resolved.model.trim().is_empty() {
         return Err(format!(
-            "No model configured for provider {internal}. Set one in Settings."
+            "No model configured for provider {}. Set one in Settings.",
+            resolved.provider,
         ));
     }
     let credentials = resolve_credentials(sidecar_provider).await?;
+    let max_tokens = resolve_max_output_tokens(sidecar_provider);
     Ok(ModelSelection {
         provider: sidecar_provider.to_string(),
-        model,
+        model: resolved.model,
         credentials,
+        max_tokens,
     })
+}
+
+/// Per-provider response-token ceiling, read live on every workflow
+/// dispatch so the user's Settings choice takes effect on the very
+/// next call. Returns None for Ollama (the local server enforces the
+/// loaded model's context window — overriding it produces confusing
+/// mid-response truncation when models with different limits get
+/// loaded).
+fn resolve_max_output_tokens(provider: &'static str) -> Option<u32> {
+    let key = match provider {
+        "anthropic" => "anthropic_max_output_tokens",
+        "google" => "gemini_max_output_tokens",
+        "copilot" => "copilot_max_output_tokens",
+        _ => return None,
+    };
+    crate::storage::preferences::get_pref(key)
+        .and_then(|raw| raw.parse::<u32>().ok())
+        .filter(|&n| n > 0)
 }
 
 #[tauri::command]

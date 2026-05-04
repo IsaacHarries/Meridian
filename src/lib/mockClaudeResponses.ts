@@ -1,15 +1,5 @@
-import type {
-  GroomingOutput,
-  ImpactOutput,
-  ImplementationPlan,
-  GuidanceOutput,
-  TestOutput,
-  TestFileWritten,
-  PlanReviewOutput,
-  PrDescriptionOutput,
-  RetrospectiveOutput,
-  ReviewReport,
-} from "./tauri";
+import { type ReviewReport } from "@/lib/tauri/pr-review";
+import { type GroomingOutput, type GuidanceOutput, type ImpactOutput, type ImplementationPlan, type PlanReviewOutput, type PrDescriptionOutput, type RetrospectiveOutput, type TestFileWritten, type TestOutput } from "@/lib/tauri/workflows";
 
 /** JSON agent outputs (no markdown fences) for parseAgentJson / parseQualityReport / runPrReviewWorkflow */
 

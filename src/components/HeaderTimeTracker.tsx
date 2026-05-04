@@ -355,23 +355,17 @@ function ChipPopover({
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
+const PAUSE_REASON_LABELS: Record<string, string> = {
+  "screen-locked": "Paused — screen is locked",
+  idle: "Paused — no input detected",
+  midnight: "Paused — new day, awaiting activity",
+  manual: "Paused manually",
+  shutdown: "Paused — system was asleep",
+  boot: "Awaiting first activity",
+};
+
 function pauseReasonLabel(
   reason: ReturnType<typeof useTimeTrackingStore.getState>["pauseReason"],
 ): string {
-  switch (reason) {
-    case "screen-locked":
-      return "Paused — screen is locked";
-    case "idle":
-      return "Paused — no input detected";
-    case "midnight":
-      return "Paused — new day, awaiting activity";
-    case "manual":
-      return "Paused manually";
-    case "shutdown":
-      return "Paused — system was asleep";
-    case "boot":
-      return "Awaiting first activity";
-    default:
-      return "Paused";
-  }
+  return (reason ? PAUSE_REASON_LABELS[reason] : undefined) ?? "Paused";
 }

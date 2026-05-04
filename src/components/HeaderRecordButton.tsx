@@ -1,16 +1,14 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { createPortal } from "react-dom";
-import { Pause, Play, Square, ExternalLink, Loader2, AlertTriangle } from "lucide-react";
-import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
-import { cn } from "@/lib/utils";
-import {
-  useMeetingsStore,
-  formatTimestamp,
-} from "@/stores/meetingsStore";
 import { useOpenMeetings } from "@/context/OpenMeetingsContext";
 import { useRecordingContextTags } from "@/context/RecordingContextTagsContext";
 import { getPreferences } from "@/lib/preferences";
+import { cn } from "@/lib/utils";
+import { formatTimestamp } from "@/stores/meetings/helpers";
+import { useMeetingsStore } from "@/stores/meetings/store";
+import { AlertTriangle, ExternalLink, Loader2, Pause, Play, Square } from "lucide-react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
+import { toast } from "sonner";
 
 function LiveTranscribeIcon({ className }: { className?: string }) {
   return (

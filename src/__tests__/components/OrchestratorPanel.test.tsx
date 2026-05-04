@@ -1,17 +1,13 @@
-import { describe, it, expect, vi } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
 import {
-  OrchestratorEntry,
-  ProposalCard,
-  proposalCardTitle,
-  renderPlanEditOp,
-  groupOrchestratorThreadByStage,
+    groupOrchestratorThreadByStage,
+    OrchestratorEntry,
+    ProposalCard,
+    proposalCardTitle,
+    renderPlanEditOp,
 } from "@/components/OrchestratorPanel";
-import type {
-  OrchestratorMessage,
-  OrchestratorPendingProposal,
-  PlanEditOp,
-} from "@/lib/tauri";
+import { type OrchestratorMessage, type OrchestratorPendingProposal, type PlanEditOp } from "@/lib/tauri/orchestrator";
+import { fireEvent, render, screen } from "@testing-library/react";
+import { describe, expect, it, vi } from "vitest";
 
 // MarkdownBlock pulls in remark-gfm + markdown plugins which are heavy;
 // stub it for these tests so we can assert text without parsing markdown.

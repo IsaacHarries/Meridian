@@ -1,7 +1,7 @@
+import { BitbucketImage } from "@/components/BitbucketImage";
+import { openUrl } from "@/lib/tauri/core";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { BitbucketImage } from "@/components/BitbucketImage";
-import { openUrl } from "@/lib/tauri";
 
 /**
  * Shared renderer for AI-generated markdown (retro summaries, trend analyses,

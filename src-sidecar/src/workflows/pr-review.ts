@@ -334,12 +334,22 @@ async function chunkReviewNode(state: PrReviewState): Promise<Partial<PrReviewSt
   }
 
   const user = `Find all review findings in this diff chunk:\n\n${chunk}`;
-  const response = await model.invoke([
+
+  // Stream chunk reviews so adapters that surface usage_metadata only via
+  // the streaming path (Gemini CodeAssist, Copilot) feed the per-call
+  // token totals back into the workflow's usage accumulator. The chunk's
+  // raw findings JSON isn't surfaced to the UI, but tokens still need to
+  // count toward the run total.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const stream = (await (model as any).stream([
     new SystemMessage(CHUNK_SYSTEM),
     new HumanMessage(user),
-  ]);
-
-  const raw = extractText(response.content) || response.text;
+  ])) as AsyncIterable<AIMessageChunk>;
+  let accumulated: AIMessageChunk | undefined;
+  for await (const part of stream) {
+    accumulated = accumulated ? accumulated.concat(part) : part;
+  }
+  const raw = accumulated ? extractText(accumulated.content) : "";
   const cleaned = stripJsonFences(raw);
 
   let chunkFindings: Finding[] = [];
@@ -365,7 +375,7 @@ async function chunkReviewNode(state: PrReviewState): Promise<Partial<PrReviewSt
   return {
     allFindings: chunkFindings,
     currentChunk: state.currentChunk + 1,
-    usage: tokenUsage(response.usage_metadata),
+    usage: tokenUsage(accumulated?.usage_metadata),
   };
 }
 

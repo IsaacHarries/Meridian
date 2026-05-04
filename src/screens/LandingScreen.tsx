@@ -1,15 +1,29 @@
-import { useEffect, useState, useMemo } from "react";
-import { AlertTriangle, TrendingUp, CheckSquare, GitPullRequest } from "lucide-react";
-import { HeaderSettingsButton } from "@/components/HeaderSettingsButton";
 import { HeaderRecordButton } from "@/components/HeaderRecordButton";
+import { HeaderSettingsButton } from "@/components/HeaderSettingsButton";
 import { HeaderTasksButton } from "@/components/HeaderTasksButton";
 import { HeaderTimeTracker } from "@/components/HeaderTimeTracker";
 import { APP_HEADER_BAR } from "@/components/appHeaderLayout";
+import { BentoLayout } from "@/components/landing/BentoLayout";
+import { ConstellationLayout } from "@/components/landing/ConstellationLayout";
+import { OrbitalLayout } from "@/components/landing/OrbitalLayout";
+import { ShapedLayout } from "@/components/landing/ShapedLayout";
+import { Button } from "@/components/ui/button";
 import { useOpenSettings } from "@/context/OpenSettingsContext";
-import { useImplementTicketStore } from "@/stores/implementTicketStore";
-import { useMeetingsStore } from "@/stores/meetingsStore";
-import { usePrReviewStore } from "@/stores/prReviewStore";
+import {
+    type RenderableCard,
+    useLandingLayoutId,
+} from "@/lib/landingLayouts";
+import { type BitbucketPr, getOpenPrs, getPrsForReview } from "@/lib/tauri/bitbucket";
+import { type CredentialStatus, aiProviderComplete, bitbucketComplete, getNonSecretConfig, jiraComplete } from "@/lib/tauri/credentials";
+import { type JiraIssue, type JiraSprint, getAllActiveSprintIssues } from "@/lib/tauri/jira";
+import { WORKFLOW_ICONS } from "@/lib/workflowIcons";
+import type { WorkflowId } from "@/screens/WorkflowScreen";
+import { useImplementTicketStore } from "@/stores/implementTicket/store";
+import { useMeetingsStore } from "@/stores/meetings/store";
+import { usePrReviewStore } from "@/stores/prReview/store";
 import { useWorkloadAlertStore } from "@/stores/workloadAlertStore";
+import { AlertTriangle, CheckSquare, GitPullRequest, TrendingUp } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
 
 const QUIPS = [
   "It works on my machine...",
@@ -90,30 +104,6 @@ const QUIPS = [
   "It's not technical debt if you ignore it long enough...",
   "Closed as 'works as intended'...",
 ];
-import { Button } from "@/components/ui/button";
-import {
-  type CredentialStatus,
-  type JiraSprint,
-  type JiraIssue,
-  type BitbucketPr,
-  aiProviderComplete,
-  jiraComplete,
-  bitbucketComplete,
-  getAllActiveSprintIssues,
-  getOpenPrs,
-  getPrsForReview,
-  getNonSecretConfig,
-} from "@/lib/tauri";
-import type { WorkflowId } from "@/screens/WorkflowScreen";
-import { WORKFLOW_ICONS } from "@/lib/workflowIcons";
-import {
-  useLandingLayoutId,
-  type RenderableCard,
-} from "@/lib/landingLayouts";
-import { ConstellationLayout } from "@/components/landing/ConstellationLayout";
-import { BentoLayout } from "@/components/landing/BentoLayout";
-import { ShapedLayout } from "@/components/landing/ShapedLayout";
-import { OrbitalLayout } from "@/components/landing/OrbitalLayout";
 
 interface LandingScreenProps {
   credStatus: CredentialStatus;

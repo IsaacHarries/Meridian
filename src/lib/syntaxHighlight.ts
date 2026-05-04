@@ -35,54 +35,38 @@ import "prismjs/components/prism-css";
 import "prismjs/components/prism-markdown";
 import "prismjs/components/prism-sql";
 
+const EXT_TO_PRISM_LANG: Record<string, string> = {
+  ts: "typescript",
+  tsx: "tsx",
+  js: "javascript",
+  mjs: "javascript",
+  cjs: "javascript",
+  jsx: "jsx",
+  rs: "rust",
+  py: "python",
+  go: "go",
+  java: "java",
+  rb: "ruby",
+  sh: "bash",
+  bash: "bash",
+  zsh: "bash",
+  json: "json",
+  yaml: "yaml",
+  yml: "yaml",
+  toml: "toml",
+  css: "css",
+  scss: "css",
+  sass: "css",
+  md: "markdown",
+  markdown: "markdown",
+  sql: "sql",
+};
+
 /** File extension → Prism language id. Returns null for unknown extensions
  *  so callers can fall back to plain rendering. */
 export function getPrismLanguageForPath(path: string): string | null {
   const ext = path.split("/").pop()?.split(".").pop()?.toLowerCase() ?? "";
-  switch (ext) {
-    case "ts":
-      return "typescript";
-    case "tsx":
-      return "tsx";
-    case "js":
-    case "mjs":
-    case "cjs":
-      return "javascript";
-    case "jsx":
-      return "jsx";
-    case "rs":
-      return "rust";
-    case "py":
-      return "python";
-    case "go":
-      return "go";
-    case "java":
-      return "java";
-    case "rb":
-      return "ruby";
-    case "sh":
-    case "bash":
-    case "zsh":
-      return "bash";
-    case "json":
-      return "json";
-    case "yaml":
-    case "yml":
-      return "yaml";
-    case "toml":
-      return "toml";
-    case "css":
-    case "scss":
-    case "sass":
-      return "css";
-    case "md":
-    case "markdown":
-      return "markdown";
-    case "sql":
-      return "sql";
-    default:
-      return null;
-  }
+  return EXT_TO_PRISM_LANG[ext] ?? null;
 }
 
 const HTML_ENTITIES: Record<string, string> = {

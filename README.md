@@ -57,7 +57,7 @@ Real-time sprint health: story points, burndown, blockers, PR cycle times, per-d
 ### Sprint Retrospectives
 Browse completed sprints, view multi-sprint velocity and trend charts, and generate AI retrospective summaries with embedded charts. Exportable as markdown.
 
-### Ticket Quality Checker
+### Groom Ticket
 Runs any backlog ticket through a readiness assessment — acceptance criteria completeness, scope clarity, dependency identification, and suggested rewrites.
 
 ### Meetings

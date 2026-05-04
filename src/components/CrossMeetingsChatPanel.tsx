@@ -17,41 +17,40 @@
  * an app restart (matches the rest of the chat panels).
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { SlashCommandInput } from "@/components/SlashCommandInput";
 import { Button } from "@/components/ui/button";
 import {
-  ArrowLeft,
-  Loader2,
-  AlertTriangle,
-  Sparkles,
-  ChevronDown,
-  ChevronRight,
-} from "lucide-react";
-import { toast } from "sonner";
-import { cn } from "@/lib/utils";
+    gatherNamePool,
+    gatherTagPool,
+    participantsForMeeting,
+} from "@/lib/meetingPeople";
 import {
-  searchMeetings,
-  chatCrossMeetings,
-  type MeetingSearchHit,
-} from "@/lib/tauri";
-import { useChatHistoryStore, type ChatTurn } from "@/stores/chatHistoryStore";
-import { useMeetingsStore } from "@/stores/meetingsStore";
-import { SlashCommandInput } from "@/components/SlashCommandInput";
-import {
-  createGlobalCommands,
-  parseSlashInput,
-  type SlashCommand,
+    createGlobalCommands,
+    parseSlashInput,
+    type SlashCommand,
 } from "@/lib/slashCommands";
 import {
-  parseTaggedQuery,
-  meetingMatchesTags,
-  meetingMatchesNames,
+    meetingMatchesNames,
+    meetingMatchesTags,
+    parseTaggedQuery,
 } from "@/lib/taggedQuery";
+import { currentModelKeyFor } from "@/lib/tauri/core";
+import { chatCrossMeetings, searchMeetings, type MeetingSearchHit } from "@/lib/tauri/meetings";
+import { cn } from "@/lib/utils";
+import { subscribeWorkflowStream } from "@/lib/workflowStream";
+import { useChatHistoryStore, type ChatTurn } from "@/stores/chatHistoryStore";
+import { useMeetingsStore } from "@/stores/meetings/store";
+import { useTokenUsageStore } from "@/stores/tokenUsageStore";
 import {
-  participantsForMeeting,
-  gatherNamePool,
-  gatherTagPool,
-} from "@/lib/meetingPeople";
+    AlertTriangle,
+    ArrowLeft,
+    ChevronDown,
+    ChevronRight,
+    Loader2,
+    Sparkles,
+} from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { toast } from "sonner";
 
 const PANEL_KEY = "meetings" as const;
 const CONTEXT_KEY = "cross-meetings";
@@ -124,6 +123,9 @@ export function CrossMeetingsChatPanel({
   // ephemeral since stale source lists can be confusing.
   const [hitsByTurn, setHitsByTurn] = useState<MeetingSearchHit[][]>([]);
   const [warningByTurn, setWarningByTurn] = useState<(string | null)[]>([]);
+  /** Streaming reply text for the current in-flight ask. Cleared when the
+   *  workflow finishes and the final reply is appended to history. */
+  const [streamReply, setStreamReply] = useState("");
   const bottomRef = useRef<HTMLDivElement>(null);
 
   // Auto-scroll the chat to the latest message when new content lands.
@@ -148,6 +150,22 @@ export function CrossMeetingsChatPanel({
       setHistory(optimistic);
       setInput("");
       setBusy(true);
+      setStreamReply("");
+
+      const stream = await subscribeWorkflowStream(
+        "cross-meetings-chat-workflow-event",
+        (text) => setStreamReply(text),
+        {
+          onUsage: (usage) =>
+            useTokenUsageStore
+              .getState()
+              .setCurrentCallUsage(
+                "meetings",
+                usage,
+                currentModelKeyFor("meetings"),
+              ),
+        },
+      );
 
       try {
         const search = await searchMeetings(query, {
@@ -195,6 +213,8 @@ export function CrossMeetingsChatPanel({
         setHitsByTurn((prev) => prev.slice(0, -1));
         setWarningByTurn((prev) => prev.slice(0, -1));
       } finally {
+        await stream.dispose();
+        setStreamReply("");
         setBusy(false);
       }
     },
@@ -575,11 +595,15 @@ export function CrossMeetingsChatPanel({
             onOpenMeeting={onOpenMeeting}
           />
         )}
-        {busy && (
-          <div className="flex items-center gap-2 text-xs text-muted-foreground">
-            <Loader2 className="h-3.5 w-3.5 animate-spin" />
-            {compact ? "Searching…" : "Searching transcripts and synthesising an answer…"}
-          </div>
+        {busy && streamReply ? (
+          <AssistantBubble content={streamReply} hits={[]} warning={null} onOpenMeeting={onOpenMeeting} streaming />
+        ) : (
+          busy && (
+            <div className="flex items-center gap-2 text-xs text-muted-foreground">
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              {compact ? "Searching…" : "Searching transcripts and synthesising an answer…"}
+            </div>
+          )
         )}
         <div ref={bottomRef} />
       </div>
@@ -708,16 +732,24 @@ function AssistantBubble({
   hits,
   warning,
   onOpenMeeting,
+  streaming,
 }: {
   content: string;
   hits: MeetingSearchHit[];
   warning: string | null;
   onOpenMeeting: (id: string) => void;
+  streaming?: boolean;
 }) {
   return (
     <li className="space-y-2">
       <div className="max-w-[90%] rounded-2xl rounded-bl-sm bg-muted/60 px-3 py-2 text-sm whitespace-pre-wrap break-words">
         {content}
+        {streaming && (
+          <span
+            aria-hidden
+            className="inline-block ml-0.5 w-1.5 h-3.5 align-text-bottom bg-foreground/60 animate-pulse"
+          />
+        )}
       </div>
       {warning && (
         <div className="max-w-[90%] flex items-start gap-2 text-[11px] text-amber-600 dark:text-amber-400">

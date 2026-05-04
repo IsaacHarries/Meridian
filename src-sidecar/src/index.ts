@@ -1,12 +1,7 @@
 import * as readline from "node:readline";
 import type { InboundMessage, OutboundEvent } from "./protocol.js";
-import {
-  cancelWorkflow,
-  resumeWorkflow,
-  rewindWorkflow,
-  runWorkflow,
-} from "./workflows/registry.js";
 import { resolveToolCallback } from "./tools/bridge.js";
+import { cancelWorkflow, resumeWorkflow, rewindWorkflow, runWorkflow } from "./workflows/registry/lifecycle.js";
 
 // Redirect non-protocol output away from stdout (which carries JSON only).
 console.log = console.error;

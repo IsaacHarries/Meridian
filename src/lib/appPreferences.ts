@@ -25,6 +25,9 @@ const KEY = {
   aiDebugDockMode: "ai_debug_dock_mode",
   meetingsEmbeddingModel: "meetings_embedding_model",
   meetingsSearchMinScore: "meetings_search_min_score",
+  anthropicMaxOutputTokens: "anthropic_max_output_tokens",
+  geminiMaxOutputTokens: "gemini_max_output_tokens",
+  copilotMaxOutputTokens: "copilot_max_output_tokens",
 } as const;
 
 // ── Defaults ──────────────────────────────────────────────────────────────────
@@ -72,6 +75,18 @@ export const APP_PREFERENCE_DEFAULTS = {
    *  tail noise, lenient enough to allow on-topic non-paraphrase
    *  matches through. */
   meetingsSearchMinScore: 0.61,
+  /** Per-provider response-token ceiling. Set to a generous default
+   *  (32K) for Anthropic + Gemini because `max_tokens` is a cap not
+   *  an allocation — typical responses are 1–4K, but Plan / Test Plan
+   *  / Code Review can blow past 8K and silently truncate at the
+   *  adapter's historical default. Copilot is held at 8K because the
+   *  GPT-4-class models behind it tend to genuinely cap there.
+   *  Ollama is intentionally absent — its server enforces the loaded
+   *  model's native context window, and overriding it produces
+   *  confusing mid-response truncation. */
+  anthropicMaxOutputTokens: 32768,
+  geminiMaxOutputTokens: 32768,
+  copilotMaxOutputTokens: 8192,
 } as const;
 
 export type AiDebugDockMode = "bottom" | "right" | "left" | "window" | "hidden";
@@ -90,6 +105,9 @@ export type AppPreferences = {
   aiDebugDockMode: AiDebugDockMode;
   meetingsEmbeddingModel: string;
   meetingsSearchMinScore: number;
+  anthropicMaxOutputTokens: number;
+  geminiMaxOutputTokens: number;
+  copilotMaxOutputTokens: number;
 };
 
 // ── Parsing helpers ───────────────────────────────────────────────────────────
@@ -191,6 +209,18 @@ export async function getAppPreferences(): Promise<AppPreferences> {
       0,
       1,
     ),
+    anthropicMaxOutputTokens: parsePositiveInt(
+      prefs[KEY.anthropicMaxOutputTokens],
+      APP_PREFERENCE_DEFAULTS.anthropicMaxOutputTokens,
+    ),
+    geminiMaxOutputTokens: parsePositiveInt(
+      prefs[KEY.geminiMaxOutputTokens],
+      APP_PREFERENCE_DEFAULTS.geminiMaxOutputTokens,
+    ),
+    copilotMaxOutputTokens: parsePositiveInt(
+      prefs[KEY.copilotMaxOutputTokens],
+      APP_PREFERENCE_DEFAULTS.copilotMaxOutputTokens,
+    ),
   };
 }
 
@@ -268,4 +298,13 @@ export async function setMeetingsSearchMinScore(value: number): Promise<void> {
   const clamped = Math.min(1, Math.max(0, value));
   // Format with 2 decimals to keep the on-disk pref readable.
   await setPreference(KEY.meetingsSearchMinScore, clamped.toFixed(2));
+}
+export async function setAnthropicMaxOutputTokens(value: number): Promise<void> {
+  await setPreference(KEY.anthropicMaxOutputTokens, String(value));
+}
+export async function setGeminiMaxOutputTokens(value: number): Promise<void> {
+  await setPreference(KEY.geminiMaxOutputTokens, String(value));
+}
+export async function setCopilotMaxOutputTokens(value: number): Promise<void> {
+  await setPreference(KEY.copilotMaxOutputTokens, String(value));
 }

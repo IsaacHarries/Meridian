@@ -1,41 +1,28 @@
-import { useEffect, useMemo, useState } from "react";
-import { toast } from "sonner";
-import {
-  AlertTriangle,
-  Check,
-  CheckSquare,
-  ChevronDown,
-  ChevronRight,
-  Copy,
-  Loader2,
-  Sparkles,
-  Square,
-  Trash2,
-  XCircle,
-} from "lucide-react";
-import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { MarkdownBlock } from "@/components/MarkdownBlock";
 import { TrendCharts } from "@/components/TrendCharts";
-import {
-  type JiraSprint,
-  type JiraIssue,
-  type BitbucketPr,
-  type SprintReportCache,
-  type TrendAnalysisRecord,
-  type TrendAnalysisSprintRef,
-  type TrendSprintInput,
-  getSprintIssuesById,
-  getMergedPrs,
-  saveSprintReport,
-  loadSprintReport,
-  generateMultiSprintTrends,
-  saveTrendAnalysis,
-  loadTrendAnalysis,
-  listTrendAnalyses,
-  deleteTrendAnalysis,
-} from "@/lib/tauri";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { type BitbucketPr, getMergedPrs } from "@/lib/tauri/bitbucket";
+import { currentModelKeyFor } from "@/lib/tauri/core";
+import { type JiraIssue, type JiraSprint, type SprintReportCache, getSprintIssuesById, loadSprintReport, saveSprintReport } from "@/lib/tauri/jira";
+import { type TrendAnalysisRecord, type TrendAnalysisSprintRef, type TrendSprintInput, deleteTrendAnalysis, generateMultiSprintTrends, listTrendAnalyses, loadTrendAnalysis, saveTrendAnalysis } from "@/lib/tauri/trends";
 import { subscribeWorkflowStream } from "@/lib/workflowStream";
+import { useTokenUsageStore } from "@/stores/tokenUsageStore";
+import {
+    AlertTriangle,
+    Check,
+    CheckSquare,
+    ChevronDown,
+    ChevronRight,
+    Copy,
+    Loader2,
+    Sparkles,
+    Square,
+    Trash2,
+    XCircle,
+} from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { toast } from "sonner";
 
 // ── Input transformation ──────────────────────────────────────────────────────
 
@@ -260,6 +247,12 @@ export function TrendAnalysisPanel({ sprints }: Props) {
     const stream = await subscribeWorkflowStream(
       "multi-sprint-trends-workflow-event",
       (t) => setStreamText(t),
+      {
+        onUsage: (usage) =>
+          useTokenUsageStore
+            .getState()
+            .setCurrentCallUsage("trends", usage, currentModelKeyFor("trends")),
+      },
     );
     try {
       // Oldest → newest so "trend direction" language maps naturally.

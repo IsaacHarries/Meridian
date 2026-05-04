@@ -1,27 +1,4 @@
-/**
- * Helpers for resolving "who participated in a meeting" — used by the
- * `@name` filter syntax and the autocomplete popover.
- *
- * Two sources feed every meeting's participant list:
- *
- *   1. Named diarisation speakers — `speaker.displayName` once the
- *      user has assigned a real name to a cluster id. Anonymous
- *      cluster ids (e.g. `SPEAKER_00`) are skipped because they're
- *      not useful to filter on.
- *
- *   2. `@mention` nodes inside the rich notes editor — extracted by
- *      walking the TipTap doc JSON and pulling each Mention node's
- *      `attrs.label`. Plain-text `@isaac` typed without going through
- *      the autocomplete is intentionally NOT recognised: the user
- *      opted for an explicit-mention model so stray mid-sentence `@`s
- *      don't pollute the pool.
- *
- * Per-meeting labels are deduped (case-insensitive on the keying side,
- * preserving the first-seen casing for display). The cross-meeting
- * pool is the same with one more dedupe pass over every meeting.
- */
-
-import type { MeetingRecord } from "@/lib/tauri";
+import { type MeetingRecord } from "@/lib/tauri/meetings";
 import { extractMentionLabels } from "@/lib/tiptapText";
 
 /**

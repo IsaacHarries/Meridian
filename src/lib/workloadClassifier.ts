@@ -1,12 +1,5 @@
-/**
- * Shared workload classification logic.
- *
- * Single source of truth used by both WorkloadBalancerScreen (display) and
- * workloadAlertStore (background polling / badge). Keeping them in sync here
- * prevents the badge and the Capacity list from ever disagreeing.
- */
-
-import { type JiraIssue, type BitbucketPr } from "@/lib/tauri";
+import { type BitbucketPr } from "@/lib/tauri/bitbucket";
+import { type JiraIssue } from "@/lib/tauri/jira";
 
 export type LoadStatus = "overloaded" | "balanced" | "underutilised";
 

@@ -198,6 +198,12 @@ pub struct ModelSelection {
     pub provider: String,
     pub model: String,
     pub credentials: ProviderCredentials,
+    /// Per-provider response-token ceiling. Resolved from the user's
+    /// preferences (Settings → Models → "Max output tokens"). Skipped
+    /// from JSON serialisation when None so the sidecar's adapter
+    /// defaults stay in charge for unset values.
+    #[serde(rename = "maxTokens", skip_serializing_if = "Option::is_none")]
+    pub max_tokens: Option<u32>,
 }
 
 #[derive(Serialize)]
@@ -273,6 +279,25 @@ pub struct SidecarUsage {
     pub input_tokens: u64,
     #[serde(rename = "outputTokens")]
     pub output_tokens: u64,
+    /// Anthropic prompt-cache breakdown (subset of `input_tokens`).
+    /// Tokens billed at 1.25x because they wrote the cache. Optional —
+    /// present only on workflows that opt into prompt caching (the
+    /// implementation pipeline's orchestrator at time of writing); zero
+    /// for the rest and for non-Anthropic providers.
+    #[serde(
+        rename = "cacheCreationInputTokens",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub cache_creation_input_tokens: Option<u64>,
+    /// Anthropic prompt-cache breakdown (subset of `input_tokens`).
+    /// Tokens billed at 0.1x because they came from a cache hit.
+    #[serde(
+        rename = "cacheReadInputTokens",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub cache_read_input_tokens: Option<u64>,
 }
 
 impl SidecarOutboundEvent {
@@ -831,6 +856,20 @@ async fn drive_workflow_loop(
                 data,
                 ..
             } => {
+                // Rate-limit snapshots ride on the workflow's progress
+                // channel (sidecar emits them as a side-effect of any
+                // Anthropic OAuth response), but the consumer is a
+                // global UI element (HeaderModelPicker bars). Mirror
+                // them onto a dedicated channel so a single boot-time
+                // listener catches updates regardless of which workflow
+                // is in flight — without this, only stores that listen
+                // on the originating workflow's channel see them, and
+                // the orchestrator chat path leaves the bars empty.
+                if let Some(rate_limits) =
+                    data.as_ref().and_then(|d| d.get("rateLimits"))
+                {
+                    let _ = app.emit("ai-rate-limit-event", rate_limits.clone());
+                }
                 let _ = app.emit(
                     event_name,
                     serde_json::json!({
@@ -876,10 +915,7 @@ async fn drive_workflow_loop(
                         reason,
                         payload,
                     },
-                    SidecarUsage {
-                        input_tokens: 0,
-                        output_tokens: 0,
-                    },
+                    SidecarUsage::default(),
                 ));
             }
             SidecarOutboundEvent::ToolCallbackRequest {

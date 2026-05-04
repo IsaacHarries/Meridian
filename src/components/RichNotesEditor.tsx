@@ -11,61 +11,60 @@
  * (via a `key` based on meeting id) when switching to a different meeting.
  */
 
-import { useEffect, useRef, useState } from "react";
+import Placeholder from "@tiptap/extension-placeholder";
+import TaskItem from "@tiptap/extension-task-item";
+import TaskList from "@tiptap/extension-task-list";
 import {
-  useEditor,
-  useEditorState,
-  EditorContent,
-  type Editor,
-  type JSONContent,
+    EditorContent,
+    useEditor,
+    useEditorState,
+    type Editor,
+    type JSONContent,
 } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
-import TaskList from "@tiptap/extension-task-list";
-import TaskItem from "@tiptap/extension-task-item";
-import Placeholder from "@tiptap/extension-placeholder";
+import { useEffect, useRef, useState } from "react";
 // StarterKit 3 already bundles Bold, Italic, Underline, Strike, Code,
 // CodeBlock, Blockquote, Link, lists, etc., so we configure them through
 // StarterKit's options object rather than re-importing. Highlight is the
 // only mark we still bring in standalone.
+import type { MentionSuggestionItem } from "@/components/MentionSuggestionList";
+import { mentionSuggestionRenderer } from "@/components/mentionSuggestionRenderer";
+import { Button } from "@/components/ui/button";
+import { gatherNamePool } from "@/lib/meetingPeople";
+import type { AccentColor } from "@/lib/theme";
+import { cn } from "@/lib/utils";
+import { useTheme } from "@/providers/ThemeProvider";
+import { useMeetingsStore } from "@/stores/meetings/store";
 import Highlight from "@tiptap/extension-highlight";
 import Mention from "@tiptap/extension-mention";
-import { mentionSuggestionRenderer } from "@/components/mentionSuggestionRenderer";
-import { gatherNamePool } from "@/lib/meetingPeople";
-import { useMeetingsStore } from "@/stores/meetingsStore";
-import type { MentionSuggestionItem } from "@/components/MentionSuggestionList";
 import {
-  Bold,
-  Italic,
-  Underline as UnderlineIcon,
-  Strikethrough,
-  Code,
-  Highlighter,
-  List,
-  ListOrdered,
-  ListChecks,
-  Quote,
-  SquareCode,
-  Link2,
-  X,
-  Check,
-  ChevronDown,
+    Bold,
+    Check,
+    ChevronDown,
+    Code,
+    Highlighter,
+    Italic,
+    Link2,
+    List,
+    ListChecks,
+    ListOrdered,
+    Quote,
+    SquareCode,
+    Strikethrough,
+    Underline as UnderlineIcon,
+    X,
 } from "lucide-react";
-import { cn } from "@/lib/utils";
-import { Button } from "@/components/ui/button";
-import { useTheme } from "@/providers/ThemeProvider";
-import type { AccentColor } from "@/lib/theme";
 
 export type LineHeightMode = "compact" | "normal" | "relaxed";
 
+const LINE_HEIGHTS: Record<LineHeightMode, string> = {
+  compact: "1.3",
+  normal: "1.5",
+  relaxed: "1.75",
+};
+
 function resolveLineHeight(mode: LineHeightMode): string {
-  switch (mode) {
-    case "compact":
-      return "1.3";
-    case "relaxed":
-      return "1.75";
-    default:
-      return "1.5";
-  }
+  return LINE_HEIGHTS[mode];
 }
 
 interface RichNotesEditorProps {

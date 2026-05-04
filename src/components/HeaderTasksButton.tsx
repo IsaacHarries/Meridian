@@ -1,9 +1,9 @@
-import { ListTodo } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { cn } from "@/lib/utils";
-import { useTasksStore } from "@/stores/tasksStore";
-import { useMeetingsStore } from "@/stores/meetingsStore";
 import { extractNotesTaskItems } from "@/lib/tiptapTasks";
+import { cn } from "@/lib/utils";
+import { useMeetingsStore } from "@/stores/meetings/store";
+import { useTasksStore } from "@/stores/tasksStore";
+import { ListTodo } from "lucide-react";
 
 /**
  * Header button that toggles the right-side Tasks panel. The badge count

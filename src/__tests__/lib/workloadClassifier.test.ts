@@ -1,6 +1,7 @@
-import { describe, it, expect } from "vitest";
+import { type BitbucketPr } from "@/lib/tauri/bitbucket";
+import { type JiraIssue } from "@/lib/tauri/jira";
 import { classifyWorkloads } from "@/lib/workloadClassifier";
-import type { JiraIssue, BitbucketPr } from "@/lib/tauri";
+import { describe, expect, it } from "vitest";
 
 // ── Minimal fixtures ──────────────────────────────────────────────────────────
 

@@ -429,7 +429,12 @@ export class ClaudeOAuthChatModel extends ChatAnthropic {
       // request leaves the process.
       apiKey: "oauth-placeholder-not-used",
       model: input.model,
-      maxTokens: input.maxTokens ?? 8192,
+      // Generous ceiling — Sonnet 4.6 / Haiku 4.5 support up to 64K
+      // output, and `max_tokens` is a cap not an allocation, so a
+      // larger value costs nothing on typical (1–4K) responses but
+      // prevents truncation on long Plan / Code Review stages. The
+      // user can override this floor via Settings → Models.
+      maxTokens: input.maxTokens ?? 32768,
       clientOptions: {
         fetch: makeOAuthFetch(input.accessToken),
       },

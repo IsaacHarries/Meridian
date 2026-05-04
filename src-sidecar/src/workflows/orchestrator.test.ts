@@ -1,16 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
-import {
-  PlanEditOpSchema,
-  PendingProposalSchema,
-  OrchestratorMessageSchema,
-  applyPlanEditOp,
-  threadReducer,
-  stageSummariesReducer,
-  maybeCompressStageOnTransition,
-  type PlanEditOp,
-  type PlanShape,
-  type OrchestratorMessage,
-} from "./orchestrator.js";
+import { applyPlanEditOp } from "./orchestrator/plan-edits.js";
+import { OrchestratorMessageSchema, PendingProposalSchema, PlanEditOpSchema } from "./orchestrator/schemas.js";
+import { stageSummariesReducer, threadReducer } from "./orchestrator/state.js";
+import { maybeCompressStageOnTransition } from "./orchestrator/summarisation.js";
+import { type OrchestratorMessage, type PlanShape } from "./orchestrator/types.js";
 
 // ── PlanEditOpSchema ─────────────────────────────────────────────────────────
 
@@ -409,13 +402,23 @@ describe("stageSummariesReducer", () => {
 // ── maybeCompressStageOnTransition ───────────────────────────────────────────
 
 // We mock buildModel via vi.mock so summariseStageTurns doesn't try a real
-// LLM call. The mock returns a model whose `invoke` produces a fixed
-// summary string.
-vi.mock("../models/factory.js", () => ({
-  buildModel: () => ({
-    invoke: async () => ({ content: "MOCK_SUMMARY" }),
-  }),
-}));
+// LLM call. summariseStageTurns now drives `model.stream(messages)` and
+// concats the chunks (so adapters that only attach usage_metadata via the
+// streaming branch report tokens correctly), so the mock yields a single
+// AIMessageChunk carrying the summary text.
+vi.mock("../models/factory.js", async () => {
+  const { AIMessageChunk } = await import("@langchain/core/messages");
+  return {
+    buildModel: () => ({
+      stream: async () => {
+        async function* gen() {
+          yield new AIMessageChunk({ content: "MOCK_SUMMARY" });
+        }
+        return gen();
+      },
+    }),
+  };
+});
 
 describe("maybeCompressStageOnTransition", () => {
   const fakeModel = { provider: "anthropic", model: "x", credentials: {} as never } as never;

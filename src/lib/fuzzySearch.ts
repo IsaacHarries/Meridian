@@ -1,4 +1,4 @@
-import type { JiraIssue } from "./tauri";
+import { type JiraIssue } from "@/lib/tauri/jira";
 
 /**
  * Score how well `query` fuzzy-matches `target`. Returns null when not all

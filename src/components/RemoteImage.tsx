@@ -16,9 +16,9 @@
  * the network on every render.
  */
 
+import { fetchBitbucketImage, fetchJiraImage } from "@/lib/tauri/misc";
+import { ImageOff, Loader2 } from "lucide-react";
 import { useEffect, useState } from "react";
-import { Loader2, ImageOff } from "lucide-react";
-import { fetchBitbucketImage, fetchJiraImage } from "@/lib/tauri";
 
 const cache = new Map<string, string>();
 

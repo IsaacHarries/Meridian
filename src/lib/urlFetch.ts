@@ -1,4 +1,4 @@
-import { fetchUrlContent } from "./tauri";
+import { fetchUrlContent } from "@/lib/tauri/misc";
 
 /** Matches http:// and https:// URLs in text. */
 const URL_REGEX = /https?:\/\/[^\s"'<>()[\]{}]+/g;

@@ -1,6 +1,7 @@
-import { describe, it, expect } from "vitest";
-import { compileTicketText, detectGroomingBlockers } from "@/stores/implementTicketStore";
-import type { JiraIssue, GroomingOutput } from "@/lib/tauri";
+import { type JiraIssue } from "@/lib/tauri/jira";
+import { type GroomingOutput } from "@/lib/tauri/workflows";
+import { compileTicketText, detectGroomingBlockers } from "@/stores/implementTicket/helpers";
+import { describe, expect, it } from "vitest";
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
 
@@ -266,6 +267,34 @@ describe("detectGroomingBlockers", () => {
     const blockers = detectGroomingBlockers(issue, makeGrooming());
     const b = blockers.find((b) => b.id === "no-description")!;
     expect(b.severity).toBe("blocking");
+  });
+
+  it("does NOT block when content lives in descriptionSections (real-Jira shape)", () => {
+    // Modern Atlassian Document Format payloads put the body content
+    // under `descriptionSections` and leave the top-level `description`
+    // null. The blocker check must consider both sources or it falsely
+    // flags every modern Jira ticket as missing a description.
+    const issue = makeIssue({
+      description: null,
+      descriptionSections: [
+        {
+          heading: "Overview",
+          content:
+            "Build a small CLI that reads a markdown file and outputs a linked TOC.",
+        },
+      ],
+    });
+    const blockers = detectGroomingBlockers(issue, makeGrooming());
+    expect(blockers.some((b) => b.id === "no-description")).toBe(false);
+  });
+
+  it("blocks when descriptionSections only contains empty content", () => {
+    const issue = makeIssue({
+      description: null,
+      descriptionSections: [{ heading: "Overview", content: "" }],
+    });
+    const blockers = detectGroomingBlockers(issue, makeGrooming());
+    expect(blockers.some((b) => b.id === "no-description")).toBe(true);
   });
 
   // ── Acceptance criteria checks ────────────────────────────────────────────

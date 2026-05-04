@@ -144,7 +144,7 @@ pub async fn get_future_sprints(limit: u32) -> Result<Vec<JiraSprint>, String> {
     client.get_future_sprints(board_id, limit as usize).await
 }
 
-/// General-purpose JQL search (used by Ticket Quality Checker and other workflows).
+/// General-purpose JQL search (used by Groom Ticket and other workflows).
 #[tauri::command]
 pub async fn search_jira_issues(jql: String, max_results: u32) -> Result<Vec<JiraIssue>, String> {
     let (client, _) = jira_client()?;

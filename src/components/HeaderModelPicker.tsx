@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { Cpu, Loader2, Lock, RotateCcw } from "lucide-react";
+import { AlertCircle, Cpu, Loader2, RotateCcw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import {
@@ -13,11 +13,17 @@ import {
   PANEL_LABELS,
 } from "@/stores/aiSelectionStore";
 import {
+  useCredentialStatusStore,
+  authenticatedProviders,
+} from "@/stores/credentialStatusStore";
+import { useOpenSettings } from "@/context/OpenSettingsContext";
+import {
   useTokenUsageStore,
   modelKey,
   formatTokens,
   type TokenUsage,
   type PanelKey,
+  type RateLimitSnapshot,
 } from "@/stores/tokenUsageStore";
 import { getAppPreferences } from "@/lib/appPreferences";
 import { ContextProgressRing } from "@/components/ContextProgressRing";
@@ -57,10 +63,19 @@ export function HeaderModelPicker({
   const resolve = useAiSelectionStore((s) => s.resolve);
 
   // Re-render whenever any selection-relevant slice changes.
-  useAiSelectionStore((s) => s.priority);
+  useAiSelectionStore((s) => s.defaultProvider);
+  useAiSelectionStore((s) => s.defaultModel);
   useAiSelectionStore((s) => s.panelOverrides);
   useAiSelectionStore((s) => s.stageOverrides);
   useAiSelectionStore((s) => s.providerDefaultModel);
+
+  const credStatus = useCredentialStatusStore((s) => s.status);
+  const authed = useMemo(() => authenticatedProviders(credStatus), [credStatus]);
+  const openSettings = useOpenSettings();
+
+  // Subscribe to ALL provider rate-limit snapshots; we'll select the
+  // one for the active provider after `resolved` is computed below.
+  const allRateLimits = useTokenUsageStore((s) => s.rateLimits);
 
   const [open, setOpen] = useState(false);
   const buttonRef = useRef<HTMLButtonElement>(null);
@@ -124,6 +139,15 @@ export function HeaderModelPicker({
 
   const resolved = resolve(panel, stage ?? undefined);
   const stageHasOverride = stage ? !!stageOverrides[stage] : false;
+  // Pick out the active provider's rate-limit snapshot from the live
+  // map. Parsed from the standard `anthropic-ratelimit-*` response
+  // headers and forwarded by the sidecar's streaming.ts whenever a
+  // workflow is in flight. Only `claude` is wired today (the OAuth
+  // subscription path is the one emitting these); other providers
+  // don't currently produce snapshots, so the section quietly hides
+  // for them.
+  const rateLimitSnapshot: RateLimitSnapshot | null =
+    allRateLimits[resolved.provider] ?? null;
 
   // The provider currently shown in the picker body. When locked, always the
   // locked provider. Otherwise, the resolved one (or the first option).
@@ -144,21 +168,11 @@ export function HeaderModelPicker({
   const loadingModels = !!modelsLoading[draftProvider];
 
   async function selectModel(modelId: string) {
-    if (resolved.locked) {
-      // Locked: write override on the locked provider only.
-      const value = { provider: resolved.provider, model: modelId };
-      if (scope === "stage" && stage) {
-        await setStageOverride(stage, value);
-      } else {
-        await setPanelOverride(panel, value);
-      }
+    const value = { provider: draftProvider, model: modelId };
+    if (scope === "stage" && stage) {
+      await setStageOverride(stage, value);
     } else {
-      const value = { provider: draftProvider, model: modelId };
-      if (scope === "stage" && stage) {
-        await setStageOverride(stage, value);
-      } else {
-        await setPanelOverride(panel, value);
-      }
+      await setPanelOverride(panel, value);
     }
     setOpen(false);
   }
@@ -189,17 +203,28 @@ export function HeaderModelPicker({
   const activeUsage = useMemo<TokenUsage>(() => {
     let inputTokens = 0;
     let outputTokens = 0;
+    let cacheCreationInputTokens = 0;
+    let cacheReadInputTokens = 0;
     for (const [key, u] of Object.entries(modelCumulative)) {
       if (!key.startsWith(providerPrefix)) continue;
       inputTokens += u.inputTokens;
       outputTokens += u.outputTokens;
+      cacheCreationInputTokens += u.cacheCreationInputTokens;
+      cacheReadInputTokens += u.cacheReadInputTokens;
     }
     for (const [key, u] of Object.entries(modelCurrentCall)) {
       if (!key.startsWith(providerPrefix)) continue;
       inputTokens += u.inputTokens;
       outputTokens += u.outputTokens;
+      cacheCreationInputTokens += u.cacheCreationInputTokens;
+      cacheReadInputTokens += u.cacheReadInputTokens;
     }
-    return { inputTokens, outputTokens };
+    return {
+      inputTokens,
+      outputTokens,
+      cacheCreationInputTokens,
+      cacheReadInputTokens,
+    };
   }, [providerPrefix, modelCumulative, modelCurrentCall]);
   const activeUsageTotal = activeUsage.inputTokens + activeUsage.outputTokens;
 
@@ -276,16 +301,16 @@ export function HeaderModelPicker({
         size="sm"
         onClick={() => setOpen((v) => !v)}
         title={
-          resolved.locked
-            ? `Locked to ${PROVIDER_LABELS[resolved.provider]} via Settings → AI Provider Priority`
-            : "Change AI provider/model for this panel"
+          authed.has(resolved.provider)
+            ? "Change AI provider/model for this panel"
+            : `${PROVIDER_LABELS[resolved.provider]} is not authenticated — open Settings → Models to set it up`
         }
         className="h-9 gap-1.5 px-2.5"
       >
-        {resolved.locked ? (
-          <Lock className="h-3.5 w-3.5 text-muted-foreground" />
-        ) : (
+        {authed.has(resolved.provider) ? (
           <Cpu className="h-3.5 w-3.5 text-muted-foreground" />
+        ) : (
+          <AlertCircle className="h-3.5 w-3.5 text-amber-500" />
         )}
         <span className="text-[11px] font-medium leading-tight">
           {PROVIDER_LABELS[resolved.provider]}
@@ -338,14 +363,28 @@ export function HeaderModelPicker({
                 {stage ? ` · ${STAGE_LABELS[stage]}` : ""}
               </p>
               <p className="text-[11px] text-muted-foreground mt-0.5">
-                {resolved.locked
-                  ? `Locked to ${PROVIDER_LABELS[resolved.provider]} — change priority in Settings to switch provider.`
-                  : resolved.source === "stage"
-                    ? "Using stage override."
-                    : resolved.source === "panel"
-                      ? "Using panel override."
-                      : "Using default fallback order."}
+                {resolved.source === "stage"
+                  ? "Using stage override."
+                  : resolved.source === "panel"
+                    ? "Using panel override."
+                    : "Using default model."}
               </p>
+              {!authed.has(resolved.provider) && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setOpen(false);
+                    openSettings();
+                  }}
+                  className="mt-1.5 w-full flex items-start gap-1.5 rounded border border-amber-500/40 bg-amber-500/10 px-2 py-1.5 text-left text-[11px] text-amber-700 dark:text-amber-400 hover:bg-amber-500/20"
+                >
+                  <AlertCircle className="h-3 w-3 shrink-0 mt-0.5" />
+                  <span>
+                    {PROVIDER_LABELS[resolved.provider]} isn't authenticated.
+                    Click to open Settings → Models.
+                  </span>
+                </button>
+              )}
             </div>
 
             {/* Session usage — always visible. Sums every model the
@@ -396,6 +435,9 @@ export function HeaderModelPicker({
               )}
             </div>
 
+            {rateLimitSnapshot && (
+              <RateLimitsSection snapshot={rateLimitSnapshot} />
+            )}
 
             {stageScopable && (
               <div className="px-3 pt-2.5 pb-2 border-b">
@@ -431,30 +473,39 @@ export function HeaderModelPicker({
               </div>
             )}
 
-            {!resolved.locked && (
-              <div className="px-3 pt-2.5 pb-2 border-b">
-                <p className="text-[11px] uppercase tracking-wide text-muted-foreground mb-1.5">
-                  Provider
-                </p>
-                <div className="grid grid-cols-2 gap-1">
-                  {PROVIDER_OPTIONS.map((p) => (
+            <div className="px-3 pt-2.5 pb-2 border-b">
+              <p className="text-[11px] uppercase tracking-wide text-muted-foreground mb-1.5">
+                Provider
+              </p>
+              <div className="grid grid-cols-2 gap-1">
+                {PROVIDER_OPTIONS.map((p) => {
+                  const isAuthed = authed.has(p);
+                  return (
                     <button
                       key={p}
                       type="button"
                       className={cn(
-                        "rounded px-2 py-1.5 text-xs",
+                        "rounded px-2 py-1.5 text-xs flex items-center justify-center gap-1.5",
                         draftProvider === p
                           ? "bg-primary text-primary-foreground"
                           : "bg-muted hover:bg-muted/70",
                       )}
                       onClick={() => setDraftProvider(p)}
+                      title={
+                        isAuthed
+                          ? undefined
+                          : `${PROVIDER_LABELS[p]} not authenticated — set it up in Settings`
+                      }
                     >
-                      {PROVIDER_LABELS[p]}
+                      <span>{PROVIDER_LABELS[p]}</span>
+                      {!isAuthed && (
+                        <AlertCircle className="h-3 w-3 text-amber-500" />
+                      )}
                     </button>
-                  ))}
-                </div>
+                  );
+                })}
               </div>
-            )}
+            </div>
 
             <div className="px-3 pt-2.5 pb-2.5">
               <p className="text-[11px] uppercase tracking-wide text-muted-foreground mb-1.5">
@@ -542,4 +593,153 @@ export function HeaderModelPicker({
         )}
     </div>
   );
+}
+
+// ── Rate-limits section ──────────────────────────────────────────────────────
+//
+// Renders one progress bar per metric Anthropic surfaces in its
+// `anthropic-ratelimit-*` response headers — typically requests/min,
+// total tokens, input tokens, output tokens. Each bar shows percent
+// remaining (not used), since the user cares about how much budget
+// is left before being throttled. Counters whose `limit` is null are
+// hidden — Anthropic omits headers for tiers that don't apply.
+//
+// Style mirrors Claude Code's `/usage` output: tight paired label +
+// bar rows with a numeric remaining/limit suffix, plus a reset
+// countdown so the user can decide whether to wait it out.
+interface RateLimitMetric {
+  label: string;
+  remaining: number | null;
+  limit: number | null;
+  resetAt: string | null;
+}
+
+function RateLimitsSection({ snapshot }: { snapshot: RateLimitSnapshot }) {
+  const metrics: RateLimitMetric[] = [
+    {
+      label: "Requests",
+      remaining: snapshot.requestsRemaining,
+      limit: snapshot.requestsLimit,
+      resetAt: snapshot.requestsResetAt,
+    },
+    {
+      label: "Tokens",
+      remaining: snapshot.tokensRemaining,
+      limit: snapshot.tokensLimit,
+      resetAt: snapshot.tokensResetAt,
+    },
+    {
+      label: "Input tokens",
+      remaining: snapshot.inputTokensRemaining,
+      limit: snapshot.inputTokensLimit,
+      resetAt: snapshot.tokensResetAt,
+    },
+    {
+      label: "Output tokens",
+      remaining: snapshot.outputTokensRemaining,
+      limit: snapshot.outputTokensLimit,
+      resetAt: snapshot.tokensResetAt,
+    },
+  ];
+  const visible = metrics.filter(
+    (m) => m.remaining != null && m.limit != null && m.limit > 0,
+  );
+  if (visible.length === 0) return null;
+
+  // Use the soonest reset across all visible metrics so the section's
+  // single countdown line tells the user "the most-pressing window
+  // resets in X". Each bar carries its own resetAt under the hood
+  // (via the metric's tooltip) but a single visible countdown reads
+  // cleaner than four.
+  const earliestReset = visible
+    .map((m) => m.resetAt)
+    .filter((r): r is string => !!r)
+    .sort()[0];
+
+  return (
+    <div className="px-3 py-2 border-b">
+      <div className="flex items-center justify-between gap-2 mb-1.5">
+        <p className="text-[10px] uppercase tracking-wide text-muted-foreground">
+          Rate limits
+        </p>
+        {earliestReset && (
+          <span className="text-[10px] tabular-nums text-muted-foreground">
+            resets {formatResetCountdown(earliestReset)}
+          </span>
+        )}
+      </div>
+      <div className="space-y-1.5">
+        {visible.map((m) => (
+          <RateLimitBar key={m.label} metric={m} />
+        ))}
+      </div>
+      <p className="text-[9px] text-muted-foreground/70 mt-1.5">
+        Captured from response headers · refreshes on every API call.
+      </p>
+    </div>
+  );
+}
+
+function RateLimitBar({ metric }: { metric: RateLimitMetric }) {
+  // `remaining` and `limit` are guaranteed non-null at this point —
+  // the parent filters to visible metrics — but TS only knows this
+  // through the explicit guard, so coerce-as-number once for ergonomics.
+  const remaining = metric.remaining as number;
+  const limit = metric.limit as number;
+  const remainingPct = (remaining / limit) * 100;
+  const usedPct = 100 - remainingPct;
+  // Colour ramp matches the < 10% warning toast threshold + the
+  // session-usage bar in this same dropdown: green ≥ 50%, amber 10–50%,
+  // red < 10% remaining.
+  const barColor =
+    remainingPct < 10
+      ? "bg-destructive"
+      : remainingPct < 50
+        ? "bg-amber-500"
+        : "bg-emerald-500";
+  return (
+    <div>
+      <div className="flex items-baseline justify-between gap-2 mb-0.5">
+        <span className="text-[11px] text-foreground/90">{metric.label}</span>
+        <span
+          className="text-[10px] tabular-nums text-muted-foreground"
+          title={
+            metric.resetAt
+              ? `Resets ${new Date(metric.resetAt).toLocaleString()}`
+              : undefined
+          }
+        >
+          {formatTokens(remaining)} / {formatTokens(limit)} ({remainingPct.toFixed(0)}%)
+        </span>
+      </div>
+      <div className="h-1 w-full rounded-full bg-muted overflow-hidden">
+        <div
+          className={cn("h-full rounded-full transition-all", barColor)}
+          style={{ width: `${Math.max(2, usedPct)}%` }}
+        />
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Render a reset timestamp (ISO 8601 from the Anthropic header) as
+ * a short relative countdown — "in 42s", "in 4m", "in 1h 12m". Past
+ * timestamps land as "now" since the next API call will refresh the
+ * snapshot anyway. Recomputes on each render rather than ticking on
+ * an interval — the parent component re-renders whenever the snapshot
+ * updates, which is often enough that a 1Hz visual refresh is overkill.
+ */
+function formatResetCountdown(resetAt: string): string {
+  const target = new Date(resetAt).getTime();
+  if (!Number.isFinite(target)) return "soon";
+  const diffMs = target - Date.now();
+  if (diffMs <= 0) return "now";
+  const totalSec = Math.floor(diffMs / 1000);
+  if (totalSec < 60) return `in ${totalSec}s`;
+  const minutes = Math.floor(totalSec / 60);
+  if (minutes < 60) return `in ${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  const remMin = minutes % 60;
+  return remMin > 0 ? `in ${hours}h ${remMin}m` : `in ${hours}h`;
 }

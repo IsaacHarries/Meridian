@@ -1,16 +1,9 @@
 import { describe, expect, it } from "vitest";
-import {
-  classifyVerification,
-  routeAfterImplementation,
-  routeAfterBuildCheck,
-  tailBuildOutput,
-  isTransientModelError,
-  PerFileResponseSchema,
-  BUILD_CHECK_MAX_ATTEMPTS,
-  BUILD_OUTPUT_TAIL_CHARS,
-  PLAN_REVISION_MAX,
-  type PipelineState,
-} from "./pipeline.js";
+import { BUILD_OUTPUT_TAIL_CHARS, isTransientModelError, tailBuildOutput } from "./pipeline/helpers.js";
+import { BUILD_CHECK_MAX_ATTEMPTS, PLAN_REVISION_MAX, routeAfterBuildCheck, routeAfterImplementation } from "./pipeline/nodes/build.js";
+import { classifyVerification } from "./pipeline/nodes/implementation.js";
+import { PerFileResponseSchema } from "./pipeline/schemas.js";
+import { type PipelineState } from "./pipeline/state.js";
 
 // ── classifyVerification ─────────────────────────────────────────────────────
 
@@ -291,7 +284,13 @@ describe("routeAfterBuildCheck", () => {
     ).toBe("build_fix");
   });
 
-  it("returns replan_check once attempts are exhausted AND revision budget remains", () => {
+  it("returns checkpoint_implementation once attempts are exhausted (does NOT trigger a full plan rewrite)", () => {
+    // Build failures used to bubble out to a full re-plan + re-implement
+    // when the build_fix budget ran out. That was wildly out of proportion
+    // to a tsc / test failure — replans wipe and rewrite every file. Now
+    // the route always lands on the implementation checkpoint so the user
+    // can read the build output and decide whether to retry, edit, or
+    // abandon the run on their own terms.
     expect(
       routeAfterBuildCheck(
         makeState({
@@ -309,7 +308,7 @@ describe("routeAfterBuildCheck", () => {
           },
         }),
       ),
-    ).toBe("replan_check");
+    ).toBe("checkpoint_implementation");
   });
 
   it("returns checkpoint_implementation once both budgets are exhausted", () => {

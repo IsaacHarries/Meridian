@@ -140,7 +140,7 @@ The implementation pipeline does not lock a provider for the run. Before each pe
 3. **Sprint Dashboard** — real-time sprint health, blockers, team performance, and team workload with AI rebalancing suggestions. Also the launch point for standup recordings (header record button auto-tags the meeting `standup`).
 4. **Sprint Retrospectives** — completed sprint analysis, trend charts, AI summary
 5. **Multi-Sprint Trends** — analysis across multiple completed sprints; pre-computed stats table + AI-driven pattern analysis.
-6. **Ticket Quality Checker** — runs the grooming workflow against any chosen ticket without committing to the implementation pipeline. Use case: triaging tickets in sprint planning to surface blockers (missing AC, story points, ambiguity) before they're picked up.
+6. **Groom Ticket** — runs the grooming workflow against any chosen ticket without committing to the implementation pipeline. Use case: triaging tickets in sprint planning to surface blockers (missing AC, story points, ambiguity) before they're picked up.
 7. **Address PR Comments** — AI reads reviewer comments, checks out branch in worktree, proposes and applies fixes
 8. **Meetings** — local whisper transcription _or_ freeform notes (when recording is not allowed); both are tagged, timestamped, and AI-summarisable, and feed into Sprint Retrospectives. Start a recording from any screen via the header record button (auto-tags `standup` from Sprint Dashboard, `retro` from Retrospectives); notes are created from the Meetings screen via the split-button dropdown, which remembers the last mode chosen.
 
