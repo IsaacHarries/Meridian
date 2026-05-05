@@ -33,7 +33,7 @@ interface PrSelectorProps {
   /** Set of PR ids where new commits have arrived since the last review */
   stalePrIds: Set<number>;
   /** Linked JIRA issues keyed by issue key — used for the priority badge / sort */
-  linkedIssuesByKey: Map<string, import("@/lib/tauri").JiraIssue>;
+  linkedIssuesByKey: Map<string, import("@/lib/tauri/jira").JiraIssue>;
 }
 
 type PrSortMode = "priority" | "age" | "updated";

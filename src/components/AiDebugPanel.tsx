@@ -23,6 +23,72 @@ import { ChevronDown, ChevronRight, FileText, Trash2, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 
+// ── Date-range filter helpers (exported for unit testing) ──────────────────
+
+/**
+ * Convert a date string (yyyy-MM-dd from <input type=date>) and an optional
+ * time string (HH:MM from <input type=time>) into an epoch-ms value in the
+ * user's local timezone. Returns null when the date is empty/invalid so
+ * callers can treat that side of the range as unbounded.
+ *
+ * `fallbackTime` is used when `time` is empty — pass "00:00" for the lower
+ * bound and "23:59:59.999" for the upper bound so a date-only range covers
+ * the whole calendar day.
+ */
+export function combineDateTime(
+  date: string,
+  time: string,
+  fallbackTime: string,
+): number | null {
+  if (!date) return null;
+  // Parse yyyy-MM-dd as a LOCAL date (not UTC) so the user's "today" lines
+  // up with their wall clock. Constructing `new Date("yyyy-MM-dd")` would
+  // be parsed as UTC midnight, shifting the boundary in non-UTC timezones.
+  const [yStr, mStr, dStr] = date.split("-");
+  const year = Number(yStr);
+  const month = Number(mStr);
+  const day = Number(dStr);
+  if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day)) {
+    return null;
+  }
+  const t = time || fallbackTime;
+  const [hStr = "0", mnStr = "0", sStr = "0"] = t.split(":");
+  const hour = Number(hStr);
+  const minute = Number(mnStr);
+  const second = Number(sStr.split(".")[0] ?? "0");
+  const ms = Number(sStr.includes(".") ? sStr.split(".")[1] : "0");
+  const local = new Date(year, month - 1, day, hour, minute, second, ms);
+  const epoch = local.getTime();
+  return Number.isFinite(epoch) ? epoch : null;
+}
+
+export interface TimeRangeFilter {
+  fromDate: string;
+  fromTime: string;
+  toDate: string;
+  toTime: string;
+}
+
+/**
+ * Filter traffic events by a date+optional-time range. Either side may be
+ * empty (unbounded). When only the date is set on a side, that side
+ * defaults to the start of the day (lower bound) or the end of the day
+ * (upper bound). Returns the input unchanged when no filter is active.
+ */
+export function filterEventsByTimeRange(
+  events: AiTrafficEvent[],
+  filter: TimeRangeFilter,
+): AiTrafficEvent[] {
+  const fromMs = combineDateTime(filter.fromDate, filter.fromTime, "00:00");
+  const toMs = combineDateTime(filter.toDate, filter.toTime, "23:59:59.999");
+  if (fromMs === null && toMs === null) return events;
+  return events.filter((e) => {
+    if (fromMs !== null && e.startedAt < fromMs) return false;
+    if (toMs !== null && e.startedAt > toMs) return false;
+    return true;
+  });
+}
+
 interface AiDebugPanelProps {
   /** Show a close (x) button that hides the panel — only the docked
    *  variants pass this; the popped-out window has its own close. */
@@ -38,7 +104,27 @@ export function AiDebugPanel({ onClose, controls }: AiDebugPanelProps) {
   const setEnabled = useAiDebugStore((s) => s.setEnabled);
   const clear = useAiDebugStore((s) => s.clear);
 
-  const totals = useMemo(() => totalCapturedTokens(events), [events]);
+  // Date+optional-time range filter — local component state because this is
+  // a developer tool that doesn't need cross-session persistence. Empty
+  // strings mean "unbounded on this side".
+  const [filter, setFilter] = useState<TimeRangeFilter>({
+    fromDate: "",
+    fromTime: "",
+    toDate: "",
+    toTime: "",
+  });
+
+  const filteredEvents = useMemo(
+    () => filterEventsByTimeRange(events, filter),
+    [events, filter],
+  );
+  const filterActive = Boolean(
+    filter.fromDate || filter.fromTime || filter.toDate || filter.toTime,
+  );
+  const totals = useMemo(
+    () => totalCapturedTokens(filteredEvents),
+    [filteredEvents],
+  );
 
   // Resolve the on-disk JSONL log path lazily — the main reason to
   // surface it is so the user (or Claude Code) can grep / tail the
@@ -80,8 +166,10 @@ export function AiDebugPanel({ onClose, controls }: AiDebugPanelProps) {
         <div className="flex items-center gap-3">
           <span className="font-semibold">AI Traffic</span>
           <span className="text-muted-foreground">
-            {events.length} {events.length === 1 ? "call" : "calls"}
-            {events.length > 0 && (
+            {filterActive
+              ? `${filteredEvents.length} of ${events.length} ${events.length === 1 ? "call" : "calls"}`
+              : `${events.length} ${events.length === 1 ? "call" : "calls"}`}
+            {filteredEvents.length > 0 && (
               <>
                 {" • "}
                 <span title="Total input tokens captured">
@@ -146,6 +234,15 @@ export function AiDebugPanel({ onClose, controls }: AiDebugPanelProps) {
         </div>
       </header>
 
+      <FilterRow
+        filter={filter}
+        onChange={setFilter}
+        active={filterActive}
+        onClear={() =>
+          setFilter({ fromDate: "", fromTime: "", toDate: "", toTime: "" })
+        }
+      />
+
       <div className="flex-1 min-h-0 overflow-y-auto">
         {events.length === 0 ? (
           <div className="text-center text-xs text-muted-foreground p-6">
@@ -153,14 +250,80 @@ export function AiDebugPanel({ onClose, controls }: AiDebugPanelProps) {
               ? "Waiting for traffic — kick off a workflow and prompts will land here."
               : "Capture is off. Turn it on in Settings or via the button above."}
           </div>
+        ) : filteredEvents.length === 0 ? (
+          <div className="text-center text-xs text-muted-foreground p-6">
+            No calls in the selected time range. Adjust the filter or clear it.
+          </div>
         ) : (
           <ul className="divide-y divide-border/60">
-            {events.map((e, i) => (
+            {filteredEvents.map((e, i) => (
               <TrafficRow key={`${e.runId}-${e.startedAt}-${i}`} event={e} />
             ))}
           </ul>
         )}
       </div>
+    </div>
+  );
+}
+
+function FilterRow({
+  filter,
+  onChange,
+  active,
+  onClear,
+}: {
+  filter: TimeRangeFilter;
+  onChange: (next: TimeRangeFilter) => void;
+  active: boolean;
+  onClear: () => void;
+}) {
+  const inputBase =
+    "h-7 px-1.5 rounded border border-input bg-background text-[11px] focus:outline-none focus:ring-1 focus:ring-ring";
+  return (
+    <div className="flex flex-wrap items-center gap-2 px-3 py-2 border-b bg-muted/20 text-[11px]">
+      <span className="text-muted-foreground">Filter:</span>
+      <span className="text-muted-foreground">From</span>
+      <input
+        type="date"
+        value={filter.fromDate}
+        onChange={(e) => onChange({ ...filter, fromDate: e.target.value })}
+        className={inputBase}
+        title="From date (lower bound)"
+      />
+      <input
+        type="time"
+        value={filter.fromTime}
+        onChange={(e) => onChange({ ...filter, fromTime: e.target.value })}
+        className={inputBase}
+        disabled={!filter.fromDate}
+        title="Optional time on the From date — defaults to 00:00 when blank"
+      />
+      <span className="text-muted-foreground">To</span>
+      <input
+        type="date"
+        value={filter.toDate}
+        onChange={(e) => onChange({ ...filter, toDate: e.target.value })}
+        className={inputBase}
+        title="To date (upper bound)"
+      />
+      <input
+        type="time"
+        value={filter.toTime}
+        onChange={(e) => onChange({ ...filter, toTime: e.target.value })}
+        className={inputBase}
+        disabled={!filter.toDate}
+        title="Optional time on the To date — defaults to 23:59:59 when blank"
+      />
+      {active && (
+        <Button
+          variant="ghost"
+          size="sm"
+          className="h-7 px-2 text-[11px]"
+          onClick={onClear}
+        >
+          Clear
+        </Button>
+      )}
     </div>
   );
 }

@@ -151,7 +151,7 @@ export function SettingsScreen({ onClose, onNavigate }: SettingsScreenProps) {
   }
 
   return (
-    <div className="h-screen flex flex-col">
+    <div className="h-full flex flex-col">
       <header className={APP_HEADER_BAR}>
         <div className={APP_HEADER_ROW_PANEL}>
           <h1 className={cn(APP_HEADER_TITLE, "shrink-0")}>Settings</h1>

@@ -76,7 +76,12 @@ export function RetrospectivesScreen({ onBack }: RetrospectivesScreenProps) {
         // 2. Disk cache — avoids re-fetching on app restart
         const disk = await loadSprintReport(sprintId);
         if (disk) {
-          const data: SprintData = { issues: disk.issues, prs: disk.prs };
+          const data: SprintData = {
+            issues: disk.issues,
+            prs: disk.prs,
+            aiSummary: disk.aiSummary,
+            aiSummaryGeneratedAt: disk.aiSummaryGeneratedAt,
+          };
           cache.current.set(sprintId, data);
           setCachedData(data);
           return;
@@ -99,6 +104,36 @@ export function RetrospectivesScreen({ onBack }: RetrospectivesScreenProps) {
       }
     },
     []
+  );
+
+  // Persist a freshly-generated AI retrospective summary into both the
+  // in-memory cache (so navigating away and back shows it instantly) and
+  // the disk cache (so it survives app restarts). Merges with the existing
+  // sprint data so a re-fetch isn't needed.
+  const handleSummaryGenerated = useCallback(
+    (sprintId: number, summary: string) => {
+      const generatedAt = new Date().toISOString();
+      const existing = cache.current.get(sprintId);
+      if (!existing) return;
+      const updated: SprintData = {
+        ...existing,
+        aiSummary: summary,
+        aiSummaryGeneratedAt: generatedAt,
+      };
+      cache.current.set(sprintId, updated);
+      setCachedData((prev) =>
+        prev && selectedId === sprintId ? updated : prev,
+      );
+      const report: SprintReportCache = {
+        issues: updated.issues,
+        prs: updated.prs,
+        cachedAt: new Date().toISOString(),
+        aiSummary: summary,
+        aiSummaryGeneratedAt: generatedAt,
+      };
+      saveSprintReport(sprintId, report).catch(() => {});
+    },
+    [selectedId],
   );
 
   // Load selected sprint whenever selection changes
@@ -162,7 +197,7 @@ export function RetrospectivesScreen({ onBack }: RetrospectivesScreenProps) {
         panel="retrospectives"
         leading={
           <>
-            <Button variant="ghost" size="icon" onClick={onBack}>
+            <Button variant="ghost" size="icon" className="shrink-0" onClick={onBack}>
               <ArrowLeft className="h-4 w-4" />
             </Button>
             <h1 className={APP_HEADER_TITLE}>Sprint Retrospectives</h1>
@@ -268,6 +303,11 @@ export function RetrospectivesScreen({ onBack }: RetrospectivesScreenProps) {
               sprint={selectedSprint}
               issues={cachedData.issues}
               prs={cachedData.prs}
+              cachedSummary={cachedData.aiSummary}
+              cachedSummaryAt={cachedData.aiSummaryGeneratedAt}
+              onSummaryGenerated={(summary) =>
+                handleSummaryGenerated(selectedSprint.id, summary)
+              }
             />
           </>
         )}

@@ -31,6 +31,7 @@ import type { MentionSuggestionItem } from "@/components/MentionSuggestionList";
 import { mentionSuggestionRenderer } from "@/components/mentionSuggestionRenderer";
 import { Button } from "@/components/ui/button";
 import { gatherNamePool } from "@/lib/meetingPeople";
+import { getJiraBaseUrlCache, openUrl } from "@/lib/tauri/core";
 import type { AccentColor } from "@/lib/theme";
 import { cn } from "@/lib/utils";
 import { useTheme } from "@/providers/ThemeProvider";
@@ -65,6 +66,32 @@ const LINE_HEIGHTS: Record<LineHeightMode, string> = {
 
 function resolveLineHeight(mode: LineHeightMode): string {
   return LINE_HEIGHTS[mode];
+}
+
+// JIRA tickets are PROJECT-NUMBER (uppercase letters, digits). Conservative
+// boundaries: must not be preceded/followed by another letter/digit/dash so
+// that things like "ISO-8601-2" or "GIT-2-something" don't match. Anchored
+// to a small text slice (the click target's text node — usually <500 chars)
+// and only invoked on Cmd/Ctrl-click, so per-keystroke cost is zero.
+const JIRA_KEY_GLOBAL = /(?<![A-Za-z0-9-])([A-Z][A-Z0-9]+-\d+)(?![A-Za-z0-9-])/g;
+
+/**
+ * Find the JIRA ticket key whose match span covers `offset` in `text`, if any.
+ * Returns the matched key (e.g. "ABC-123") or null.
+ *
+ * Exported for unit testing — keep the regex/decision in one place so the
+ * editor's click handler and the test see exactly the same logic.
+ */
+export function findJiraKeyAtOffset(text: string, offset: number): string | null {
+  // Reset lastIndex defensively — global regex state leaks across calls.
+  JIRA_KEY_GLOBAL.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = JIRA_KEY_GLOBAL.exec(text)) !== null) {
+    const start = m.index;
+    const end = start + m[0].length;
+    if (offset >= start && offset <= end) return m[0];
+  }
+  return null;
 }
 
 interface RichNotesEditorProps {
@@ -211,6 +238,24 @@ export function RichNotesEditor({
         // would only react to clicks on actual text.
         class:
           "prose prose-sm dark:prose-invert max-w-none focus:outline-none min-h-full px-4 py-3",
+        title: "Cmd/Ctrl-click a JIRA ticket key (e.g. ABC-123) to open it",
+      },
+      // Cmd/Ctrl-click on a JIRA ticket key opens the ticket in the browser.
+      // Cost is zero on a normal click (the modifier-key guard short-circuits)
+      // and the regex only ever runs on a single text node — usually a
+      // paragraph's worth of chars — when the modifier IS held.
+      handleClick(view, pos, event) {
+        if (!(event.metaKey || event.ctrlKey)) return false;
+        const baseUrl = getJiraBaseUrlCache();
+        if (!baseUrl) return false;
+        const $pos = view.state.doc.resolve(pos);
+        const nodeText = $pos.parent.textContent;
+        const key = findJiraKeyAtOffset(nodeText, $pos.parentOffset);
+        if (!key) return false;
+        const url = `${baseUrl.replace(/\/+$/, "")}/browse/${key}`;
+        void openUrl(url);
+        event.preventDefault();
+        return true;
       },
     },
   });

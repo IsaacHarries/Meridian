@@ -37,4 +37,35 @@ describe("pr-review prompts", () => {
     expect(SYNTHESIS_SYSTEM).toContain("Single-chunk mode");
     expect(SYNTHESIS_SYSTEM).toContain("Multi-chunk mode");
   });
+
+  // ── Acceptance Criteria lens hardening ─────────────────────────────────────
+  // Regression guard: the AC lens used to be two bullets and the model would
+  // return vague "all criteria addressed" verdicts even when explicit demands
+  // (e.g. "create integration tests") had no corresponding diff changes. The
+  // current prompts force a per-criterion enumeration with evidence and a
+  // dedicated test-demand check.
+
+  it("CHUNK_SYSTEM: AC lens forces per-criterion judgement and test-demand check", () => {
+    // The chunk-level rules must require walking each bulleted criterion
+    // (not punting to synthesis) and must explicitly check for missing
+    // tests when criteria demand them.
+    expect(CHUNK_SYSTEM).toMatch(/walk the bulleted list under "Acceptance Criteria/);
+    expect(CHUNK_SYSTEM).toContain("TEST DEMAND CHECK");
+    expect(CHUNK_SYSTEM).toMatch(/met \/ unmet \/ partial/);
+    // Vague-approval suppression
+    expect(CHUNK_SYSTEM).toMatch(/all criteria addressed/);
+  });
+
+  it("SYNTHESIS_SYSTEM: AC assessment must be a per-criterion table, not free-form prose", () => {
+    expect(SYNTHESIS_SYSTEM).toContain("per-criterion table");
+    expect(SYNTHESIS_SYSTEM).toContain("REQUIRED");
+    expect(SYNTHESIS_SYSTEM).toMatch(/met \| unmet \| partial \| unverifiable/);
+    // The dedicated test-demand check must appear (model-agnostic guard
+    // against the agent declaring criteria like "create integration tests"
+    // satisfied by a diff with no test files).
+    expect(SYNTHESIS_SYSTEM).toContain("TEST DEMAND CHECK");
+    // The banned-phrasing rule must appear so the model can't fall back
+    // to a generic approval.
+    expect(SYNTHESIS_SYSTEM).toMatch(/All listed acceptance criteria were addressed.*banned/);
+  });
 });

@@ -82,7 +82,24 @@ SECURITY:
 
 ACCEPTANCE CRITERIA:
 - If criteria are blank or not provided, return ZERO findings for this lens.
-- Only check against explicitly stated criteria.
+- Otherwise: walk the bulleted list under "Acceptance Criteria:" in the input \
+  and, for each criterion, judge it against this chunk's diff and the \
+  TEST / SPEC FILES IN THIS DIFF section: met / unmet / partial / \
+  unverifiable-from-this-chunk.
+- Raise a finding for every criterion this chunk shows is plainly UNMET or \
+  PARTIAL. Severity: blocking when the criterion uses an explicit verb \
+  ("Create", "Add", "Ensure", "Check", "Verify") AND the artefact is plainly \
+  missing from the diff; non_blocking for partial implementations.
+- TEST DEMAND CHECK: if a criterion contains words like "tests", "integration \
+  tests", "unit tests", "verify", "ensure correct", "edge cases", "edge \
+  condition", the change MUST include corresponding NEW test files. Consult \
+  the TEST / SPEC FILES IN THIS DIFF section. If that section is absent or \
+  lists no test files covering the criterion's subject, the criterion is \
+  UNMET — raise a blocking finding naming the missing tests.
+- Do NOT emit generic "all criteria addressed" / "criteria look met" findings \
+  — this lens lists UNMET items, not approvals.
+- For criteria you cannot judge from this chunk alone (e.g. behaviour lives \
+  in a file outside this chunk), stay silent — synthesis sees the full diff.
 
 === FULL FILE VERIFICATION ===
 The input may include === FULL FILE CONTENTS FROM BRANCH ===.
@@ -176,7 +193,30 @@ TESTING lens:
   no key, annotation present, or no unit tests.
 
 ACCEPTANCE CRITERIA lens:
-- If criteria are blank/not provided: empty findings array, assessment states none available.
+- If criteria are blank/not provided: empty findings array, assessment states \
+  "no acceptance criteria provided".
+- Otherwise the assessment field MUST be a structured per-criterion table, \
+  one line per original bulleted criterion, in this exact format: \
+    "N. <criterion verbatim, trimmed> — met | unmet | partial | unverifiable \
+    (<one sentence of evidence: cite file paths and [Lnnn] line ranges, or \
+    name the missing artefact like 'no test files in diff'>)" \
+  This per-criterion enumeration is REQUIRED whenever criteria are present. \
+  A free-form approval like "all criteria addressed" or "looks good" is itself \
+  a synthesis failure — fall back to the per-criterion table.
+- For every criterion marked unmet or partial, ALSO emit a corresponding \
+  finding under this lens. Severity: blocking when the criterion uses an \
+  explicit verb ("Create", "Add", "Ensure", "Check", "Verify") and the \
+  artefact is plainly missing from the diff; non_blocking for partial \
+  implementations.
+- TEST DEMAND CHECK: if any criterion mentions "tests", "integration tests", \
+  "unit tests", "verify", "ensure", "edge cases", "edge condition", the diff \
+  MUST contain corresponding NEW test files (consult the TEST / SPEC FILES \
+  IN THIS DIFF section, which the input includes verbatim). If absent, raise \
+  a blocking unmet finding citing the missing tests and DO NOT mark the \
+  criterion met.
+- "All listed acceptance criteria were addressed" is a banned phrasing unless \
+  it appears AFTER the per-criterion table and every line in the table reads \
+  "— met".
 
 QUALITY lens:
 - DROP findings about test framework function choice (test/it/describe/expect etc.).

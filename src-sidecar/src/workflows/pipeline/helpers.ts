@@ -171,6 +171,25 @@ export function appendSkill(
 }
 
 /**
+ * Append a SELF-CHECK block to a system prompt. The model is told to verify
+ * the listed items before emitting its final output — catches the most likely
+ * failure modes (vague verdicts, missing per-item evidence, hallucinated
+ * citations) at the model side before the JSON parser runs.
+ *
+ * Pair with structured-output prompts where the schema alone doesn't enforce
+ * correctness (free-form summary/assessment fields, lists that need per-item
+ * evidence, severity calibration the schema can't validate).
+ */
+export function appendSelfCheck(base: string, items: string[]): string {
+  if (items.length === 0) return base;
+  const numbered = items.map((it, i) => `${i + 1}. ${it}`).join("\n");
+  return (
+    `${base}\n\n=== SELF-CHECK (apply before outputting) ===\n${numbered}\n` +
+    `If any answer is NO — fix or downgrade the affected fields before emitting JSON.`
+  );
+}
+
+/**
  * Stream a structured-output response, forwarding each parsable
  * incremental partial-JSON snapshot to the frontend as a `progress` event
  * with `data.partial` so the UI can render fields as they fill in,

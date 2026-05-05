@@ -60,14 +60,14 @@ export function PrReviewScreen({ credStatus, onBack }: PrReviewScreenProps) {
     comments: [] as import("@/lib/tauri/bitbucket").BitbucketComment[],
     commentCountAtFetch: 0, commentsLastFetchedAt: null as string | null, hasNewComments: false,
     linkedIssue: null, loadingDetails: false, checkingForUpdates: false,
-    report: null, partialReport: null as Partial<import("@/lib/tauri").ReviewReport> | null,
+    report: null, partialReport: null as Partial<import("@/lib/tauri/pr-review").ReviewReport> | null,
     rawError: null, reviewing: false,
     reviewProgress: "", reviewStreamText: "", reviewChatStreamText: "",
     worktreeBranch: null, checkoutStatus: "idle" as const, checkoutError: "",
     submitAction: null, submitStatus: "idle" as const, submitError: "",
     reviewChat: [],
     myPostedCommentIds: [] as number[], postingComment: false, postCommentError: "",
-    tasks: [] as import("@/lib/tauri").BitbucketTask[],
+    tasks: [] as import("@/lib/tauri/bitbucket").BitbucketTask[],
   };
   // Guard against old cache entries that are missing fields added in newer versions
   const comments = session.comments ?? [];
@@ -354,17 +354,17 @@ export function PrReviewScreen({ credStatus, onBack }: PrReviewScreenProps) {
   // ── Render ────────────────────────────────────────────────────────────────
 
   return (
-    <div className="h-screen flex flex-col overflow-hidden">
+    <div className="h-full flex flex-col overflow-hidden">
       {/* Header */}
       <WorkflowPanelHeader
         panel="pr_review"
         barClassName="z-20"
         leading={
           <>
-            <Button variant="ghost" size="icon" onClick={selectedPr ? () => store().clearSelection() : onBack}>
+            <Button variant="ghost" size="icon" className="shrink-0" onClick={selectedPr ? () => store().clearSelection() : onBack}>
               <ArrowLeft className="h-4 w-4" />
             </Button>
-            <div className="min-w-0">
+            <div className="min-w-0 flex-1">
               <h1 className={`${APP_HEADER_TITLE} leading-none`}>PR Review Assistant</h1>
               {selectedPr && (
                 <p className="mt-0.5 truncate text-xs text-muted-foreground">

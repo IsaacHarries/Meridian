@@ -150,12 +150,12 @@ export function MeetingsScreen({ onBack }: MeetingsScreenProps) {
   const showChatPanel = !(active || creating);
 
   return (
-    <div className="h-screen flex flex-col overflow-hidden">
+    <div className="h-full flex flex-col overflow-hidden">
       <WorkflowPanelHeader
         panel="meetings"
         leading={
           <>
-            <Button variant="ghost" size="icon" onClick={onBack}>
+            <Button variant="ghost" size="icon" className="shrink-0" onClick={onBack}>
               <ArrowLeft className="h-4 w-4" />
             </Button>
             <h1 className={APP_HEADER_TITLE}>Meetings</h1>
@@ -165,7 +165,7 @@ export function MeetingsScreen({ onBack }: MeetingsScreenProps) {
 
       <div className="flex flex-1 min-h-0">
         {/* List pane */}
-        <aside className="w-80 shrink-0 border-r flex flex-col bg-background/60">
+        <aside className="w-80 shrink-0 border-r flex flex-col h-full min-h-0 bg-background/60">
           <div className="p-3 border-b">
             {transcriptionDisabled ? (
               <Button
@@ -225,11 +225,11 @@ export function MeetingsScreen({ onBack }: MeetingsScreenProps) {
             ) : selected ? (
               <MeetingDetailView record={selected} />
             ) : (
-              <EmptyState />
+              <EmptyState transcriptionDisabled={transcriptionDisabled} />
             )}
           </main>
           {showChatPanel && (
-            <aside className="w-[420px] shrink-0 border-l bg-background/40 flex flex-col min-h-0">
+            <aside className="w-[420px] shrink-0 border-l bg-background/40 flex flex-col h-full min-h-0">
               {selected ? (
                 <MeetingChatPanel record={selected} />
               ) : (
@@ -249,19 +249,35 @@ export function MeetingsScreen({ onBack }: MeetingsScreenProps) {
   );
 }
 
-function EmptyState() {
+function EmptyState({ transcriptionDisabled }: { transcriptionDisabled: boolean }) {
+  // Pencil-on-paper when transcription is off (notes is the only path);
+  // mic when transcription is on (recording is the primary action).
+  const Icon = transcriptionDisabled ? NotebookPen : Mic;
   return (
     <div className="h-full flex flex-col items-center justify-center text-center px-6 gap-3">
       <div className="rounded-full bg-muted p-4">
-        <Mic className="h-7 w-7 text-muted-foreground" />
+        <Icon className="h-7 w-7 text-muted-foreground" />
       </div>
       <div className="space-y-1">
-        <h2 className="text-lg font-semibold">Capture meetings</h2>
-        <p className="text-sm text-muted-foreground max-w-md">
-          Record audio for local whisper transcription, or write freeform notes
-          when recording is not allowed. Either way the AI can summarise the
-          discussion. Start a new meeting or select a past meeting from the list.
-        </p>
+        {transcriptionDisabled ? (
+          <>
+            <h2 className="text-lg font-semibold">Write meeting notes</h2>
+            <p className="text-sm text-muted-foreground max-w-md">
+              Capture freeform notes during your meetings. Start a new one or
+              select a past meeting from the list.
+            </p>
+          </>
+        ) : (
+          <>
+            <h2 className="text-lg font-semibold">Capture meetings</h2>
+            <p className="text-sm text-muted-foreground max-w-md">
+              Record audio for local whisper transcription, or write freeform
+              notes when recording is not allowed. Either way the AI can
+              summarise the discussion. Start a new meeting or select a past
+              meeting from the list.
+            </p>
+          </>
+        )}
       </div>
     </div>
   );

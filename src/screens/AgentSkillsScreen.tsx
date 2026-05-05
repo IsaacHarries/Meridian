@@ -153,12 +153,12 @@ export function AgentSkillsScreen({ onBack }: Props) {
       <WorkflowPanelHeader
         leading={
           <>
-            <Button variant="ghost" size="icon" onClick={onBack} aria-label="Back">
+            <Button variant="ghost" size="icon" className="shrink-0" onClick={onBack} aria-label="Back">
               <ArrowLeft className="h-4 w-4" />
             </Button>
-            <div className="min-w-0">
+            <div className="min-w-0 flex-1">
               <h1 className={APP_HEADER_TITLE}>Agent Skills</h1>
-              <p className="text-xs text-muted-foreground">
+              <p className="truncate text-xs text-muted-foreground">
                 Domain knowledge injected into AI agents to improve their understanding of your
                 team and codebase
               </p>

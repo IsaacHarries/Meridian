@@ -162,12 +162,12 @@ export function SprintDashboardScreen({ credStatus, onBack }: SprintDashboardScr
       : String(allData?.sprints[selectedSprintIndex]?.sprint.id ?? "none");
 
   return (
-    <div className="h-screen flex flex-col overflow-hidden">
+    <div className="h-full flex flex-col overflow-hidden">
       <WorkflowPanelHeader
         panel="sprint_dashboard"
         leading={
           <>
-            <Button variant="ghost" size="icon" onClick={onBack}>
+            <Button variant="ghost" size="icon" className="shrink-0" onClick={onBack}>
               <ArrowLeft className="h-4 w-4" />
             </Button>
             <h1 className={APP_HEADER_TITLE}>Sprint Dashboard</h1>

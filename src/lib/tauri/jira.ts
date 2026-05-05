@@ -160,6 +160,8 @@ export interface SprintReportCache {
   issues: JiraIssue[];
   prs: BitbucketPr[];
   cachedAt: string;
+  aiSummary?: string;
+  aiSummaryGeneratedAt?: string;
 }
 
 export async function saveSprintReport(

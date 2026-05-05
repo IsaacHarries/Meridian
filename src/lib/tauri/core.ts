@@ -136,6 +136,19 @@ export function setLocalLlmUrlCache(url: string) {
   _cachedLocalLlmUrl = url;
 }
 
+// Module-level cache for the configured JIRA base URL so the rich-notes
+// editor's Cmd/Ctrl-click handler can build a `/browse/<KEY>` URL without
+// having to await an async lookup on every click. Hydrated once at app
+// boot from `getNonSecretConfig()` (App.tsx) and refreshed when the user
+// updates their JIRA settings.
+let _cachedJiraBaseUrl: string | null = null;
+export function setJiraBaseUrlCache(url: string) {
+  _cachedJiraBaseUrl = url;
+}
+export function getJiraBaseUrlCache(): string | null {
+  return _cachedJiraBaseUrl;
+}
+
 /**
  * Show a persistent toast explaining that the Ollama server is not running,
  * including the command needed to start it.

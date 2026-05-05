@@ -1,8 +1,11 @@
 import { getIgnoredDevs } from "@/lib/preferences";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("@/lib/tauri", () => ({
+vi.mock("@/lib/tauri/jira", () => ({
   getAllActiveSprintIssues: vi.fn(),
+}));
+
+vi.mock("@/lib/tauri/bitbucket", () => ({
   getOpenPrs: vi.fn(),
 }));
 

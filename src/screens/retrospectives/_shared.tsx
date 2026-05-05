@@ -57,6 +57,8 @@ export function sprintDateRange(sprint: JiraSprint): string {
 export interface SprintData {
   issues: JiraIssue[];
   prs: BitbucketPr[];
+  aiSummary?: string;
+  aiSummaryGeneratedAt?: string;
 }
 
 // ── Velocity trend types ──────────────────────────────────────────────────────

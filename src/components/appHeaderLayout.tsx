@@ -19,9 +19,12 @@ export const APP_HEADER_ROW_PANEL =
 export const APP_HEADER_ROW_LANDING =
   "flex h-14 w-full items-center justify-end gap-2 overflow-hidden pl-2 pr-2.5 sm:pl-3 sm:pr-3";
 
-/** Title next to back — same weight/size across panels. */
+/** Title next to back — same weight/size across panels. `min-w-0` is what
+ *  lets `truncate` actually fire when the title sits as a flex child (the
+ *  default `min-width: auto` would keep it at content width and prevent the
+ *  ellipsis from triggering when the workspace narrows). */
 export const APP_HEADER_TITLE =
-  "text-sm font-semibold text-foreground truncate";
+  "min-w-0 text-sm font-semibold text-foreground truncate";
 
 type WorkflowPanelHeaderProps = {
   leading: ReactNode;
@@ -51,10 +54,16 @@ export function WorkflowPanelHeader({
   return (
     <header className={cn(APP_HEADER_BAR, barClassName)}>
       <div className={APP_HEADER_ROW_PANEL}>
-        <div className="relative z-10 flex min-w-0 shrink-0 items-center gap-2">
+        {/* Leading takes the available space (flex-1) so the title can truncate
+            when the workspace narrows — the right-cluster icons (settings,
+            tasks, model picker, etc.) stay shrink-0 and never get pushed off
+            the row. Consumers MUST: (a) add `shrink-0` to the back button so
+            it stays visible; (b) wrap multi-line titles in `min-w-0 flex-1`
+            so they shrink with their parent. APP_HEADER_TITLE already carries
+            `min-w-0 truncate`. */}
+        <div className="relative z-10 flex min-w-0 flex-1 items-center gap-2">
           {leading}
         </div>
-        <div className="min-w-0 flex-1" aria-hidden />
         <div className="relative z-10 flex shrink-0 items-center gap-2">
           {trailing}
           {panel ? <HeaderModelPicker panel={panel} stage={stage} /> : null}

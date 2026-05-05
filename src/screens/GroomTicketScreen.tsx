@@ -571,15 +571,15 @@ export function GroomTicketScreen({ credStatus, onBack }: GroomTicketScreenProps
   }, [session]);
 
   return (
-    <div className="h-screen flex flex-col overflow-hidden">
+    <div className="h-full flex flex-col overflow-hidden">
       <WorkflowPanelHeader
         panel="ticket_quality"
         leading={
           <>
-            <Button variant="ghost" size="icon" onClick={onBack}><ArrowLeft className="h-4 w-4" /></Button>
-            <div className="min-w-0">
+            <Button variant="ghost" size="icon" className="shrink-0" onClick={onBack}><ArrowLeft className="h-4 w-4" /></Button>
+            <div className="min-w-0 flex-1">
               <h1 className={`${APP_HEADER_TITLE} leading-none`}>Groom Tickets</h1>
-              <p className="mt-0.5 text-xs text-muted-foreground">
+              <p className="mt-0.5 truncate text-xs text-muted-foreground">
                 {selectedSprint ? `${selectedSprint.name}${selectedSprint.state === "future" ? " · upcoming" : ""}` : "AI-assisted ticket grooming with JIRA write-back"}
               </p>
             </div>

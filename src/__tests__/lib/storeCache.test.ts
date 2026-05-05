@@ -3,7 +3,7 @@ import { loadStoreCache, saveStoreCache } from "@/lib/tauri/store-cache";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // Mock the Tauri commands that storeCache delegates to
-vi.mock("@/lib/tauri", () => ({
+vi.mock("@/lib/tauri/store-cache", () => ({
   saveStoreCache: vi.fn().mockResolvedValue(undefined),
   loadStoreCache: vi.fn().mockResolvedValue(null),
   deleteStoreCache: vi.fn().mockResolvedValue(undefined),

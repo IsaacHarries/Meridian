@@ -14,7 +14,7 @@ import { BackgroundRenderer, getBackgroundId, useBgChangeListener } from "@/lib/
 import { startRateLimitListener } from "@/lib/rateLimitListener";
 import { clearAllEffects, fireBlackHole, fireComet, fireMeteorShower, firePulsar, fireShootingStar, fireWormhole, getBhGravityEnabled, getSpaceEffectKindToggles, setEffectsEnabled, SPACE_FX_BH_GRAVITY_EVENT, SPACE_FX_TOGGLES_EVENT, toggleBhGravityEnabled, toggleSpaceEffectKind, type SpaceEffectKind } from "@/lib/spaceEffects/_shared";
 import { SpaceEffectsOverlay } from "@/lib/spaceEffects/overlay";
-import { setLocalLlmUrlCache } from "@/lib/tauri/core";
+import { setJiraBaseUrlCache, setLocalLlmUrlCache } from "@/lib/tauri/core";
 import { bitbucketComplete, credentialStatusComplete, getCredentialStatus, getNonSecretConfig, jiraComplete, type CredentialStatus } from "@/lib/tauri/credentials";
 import { setRuntimeOverloadPct } from "@/lib/workloadClassifier";
 import { ThemeProvider } from "@/providers/ThemeProvider";
@@ -125,11 +125,15 @@ function AppInner() {
         setScreen(credentialStatusComplete(status) ? "landing" : "onboarding");
       })
       .catch(() => setScreen("onboarding"));
-    // Pre-load the local LLM URL into the cache so toasts can display it.
+    // Pre-load the local LLM URL (so toasts can display it) and the JIRA base
+    // URL (so the rich-notes editor's Cmd-click handler can build /browse/<KEY>
+    // links without an async lookup on every click).
     getNonSecretConfig()
       .then((cfg) => {
-        const url = cfg["local_llm_url"];
-        if (url) setLocalLlmUrlCache(url);
+        const llmUrl = cfg["local_llm_url"];
+        if (llmUrl) setLocalLlmUrlCache(llmUrl);
+        const jiraUrl = cfg["jira_base_url"];
+        if (jiraUrl) setJiraBaseUrlCache(jiraUrl);
       })
       .catch(() => {});
   }, []);
@@ -290,7 +294,15 @@ function ScreenWithTasksPanel({ children }: { children: React.ReactNode }) {
   const width = useTasksStore((s) => s.panelWidth);
   return (
     <>
-      <div style={{ paddingRight: open ? width : 0 }}>
+      {/* `h-full` is critical: every screen uses `h-full` for its own root,
+          which only resolves correctly when this wrapper has a definite
+          height. Without it, `h-full` collapses to content size and screens
+          like Meetings render their inner panels at content height — which
+          can push the chat input below the visible window when the app is
+          short. The parent (AiDebugDock children div) has the dvh-anchored
+          height, so h-full propagates from there down through this wrapper
+          to each screen. */}
+      <div className="h-full" style={{ paddingRight: open ? width : 0 }}>
         {children}
       </div>
       <TasksPanel />

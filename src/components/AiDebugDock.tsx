@@ -5,18 +5,14 @@
  *     window for the panel, with a draggable divider.
  *   - "window": pop the panel out into its own Tauri WebviewWindow
  *     so the user can drag it to a second monitor.
- *   - "hidden": panel is collapsed to a small floating button.
+ *   - "hidden": panel is collapsed away; main app fills the viewport.
  *
- * The dock mode is persisted in `aiDebugStore` (mirroring the
- * preference in `appPreferences`). Dragging the divider is purely
- * in-memory — sticking the size to the user's last drag is a future
- * polish and not load-bearing for the core debug workflow.
- *
- * Children are rendered inside the "main" slot; the panel sits on the
- * configured edge. When dock mode is "window" or "hidden", children
- * fill the entire viewport and the panel is rendered elsewhere (the
- * popped-out window owns its own copy; the hidden mode shows a small
- * pill the user can click to re-dock).
+ * Critical: the children (the entire app) must NOT unmount when the
+ * dock mode changes. We always render the same outer `<div>` wrapper
+ * with children at a stable JSX position (gridArea: "main"); the
+ * panel and divider are conditionally rendered as siblings. React
+ * preserves the children subtree across mode toggles, so workflow
+ * state and the current screen survive a Cmd-Shift-D press.
  */
 
 import { useEffect, useMemo, useRef } from "react";
@@ -43,18 +39,15 @@ export function AiDebugDock({ children }: { children: React.ReactNode }) {
     }
   }, [dockMode]);
 
-  // The panel is hidden in two cases:
-  //   - dockMode === "hidden": user explicitly closed it; reveal via the
-  //     View → AI Debug Panel native menu (shortcut Cmd/Ctrl+Shift+D).
-  //   - dockMode === "window": panel lives in the popped-out window.
-  // In both cases the main window just renders its children unmodified.
-  if (dockMode === "hidden" || dockMode === "window") {
-    return <>{children}</>;
-  }
+  // The inline panel only renders for the three split modes. For
+  // "hidden" and "window" we still render the wrapper (so children stay
+  // mounted) but pass `orientation = null` to skip the panel slot.
+  const splitOrientation: "bottom" | "right" | "left" | null =
+    dockMode === "hidden" || dockMode === "window" ? null : dockMode;
 
   return (
     <DockSplit
-      orientation={dockMode}
+      orientation={splitOrientation}
       panelSize={panelSize}
       onPanelSizeChange={setPanelSize}
       panelSlot={
@@ -107,7 +100,7 @@ function DockSplit({
   panelSlot,
   children,
 }: {
-  orientation: "bottom" | "right" | "left";
+  orientation: "bottom" | "right" | "left" | null;
   panelSize: number;
   onPanelSizeChange: (px: number) => void;
   panelSlot: React.ReactNode;
@@ -117,6 +110,7 @@ function DockSplit({
   const startRef = useRef({ pos: 0, size: 0 });
 
   const onDividerDown = (e: React.MouseEvent) => {
+    if (!orientation) return;
     e.preventDefault();
     draggingRef.current = true;
     startRef.current = {
@@ -143,59 +137,83 @@ function DockSplit({
     window.addEventListener("mouseup", onUp);
   };
 
+  // Single grid layout, parameterised by orientation. Named grid areas
+  // ("main" / "divider" / "panel") let us keep the children div at a
+  // STABLE JSX position regardless of mode — switching modes only
+  // changes CSS, never the React tree, so children never unmount.
   const containerStyle = useMemo<React.CSSProperties>(() => {
+    const base: React.CSSProperties = {
+      display: "grid",
+      height: "100dvh",
+      width: "100vw",
+    };
+    if (!orientation) {
+      return {
+        ...base,
+        gridTemplateRows: "1fr",
+        gridTemplateColumns: "1fr",
+        gridTemplateAreas: '"main"',
+      };
+    }
     if (orientation === "bottom") {
       return {
-        display: "grid",
+        ...base,
+        gridTemplateColumns: "1fr",
         gridTemplateRows: `1fr 4px ${panelSize}px`,
-        height: "100vh",
-        width: "100vw",
+        gridTemplateAreas: '"main" "divider" "panel"',
       };
     }
     if (orientation === "right") {
       return {
-        display: "grid",
+        ...base,
+        gridTemplateRows: "1fr",
         gridTemplateColumns: `1fr 4px ${panelSize}px`,
-        height: "100vh",
-        width: "100vw",
+        gridTemplateAreas: '"main divider panel"',
       };
     }
     return {
-      display: "grid",
+      ...base,
+      gridTemplateRows: "1fr",
       gridTemplateColumns: `${panelSize}px 4px 1fr`,
-      height: "100vh",
-      width: "100vw",
+      gridTemplateAreas: '"panel divider main"',
     };
   }, [orientation, panelSize]);
 
-  const dividerStyle: React.CSSProperties = {
-    cursor: orientation === "bottom" ? "ns-resize" : "ew-resize",
-    background: "var(--border)",
-  };
+  const dividerStyle: React.CSSProperties = orientation
+    ? {
+        gridArea: "divider",
+        cursor: orientation === "bottom" ? "ns-resize" : "ew-resize",
+        background: "var(--border)",
+      }
+    : {};
 
-  if (orientation === "bottom") {
-    return (
-      <div style={containerStyle}>
-        <div className="overflow-hidden">{children}</div>
-        <div onMouseDown={onDividerDown} style={dividerStyle} />
-        <div className="overflow-hidden">{panelSlot}</div>
-      </div>
-    );
-  }
-  if (orientation === "right") {
-    return (
-      <div style={containerStyle}>
-        <div className="overflow-hidden">{children}</div>
-        <div onMouseDown={onDividerDown} style={dividerStyle} />
-        <div className="overflow-hidden">{panelSlot}</div>
-      </div>
-    );
-  }
   return (
     <div style={containerStyle}>
-      <div className="overflow-hidden">{panelSlot}</div>
-      <div onMouseDown={onDividerDown} style={dividerStyle} />
-      <div className="overflow-hidden">{children}</div>
+      {/*
+        Children always live in this single div at this single JSX position.
+        `min-h-0 min-w-0` lets the grid track size it correctly; `overflow-y-auto`
+        is the safety net for screens that use `min-h-screen` (which would
+        otherwise overflow the smaller grid track when a dock is active).
+        Screens that already use `h-full` / `h-dvh` fit exactly and the
+        scrollbar never appears.
+      */}
+      <div
+        style={{ gridArea: "main" }}
+        className="min-h-0 min-w-0 overflow-y-auto"
+      >
+        {children}
+      </div>
+      {orientation && (
+        <>
+          <div onMouseDown={onDividerDown} style={dividerStyle} />
+          <div
+            style={{ gridArea: "panel" }}
+            className="min-h-0 min-w-0 overflow-hidden"
+          >
+            {panelSlot}
+          </div>
+        </>
+      )}
     </div>
   );
 }

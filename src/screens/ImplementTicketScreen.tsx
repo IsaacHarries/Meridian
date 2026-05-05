@@ -282,12 +282,15 @@ export function ImplementTicketScreen({
   // ── Render ──────────────────────────────────────────────────────────────────
 
   return (
-    <div className="flex h-dvh min-h-0 flex-col overflow-hidden">
+    <div className="flex h-full min-h-0 flex-col overflow-hidden">
       {/* Header */}
       <header className={cn(APP_HEADER_BAR, "z-20 shrink-0")}>
         <div className={cn(APP_HEADER_ROW_PANEL, "relative")}>
-          {/* Back + title — left (same slot as other panels) */}
-          <div className="relative z-10 flex min-w-0 shrink-0 items-center gap-2">
+          {/* Back + title — left (same slot as other panels). `flex-1 min-w-0`
+              lets the title shrink/truncate when the workspace narrows so the
+              right-side icons (settings, tasks, etc.) never get pushed off
+              the row. */}
+          <div className="relative z-10 flex min-w-0 flex-1 items-center gap-2">
             <Button
               variant="ghost"
               size="icon"
@@ -323,12 +326,10 @@ export function ImplementTicketScreen({
             >
               <ArrowLeft className="h-4 w-4" />
             </Button>
-            <span className={cn(APP_HEADER_TITLE, "shrink-0")}>
+            <span className={APP_HEADER_TITLE}>
               Implement a Ticket
             </span>
           </div>
-
-          <div className="min-w-0 flex-1" aria-hidden />
 
           <Button
             variant="ghost"

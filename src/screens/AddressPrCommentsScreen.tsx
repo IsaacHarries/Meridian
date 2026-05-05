@@ -529,7 +529,7 @@ export function AddressPrCommentsScreen({ credStatus, onBack }: Props) {
         panel="address_pr_comments"
         leading={
           <>
-            <Button variant="ghost" size="icon" onClick={onBack}>
+            <Button variant="ghost" size="icon" className="shrink-0" onClick={onBack}>
               <ArrowLeft className="h-4 w-4" />
             </Button>
             <h1 className={APP_HEADER_TITLE}>Address PR Tasks & Comments</h1>

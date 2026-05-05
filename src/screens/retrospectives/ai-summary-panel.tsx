@@ -17,8 +17,25 @@ import {
     RefreshCw,
     Sparkles,
 } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { isDone } from "./_shared";
+
+// Compact "X ago" formatter for the cached-summary timestamp. Seconds-precise
+// freshness isn't useful here — minutes/hours/days is what matters for
+// deciding whether to regenerate.
+export function formatRelativeTime(iso: string): string {
+  const then = new Date(iso).getTime();
+  if (Number.isNaN(then)) return "";
+  const diffMs = Date.now() - then;
+  const minutes = Math.floor(diffMs / 60_000);
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  if (days < 30) return `${days}d ago`;
+  return new Date(iso).toLocaleDateString();
+}
 
 // Selects meetings whose start time falls within the sprint window. The
 // boundary check is loose on purpose: sprint dates often have time-of-day
@@ -142,15 +159,34 @@ export function AiSummaryPanel({
   sprint,
   issues,
   prs,
+  cachedSummary,
+  cachedSummaryAt,
+  onSummaryGenerated,
 }: {
   sprint: JiraSprint;
   issues: JiraIssue[];
   prs: BitbucketPr[];
+  cachedSummary?: string;
+  cachedSummaryAt?: string;
+  onSummaryGenerated?: (summary: string) => void;
 }) {
-  const [state, setState] = useState<"idle" | "loading" | "done" | "error">("idle");
-  const [summary, setSummary] = useState("");
+  const [state, setState] = useState<"idle" | "loading" | "done" | "error">(
+    cachedSummary ? "done" : "idle",
+  );
+  const [summary, setSummary] = useState(cachedSummary ?? "");
+  const [generatedAt, setGeneratedAt] = useState<string | undefined>(cachedSummaryAt);
   const [error, setError] = useState("");
   const [copied, setCopied] = useState(false);
+
+  // Re-seed when the parent swaps to a different sprint's cached data, so
+  // sprint navigation shows the correct cached summary instead of stale state
+  // from the previously-viewed sprint.
+  useEffect(() => {
+    setSummary(cachedSummary ?? "");
+    setGeneratedAt(cachedSummaryAt);
+    setState(cachedSummary ? "done" : "idle");
+    setError("");
+  }, [sprint.id, cachedSummary, cachedSummaryAt]);
 
   async function generate() {
     setState("loading");
@@ -178,7 +214,9 @@ export function AiSummaryPanel({
       const context = buildSprintContext(sprint, issues, prs, sprintMeetings);
       const result = await generateSprintRetrospective(context);
       setSummary(result);
+      setGeneratedAt(new Date().toISOString());
       setState("done");
+      onSummaryGenerated?.(result);
     } catch (e) {
       setError(String(e));
       setState("error");
@@ -197,10 +235,17 @@ export function AiSummaryPanel({
     <Card>
       <CardHeader className="pb-3">
         <div className="flex items-center justify-between">
-          <CardTitle className="text-base flex items-center gap-2">
-            <Sparkles className="h-4 w-4 text-purple-400" />
-            AI Retrospective Summary
-          </CardTitle>
+          <div>
+            <CardTitle className="text-base flex items-center gap-2">
+              <Sparkles className="h-4 w-4 text-purple-400" />
+              AI Retrospective Summary
+            </CardTitle>
+            {state === "done" && generatedAt && (
+              <p className="text-[11px] text-muted-foreground mt-1">
+                Generated {formatRelativeTime(generatedAt)}
+              </p>
+            )}
+          </div>
           <div className="flex items-center gap-2">
             {state === "done" && (
               <Button variant="ghost" size="sm" className="gap-1.5 text-xs" onClick={handleCopy}>
