@@ -4,7 +4,14 @@ import { Textarea } from "@/components/ui/textarea";
 import { type JiraIssue } from "@/lib/tauri/jira";
 import { type SuggestedEditField } from "@/lib/tauri/workflows";
 import { Check, Loader2, Pencil, X } from "lucide-react";
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import {
+    forwardRef,
+    useEffect,
+    useImperativeHandle,
+    useLayoutEffect,
+    useRef,
+    useState,
+} from "react";
 import {
     type DraftChange,
     composeFromDecisions,
@@ -14,16 +21,16 @@ import {
 } from "./_shared";
 import { InlineDiffView } from "./diff-view";
 
-export function FieldEditor({
-  field,
-  label,
-  value,
-  issue,
-  pendingDraft,
-  onSave,
-  onAcceptSuggestion,
-  onDeclineSuggestion,
-}: {
+export interface FieldEditorHandle {
+  /** If the field has unsaved edits, push them to JIRA. Used by the
+   *  parent to auto-save in-flight edits when the user navigates to a
+   *  different ticket without explicitly clicking Save. No-op when not
+   *  dirty, not editable, or while an AI suggestion diff is open
+   *  (mid-resolution edits aren't a committed change yet). */
+  flushIfDirty: () => Promise<void>;
+}
+
+export const FieldEditor = forwardRef<FieldEditorHandle, {
   field: SuggestedEditField;
   label: string;
   value: string;
@@ -35,7 +42,16 @@ export function FieldEditor({
    *  longer writes to JIRA on its own; the user must press Save to submit. */
   onAcceptSuggestion: (draftId: string) => void;
   onDeclineSuggestion: (draftId: string) => void;
-}) {
+}>(function FieldEditor({
+  field,
+  label,
+  value,
+  issue,
+  pendingDraft,
+  onSave,
+  onAcceptSuggestion,
+  onDeclineSuggestion,
+}, ref) {
   // `editorContent` is what the editor currently shows — driven by user
   // typing, suggestion accepts, or external sync. `baseline` is the last
   // value we know matches what JIRA has stored. Save shows whenever they
@@ -115,6 +131,25 @@ export function FieldEditor({
       setSaving(false);
     }
   }
+
+  useImperativeHandle(
+    ref,
+    () => ({
+      async flushIfDirty() {
+        if (!editable) return;
+        if (editorContent === baseline) return;
+        // Mid-resolution AI suggestion: the user hasn't committed to the
+        // composed result yet, so we don't auto-save. Once they finish
+        // resolving the diff, the editor flips to mode==="edit" with the
+        // composed text — re-entering this method's scope.
+        if (pendingDraft) return;
+        await onSave(editorContent);
+        setBaseline(editorContent);
+        setMode("view");
+      },
+    }),
+    [editable, editorContent, baseline, pendingDraft, onSave],
+  );
 
   return (
     <div className="border rounded-md overflow-hidden">
@@ -303,4 +338,4 @@ export function FieldEditor({
       )}
     </div>
   );
-}
+});

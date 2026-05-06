@@ -19,7 +19,7 @@ import {
 } from "@/screens/groom-ticket/_shared";
 import { ChatPanel } from "@/screens/groom-ticket/chat-panel";
 import { DraftChangesPanel } from "@/screens/groom-ticket/draft-changes-panel";
-import { TicketFieldsPanel } from "@/screens/groom-ticket/ticket-fields-panel";
+import { TicketFieldsPanel, type TicketFieldsPanelHandle } from "@/screens/groom-ticket/ticket-fields-panel";
 import { TicketSelector } from "@/screens/groom-ticket/ticket-selector";
 import { TicketSummaryCard } from "@/screens/groom-ticket/ticket-summary-card";
 import { useAiSelectionStore } from "@/stores/aiSelectionStore";
@@ -31,6 +31,7 @@ import {
     useTokenUsageStore,
 } from "@/stores/tokenUsageStore";
 import { listen } from "@tauri-apps/api/event";
+import { toast } from "sonner";
 import {
     ArrowLeft,
     PanelLeftClose,
@@ -63,6 +64,11 @@ export function GroomTicketScreen({ credStatus, onBack }: GroomTicketScreenProps
   const [initError, setInitError] = useState<string | null>(null);
   const [recentlyUpdated, setRecentlyUpdated] = useState<Set<string>>(new Set());
   const recentlyUpdatedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Imperative handle on the fields panel — used to flush dirty in-line
+  // field edits to JIRA when the user switches tickets, so unsaved typed
+  // or accepted-suggestion text doesn't get silently dropped or carried
+  // over into the next ticket's editor.
+  const fieldsPanelRef = useRef<TicketFieldsPanelHandle | null>(null);
 
   // Mirror the live session chat into the chat-history store so it
   // survives navigating away from this screen. Rehydrated in
@@ -336,9 +342,18 @@ export function GroomTicketScreen({ credStatus, onBack }: GroomTicketScreenProps
     }
   }
 
-  const selectTicket = useCallback((issue: JiraIssue) => {
+  const selectTicket = useCallback(async (issue: JiraIssue) => {
     const hasUnapplied = session?.drafts.some((d) => d.status === "approved" && d.applyResult !== "ok");
     if (hasUnapplied && !confirm("You have approved changes not yet applied to JIRA. Leave anyway?")) return;
+    // Push any in-flight dirty field edits to JIRA against the OUTGOING
+    // ticket before swapping. If a save fails we surface a toast and
+    // continue; the field-editor remount on issue.id ensures stale text
+    // never leaks into the new ticket either way.
+    try {
+      await fieldsPanelRef.current?.flushAllDirty();
+    } catch (e) {
+      toast.error("Couldn't auto-save field edits", { description: String(e) });
+    }
     void loadTicket(issue);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session]);
@@ -697,6 +712,7 @@ export function GroomTicketScreen({ credStatus, onBack }: GroomTicketScreenProps
 
               <div className="mx-2">
                 <TicketFieldsPanel
+                  ref={fieldsPanelRef}
                   issue={session.issue}
                   drafts={session.drafts}
                   onSaveField={saveFieldEdit}

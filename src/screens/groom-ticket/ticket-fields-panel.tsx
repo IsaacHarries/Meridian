@@ -2,12 +2,21 @@ import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { type JiraIssue } from "@/lib/tauri/jira";
 import { type SuggestedEditField } from "@/lib/tauri/workflows";
+import { forwardRef, useImperativeHandle, useRef } from "react";
 import {
     type DraftChange,
     FIELD_LABELS,
     joinDescriptionSections,
 } from "./_shared";
-import { FieldEditor } from "./field-editor";
+import { FieldEditor, type FieldEditorHandle } from "./field-editor";
+
+export interface TicketFieldsPanelHandle {
+  /** Auto-save every dirty field editor to JIRA. Used by the parent
+   *  before switching tickets so unsaved typed/accepted edits land
+   *  against the *current* ticket instead of either being lost or
+   *  bleeding into the next ticket's local editor state. */
+  flushAllDirty: () => Promise<void>;
+}
 
 // ── All-fields panel ──────────────────────────────────────────────────────────
 //
@@ -22,20 +31,41 @@ import { FieldEditor } from "./field-editor";
 // user can't edit yet (custom fields whose JIRA IDs haven't been
 // auto-discovered) show a read-only badge instead of the Edit button.
 
-export function TicketFieldsPanel({
-  issue,
-  drafts,
-  onSaveField,
-  onAcceptSuggestion,
-  onDeclineSuggestion,
-}: {
+export const TicketFieldsPanel = forwardRef<TicketFieldsPanelHandle, {
   issue: JiraIssue;
   /** Pending AI suggestions, routed to the matching field row. */
   drafts: DraftChange[];
   onSaveField: (field: SuggestedEditField, value: string) => Promise<void>;
   onAcceptSuggestion: (draftId: string) => void;
   onDeclineSuggestion: (draftId: string) => void;
-}) {
+}>(function TicketFieldsPanel({
+  issue,
+  drafts,
+  onSaveField,
+  onAcceptSuggestion,
+  onDeclineSuggestion,
+}, ref) {
+  // Map of registered FieldEditor handles, keyed by field name. Used to
+  // call flushIfDirty across every editor when the parent navigates to
+  // a different ticket. Refs are deleted on unmount so stale handles
+  // pointing at remounted editors never linger.
+  const editorRefs = useRef<Map<SuggestedEditField, FieldEditorHandle>>(new Map());
+
+  useImperativeHandle(
+    ref,
+    () => ({
+      async flushAllDirty() {
+        const handles = Array.from(editorRefs.current.values());
+        // Sequential rather than Promise.all so a JIRA rate-limit on
+        // the first save doesn't fan out into duplicate 429s on the
+        // others; the field count here is small (~3–5).
+        for (const h of handles) {
+          await h.flushIfDirty();
+        }
+      },
+    }),
+    [],
+  );
   const description = joinDescriptionSections(issue);
   // Steps / observed / expected are only meaningful on bug-type tickets;
   // hiding them on Story/Task/etc. avoids cluttering the panel with empty
@@ -72,8 +102,16 @@ export function TicketFieldsPanel({
       </CardHeader>
       <CardContent className="space-y-3 pt-3">
         {fields.map(({ field, value }) => (
+          // Key by issue id so local editor state (mode, dirty content,
+          // diff decisions) resets when the user switches tickets — a
+          // safety net for the auto-save flow: even if flushAllDirty
+          // fails, stale text never bleeds into the next ticket.
           <FieldEditor
-            key={field}
+            key={`${issue.id}-${field}`}
+            ref={(handle) => {
+              if (handle) editorRefs.current.set(field, handle);
+              else editorRefs.current.delete(field);
+            }}
             field={field}
             label={FIELD_LABELS[field]}
             value={value ?? ""}
@@ -119,4 +157,4 @@ export function TicketFieldsPanel({
       </CardContent>
     </Card>
   );
-}
+});
