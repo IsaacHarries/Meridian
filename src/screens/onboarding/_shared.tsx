@@ -37,20 +37,42 @@ export const PROVIDER_TITLE: Record<AiProvider, string> = {
 };
 
 export function StepIndicator({ current, total }: { current: number; total: number }) {
+  // Orbit-line indicator — a faint horizontal track with one dot per step.
+  // Past steps are small filled stars, the current step is a glowing
+  // "planet" that pulses, future steps are hollow rings. Reads as a
+  // miniature orbital path matching the wizard's space theme.
   return (
-    <div className="flex items-center gap-2">
-      {Array.from({ length: total }, (_, i) => (
-        <div
-          key={i}
-          className={`h-1.5 rounded-full transition-all ${
-            i < current
-              ? "bg-primary w-6"
-              : i === current
-              ? "bg-primary w-10"
-              : "bg-muted w-6"
-          }`}
-        />
-      ))}
+    <div className="relative flex items-center justify-center gap-5">
+      {/* connecting orbit track behind the dots */}
+      <div className="absolute left-2 right-2 top-1/2 -translate-y-1/2 h-px bg-gradient-to-r from-transparent via-primary/40 to-transparent" />
+      {Array.from({ length: total }, (_, i) => {
+        if (i < current) {
+          return (
+            <span
+              key={i}
+              className="relative z-10 h-1.5 w-1.5 rounded-full bg-primary"
+              aria-hidden
+            />
+          );
+        }
+        if (i === current) {
+          return (
+            <span key={i} className="relative z-10 inline-flex" aria-current="step">
+              {/* outer halo */}
+              <span className="absolute -inset-1.5 rounded-full bg-primary/30 blur-[3px] animate-pulse" />
+              {/* planet */}
+              <span className="relative h-2.5 w-2.5 rounded-full bg-primary shadow-[0_0_10px_2px] shadow-primary/50" />
+            </span>
+          );
+        }
+        return (
+          <span
+            key={i}
+            className="relative z-10 h-1.5 w-1.5 rounded-full border border-foreground/30 bg-background/40"
+            aria-hidden
+          />
+        );
+      })}
     </div>
   );
 }

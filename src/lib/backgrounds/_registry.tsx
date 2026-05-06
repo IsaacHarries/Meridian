@@ -1,9 +1,9 @@
 import React from "react";
 import { MeridianBg, DuskBg, AuroraBg, ForestBg } from "./meridian";
-import { NebulaBg, CosmosBg, SupernovaBg, StarfieldBg, DeepSpaceBg } from "./space";
+import { NebulaBg, CosmosBg, StarfieldBg, DeepSpaceBg } from "./space";
 import {
   JWSTCarinaBg, JWSTPillarsBg, JWSTSouthernRingBg, JWSTPhantomBg,
-  JWSTTarantulaBg, JWSTDeepFieldBg, JWSTStephansBg, JWSTCartwheelBg,
+  JWSTTarantulaBg, JWSTStephansBg, JWSTCartwheelBg,
 } from "./jwst";
 import { WatercolorBg, NeonBg, PrismBg, GeometricBg, MeshBg } from "./abstract";
 import { HoneycombBg, WavesBg, CircuitBg, BlueprintBg, TopographicBg } from "./patterns";
@@ -14,8 +14,20 @@ import { DotsBg, NoneBg } from "./minimal";
 const LS_KEY = "meridian_bg";
 const CHANGE_EVENT = "meridian-bg-change";
 
+/** Map removed / renamed background ids to a still-existing slot so a
+ *  user's stored selection doesn't silently fall back to the default
+ *  when their previously-chosen background no longer exists. Add an
+ *  entry whenever a slot is removed or renamed. */
+const BG_ID_MIGRATIONS: Record<string, string> = {
+  supernova: "deep-space",             // removed (was Supernova → briefly Galactic Core)
+  "galactic-core": "deep-space",       // removed slot
+  "jwst-deep-field": "deep-space",     // removed (was Deep Field → briefly Eta Carinae)
+  "jwst-eta-carinae": "deep-space",    // removed slot
+};
+
 export function getBackgroundId(): string {
-  return localStorage.getItem(LS_KEY) ?? "deep-space";
+  const raw = localStorage.getItem(LS_KEY) ?? "deep-space";
+  return BG_ID_MIGRATIONS[raw] ?? raw;
 }
 
 export function setBackgroundId(id: string): void {
@@ -55,7 +67,6 @@ export const BACKGROUNDS: BackgroundDef[] = [
   { id: "deep-space",  name: "Deep Space",  category: "space" },
   { id: "nebula",      name: "Nebula",      category: "space" },
   { id: "cosmos",      name: "Cosmos",      category: "space" },
-  { id: "supernova",   name: "Supernova",   category: "space" },
   { id: "starfield",   name: "Starfield",   category: "space" },
   // Meridian
   { id: "meridian",    name: "Meridian",    category: "meridian" },
@@ -68,7 +79,6 @@ export const BACKGROUNDS: BackgroundDef[] = [
   { id: "jwst-southern-ring", name: "Southern Ring",       category: "jwst" },
   { id: "jwst-phantom",       name: "Phantom Galaxy",      category: "jwst" },
   { id: "jwst-tarantula",     name: "Tarantula Nebula",    category: "jwst" },
-  { id: "jwst-deep-field",    name: "Deep Field",          category: "jwst" },
   { id: "jwst-stephans",      name: "Stephan's Quintet",   category: "jwst" },
   { id: "jwst-cartwheel",     name: "Cartwheel Galaxy",    category: "jwst" },
   // Abstract
@@ -96,7 +106,6 @@ const COMPONENTS: Record<string, React.FC> = {
   "forest":      ForestBg,
   "nebula":      NebulaBg,
   "cosmos":      CosmosBg,
-  "supernova":   SupernovaBg,
   "starfield":   StarfieldBg,
   "deep-space":  DeepSpaceBg,
   "jwst-carina":      JWSTCarinaBg,
@@ -105,7 +114,6 @@ const COMPONENTS: Record<string, React.FC> = {
   "jwst-southern-ring": JWSTSouthernRingBg,
   "jwst-phantom": JWSTPhantomBg,
   "jwst-tarantula": JWSTTarantulaBg,
-  "jwst-deep-field": JWSTDeepFieldBg,
   "jwst-stephans": JWSTStephansBg,
   "watercolor":  WatercolorBg,
   "neon":        NeonBg,

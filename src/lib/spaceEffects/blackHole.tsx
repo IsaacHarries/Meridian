@@ -2,6 +2,10 @@ import React from "react";
 import { r, uid } from "./_shared";
 
 // ── 2. Black Hole ──────────────────────────────────────────────────────────────
+//
+// Image asset: `public/bh.webp` is adapted from a NASA visualisation of
+// light bending around a Schwarzschild black hole.
+//   Credit: NASA's Goddard Space Flight Center / Jeremy Schnittman / Scott Noble.
 
 export interface BH { id: number; x: number; y: number; duration: number; rotation: number; }
 

@@ -182,3 +182,10 @@ meridian/
 - API calls are stateless; no codebase content is retained between sessions.
 - Training opt-out should be enabled on your Anthropic account ([platform.claude.com](https://platform.claude.com) → Settings → Privacy).
 - Meeting audio is transcribed locally via Whisper — it never leaves your machine.
+
+---
+
+## Credits
+
+- **Black-hole animation** (`public/bh.webp`) — adapted from a NASA visualisation of light bending around a Schwarzschild black hole.
+  Credit: **NASA's Goddard Space Flight Center / Jeremy Schnittman / Scott Noble.**

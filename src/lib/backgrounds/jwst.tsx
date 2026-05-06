@@ -1,40 +1,20 @@
-import { BgSvg, Stars, makeStars, W, H } from "./_shared";
+import { BgSvg, Stars, makeStars } from "./_shared";
 
 // ── JWST star fields & galaxy helper ──────────────────────────────────────────
 
-const STARS_CARINA        = makeStars(220, 333, 0.3, 2.2);
-const STARS_PILLARS       = makeStars(200, 557, 0.3, 1.8);
-const STARS_SOUTHERN_RING = makeStars(130, 889, 0.4, 1.6);
-const STARS_PHANTOM       = makeStars( 90, 123, 0.3, 1.4);
-const STARS_TARANTULA     = makeStars(280, 777, 0.3, 2.4);
-const STARS_DEEP_BG       = makeStars( 60, 444, 0.3, 1.0);
-const STARS_STEPHANS      = makeStars( 80, 666, 0.3, 1.2);
-const STARS_CARTWHEEL     = makeStars( 90, 999, 0.3, 1.4);
+// All JWST backgrounds share the Deep Space star recipe (count 260,
+// radius 0.3–1.0) so the foreground nebulae / galaxies stay the
+// dominant visual element. Only the seed differs per background so
+// stars land in different positions each time.
+const STARS_CARINA        = makeStars(260, 333, 0.3, 1.0);
+const STARS_PILLARS       = makeStars(260, 557, 0.3, 1.0);
+const STARS_SOUTHERN_RING = makeStars(260, 889, 0.3, 1.0);
+const STARS_PHANTOM       = makeStars(260, 123, 0.3, 1.0);
+const STARS_TARANTULA     = makeStars(260, 777, 0.3, 1.0);
+const STARS_STEPHANS      = makeStars(260, 666, 0.3, 1.0);
+const STARS_CARTWHEEL     = makeStars(260, 999, 0.3, 1.0);
 
 const JWST_STAR_COLOR = "hsl(220 30% 92%)";
-
-interface GalaxyShape {
-  x: number; y: number; rx: number; ry: number;
-  rot: number; color: string; opacity: number;
-}
-const GALAXY_PALETTE = [
-  "hsl(45 90% 68%)", "hsl(200 80% 68%)", "hsl(340 70% 68%)",
-  "hsl(25 85% 62%)", "hsl(270 65% 68%)", "hsl(160 65% 62%)",
-  "hsl(0 72% 65%)",  "hsl(240 75% 72%)",
-];
-function makeGalaxies(count: number, seed: number): GalaxyShape[] {
-  const rand = (n: number) => { const x = Math.sin(n) * 43758.5453; return x - Math.floor(x); };
-  return Array.from({ length: count }, (_, i) => ({
-    x:       rand(seed + i * 7 + 0) * W,
-    y:       rand(seed + i * 7 + 1) * H,
-    rx:      5  + rand(seed + i * 7 + 2) * 22,
-    ry:      2  + rand(seed + i * 7 + 3) * 7,
-    rot:     rand(seed + i * 7 + 4) * 180,
-    color:   GALAXY_PALETTE[Math.floor(rand(seed + i * 7 + 5) * GALAXY_PALETTE.length)],
-    opacity: 0.28 + rand(seed + i * 7 + 6) * 0.55,
-  }));
-}
-const DEEP_FIELD_GALAXIES = makeGalaxies(90, 444);
 
 // ── JWST backgrounds ───────────────────────────────────────────────────────────
 
@@ -194,39 +174,7 @@ export function JWSTTarantulaBg() {
   );
 }
 
-// Webb 6: JWST Deep Field — thousands of galaxies at all distances
-export function JWSTDeepFieldBg() {
-  return (
-    <BgSvg>
-      <defs>
-        <filter id="df-sm" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="4" /></filter>
-      </defs>
-      {/* Background stars */}
-      <Stars stars={STARS_DEEP_BG} color={JWST_STAR_COLOR} />
-      {/* Galaxy shapes — each a small rotated ellipse */}
-      {DEEP_FIELD_GALAXIES.map((g, i) => (
-        <ellipse key={i}
-          cx={g.x.toFixed(1)} cy={g.y.toFixed(1)}
-          rx={g.rx.toFixed(1)} ry={g.ry.toFixed(1)}
-          fill={g.color} opacity={g.opacity.toFixed(2)}
-          transform={`rotate(${g.rot.toFixed(0)}, ${g.x.toFixed(1)}, ${g.y.toFixed(1)})`}
-          filter="url(#df-sm)"
-        />
-      ))}
-      {/* A few larger foreground galaxies */}
-      <ellipse cx="240"  cy="180" rx="38" ry="12" fill="hsl(45 90% 68%)"  opacity="0.55"
-        transform="rotate(25 240 180)"  filter="url(#df-sm)" />
-      <ellipse cx="960"  cy="580" rx="45" ry="14" fill="hsl(200 80% 68%)" opacity="0.52"
-        transform="rotate(-40 960 580)" filter="url(#df-sm)" />
-      <ellipse cx="520"  cy="640" rx="30" ry="10" fill="hsl(340 70% 68%)" opacity="0.48"
-        transform="rotate(60 520 640)"  filter="url(#df-sm)" />
-      <ellipse cx="860"  cy="150" rx="35" ry="11" fill="hsl(270 65% 68%)" opacity="0.50"
-        transform="rotate(-15 860 150)" filter="url(#df-sm)" />
-    </BgSvg>
-  );
-}
-
-// Webb 7: Stephan's Quintet — five galaxies in close proximity with a blue shock wave
+// Webb 6: Stephan's Quintet — five galaxies in close proximity with a blue shock wave
 export function JWSTStephansBg() {
   return (
     <BgSvg>
@@ -264,7 +212,7 @@ export function JWSTStephansBg() {
   );
 }
 
-// Webb 8: Cartwheel Galaxy — ring galaxy with vivid outer ring and radial spokes
+// Webb 7: Cartwheel Galaxy — ring galaxy with vivid outer ring and radial spokes
 export function JWSTCartwheelBg() {
   return (
     <BgSvg>
