@@ -21,37 +21,51 @@ export function makeStars(count: number, seed: number, minR = 0.5, maxR = 2.0): 
   }));
 }
 
-/** Render a star field. Stars TWINKLE by default — each star runs the
- *  shared `bg-star-twinkle` keyframe (defined in `index.css`) on a
- *  per-star randomised duration (4–8 s) and delay (0–6 s) so the field
- *  shimmers organically rather than pulsing in sync. The star's intrinsic
- *  brightness is exposed as a CSS custom property so the keyframe peaks
- *  at that brightness and dims toward invisibility — preserves the
- *  varied opacity that `makeStars` already encodes.
+// Only a fraction of the field is animated — SVG `<circle>` opacity
+// animations aren't GPU-composited (the browser repaints the whole SVG
+// region on every frame), so animating all 260 stars per background was
+// CPU-heavy enough to noticeably degrade UI responsiveness on
+// heavier screens. Twinkling ~1-in-9 stars preserves the shimmering
+// vibe at roughly a tenth of the per-frame paint cost. The picked
+// stars are spread evenly through the index so the animation isn't
+// clumped in one corner.
+const TWINKLE_STRIDE = 9;
+
+/** Render a star field. By default ~1-in-9 stars twinkle (see
+ *  `TWINKLE_STRIDE`) running the shared `bg-star-twinkle` keyframe
+ *  defined in `index.css` on per-star randomised duration (4–8 s) and
+ *  delay (0–6 s) so the shimmer is organic rather than synchronised.
+ *  The star's intrinsic brightness is exposed as a CSS custom property
+ *  so the keyframe peaks at that brightness and dims toward
+ *  invisibility — preserves the varied opacity that `makeStars` encodes.
  *
- *  Opt out with `twinkle={false}` for static stars. */
+ *  Opt out entirely with `twinkle={false}`. */
 export function Stars({
   stars, color = "hsl(var(--foreground))", twinkle = true,
 }: {
   stars: Star[]; color?: string; twinkle?: boolean;
 }) {
-  if (!twinkle) {
-    return (
-      <>
-        {stars.map((s, i) => (
-          <circle key={i} cx={s.x.toFixed(1)} cy={s.y.toFixed(1)} r={s.r.toFixed(2)}
-            fill={color} opacity={s.opacity.toFixed(2)} />
-        ))}
-      </>
-    );
-  }
   return (
     <>
       {stars.map((s, i) => {
-        // Per-star animation parameters from the same seeded PRNG used
-        // for positions, so timing is deterministic + reproducible.
-        // Starting from the star's own seed slot so the values aren't
-        // correlated with adjacent stars' positions.
+        // Static render — used both when the caller opts out and for
+        // the majority of stars on a twinkling field.
+        if (!twinkle || i % TWINKLE_STRIDE !== 0) {
+          return (
+            <circle
+              key={i}
+              cx={s.x.toFixed(1)}
+              cy={s.y.toFixed(1)}
+              r={s.r.toFixed(2)}
+              fill={color}
+              opacity={s.opacity.toFixed(2)}
+            />
+          );
+        }
+        // Animated subset. Per-star animation parameters from the same
+        // seeded PRNG used for positions, so timing is deterministic +
+        // reproducible. Starting from the star's own seed slot so the
+        // values aren't correlated with adjacent stars' positions.
         const duration = 4 + rand(i * 7 + 13.7) * 4;
         const delay = rand(i * 11 + 5.3) * 6;
         return (
