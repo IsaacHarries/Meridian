@@ -174,17 +174,6 @@ meridian/
 └── public/                      # Static assets
 ```
 
----
-
-## Notes
-
-- Built for individual use — not distributed publicly.
-- API calls are stateless; no codebase content is retained between sessions.
-- Training opt-out should be enabled on your Anthropic account ([platform.claude.com](https://platform.claude.com) → Settings → Privacy).
-- Meeting audio is transcribed locally via Whisper — it never leaves your machine.
-
----
-
 ## Credits
 
 - **Black-hole animation** (`public/bh.webp`) — adapted from a NASA visualisation of light bending around a Schwarzschild black hole.
