@@ -82,7 +82,7 @@ pub use llms::local_llm::{get_local_models, test_local_llm_stored, validate_loca
 pub use preferences::{delete_preference, get_preferences, set_preference};
 pub use crate::storage::preferences::{
     clear_ai_debug_log_cmd, data_directory_has_content, get_ai_debug_log_path_cmd, get_data_dir,
-    move_data_directory, relaunch_app,
+    move_data_directory, read_ai_debug_log_cmd, relaunch_app,
 };
 pub use grooming_templates::{
     get_grooming_template_path, load_grooming_template, reveal_grooming_templates_dir,

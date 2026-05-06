@@ -159,6 +159,43 @@ pub fn clear_ai_debug_log_cmd() -> Result<(), String> {
     clear_ai_debug_log()
 }
 
+/// Tauri command: return up to `limit` most-recent entries from the AI
+/// debug JSONL mirror, oldest-first. Used by the AI Debug panel on mount
+/// so the buffer reflects the on-disk source of truth even if the panel
+/// missed earlier `ai-traffic-event` broadcasts (popped-out window
+/// opened mid-run, app restart, etc.). Each line is a JSON object —
+/// malformed lines are skipped silently rather than failing the call.
+#[tauri::command]
+pub fn read_ai_debug_log_cmd(limit: Option<usize>) -> Result<Vec<serde_json::Value>, String> {
+    let path = ai_debug_log_path();
+    if !path.exists() {
+        return Ok(vec![]);
+    }
+    let cap = limit.unwrap_or(200).max(1);
+    // Read the whole file — the JSONL log can grow large, but a single
+    // 8–10 MB read on panel mount is far cheaper than wiring an
+    // incremental tailer for what is a developer-only feature. If the
+    // log ever becomes large enough to matter, swap this for a reverse
+    // line scanner.
+    let bytes = fs::read(&path).map_err(|e| format!("Cannot read ai-debug log: {e}"))?;
+    let text = String::from_utf8_lossy(&bytes);
+    let mut out: Vec<serde_json::Value> = Vec::with_capacity(cap);
+    for line in text.lines().rev() {
+        if out.len() >= cap {
+            break;
+        }
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(trimmed) {
+            out.push(v);
+        }
+    }
+    out.reverse();
+    Ok(out)
+}
+
 /// Tauri command: true when the given directory exists and contains at least
 /// one entry. Used by the Settings UI to decide whether to prompt the user
 /// about migrating data when they pick a new directory.

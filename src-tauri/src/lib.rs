@@ -65,6 +65,7 @@ use commands::{
     relaunch_app,
     get_ai_debug_log_path_cmd,
     clear_ai_debug_log_cmd,
+    read_ai_debug_log_cmd,
     get_non_secret_config,
     get_open_prs,
     get_pr,
@@ -458,6 +459,7 @@ pub fn run() {
             relaunch_app,
             get_ai_debug_log_path_cmd,
             clear_ai_debug_log_cmd,
+            read_ai_debug_log_cmd,
             // Repo / worktree
             validate_worktree,
             sync_worktree,

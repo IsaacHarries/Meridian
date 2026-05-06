@@ -24,6 +24,17 @@ export async function clearAiDebugLogFile(): Promise<void> {
   return invoke<void>("clear_ai_debug_log_cmd");
 }
 
+/**
+ * Returns up to `limit` most-recent entries from the on-disk AI debug
+ * JSONL log, oldest-first. Used by the AI Debug panel on mount so the
+ * displayed buffer reflects the on-disk source of truth — covers the
+ * popped-out window opening mid-run, app restart, or any case where a
+ * live `ai-traffic-event` broadcast was missed.
+ */
+export async function readAiDebugLog(limit = 200): Promise<unknown[]> {
+  return invoke<unknown[]>("read_ai_debug_log_cmd", { limit });
+}
+
 // ── URL fetch ─────────────────────────────────────────────────────────────────
 
 /**

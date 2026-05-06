@@ -11,7 +11,11 @@
  */
 
 import { Button } from "@/components/ui/button";
-import { clearAiDebugLogFile, getAiDebugLogPath } from "@/lib/tauri/misc";
+import {
+    clearAiDebugLogFile,
+    getAiDebugLogPath,
+    readAiDebugLog,
+} from "@/lib/tauri/misc";
 import { cn } from "@/lib/utils";
 import {
     totalCapturedTokens,
@@ -19,7 +23,14 @@ import {
     type AiTrafficEvent,
 } from "@/stores/aiDebugStore";
 import { formatTokens } from "@/stores/tokenUsageStore";
-import { ChevronDown, ChevronRight, FileText, Trash2, X } from "lucide-react";
+import { ChevronDown, ChevronRight, Filter, FolderOpen, Trash2, X } from "lucide-react";
+import { revealItemInDir } from "@tauri-apps/plugin-opener";
+
+// On-mount hydrate cap: matches the in-memory store's MAX_EVENTS so we
+// never request more rows than the buffer can hold. The Rust read
+// command parses lines as JSON; capping here keeps the IPC payload
+// bounded for users with multi-MB log files.
+const MAX_HYDRATE_EVENTS = 200;
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 
@@ -103,10 +114,44 @@ export function AiDebugPanel({ onClose, controls }: AiDebugPanelProps) {
   const enabled = useAiDebugStore((s) => s.enabled);
   const setEnabled = useAiDebugStore((s) => s.setEnabled);
   const clear = useAiDebugStore((s) => s.clear);
+  const hydrateFromDisk = useAiDebugStore((s) => s.hydrateFromDisk);
+
+  // Hydrate the buffer from the on-disk JSONL log on mount so the panel
+  // reflects history regardless of whether the live `ai-traffic-event`
+  // broadcast reached this webview. Critical for the popped-out window:
+  // if it opens after a workflow has already been emitting traffic, the
+  // listener only catches subsequent events, but the JSONL log has the
+  // full record — read once on mount, dedup against any live events
+  // already in the store, and the user sees a complete picture.
+  useEffect(() => {
+    let cancelled = false;
+    void readAiDebugLog(MAX_HYDRATE_EVENTS)
+      .then((rows) => {
+        if (cancelled) return;
+        const parsed = rows.filter(
+          (r): r is AiTrafficEvent =>
+            r != null &&
+            typeof r === "object" &&
+            typeof (r as AiTrafficEvent).runId === "string" &&
+            typeof (r as AiTrafficEvent).startedAt === "number",
+        );
+        if (parsed.length > 0) hydrateFromDisk(parsed);
+      })
+      .catch((e) => {
+        console.warn("[ai-debug] failed to hydrate from disk:", e);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [hydrateFromDisk]);
 
   // Date+optional-time range filter — local component state because this is
   // a developer tool that doesn't need cross-session persistence. Empty
-  // strings mean "unbounded on this side".
+  // strings mean "unbounded on this side". `filterOpen` gates whether the
+  // input row is rendered AND whether the filter is applied; the panel
+  // opens with the filter off so the full traffic stream is visible by
+  // default and users opt in via the header toggle.
+  const [filterOpen, setFilterOpen] = useState(false);
   const [filter, setFilter] = useState<TimeRangeFilter>({
     fromDate: "",
     fromTime: "",
@@ -115,12 +160,14 @@ export function AiDebugPanel({ onClose, controls }: AiDebugPanelProps) {
   });
 
   const filteredEvents = useMemo(
-    () => filterEventsByTimeRange(events, filter),
-    [events, filter],
+    () => (filterOpen ? filterEventsByTimeRange(events, filter) : events),
+    [events, filter, filterOpen],
   );
-  const filterActive = Boolean(
-    filter.fromDate || filter.fromTime || filter.toDate || filter.toTime,
-  );
+  const filterActive =
+    filterOpen &&
+    Boolean(
+      filter.fromDate || filter.fromTime || filter.toDate || filter.toTime,
+    );
   const totals = useMemo(
     () => totalCapturedTokens(filteredEvents),
     [filteredEvents],
@@ -150,13 +197,17 @@ export function AiDebugPanel({ onClose, controls }: AiDebugPanelProps) {
     }
   }
 
-  async function copyPathToClipboard() {
+  async function revealLogInFinder() {
     if (!logPath) return;
     try {
-      await navigator.clipboard.writeText(logPath);
-      toast.success("Log path copied");
-    } catch {
-      toast.error("Clipboard write failed");
+      // `revealItemInDir` opens the parent directory in Finder/Explorer
+      // and selects the file itself. Works for files that don't yet
+      // exist on disk too — the OS will just open the parent without a
+      // selection — which matches the case where the user opens the
+      // panel before any traffic has been captured.
+      await revealItemInDir(logPath);
+    } catch (e) {
+      toast.error("Couldn't open log folder", { description: String(e) });
     }
   }
 
@@ -199,15 +250,28 @@ export function AiDebugPanel({ onClose, controls }: AiDebugPanelProps) {
               Enable capture
             </Button>
           )}
+          <Button
+            variant="ghost"
+            size="icon"
+            className={cn(
+              "h-7 w-7",
+              filterOpen && "bg-muted text-foreground",
+            )}
+            onClick={() => setFilterOpen((v) => !v)}
+            title={filterOpen ? "Hide time-range filter" : "Show time-range filter"}
+            aria-pressed={filterOpen}
+          >
+            <Filter className="h-3.5 w-3.5" />
+          </Button>
           {logPath && (
             <Button
               variant="ghost"
               size="icon"
               className="h-7 w-7"
-              onClick={() => void copyPathToClipboard()}
-              title={`Copy log path: ${logPath}`}
+              onClick={() => void revealLogInFinder()}
+              title={`Reveal log in Finder: ${logPath}`}
             >
-              <FileText className="h-3.5 w-3.5" />
+              <FolderOpen className="h-3.5 w-3.5" />
             </Button>
           )}
           <Button
@@ -234,14 +298,16 @@ export function AiDebugPanel({ onClose, controls }: AiDebugPanelProps) {
         </div>
       </header>
 
-      <FilterRow
-        filter={filter}
-        onChange={setFilter}
-        active={filterActive}
-        onClear={() =>
-          setFilter({ fromDate: "", fromTime: "", toDate: "", toTime: "" })
-        }
-      />
+      {filterOpen && (
+        <FilterRow
+          filter={filter}
+          onChange={setFilter}
+          active={filterActive}
+          onClear={() =>
+            setFilter({ fromDate: "", fromTime: "", toDate: "", toTime: "" })
+          }
+        />
+      )}
 
       <div className="flex-1 min-h-0 overflow-y-auto">
         {events.length === 0 ? (

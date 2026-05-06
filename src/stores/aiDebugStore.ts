@@ -71,8 +71,17 @@ interface AiDebugState {
   /** Initialise from disk preferences. Idempotent; safe to call on
    *  every app boot. */
   hydrate: (snapshot: { enabled: boolean; dockMode: AiDebugDockMode }) => void;
-  /** Append a new traffic event. Drops the tail if over MAX_EVENTS. */
+  /** Append a new traffic event. Drops the tail if over MAX_EVENTS.
+   *  Dedupes against existing entries by (runId, startedAt, latencyMs)
+   *  so the disk-hydrate flow can call this with already-seen events
+   *  without producing duplicates. */
   pushEvent: (e: AiTrafficEvent) => void;
+  /** Replace the in-memory buffer with the on-disk JSONL contents
+   *  (oldest-first input → most-recent-first store layout). Called by
+   *  the panel on mount so the buffer reflects the source of truth even
+   *  when live events were missed (popped-out window opened after the
+   *  workflow started, app restart, etc.). */
+  hydrateFromDisk: (entries: AiTrafficEvent[]) => void;
   /** Wipe the captured buffer. Doesn't change the enabled flag — the
    *  panel exposes a Clear button for when the buffer gets noisy. */
   clear: () => void;
@@ -104,9 +113,44 @@ export const useAiDebugStore = create<AiDebugState>()(
 
       pushEvent: (event) =>
         set((s) => {
+          // Dedup: live `ai-traffic-event` and the disk-hydrate flow can
+          // race (e.g. the popped-out window mounts mid-workflow, hydrates
+          // from disk, then the next `app.emit` arrives for an event we
+          // already loaded). Skip if we've seen the same call signature.
+          if (
+            s.events.some(
+              (e) =>
+                e.runId === event.runId &&
+                e.startedAt === event.startedAt &&
+                e.latencyMs === event.latencyMs,
+            )
+          ) {
+            return s;
+          }
           const next = [event, ...s.events];
           if (next.length > MAX_EVENTS) next.length = MAX_EVENTS;
           return { events: next };
+        }),
+
+      hydrateFromDisk: (entries) =>
+        set((s) => {
+          // entries arrive oldest-first; the store stores most-recent-first.
+          // Build a key set from the existing buffer and merge anything we
+          // don't already have, capped at MAX_EVENTS most-recent.
+          const existing = new Set(
+            s.events.map(
+              (e) => `${e.runId}|${e.startedAt}|${e.latencyMs}`,
+            ),
+          );
+          const fresh: AiTrafficEvent[] = [];
+          for (const e of entries) {
+            const key = `${e.runId}|${e.startedAt}|${e.latencyMs}`;
+            if (!existing.has(key)) fresh.push(e);
+          }
+          if (fresh.length === 0) return s;
+          const merged = [...fresh.reverse(), ...s.events];
+          if (merged.length > MAX_EVENTS) merged.length = MAX_EVENTS;
+          return { events: merged };
         }),
 
       clear: () => set({ events: [] }),
