@@ -27,8 +27,8 @@ const ACCENTS: AccentColor[] = [
 ];
 
 const BG_CATEGORIES: BgCategory[] = [
-  "meridian",
   "space",
+  "meridian",
   "jwst",
   "abstract",
   "patterns",

@@ -15,7 +15,7 @@ const LS_KEY = "meridian_bg";
 const CHANGE_EVENT = "meridian-bg-change";
 
 export function getBackgroundId(): string {
-  return localStorage.getItem(LS_KEY) ?? "meridian";
+  return localStorage.getItem(LS_KEY) ?? "deep-space";
 }
 
 export function setBackgroundId(id: string): void {
@@ -51,17 +51,17 @@ export const CATEGORY_LABELS: Record<BgCategory, string> = {
 };
 
 export const BACKGROUNDS: BackgroundDef[] = [
+  // Space — Deep Space is the app default, so it leads the list
+  { id: "deep-space",  name: "Deep Space",  category: "space" },
+  { id: "nebula",      name: "Nebula",      category: "space" },
+  { id: "cosmos",      name: "Cosmos",      category: "space" },
+  { id: "supernova",   name: "Supernova",   category: "space" },
+  { id: "starfield",   name: "Starfield",   category: "space" },
   // Meridian
   { id: "meridian",    name: "Meridian",    category: "meridian" },
   { id: "dusk",        name: "Dusk",        category: "meridian" },
   { id: "aurora",      name: "Aurora",      category: "meridian" },
   { id: "forest",      name: "Forest",      category: "meridian" },
-  // Space
-  { id: "nebula",      name: "Nebula",      category: "space" },
-  { id: "cosmos",      name: "Cosmos",      category: "space" },
-  { id: "supernova",   name: "Supernova",   category: "space" },
-  { id: "starfield",   name: "Starfield",   category: "space" },
-  { id: "deep-space",  name: "Deep Space",  category: "space" },
   // James Webb
   { id: "jwst-carina",        name: "Cosmic Cliffs",      category: "jwst" },
   { id: "jwst-pillars",       name: "Pillars of Creation", category: "jwst" },
@@ -122,6 +122,6 @@ const COMPONENTS: Record<string, React.FC> = {
 };
 
 export function BackgroundRenderer({ id }: { id: string }) {
-  const Component = COMPONENTS[id] ?? MeridianBg;
+  const Component = COMPONENTS[id] ?? DeepSpaceBg;
   return <Component />;
 }
