@@ -19,7 +19,7 @@ A personal productivity desktop application for a senior engineer and scrum mast
 | LLM providers | Claude (Anthropic), Gemini (Google), GitHub Copilot, local OpenAI-compatible servers |
 | Speech-to-text | Local Whisper (no audio leaves the machine) |
 | Data sources | JIRA REST API, Bitbucket REST API |
-| Credential storage | macOS Keychain (via `security` CLI) |
+| Credential storage | AES-256-GCM encrypted file in the app data directory; key derived from `SHA256(domain ‖ machine UUID)` |
 
 ---
 
@@ -70,7 +70,7 @@ Two ways to capture meetings: local Whisper transcription (one-click via the hea
 - [Node.js](https://nodejs.org) 20+
 - [Rust](https://rustup.rs) (stable toolchain)
 - [Tauri CLI v2](https://tauri.app/start/prerequisites/)
-- macOS (credential storage uses the macOS Keychain)
+- macOS (the credential store derives its encryption key from the machine's `IOPlatformUUID`; ports to other platforms would need an equivalent stable per-machine identifier)
 - [Whisper](https://github.com/openai/whisper) installed locally if you intend to use meeting transcription
 
 ---
@@ -131,7 +131,7 @@ You also configure the local repo worktree the agent pipeline operates against:
 | **PR address worktree path** | Separate worktree used by Address PR Comments |
 | **Repo base branch** | Branch the worktree tracks (default: `develop`) |
 
-All credentials are stored in the macOS Keychain — never written to disk in plaintext and never exposed to the frontend.
+All credentials are persisted to `credentials.bin` inside the Tauri app data directory (`~/Library/Application Support/<app id>/` on macOS) — encrypted at rest with AES-256-GCM under a key derived from `SHA256("meridian-credential-store-v1:" ‖ <machine UUID>)`. The store is read in the Rust backend only and per-request passed to the sidecar over stdio IPC; credentials are never exposed to the React frontend, never logged, and never written to disk in plaintext. Because the encryption key is bound to the machine's `IOPlatformUUID`, copying `credentials.bin` to another machine yields ciphertext that won't decrypt there.
 
 Credentials and settings can be updated at any time via the **Settings** screen (gear icon, top-right).
 

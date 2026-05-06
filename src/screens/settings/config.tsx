@@ -10,6 +10,7 @@ import {
 } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 import { getPreferences, setPreference } from "@/lib/preferences";
+import { getNonSecretConfig } from "@/lib/tauri/credentials";
 import { validateGroomingWorktree, validatePrAddressWorktree, validatePrReviewWorktree, validateWorktree } from "@/lib/tauri/worktree";
 import { AlertCircle, CheckCircle, Loader2 } from "lucide-react";
 import { useEffect, useState } from "react";
@@ -103,20 +104,31 @@ export function ConfigSection({
     useState<SectionStatus>({ state: "idle", message: "" });
 
   // Hydrate once on mount.
+  //
+  // Reads from the merged map (`getNonSecretConfig` = preferences ∪
+  // non-secret credentials, with prefs winning on collision) rather than
+  // `getPreferences` alone. Older app versions stored the config-section
+  // keys (board id, repo slug, worktree paths, base branch, terminal) in
+  // the credential store; the Rust read paths still fall through to it as
+  // a migration fallback, which is why the "Configured" badge could show
+  // green while the input fields stayed empty. Reading the merged map
+  // populates the inputs in that case, and the migration write below
+  // copies any cred-only value into preferences so the next read comes
+  // from the new storage location.
   useEffect(() => {
     let alive = true;
-    void getPreferences()
-      .then((prefs) => {
+    void Promise.all([getNonSecretConfig(), getPreferences()])
+      .then(([config, prefs]) => {
         if (!alive) return;
         const snap = {
-          boardId: prefs["jira_board_id"] ?? "",
-          repoSlug: prefs["bitbucket_repo_slug"] ?? "",
-          worktreePath: prefs["repo_worktree_path"] ?? "",
-          baseBranch: prefs["repo_base_branch"] || "develop",
-          prReviewWorktreePath: prefs["pr_review_worktree_path"] ?? "",
-          prAddressWorktreePath: prefs["pr_address_worktree_path"] ?? "",
-          groomingWorktreePath: prefs["grooming_worktree_path"] ?? "",
-          prTerminal: prefs["pr_review_terminal"] || "iTerm2",
+          boardId: config["jira_board_id"] ?? "",
+          repoSlug: config["bitbucket_repo_slug"] ?? "",
+          worktreePath: config["repo_worktree_path"] ?? "",
+          baseBranch: config["repo_base_branch"] || "develop",
+          prReviewWorktreePath: config["pr_review_worktree_path"] ?? "",
+          prAddressWorktreePath: config["pr_address_worktree_path"] ?? "",
+          groomingWorktreePath: config["grooming_worktree_path"] ?? "",
+          prTerminal: config["pr_review_terminal"] || "iTerm2",
         };
         setBoardId(snap.boardId);
         setRepoSlug(snap.repoSlug);
@@ -128,6 +140,29 @@ export function ConfigSection({
         setPrTerminal(snap.prTerminal);
         setHydratedSnapshot(snap);
         setHydrated(true);
+
+        // One-shot migration: any value present in the merged map that
+        // isn't yet in preferences came from the credential store —
+        // copy it into preferences so the new save path owns it from
+        // here on. Best-effort; failures aren't fatal because the
+        // dual-store read in Rust still works.
+        const migrations: Array<[string, string]> = [
+          ["jira_board_id", snap.boardId],
+          ["bitbucket_repo_slug", snap.repoSlug],
+          ["repo_worktree_path", snap.worktreePath],
+          ["repo_base_branch", snap.baseBranch],
+          ["pr_review_worktree_path", snap.prReviewWorktreePath],
+          ["pr_address_worktree_path", snap.prAddressWorktreePath],
+          ["grooming_worktree_path", snap.groomingWorktreePath],
+          ["pr_review_terminal", snap.prTerminal],
+        ];
+        for (const [key, value] of migrations) {
+          if (value && !prefs[key]) {
+            void setPreference(key, value).catch(() => {
+              /* migration is best-effort */
+            });
+          }
+        }
       })
       .catch(() => {
         if (alive) setHydrated(true);

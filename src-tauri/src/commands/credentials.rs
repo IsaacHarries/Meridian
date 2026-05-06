@@ -28,6 +28,13 @@ const ALLOWED_KEYS: &[&str] = &[
 ];
 
 /// Keys whose values may be returned to the frontend (not secrets).
+///
+/// Includes the dual-store config keys (board id, repo slug, worktree paths,
+/// base branch, terminal app) so the Settings → Configuration card can hydrate
+/// them even when a legacy install left them in the credential store rather
+/// than in `preferences.json`. `get_non_secret_config` lets `preferences`
+/// override these on collision so the new storage location wins as soon as
+/// the user re-saves the value.
 const NON_SECRET_KEYS: &[&str] = &[
     "claude_auth_method",
     "gemini_auth_method",
@@ -36,9 +43,17 @@ const NON_SECRET_KEYS: &[&str] = &[
     "jira_base_url",
     "jira_email",
     "jira_account_id",
+    "jira_board_id",
     "bitbucket_workspace",
     "bitbucket_email",
     "bitbucket_username",
+    "bitbucket_repo_slug",
+    "repo_worktree_path",
+    "repo_base_branch",
+    "pr_review_worktree_path",
+    "pr_address_worktree_path",
+    "grooming_worktree_path",
+    "pr_review_terminal",
 ];
 
 // ── Tauri commands ─────────────────────────────────────────────────────────────
