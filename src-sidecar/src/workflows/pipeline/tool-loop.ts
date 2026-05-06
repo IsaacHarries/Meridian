@@ -55,6 +55,7 @@ export async function runToolLoopFrom(
     workflowId: string;
     nodeName: string;
   },
+  maxIterations: number = MAX_TOOL_LOOP_ITERATIONS,
 ): Promise<ToolLoopResult> {
   // Standard adapters (ChatAnthropic, ChatGoogleGenerativeAI, ChatOllama)
   // implement bindTools natively; the custom Claude OAuth adapter inherits
@@ -71,7 +72,7 @@ export async function runToolLoopFrom(
   const usage = { inputTokens: 0, outputTokens: 0 };
   const writtenPaths: string[] = [];
 
-  for (let i = 0; i < MAX_TOOL_LOOP_ITERATIONS; i++) {
+  for (let i = 0; i < maxIterations; i++) {
     // Stream the model's reply so each text chunk surfaces to the
     // frontend live (graph.streamEvents picks up on_chat_model_stream
     // events and the runner forwards them as `stream` deltas) and so
@@ -157,7 +158,7 @@ export async function runToolLoopFrom(
   }
 
   throw new Error(
-    `Tool loop exceeded ${MAX_TOOL_LOOP_ITERATIONS} iterations without producing a final response.`,
+    `Tool loop exceeded ${maxIterations} iterations without producing a final response.`,
   );
 }
 
@@ -171,11 +172,13 @@ export async function runToolLoop(
     workflowId: string;
     nodeName: string;
   },
+  maxIterations: number = MAX_TOOL_LOOP_ITERATIONS,
 ): Promise<ToolLoopResult> {
   return runToolLoopFrom(
     model,
     tools,
     [new SystemMessage(system), new HumanMessage(user)],
     emitCtx,
+    maxIterations,
   );
 }

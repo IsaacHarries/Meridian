@@ -7,8 +7,6 @@ import type { GroomingOutput } from "../grooming.js";
 import type { ModelSelection, OutboundEvent } from "../../protocol.js";
 import type { RepoTools } from "../../tools/repo-tools.js";
 import type {
-  BuildCheckResult,
-  BuildStatus,
   FileVerification,
   ImpactOutput,
   ImplementationOutput,
@@ -21,6 +19,7 @@ import type {
   TestOutput,
   TestPlan,
   TriageTurnOutput,
+  VerificationOutput,
 } from "../pipeline-schemas.js";
 import {
   PipelineInputSchema,
@@ -57,18 +56,12 @@ export const PipelineStateAnnotation = Annotation.Root({
   triageLastTurn: Annotation<TriageTurnOutput | undefined>(),
   plan: Annotation<ImplementationPlan | undefined>(),
   implementationOutput: Annotation<ImplementationOutput | undefined>(),
-  buildVerification: Annotation<BuildCheckResult | undefined>(),
+  verificationOutput: Annotation<VerificationOutput | undefined>(),
   testPlan: Annotation<TestPlan | undefined>(),
   testOutput: Annotation<TestOutput | undefined>(),
   reviewOutput: Annotation<PlanReviewOutput | undefined>(),
   prDescription: Annotation<PrDescriptionOutput | undefined>(),
   retrospective: Annotation<RetrospectiveOutput | undefined>(),
-
-  buildStatus: Annotation<BuildStatus | undefined>(),
-  buildAttempts: Annotation<number>({
-    reducer: (_current, update) => update,
-    default: () => 0,
-  }),
 
   // Per-file post-write verification failures from the implementation node.
   // Cleared when `do_plan` runs a revision so a fresh implementation pass

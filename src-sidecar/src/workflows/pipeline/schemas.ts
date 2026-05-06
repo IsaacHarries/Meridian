@@ -37,17 +37,6 @@ export const PipelineInputSchema = z.object({
       mode: z.enum(["guide", "strict"]).default("guide"),
     })
     .nullish(),
-  /** Phase 3c — when true and `buildCheckCommand` is non-empty, the pipeline
-   *  runs the build after implementation and loops back into a fix node on
-   *  failure. Off by default; the user toggles it in Settings. */
-  buildVerifyEnabled: z.boolean().optional().default(false),
-  buildCheckCommand: z.string().optional().default(""),
-  /** Per-attempt timeout for the build command in seconds. Default 300
-   *  (5 min). Capped at 1800 in case the user typoed and entered hours. */
-  buildCheckTimeoutSecs: z.number().int().positive().max(1800).optional().default(300),
-  /** Max combined build+fix attempts before the pipeline gives up and
-   *  surfaces the failure chain at the implementation checkpoint. */
-  buildCheckMaxAttempts: z.number().int().positive().max(10).optional().default(3),
 });
 
 // ── Triage history entry (internal to PipelineStateAnnotation) ───────────────
@@ -69,9 +58,3 @@ export const PerFileResponseSchema = z.object({
   skipped: z.boolean().optional().default(false),
 });
 
-// ── Build-fix tool-loop final response ───────────────────────────────────────
-
-export const BuildFixResponseSchema = z.object({
-  summary: z.string().optional().default(""),
-  files_written: z.array(z.string()).optional().default([]),
-});

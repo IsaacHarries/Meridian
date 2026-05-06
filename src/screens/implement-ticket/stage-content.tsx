@@ -2,7 +2,7 @@ import { Button } from "@/components/ui/button";
 import { type BitbucketPr } from "@/lib/tauri/bitbucket";
 import { type JiraIssue } from "@/lib/tauri/jira";
 import { type GroomingOutput, type ImpactOutput, type ImplementationOutput, type ImplementationPlan, type PlanReviewOutput, type PrDescriptionOutput, type RetrospectiveOutput, type SuggestedEdit, type TestOutput, type TestPlan, type TriageMessage, type TriageTurnOutput } from "@/lib/tauri/workflows";
-import { type BuildCheckResult, type ReplanCheckpointPayload } from "@/lib/tauri/worktree";
+import { type ReplanCheckpointPayload, type VerificationOutput } from "@/lib/tauri/worktree";
 import { useImplementTicketStore } from "@/stores/implementTicket/store";
 import { type ImplementTicketState, type Stage } from "@/stores/implementTicket/types";
 import { Loader2, RefreshCw } from "lucide-react";
@@ -40,8 +40,7 @@ interface StageContentProps {
   implementation: ImplementationOutput | null;
   implementationStreamText: string;
   implementationProgress: ImplementTicketState["implementationProgress"];
-  buildVerification: BuildCheckResult | null;
-  buildCheckStreamText: string;
+  verificationOutput: VerificationOutput | null;
   replanCheckpoint: ReplanCheckpointPayload | null;
   testPlan: TestPlan | null;
   tests: TestOutput | null;
@@ -99,8 +98,7 @@ export function StageContent(props: StageContentProps) {
     implementation,
     implementationStreamText,
     implementationProgress,
-    buildVerification,
-    buildCheckStreamText,
+    verificationOutput,
     replanCheckpoint,
     testPlan,
     tests,
@@ -359,13 +357,14 @@ export function StageContent(props: StageContentProps) {
         />
       );
     }
-    // Implementation written but build check still running (no buildVerification yet,
-    // but buildCheckStreamText is accumulating)
-    if (!buildVerification && buildCheckStreamText) {
+    // Implementation written but verification still running — the agent is
+    // typechecking/testing/building. Reuse the implementation stream text
+    // so the same panel keeps streaming live tokens through verification.
+    if (!verificationOutput && implementationStreamText) {
       return (
         <StreamingLoader
-          label="Verifying build…"
-          streamText={buildCheckStreamText}
+          label="Verifying change (typecheck → tests → build)…"
+          streamText={implementationStreamText}
         />
       );
     }
@@ -374,7 +373,7 @@ export function StageContent(props: StageContentProps) {
         <ImplementationPanel
           data={implementation}
           tab={implementationTab}
-          buildVerification={buildVerification}
+          verificationOutput={verificationOutput}
         />
         {renderCheckpoint(stage)}
       </>

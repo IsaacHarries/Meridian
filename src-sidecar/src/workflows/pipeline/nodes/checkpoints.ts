@@ -7,7 +7,7 @@ import type {
   PipelineStage,
   PlanRevisionContext,
 } from "../../pipeline-schemas.js";
-import { BUILD_CHECK_MAX_ATTEMPTS, PLAN_REVISION_MAX } from "./build.js";
+import { PLAN_REVISION_MAX } from "./build.js";
 import type { PipelineState } from "../state.js";
 
 export type CheckpointResume =
@@ -39,25 +39,19 @@ export function checkpointNode(
   };
 }
 
-/** Checkpoint surfaced when implementation verification or build verification
- *  has exhausted its in-stage budget and the user must decide whether to
- *  revise the plan or accept the partial work. Resume actions:
+/** Checkpoint surfaced when per-file post-write verification (file missing,
+ *  empty, etc on disk after the implementation iteration) has exhausted its
+ *  budget and the user must decide whether to revise the plan or accept the
+ *  partial work. Resume actions:
  *   - `revise` → loop back to `do_plan` with `planRevisionContext` populated
- *   - `approve` → continue to `checkpoint_implementation` (accept as-is)
+ *   - `approve` → continue to `verification` (let the agent verify what
+ *                 actually got written and fix anything it can)
  *   - `abort` → throw
  *  Capped by `PLAN_REVISION_MAX`; the routing edges already gate entry. */
 export async function replanCheckpointNode(state: PipelineState): Promise<Command> {
-  const buildAttempts = state.buildVerification?.attempts ?? [];
-  const maxAttempts =
-    state.input.buildCheckMaxAttempts ?? BUILD_CHECK_MAX_ATTEMPTS;
-  const buildExhausted =
-    buildAttempts.length >= maxAttempts && !state.buildVerification?.build_passed;
   const verificationFailures = state.verificationFailures ?? [];
-  const reason: PlanRevisionContext["reason"] = buildExhausted
-    ? "build_failed"
-    : verificationFailures.length > 0
-      ? "verification_failed"
-      : "user_requested";
+  const reason: PlanRevisionContext["reason"] =
+    verificationFailures.length > 0 ? "verification_failed" : "user_requested";
 
   const previouslyWritten = (state.implementationOutput?.files_changed ?? []).map(
     (f) => f.path,
@@ -68,7 +62,6 @@ export async function replanCheckpointNode(state: PipelineState): Promise<Comman
     payload: {
       reason,
       verification_failures: verificationFailures,
-      build_attempts: buildAttempts,
       prior_plan: state.plan,
       previously_written_files: previouslyWritten,
       revisions_used: state.planRevisions,
@@ -89,7 +82,6 @@ export async function replanCheckpointNode(state: PipelineState): Promise<Comman
     const ctx: PlanRevisionContext = {
       prior_plan: state.plan,
       verification_failures: verificationFailures,
-      build_attempts: buildAttempts,
       reason,
     };
     return new Command({
@@ -97,8 +89,9 @@ export async function replanCheckpointNode(state: PipelineState): Promise<Comman
       update: { planRevisionContext: ctx },
     });
   }
-  // approve → user accepts the partial implementation as-is
-  return new Command({ goto: "checkpoint_implementation" });
+  // approve → user accepts the partial implementation; verification still
+  // gets a chance to run on whatever did land on disk.
+  return new Command({ goto: "verification" });
 }
 
 export async function triageCheckpointNode(state: PipelineState): Promise<Command> {

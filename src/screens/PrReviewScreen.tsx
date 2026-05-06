@@ -23,6 +23,7 @@ import {
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ReviewProgressBanner, lineRangeToIdeSuffix, readFileAsDataUri } from "./pr-review/_shared";
 import { DiffViewer } from "./pr-review/diff-viewer";
+import { OffDiffCommentsPanel } from "./pr-review/off-diff-comments-panel";
 import { PrDescriptionPanel } from "./pr-review/pr-description-panel";
 import { PrSelector } from "./pr-review/pr-selector";
 import { ReviewChat } from "./pr-review/review-chat";
@@ -446,6 +447,24 @@ export function PrReviewScreen({ credStatus, onBack }: PrReviewScreenProps) {
             <div ref={diffPaneRef} style={{ width: `${splitPct}%` }} className="flex-none h-full overflow-y-auto border-r px-4 pb-4 space-y-3">
               {selectedPr?.description && selectedPr.description.trim() && (
                 <PrDescriptionPanel description={selectedPr.description} />
+              )}
+              {diff && (
+                <OffDiffCommentsPanel
+                  diff={diff}
+                  comments={comments}
+                  tasks={tasks}
+                  myAccountId={myAccountId}
+                  myPostedCommentIds={myPostedCommentIds}
+                  onReply={async (parentId, content) => {
+                    await store().postComment(content, undefined, undefined, parentId);
+                  }}
+                  onCreateTask={async (commentId, content) => store().createTask(commentId, content)}
+                  onResolveTask={async (taskId, resolved) => store().resolveTask(taskId, resolved)}
+                  onEditTask={async (taskId, content) => store().updateTask(taskId, content)}
+                  onDeleteComment={async (commentId) => store().deleteComment(commentId)}
+                  onEditComment={async (commentId, newContent) => store().editComment(commentId, newContent)}
+                  onAttachImage={onAttachImage}
+                />
               )}
               <div className="flex items-center justify-between pt-4">
                 <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Diff</p>

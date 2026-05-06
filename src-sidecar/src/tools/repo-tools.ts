@@ -39,6 +39,11 @@ const DIFF_DESCRIPTION =
   "Get the unified diff of the worktree against its base branch. " +
   "Useful when the agent needs to verify what changes have already been written.";
 
+const EXEC_DESCRIPTION =
+  "Run a shell command inside the worktree (e.g. `pnpm tsc --noEmit`, `pnpm vitest run path/to/file.test.ts`, `cargo check`, `pnpm build`). " +
+  "Returns { exitCode, output } with combined stdout+stderr. Use this to typecheck, run tests, or build the project after writing code so you can verify the change works and fix any failures. " +
+  "Per-call wall-clock timeout in seconds — keep it modest (default 180, max 300).";
+
 export function makeRepoTools(ctx: RepoToolsContext) {
   // Emit a `progress` event tagged with the tool's first interesting
   // argument so the frontend can render a live activity strip ("→
@@ -53,6 +58,9 @@ export function makeRepoTools(ctx: RepoToolsContext) {
       const pattern = typeof obj.pattern === "string" ? obj.pattern : "";
       const path = typeof obj.path === "string" ? obj.path : undefined;
       return path ? `${pattern} (in ${path})` : pattern;
+    }
+    if (toolName === "exec_in_worktree") {
+      return typeof obj.command === "string" ? obj.command : "";
     }
     if (typeof obj.path === "string") return obj.path;
     if (typeof obj.pattern === "string") return obj.pattern;
@@ -176,27 +184,44 @@ export function makeRepoTools(ctx: RepoToolsContext) {
     },
   );
 
-  return [readRepoFile, writeRepoFile, globRepoFiles, grepRepoFiles, getRepoDiff];
-}
+  const execInWorktreeTool = tool(
+    async ({ command, timeoutSecs }: { command: string; timeoutSecs?: number }) => {
+      const result = (await callback("exec_in_worktree", {
+        command,
+        timeoutSecs: timeoutSecs ?? 180,
+      })) as { exitCode: number; output: string };
+      return JSON.stringify(result);
+    },
+    {
+      name: "exec_in_worktree",
+      description: EXEC_DESCRIPTION,
+      schema: z.object({
+        command: z
+          .string()
+          .describe(
+            "The shell command to run, executed via `sh -c` from the worktree root.",
+          ),
+        timeoutSecs: z
+          .number()
+          .int()
+          .positive()
+          .max(300)
+          .optional()
+          .describe(
+            "Wall-clock timeout in seconds (default 180, max 300). Pick a value matching the command's expected runtime.",
+          ),
+      }),
+    },
+  );
 
-/** Run an arbitrary shell command inside the worktree and return its exit
- *  code + combined stdout/stderr. Used by the build-check sub-loop to invoke
- *  the user's configured build command. Not exposed as a regular agent tool
- *  because it's only meaningful for that one node. */
-export async function execInWorktree(args: {
-  workflowId: string;
-  emit: Emitter;
-  command: string;
-  timeoutSecs?: number;
-}): Promise<{ exitCode: number; output: string }> {
-  const result = (await requestToolCallback({
-    workflowId: args.workflowId,
-    tool: "exec_in_worktree",
-    input: { command: args.command, timeoutSecs: args.timeoutSecs ?? 180 },
-    emit: args.emit,
-    timeoutMs: (args.timeoutSecs ?? 180) * 1000 + 30_000,
-  })) as { exitCode: number; output: string };
-  return result;
+  return [
+    readRepoFile,
+    writeRepoFile,
+    globRepoFiles,
+    grepRepoFiles,
+    getRepoDiff,
+    execInWorktreeTool,
+  ];
 }
 
 /** Stat a worktree-relative path. Distinguishes missing from empty — used by

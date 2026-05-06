@@ -6,7 +6,7 @@ import { DiffSectionCard, type DiffSection } from "./diff-section-card";
 
 // ── Diff parsing ─────────────────────────────────────────────────────────────
 
-function parseDiffSections(diff: string): DiffSection[] {
+export function parseDiffSections(diff: string): DiffSection[] {
   const sections: DiffSection[] = [];
   let current: DiffSection | null = null;
 
@@ -30,7 +30,7 @@ function parseDiffSections(diff: string): DiffSection[] {
 }
 
 /** Walk the raw diff lines for one file section and attach old/new line numbers. */
-function annotateDiffLines(lines: string[]): AnnotatedLine[] {
+export function annotateDiffLines(lines: string[]): AnnotatedLine[] {
   const result: AnnotatedLine[] = [];
   let oldLine = 0;
   let newLine = 0;

@@ -142,8 +142,7 @@ export function createLifecycleActions(set: Set, get: Get) {
             implementationStreamText: "",
             implementationProgress: null,
             pipelineActivity: null,
-            buildVerification: null,
-            buildCheckStreamText: "",
+            verificationOutput: null,
             guidance: null,
           });
           break;

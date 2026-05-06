@@ -11,11 +11,20 @@ export function pickStageOutput(
   values: Record<string, unknown>,
   stage: string,
 ): unknown {
+  if (stage === "implementation") {
+    // The implementation checkpoint payload bundles both the implementation
+    // agent's output and the post-implementation verification result so the
+    // UI can render verification status in the same panel.
+    const impl = values.implementationOutput as
+      | Record<string, unknown>
+      | undefined;
+    if (!impl) return undefined;
+    return { ...impl, verification: values.verificationOutput ?? null };
+  }
   const map: Record<string, string> = {
     grooming: "groomingOutput",
     impact: "impactOutput",
     triage: "triageLastTurn",
-    implementation: "implementationOutput",
     test_plan: "testPlan",
     test_gen: "testOutput",
     code_review: "reviewOutput",

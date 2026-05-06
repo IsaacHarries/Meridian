@@ -25,7 +25,7 @@ export function PipelineSettingsSection() {
           Implement Ticket Pipeline
         </CardTitle>
         <CardDescription className="text-xs mt-0.5">
-          Tunables for the per-stage agents and the build-verify sub-loop.
+          Tunables for the per-stage agents.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
@@ -33,26 +33,6 @@ export function PipelineSettingsSection() {
           <p className="text-xs text-muted-foreground">Loading…</p>
         ) : (
           <>
-            <NumberPreferenceField
-              label="Build-check timeout"
-              helper="Per-attempt wall-clock cap on the build command."
-              value={prefs.buildCheckTimeoutSecs}
-              defaultValue={APP_PREFERENCE_DEFAULTS.buildCheckTimeoutSecs}
-              min={10}
-              max={1800}
-              step={30}
-              unit="seconds"
-              onChange={(n) => void update("buildCheckTimeoutSecs", n)}
-            />
-            <NumberPreferenceField
-              label="Build-check max attempts"
-              helper="Combined build + fix iterations before the pipeline gives up."
-              value={prefs.buildCheckMaxAttempts}
-              defaultValue={APP_PREFERENCE_DEFAULTS.buildCheckMaxAttempts}
-              min={1}
-              max={10}
-              onChange={(n) => void update("buildCheckMaxAttempts", n)}
-            />
             <ToggleRow
               label="Stream partial output into stage panels"
               helper="When on, each stage's structured panel fills in field-by-field as the agent emits JSON. Off renders the whole panel at once when the stage finishes (less busy, slightly later)."

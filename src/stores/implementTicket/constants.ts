@@ -31,6 +31,10 @@ export const NODE_TO_STAGE: Record<string, Stage> = {
   do_plan: "plan",
   do_guidance: "implementation",
   implementation: "implementation",
+  // Verification is the post-implementation typecheck/test/build pass — it
+  // surfaces under the same Implementation stage in the UI so the user sees
+  // the verification activity in the implementation panel.
+  verification: "implementation",
   replan: "replan",
   test_plan: "tests_plan",
   test_gen: "tests",
@@ -87,6 +91,9 @@ export const NODE_TO_STREAM_FIELD: Record<string, keyof ImplementTicketState> = 
   do_plan: "planStreamText",
   do_guidance: "planStreamText",
   implementation: "implementationStreamText",
+  // Verification streams reuse the implementation stage's stream slot so the
+  // verification activity surfaces inside the same Implementation panel.
+  verification: "implementationStreamText",
   test_plan: "testsStreamText",
   test_gen: "testsStreamText",
   code_review: "reviewStreamText",

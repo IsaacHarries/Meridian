@@ -190,39 +190,36 @@ export const RetrospectiveOutputSchema = z.object({
 
 export type RetrospectiveOutput = z.infer<typeof RetrospectiveOutputSchema>;
 
-// ── Build status (used for the Implementation/TestGen retry loop) ────────────
+// ── Verification (post-implementation typecheck / test / build loop) ─────────
+//
+// One run per pipeline. The verification agent runs after the per-file
+// implementation pass with shell access (exec_in_worktree) and reports back
+// a structured log of what it ran and whether it ended up clean. Replaces
+// the older BuildAttempt / BuildCheckResult schemas, which modelled a fixed
+// build_check / build_fix loop with a single configured command.
 
-export const BuildStatusSchema = z.object({
-  ok: z.boolean(),
+export const VerificationStepSchema = z.object({
   command: z.string(),
-  exitCode: z.number().nullable(),
-  stdout: z.string(),
-  stderr: z.string(),
+  passed: z.boolean(),
+  notes: z.string().optional().default(""),
 });
 
-export type BuildStatus = z.infer<typeof BuildStatusSchema>;
-
-// ── Build-check sub-loop (Phase 3c) ──────────────────────────────────────────
-
-export const BuildAttemptSchema = z.object({
-  attempt: z.number().int(),
-  exit_code: z.number().int(),
-  output: z.string(),
-  /** True when this attempt was a fix iteration (i.e. came after a failure). */
-  fixed: z.boolean(),
-  /** Files written by the fix agent during this attempt. Empty for the first
-   *  attempt and for any pure build-only attempt that didn't run a fix. */
+export const VerificationOutputSchema = z.object({
+  /** One-or-two-sentence summary of what the agent did and the overall result. */
+  summary: z.string(),
+  /** Chronological log of every shell command the agent ran. */
+  steps: z.array(VerificationStepSchema),
+  /** Files written during verification (by the agent fixing failures). */
   files_written: z.array(z.string()),
+  /** Failures the agent could not resolve. Non-empty means the user should
+   *  inspect the change manually before merging. */
+  unresolved: z.array(z.string()),
+  /** True when every step passed and there are no unresolved issues. */
+  clean: z.boolean(),
 });
 
-export const BuildCheckResultSchema = z.object({
-  build_command: z.string(),
-  build_passed: z.boolean(),
-  attempts: z.array(BuildAttemptSchema),
-});
-
-export type BuildAttempt = z.infer<typeof BuildAttemptSchema>;
-export type BuildCheckResult = z.infer<typeof BuildCheckResultSchema>;
+export type VerificationStep = z.infer<typeof VerificationStepSchema>;
+export type VerificationOutput = z.infer<typeof VerificationOutputSchema>;
 
 // ── Per-file verification (post-write check) ─────────────────────────────────
 //
@@ -258,14 +255,12 @@ export type FileVerification = z.infer<typeof FileVerificationSchema>;
 // this field in its return so a fresh plan run starts clean.
 export const PlanRevisionReasonSchema = z.enum([
   "verification_failed",
-  "build_failed",
   "user_requested",
 ]);
 
 export const PlanRevisionContextSchema = z.object({
   prior_plan: ImplementationPlanSchema,
   verification_failures: z.array(FileVerificationSchema).default([]),
-  build_attempts: z.array(BuildAttemptSchema).default([]),
   reason: PlanRevisionReasonSchema,
 });
 

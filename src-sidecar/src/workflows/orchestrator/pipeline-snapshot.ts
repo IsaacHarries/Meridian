@@ -16,8 +16,12 @@ export interface PipelineSnapshot {
   planFileCount: number;
   implementationFileCount: number | undefined;
   verificationFailures: number;
-  buildPassed: boolean | undefined;
-  buildAttempts: number;
+  /** Whether the post-implementation verification pass landed clean
+   *  (typecheck/test/build all green and no unresolved issues). Undefined
+   *  before verification has run. */
+  verificationClean: boolean | undefined;
+  /** Number of shell commands the verification agent ran. */
+  verificationStepCount: number;
   planRevisions: number;
 }
 
@@ -49,7 +53,7 @@ export async function readPipelineSnapshot(
     plan?: { files: unknown[] } | undefined;
     implementationOutput?: { files_changed?: unknown[] } | undefined;
     verificationFailures?: unknown[];
-    buildVerification?: { build_passed?: boolean; attempts?: unknown[] } | undefined;
+    verificationOutput?: { clean?: boolean; steps?: unknown[] } | undefined;
     planRevisions?: number;
   };
   const next = (snapshot.next ?? []) as readonly string[];
@@ -60,8 +64,8 @@ export async function readPipelineSnapshot(
     planFileCount: v.plan?.files?.length ?? 0,
     implementationFileCount: v.implementationOutput?.files_changed?.length,
     verificationFailures: v.verificationFailures?.length ?? 0,
-    buildPassed: v.buildVerification?.build_passed,
-    buildAttempts: v.buildVerification?.attempts?.length ?? 0,
+    verificationClean: v.verificationOutput?.clean,
+    verificationStepCount: v.verificationOutput?.steps?.length ?? 0,
     planRevisions: v.planRevisions ?? 0,
   };
 }

@@ -150,8 +150,7 @@ export function usePipelineEventListeners(
       | "prStreamText"
       | "retroStreamText"
       | "groomingStreamText"
-      | "orchestratorStreamText"
-      | "buildCheckStreamText";
+      | "orchestratorStreamText";
     // Workflow event channels: deltas arrive as `{kind: "stream", node, delta}`
     // (sidecar bridge format). Filter for stream events and accumulate.
     const workflowStreams: Array<[string, StreamKey]> = [

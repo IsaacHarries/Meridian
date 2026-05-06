@@ -1,24 +1,24 @@
 import { Button } from "@/components/ui/button";
 import { type ImplementationOutput } from "@/lib/tauri/workflows";
-import { type BuildCheckResult, getFileAtBase, readRepoFile, writeRepoFile } from "@/lib/tauri/worktree";
+import { type VerificationOutput, getFileAtBase, readRepoFile, writeRepoFile } from "@/lib/tauri/worktree";
 import { cn } from "@/lib/utils";
 import { DiffEditor, type DiffOnMount } from "@monaco-editor/react";
 import { AlertTriangle, Check, FileCode, Loader2 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { CollapsibleList } from "./_shared";
-import { BuildVerificationPanel } from "./build-verification-panel";
+import { VerificationOutputPanel } from "./build-verification-panel";
 
 export function ImplementationStatusContent({
   data,
-  buildVerification,
+  verificationOutput,
 }: {
   data: ImplementationOutput;
-  buildVerification: BuildCheckResult | null;
+  verificationOutput: VerificationOutput | null;
 }) {
   return (
     <div className="space-y-3">
       <p className="text-sm leading-relaxed">{data.summary}</p>
-      {buildVerification && <BuildVerificationPanel result={buildVerification} />}
+      {verificationOutput && <VerificationOutputPanel result={verificationOutput} />}
       {data.files_changed.length > 0 && (
         <div className="border rounded-md overflow-hidden">
           <div className="px-3 py-2 bg-muted/30 text-sm font-medium flex items-center gap-2">
@@ -227,14 +227,14 @@ function getLanguageForPath(path: string): string {
 export function ImplementationPanel({
   data,
   tab,
-  buildVerification,
+  verificationOutput,
 }: {
   data: ImplementationOutput;
   tab: "status" | "diff";
-  buildVerification: BuildCheckResult | null;
+  verificationOutput: VerificationOutput | null;
 }) {
   return tab === "status" ? (
-    <ImplementationStatusContent data={data} buildVerification={buildVerification} />
+    <ImplementationStatusContent data={data} verificationOutput={verificationOutput} />
   ) : (
     <ImplementationDiffContent data={data} />
   );

@@ -278,7 +278,22 @@ function FilterRow({
   onClear: () => void;
 }) {
   const inputBase =
-    "h-7 px-1.5 rounded border border-input bg-background text-[11px] focus:outline-none focus:ring-1 focus:ring-ring";
+    "h-7 px-1.5 rounded border border-input bg-background text-[11px] focus:outline-none focus:ring-1 focus:ring-ring disabled:opacity-50 disabled:cursor-not-allowed";
+  // Tauri's WKWebView renders the native popup picker on `<input type="date">`
+  // when clicked, but does NOT do the same for `<input type="time">` — the
+  // user clicks and gets no visible response. Explicitly calling
+  // `showPicker()` on click forces the same picker UX for both inputs across
+  // every supported WebView build. Wrapped in try/catch because showPicker()
+  // throws if invoked outside a user gesture or on a disabled element.
+  function openPickerOnClick(e: React.MouseEvent<HTMLInputElement>) {
+    const el = e.currentTarget;
+    if (el.disabled) return;
+    try {
+      el.showPicker?.();
+    } catch {
+      /* fall back to native focus; user can type the value */
+    }
+  }
   return (
     <div className="flex flex-wrap items-center gap-2 px-3 py-2 border-b bg-muted/20 text-[11px]">
       <span className="text-muted-foreground">Filter:</span>
@@ -287,6 +302,7 @@ function FilterRow({
         type="date"
         value={filter.fromDate}
         onChange={(e) => onChange({ ...filter, fromDate: e.target.value })}
+        onClick={openPickerOnClick}
         className={inputBase}
         title="From date (lower bound)"
       />
@@ -294,15 +310,21 @@ function FilterRow({
         type="time"
         value={filter.fromTime}
         onChange={(e) => onChange({ ...filter, fromTime: e.target.value })}
+        onClick={openPickerOnClick}
         className={inputBase}
         disabled={!filter.fromDate}
-        title="Optional time on the From date — defaults to 00:00 when blank"
+        title={
+          filter.fromDate
+            ? "Optional time on the From date — defaults to 00:00 when blank"
+            : "Pick a From date first to set a time"
+        }
       />
       <span className="text-muted-foreground">To</span>
       <input
         type="date"
         value={filter.toDate}
         onChange={(e) => onChange({ ...filter, toDate: e.target.value })}
+        onClick={openPickerOnClick}
         className={inputBase}
         title="To date (upper bound)"
       />
@@ -310,9 +332,14 @@ function FilterRow({
         type="time"
         value={filter.toTime}
         onChange={(e) => onChange({ ...filter, toTime: e.target.value })}
+        onClick={openPickerOnClick}
         className={inputBase}
         disabled={!filter.toDate}
-        title="Optional time on the To date — defaults to 23:59:59 when blank"
+        title={
+          filter.toDate
+            ? "Optional time on the To date — defaults to 23:59:59 when blank"
+            : "Pick a To date first to set a time"
+        }
       />
       {active && (
         <Button

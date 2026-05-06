@@ -27,7 +27,8 @@ import { useMeetingsStore } from "@/stores/meetings/store";
 import { usePrTasksStore } from "@/stores/prTasksStore";
 import { useTasksStore } from "@/stores/tasksStore";
 import { ChevronDown, GitPullRequest, ListTodo, Plus, Tag, X } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { toast } from "sonner";
 
 interface MeetingGroup {
@@ -115,9 +116,20 @@ export function TasksPanel() {
 
   // If the sticky draft category gets removed from the vocabulary (e.g. the
   // user just deleted the only task carrying it), drop it back to null so
-  // the picker doesn't show a stale choice.
+  // the picker doesn't show a stale choice. Only fires when the category
+  // *used to* be in `allCategories` and isn't anymore — without this guard
+  // a brand-new category the user just typed in the picker (which by
+  // definition isn't in `allCategories` yet — no task carries it) gets
+  // immediately wiped before they can submit a task with it.
+  const prevCategoriesRef = useRef<string[]>(allCategories);
   useEffect(() => {
-    if (draftCategory && !allCategories.includes(draftCategory)) {
+    const prev = prevCategoriesRef.current;
+    prevCategoriesRef.current = allCategories;
+    if (
+      draftCategory &&
+      prev.includes(draftCategory) &&
+      !allCategories.includes(draftCategory)
+    ) {
       setDraftCategory(null);
     }
   }, [draftCategory, allCategories]);
@@ -512,19 +524,75 @@ function CategoryPicker({
   const [open, setOpen] = useState(false);
   const [creating, setCreating] = useState(false);
   const [newName, setNewName] = useState("");
-  const wrapperRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const popoverRef = useRef<HTMLDivElement>(null);
+  // Anchor coords for the portaled popover. Recomputed on open + on scroll/
+  // resize so the menu stays pinned to the trigger even when the per-row
+  // picker is inside the tasks list's `overflow-y-auto` container.
+  const [anchor, setAnchor] = useState<{
+    top: number;
+    left: number;
+    width: number;
+    flipUp: boolean;
+  } | null>(null);
 
+  // Position the portaled popover. We render via a body-level portal because
+  // the per-row picker lives inside `overflow-y-auto` — without portalling
+  // the dropdown would be clipped by the scroll container. Recomputes on
+  // scroll/resize so the menu tracks the trigger as the user scrolls the
+  // tasks list. Flips above the trigger when the menu would otherwise
+  // overflow the viewport.
+  useLayoutEffect(() => {
+    if (!open) return;
+    function reposition() {
+      const r = triggerRef.current?.getBoundingClientRect();
+      if (!r) return;
+      const MENU_HEIGHT_ESTIMATE = 240;
+      const GAP = 4;
+      const spaceBelow = window.innerHeight - r.bottom;
+      const flipUp = spaceBelow < MENU_HEIGHT_ESTIMATE && r.top > spaceBelow;
+      setAnchor({
+        top: flipUp ? r.top - GAP : r.bottom + GAP,
+        left: r.left,
+        width: r.width,
+        flipUp,
+      });
+    }
+    reposition();
+    window.addEventListener("resize", reposition);
+    // useCapture so we catch scroll on any ancestor (the tasks list scroller).
+    window.addEventListener("scroll", reposition, true);
+    return () => {
+      window.removeEventListener("resize", reposition);
+      window.removeEventListener("scroll", reposition, true);
+    };
+  }, [open]);
+
+  // Outside-click + Esc closes. Both refs guarded since the popover lives
+  // outside the trigger's DOM subtree.
   useEffect(() => {
     if (!open) return;
     function onDocClick(e: MouseEvent) {
-      if (!wrapperRef.current?.contains(e.target as Node)) {
+      const target = e.target as Node;
+      if (triggerRef.current?.contains(target)) return;
+      if (popoverRef.current?.contains(target)) return;
+      setOpen(false);
+      setCreating(false);
+      setNewName("");
+    }
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") {
         setOpen(false);
         setCreating(false);
         setNewName("");
       }
     }
     document.addEventListener("mousedown", onDocClick);
-    return () => document.removeEventListener("mousedown", onDocClick);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDocClick);
+      document.removeEventListener("keydown", onKey);
+    };
   }, [open]);
 
   function commitNew() {
@@ -547,8 +615,9 @@ function CategoryPicker({
   }
 
   return (
-    <div ref={wrapperRef} className="relative inline-block">
+    <>
       <button
+        ref={triggerRef}
         type="button"
         onClick={() => setOpen((v) => !v)}
         className={cn(
@@ -574,74 +643,82 @@ function CategoryPicker({
           </>
         )}
       </button>
-      {open && (
-        <div
-          role="menu"
-          className="absolute z-30 mt-1 left-0 min-w-[160px] rounded-md border bg-popover shadow-md py-1"
-        >
-          <button
-            type="button"
-            role="menuitem"
-            className={cn(
-              "w-full text-left text-xs px-3 py-1.5 hover:bg-accent",
-              value === null && "font-medium text-foreground",
-            )}
-            onClick={() => pick(null)}
+      {open && anchor &&
+        createPortal(
+          <div
+            ref={popoverRef}
+            role="menu"
+            className="fixed z-50 min-w-[160px] max-h-[60vh] overflow-y-auto rounded-md border bg-popover shadow-md py-1"
+            style={{
+              top: anchor.flipUp ? undefined : anchor.top,
+              bottom: anchor.flipUp
+                ? window.innerHeight - anchor.top
+                : undefined,
+              left: anchor.left,
+            }}
           >
-            No category
-          </button>
-          {categories.length > 0 && (
-            <div className="my-0.5 border-t" />
-          )}
-          {categories.map((c) => (
             <button
-              key={c}
               type="button"
               role="menuitem"
               className={cn(
-                "w-full text-left text-xs px-3 py-1.5 hover:bg-accent truncate",
-                value === c && "font-medium text-foreground",
+                "w-full text-left text-xs px-3 py-1.5 hover:bg-accent",
+                value === null && "font-medium text-foreground",
               )}
-              onClick={() => pick(c)}
+              onClick={() => pick(null)}
             >
-              {c}
+              No category
             </button>
-          ))}
-          <div className="my-0.5 border-t" />
-          {creating ? (
-            <div className="px-2 py-1.5">
-              <Input
-                autoFocus
-                value={newName}
-                onChange={(e) => setNewName(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") {
-                    e.preventDefault();
-                    commitNew();
-                  } else if (e.key === "Escape") {
-                    e.preventDefault();
-                    setCreating(false);
-                    setNewName("");
-                  }
-                }}
-                onBlur={commitNew}
-                placeholder="New category"
-                className="h-7 text-xs"
-              />
-            </div>
-          ) : (
-            <button
-              type="button"
-              role="menuitem"
-              className="w-full text-left text-xs px-3 py-1.5 hover:bg-accent text-primary"
-              onClick={() => setCreating(true)}
-            >
-              + New category…
-            </button>
-          )}
-        </div>
-      )}
-    </div>
+            {categories.length > 0 && <div className="my-0.5 border-t" />}
+            {categories.map((c) => (
+              <button
+                key={c}
+                type="button"
+                role="menuitem"
+                className={cn(
+                  "w-full text-left text-xs px-3 py-1.5 hover:bg-accent truncate",
+                  value === c && "font-medium text-foreground",
+                )}
+                onClick={() => pick(c)}
+              >
+                {c}
+              </button>
+            ))}
+            <div className="my-0.5 border-t" />
+            {creating ? (
+              <div className="px-2 py-1.5">
+                <Input
+                  autoFocus
+                  value={newName}
+                  onChange={(e) => setNewName(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      commitNew();
+                    } else if (e.key === "Escape") {
+                      e.preventDefault();
+                      setCreating(false);
+                      setNewName("");
+                    }
+                  }}
+                  onBlur={commitNew}
+                  placeholder="New category"
+                  className="h-7 text-xs"
+                />
+              </div>
+            ) : (
+              <button
+                type="button"
+                role="menuitem"
+                className="w-full text-left text-xs px-3 py-1.5 hover:bg-accent text-primary"
+                onClick={() => setCreating(true)}
+              >
+                + New category…
+              </button>
+            )}
+          </div>,
+          document.body,
+        )}
+    </>
   );
 }
 

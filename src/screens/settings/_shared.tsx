@@ -7,8 +7,6 @@ import {
     getAppPreferences,
     setAiDebugEnabled,
     setAnthropicMaxOutputTokens,
-    setBuildCheckMaxAttempts,
-    setBuildCheckTimeoutSecs,
     setCopilotMaxOutputTokens,
     setDailyTokenBudget,
     setGeminiMaxOutputTokens,
@@ -229,12 +227,6 @@ export function useAppPreferencesEditor() {
           break;
         case "prTasksPollIntervalMinutes":
           await setPrTasksPollIntervalMinutes(value as number);
-          break;
-        case "buildCheckTimeoutSecs":
-          await setBuildCheckTimeoutSecs(value as number);
-          break;
-        case "buildCheckMaxAttempts":
-          await setBuildCheckMaxAttempts(value as number);
           break;
         case "streamingPartialsEnabled":
           await setStreamingPartialsEnabled(value as boolean);

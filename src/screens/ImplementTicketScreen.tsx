@@ -70,8 +70,7 @@ export function ImplementTicketScreen({
     implementationStreamText,
     implementationProgress,
     pipelineActivity,
-    buildVerification,
-    buildCheckStreamText,
+    verificationOutput,
     replanCheckpoint,
     testPlan,
     tests,
@@ -623,8 +622,7 @@ export function ImplementTicketScreen({
                       implementation={implementation}
                       implementationStreamText={implementationStreamText}
                       implementationProgress={implementationProgress}
-                      buildVerification={buildVerification}
-                      buildCheckStreamText={buildCheckStreamText}
+                      verificationOutput={verificationOutput}
                       replanCheckpoint={replanCheckpoint}
                       testPlan={testPlan}
                       tests={tests}

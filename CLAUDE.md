@@ -195,18 +195,16 @@ Agent Skills updated
 
 **Test Plan vs Test Generation**: intentionally split so the engineer reviews the proposed file list and case coverage before any test files are written. Prevents the agent silently adding tests the user doesn't actually want, and prevents an agent from writing tests that just validate its own assumptions.
 
-**All agents**: read/write codebase via the local git worktree only — never via Bitbucket API for file access. Use `glob_repo_files`, `grep_repo_files`, and `read_repo_file` tools targeted at specific files, not whole-codebase loads. The Implementation, Test Generation, and Code Review agents have access to `write_repo_file`; only the build-fix sub-loop and the implementation chat workflow also write.
+**All agents**: read/write codebase via the local git worktree only — never via Bitbucket API for file access. Use `glob_repo_files`, `grep_repo_files`, and `read_repo_file` tools targeted at specific files, not whole-codebase loads. The Implementation, Verification, Test Generation, and Code Review agents have access to `write_repo_file`. The Verification agent and the orchestrator/implementation chats also have `exec_in_worktree` for running shell commands (typecheck/test/build).
 
-### Build verification (Phase 3c)
+### Verification (post-implementation)
 
-When the user enables build verification in Settings and configures a build command (e.g. `pnpm build`, `cargo check`, `make test`), the sidecar inserts a sub-loop between Implementation and the implementation checkpoint:
+After the Implementation agent finishes writing every planned file, a **`verification` node** runs as a tool-loop with full repo access plus `exec_in_worktree`. The agent infers the project's commands from its manifests (`package.json`, `Cargo.toml`, etc.), then verifies the change in order — typecheck → tests for affected modules → build — fixing any failures it can with `write_repo_file` along the way. Modeled after Claude Code's behaviour: don't trust that a write compiled, run the checks.
 
-1. **`build_check` node** — runs the configured command via the `exec_in_worktree` IPC tool, captures exit code + combined stdout/stderr, records a `BuildAttempt`.
-2. If exit code is 0, route to the implementation checkpoint as usual.
-3. If non-zero and attempts < 3, route to **`build_fix` node** — a tool-loop chat that reads the failing files (output is tail-truncated to 12k chars to avoid drowning the model), edits them via `write_repo_file`, returns a structured summary, then routes back to `build_check`.
-4. If three attempts have all failed, surface the full attempt chain via `state.buildVerification` and continue to the implementation checkpoint so the user decides whether to fix manually, retry the stage, or abort.
-
-The whole sub-loop is skipped when the toggle is off or the command field is empty.
+- Always runs; there is no Settings toggle. The agent skips checks that don't apply to the project (e.g. no typecheck step for a pure-shell project).
+- Iteration cap: `VERIFICATION_MAX_ITERATIONS` (currently 30 tool-loop steps) — generous because each cycle takes multiple exec/read/write calls.
+- Result: a `VerificationOutput` (summary, per-step log, files fixed, unresolved issues, `clean: boolean`) surfaced in the Implementation panel alongside the implementation summary at the implementation checkpoint.
+- Per-file post-write verification (file missing/empty/etc on disk after the implementation iteration) still routes to `replan_check` ahead of `verification` when there's plan-revision budget — that's a different failure mode (the agent never wrote the file) and replan is the right tool.
 
 ---
 

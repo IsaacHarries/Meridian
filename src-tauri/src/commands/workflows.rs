@@ -228,25 +228,6 @@ pub async fn run_implementation_pipeline_workflow(
     let ctx = AiContext::stage("implement_ticket", "pipeline");
     let model = resolve_model_for_context(&ctx).await?;
 
-    // Phase 3c — read the build-verify settings from the prefs store. The
-    // sidecar uses these to decide whether to insert the build_check sub-loop
-    // after implementation. Both must be set for the loop to run; either
-    // disabled or empty command short-circuits to the normal checkpoint.
-    let build_verify_enabled =
-        crate::storage::preferences::get_pref("build_verify_enabled")
-            .map(|v| v == "true")
-            .unwrap_or(false);
-    let build_check_command =
-        crate::storage::preferences::get_pref("build_check_command").unwrap_or_default();
-    let build_check_timeout_secs = crate::storage::preferences::get_pref("build_check_timeout_secs")
-        .and_then(|v| v.parse::<u32>().ok())
-        .filter(|&v| v > 0 && v <= 1800)
-        .unwrap_or(300);
-    let build_check_max_attempts = crate::storage::preferences::get_pref("build_check_max_attempts")
-        .and_then(|v| v.parse::<u32>().ok())
-        .filter(|&v| v > 0 && v <= 10)
-        .unwrap_or(3);
-
     // Read the user's grooming format templates from disk and bundle them
     // into the workflow input. Mirrors `run_grooming_workflow` /
     // `run_grooming_chat_workflow` so the pipeline's grooming stage gets
@@ -268,10 +249,6 @@ pub async fn run_implementation_pipeline_workflow(
         "groomingTemplates": grooming_templates,
         "skills": args.skills,
         "prTemplate": args.pr_template,
-        "buildVerifyEnabled": build_verify_enabled,
-        "buildCheckCommand": build_check_command,
-        "buildCheckTimeoutSecs": build_check_timeout_secs,
-        "buildCheckMaxAttempts": build_check_max_attempts,
     });
 
     crate::integrations::sidecar::run_workflow(

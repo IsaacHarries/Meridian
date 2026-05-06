@@ -2,7 +2,6 @@ import { Button } from "@/components/ui/button";
 import { type ReplanCheckpointPayload } from "@/lib/tauri/worktree";
 import {
     AlertTriangle,
-    Bug,
     ChevronRight,
     FileCode,
     Loader2,
@@ -10,16 +9,14 @@ import {
     X,
 } from "lucide-react";
 
-/** Surfaces the `replan` checkpoint payload — verification failures, exhausted
- *  build attempts, prior plan, and the partial files already on disk. The
+/** Surfaces the `replan` checkpoint payload — per-file post-write verification
+ *  failures, prior plan, and the partial files already on disk. The
  *  three-button approval row (Revise / Accept partial / Abort) is rendered by
  *  the screen, not this panel. */
 export function ReplanPanel({ data }: { data: ReplanCheckpointPayload }) {
   const reasonLabel: Record<ReplanCheckpointPayload["reason"], string> = {
     verification_failed:
       "One or more files didn't end up in the expected state on disk after the implementation pass.",
-    build_failed:
-      "The build verification sub-loop exhausted its retry budget without a passing build.",
     user_requested: "Plan revision requested.",
   };
   return (
@@ -62,38 +59,6 @@ export function ReplanPanel({ data }: { data: ReplanCheckpointPayload }) {
                 {f.detail && (
                   <p className="text-xs text-muted-foreground">{f.detail}</p>
                 )}
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {data.build_attempts.length > 0 && (
-        <div className="border rounded-md overflow-hidden">
-          <div className="px-3 py-2 bg-muted/30 text-sm font-medium flex items-center gap-2">
-            <Bug className="h-4 w-4 text-muted-foreground" />
-            Build attempts ({data.build_attempts.length})
-          </div>
-          <div className="divide-y">
-            {data.build_attempts.map((a, i) => (
-              <div key={i} className="px-3 py-2 space-y-1">
-                <div className="flex items-center gap-2">
-                  <span className="text-sm font-medium">Attempt {a.attempt}</span>
-                  <span
-                    className={`text-xs px-1.5 py-0.5 rounded font-medium ${
-                      a.exit_code === 0
-                        ? "bg-green-100 text-green-700 dark:bg-green-900 dark:text-green-300"
-                        : "bg-red-100 text-red-700 dark:bg-red-900 dark:text-red-300"
-                    }`}
-                  >
-                    exit {a.exit_code}
-                  </span>
-                  {a.fixed && (
-                    <span className="text-xs text-muted-foreground">
-                      fix wrote {a.files_written.length} file(s)
-                    </span>
-                  )}
-                </div>
               </div>
             ))}
           </div>

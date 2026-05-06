@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { BUILD_OUTPUT_TAIL_CHARS, isTransientModelError, tailBuildOutput } from "./pipeline/helpers.js";
-import { BUILD_CHECK_MAX_ATTEMPTS, PLAN_REVISION_MAX, routeAfterBuildCheck, routeAfterImplementation } from "./pipeline/nodes/build.js";
+import { isTransientModelError } from "./pipeline/helpers.js";
+import { PLAN_REVISION_MAX, routeAfterImplementation } from "./pipeline/nodes/build.js";
 import { classifyVerification } from "./pipeline/nodes/implementation.js";
 import { PerFileResponseSchema } from "./pipeline/schemas.js";
 import { type PipelineState } from "./pipeline/state.js";
@@ -142,13 +142,10 @@ function makeState(overrides: Partial<PipelineState> = {}): PipelineState {
       ticketKey: "TEST-1",
       worktreePath: "/tmp",
       codebaseContext: "",
-      buildVerifyEnabled: false,
-      buildCheckCommand: "",
     } as PipelineState["input"],
     model: {} as PipelineState["model"],
     currentStage: "implementation",
     triageHistory: [],
-    buildAttempts: 0,
     verificationFailures: [],
     planRevisions: 0,
     usage: { inputTokens: 0, outputTokens: 0 },
@@ -172,7 +169,7 @@ describe("routeAfterImplementation", () => {
     ).toBe("replan_check");
   });
 
-  it("falls through past replan_check when revision budget is exhausted", () => {
+  it("falls through past replan_check to verification when revision budget is exhausted", () => {
     expect(
       routeAfterImplementation(
         makeState({
@@ -182,48 +179,14 @@ describe("routeAfterImplementation", () => {
           planRevisions: PLAN_REVISION_MAX,
         }),
       ),
-    ).toBe("checkpoint_implementation");
+    ).toBe("verification");
   });
 
-  it("routes to build_check when build verification is enabled + command is set", () => {
-    expect(
-      routeAfterImplementation(
-        makeState({
-          input: {
-            ticketText: "",
-            ticketKey: "T",
-            worktreePath: "/tmp",
-            codebaseContext: "",
-            buildVerifyEnabled: true,
-            buildCheckCommand: "pnpm build",
-          } as PipelineState["input"],
-        }),
-      ),
-    ).toBe("build_check");
+  it("routes to verification by default — verification always runs after implementation", () => {
+    expect(routeAfterImplementation(makeState())).toBe("verification");
   });
 
-  it("routes to checkpoint_implementation when build verification is disabled", () => {
-    expect(routeAfterImplementation(makeState())).toBe("checkpoint_implementation");
-  });
-
-  it("routes to checkpoint_implementation when build is enabled but command is empty", () => {
-    expect(
-      routeAfterImplementation(
-        makeState({
-          input: {
-            ticketText: "",
-            ticketKey: "T",
-            worktreePath: "/tmp",
-            codebaseContext: "",
-            buildVerifyEnabled: true,
-            buildCheckCommand: "   ",
-          } as PipelineState["input"],
-        }),
-      ),
-    ).toBe("checkpoint_implementation");
-  });
-
-  it("verification failures take priority over build_check routing", () => {
+  it("verification failures take priority over the verification node — replan first", () => {
     expect(
       routeAfterImplementation(
         makeState({
@@ -231,156 +194,9 @@ describe("routeAfterImplementation", () => {
             { path: "a.ts", expected_action: "create", outcome: "missing" },
           ],
           planRevisions: 0,
-          input: {
-            ticketText: "",
-            ticketKey: "T",
-            worktreePath: "/tmp",
-            codebaseContext: "",
-            buildVerifyEnabled: true,
-            buildCheckCommand: "pnpm build",
-          } as PipelineState["input"],
         }),
       ),
     ).toBe("replan_check");
-  });
-});
-
-// ── routeAfterBuildCheck ─────────────────────────────────────────────────────
-
-describe("routeAfterBuildCheck", () => {
-  it("returns checkpoint_implementation when buildVerification is missing", () => {
-    expect(routeAfterBuildCheck(makeState())).toBe("checkpoint_implementation");
-  });
-
-  it("returns checkpoint_implementation when build passed", () => {
-    expect(
-      routeAfterBuildCheck(
-        makeState({
-          buildVerification: {
-            build_command: "pnpm build",
-            build_passed: true,
-            attempts: [
-              { attempt: 1, exit_code: 0, output: "ok", fixed: false, files_written: [] },
-            ],
-          },
-        }),
-      ),
-    ).toBe("checkpoint_implementation");
-  });
-
-  it("returns build_fix while attempts < BUILD_CHECK_MAX_ATTEMPTS and build is failing", () => {
-    expect(
-      routeAfterBuildCheck(
-        makeState({
-          buildVerification: {
-            build_command: "pnpm build",
-            build_passed: false,
-            attempts: [
-              { attempt: 1, exit_code: 1, output: "boom", fixed: false, files_written: [] },
-            ],
-          },
-        }),
-      ),
-    ).toBe("build_fix");
-  });
-
-  it("returns checkpoint_implementation once attempts are exhausted (does NOT trigger a full plan rewrite)", () => {
-    // Build failures used to bubble out to a full re-plan + re-implement
-    // when the build_fix budget ran out. That was wildly out of proportion
-    // to a tsc / test failure — replans wipe and rewrite every file. Now
-    // the route always lands on the implementation checkpoint so the user
-    // can read the build output and decide whether to retry, edit, or
-    // abandon the run on their own terms.
-    expect(
-      routeAfterBuildCheck(
-        makeState({
-          planRevisions: 0,
-          buildVerification: {
-            build_command: "pnpm build",
-            build_passed: false,
-            attempts: Array.from({ length: BUILD_CHECK_MAX_ATTEMPTS }, (_, i) => ({
-              attempt: i + 1,
-              exit_code: 1,
-              output: "boom",
-              fixed: false,
-              files_written: [],
-            })),
-          },
-        }),
-      ),
-    ).toBe("checkpoint_implementation");
-  });
-
-  it("returns checkpoint_implementation once both budgets are exhausted", () => {
-    expect(
-      routeAfterBuildCheck(
-        makeState({
-          planRevisions: PLAN_REVISION_MAX,
-          buildVerification: {
-            build_command: "pnpm build",
-            build_passed: false,
-            attempts: Array.from({ length: BUILD_CHECK_MAX_ATTEMPTS }, (_, i) => ({
-              attempt: i + 1,
-              exit_code: 1,
-              output: "boom",
-              fixed: false,
-              files_written: [],
-            })),
-          },
-        }),
-      ),
-    ).toBe("checkpoint_implementation");
-  });
-
-  it("build-passed short-circuits to checkpoint regardless of attempt count", () => {
-    expect(
-      routeAfterBuildCheck(
-        makeState({
-          planRevisions: 0,
-          buildVerification: {
-            build_command: "pnpm build",
-            build_passed: true,
-            attempts: Array.from({ length: BUILD_CHECK_MAX_ATTEMPTS }, (_, i) => ({
-              attempt: i + 1,
-              exit_code: 0,
-              output: "",
-              fixed: false,
-              files_written: [],
-            })),
-          },
-        }),
-      ),
-    ).toBe("checkpoint_implementation");
-  });
-});
-
-// ── tailBuildOutput ──────────────────────────────────────────────────────────
-
-describe("tailBuildOutput", () => {
-  it("passes through unchanged when below the cap", () => {
-    const short = "x".repeat(100);
-    expect(tailBuildOutput(short)).toBe(short);
-  });
-
-  it("passes through unchanged at exactly the cap", () => {
-    const exact = "x".repeat(BUILD_OUTPUT_TAIL_CHARS);
-    expect(tailBuildOutput(exact)).toBe(exact);
-  });
-
-  it("truncates to the last N chars when over the cap", () => {
-    const tail = "tail".repeat(10); // 40 chars
-    const head = "head".repeat(BUILD_OUTPUT_TAIL_CHARS); // very long
-    const out = tailBuildOutput(head + tail);
-    expect(out.endsWith(tail)).toBe(true);
-    // The result is prefix + last N chars of input. Length is N + the
-    // marker prefix.
-    expect(out.length).toBeGreaterThan(BUILD_OUTPUT_TAIL_CHARS);
-    expect(out.length).toBeLessThan(BUILD_OUTPUT_TAIL_CHARS + 200);
-  });
-
-  it("includes a truncation marker when truncating", () => {
-    const huge = "x".repeat(BUILD_OUTPUT_TAIL_CHARS + 1);
-    expect(tailBuildOutput(huge)).toContain("truncated");
   });
 });
 

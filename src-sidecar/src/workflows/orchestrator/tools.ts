@@ -78,8 +78,9 @@ export function makePipelineControlTools(args: {
       name: "get_pipeline_state",
       description:
         "Read the current implementation pipeline's state: which stage it's on, whether a plan exists, " +
-        "implementation/build/verification status, and the plan-revision counter. Use this to ground " +
-        "review and proposal decisions in actual pipeline state rather than guessing from chat history.",
+        "implementation and post-implementation verification status (typecheck/test/build), and the " +
+        "plan-revision counter. Use this to ground review and proposal decisions in actual pipeline " +
+        "state rather than guessing from chat history.",
       schema: z.object({}),
     },
   );

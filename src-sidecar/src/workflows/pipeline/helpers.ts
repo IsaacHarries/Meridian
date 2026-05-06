@@ -251,18 +251,6 @@ export function isTransientModelError(err: unknown): boolean {
   );
 }
 
-/** Cap on stdout/stderr forwarded to the fix agent — long build outputs
- *  drown the model in noise. The tail is the most useful part. */
-export const BUILD_OUTPUT_TAIL_CHARS = 12_000;
-
-export function tailBuildOutput(output: string): string {
-  if (output.length <= BUILD_OUTPUT_TAIL_CHARS) return output;
-  return (
-    `…(truncated; showing last ${BUILD_OUTPUT_TAIL_CHARS} chars)…\n\n` +
-    output.slice(output.length - BUILD_OUTPUT_TAIL_CHARS)
-  );
-}
-
 export function formatTriageTurnAsMarkdown(turn: TriageTurnOutput): string {
   const parts: string[] = [];
   if (turn.message?.trim()) parts.push(turn.message.trim());

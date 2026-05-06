@@ -8,7 +8,7 @@ import { type JiraIssue } from "@/lib/tauri/jira";
 import { type OrchestratorTurnOutput } from "@/lib/tauri/orchestrator";
 import { type SkillType } from "@/lib/tauri/templates";
 import { type GroomingOutput, type ImpactOutput, type ImplementationOutput, type PipelineWorkflowResult, type PlanReviewOutput, type PrDescriptionOutput, type SuggestedEdit, type SuggestedEditStatus, type TestOutput, type TestPlan, type TriageMessage, type TriageTurnOutput } from "@/lib/tauri/workflows";
-import { type ReplanCheckpointPayload } from "@/lib/tauri/worktree";
+import { type ReplanCheckpointPayload, type VerificationOutput } from "@/lib/tauri/worktree";
 import { NODE_TO_STAGE, STAGE_ORDER } from "./constants";
 import { useImplementTicketStore } from "./store";
 import type {
@@ -128,14 +128,24 @@ export function applyInterruptToState(
         updates.partialTriageTurn = null;
         break;
       }
-      case "implementation":
-        updates.implementation = payload as ImplementationOutput;
+      case "implementation": {
+        // The implementation checkpoint payload is the implementation output
+        // with the post-implementation verification result attached as a
+        // sibling `verification` field. Split them back out so the panel
+        // renders both alongside each other.
+        const combined = (payload ?? {}) as ImplementationOutput & {
+          verification?: VerificationOutput | null;
+        };
+        const { verification, ...implOutput } = combined;
+        updates.implementation = implOutput as ImplementationOutput;
+        updates.verificationOutput = verification ?? null;
         // Plan + guidance are intermediate silent stages — their
         // partial-stream snapshots are no longer relevant once
         // implementation has produced an interrupt.
         updates.partialPlan = null;
         updates.partialGuidance = null;
         break;
+      }
       case "replan":
         updates.replanCheckpoint = payload as ReplanCheckpointPayload;
         break;
@@ -436,6 +446,7 @@ export function snapshotSession(s: ImplementTicketState): PipelineSession {
     guidance: s.guidance,
     implementation: s.implementation,
     implementationStreamText: s.implementationStreamText,
+    verificationOutput: s.verificationOutput,
     testPlan: s.testPlan,
     tests: s.tests,
     review: s.review,
@@ -591,7 +602,6 @@ export function serializableState(s: ImplementTicketState) {
     implementationStreamText: "",
     implementationProgress: null,
     pipelineActivity: null,
-    buildCheckStreamText: "",
     testsStreamText: "",
     reviewStreamText: "",
     prStreamText: "",

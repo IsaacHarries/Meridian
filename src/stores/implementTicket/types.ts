@@ -3,7 +3,7 @@ import { type JiraIssue } from "@/lib/tauri/jira";
 import { type OrchestratorMessage, type OrchestratorPendingProposal } from "@/lib/tauri/orchestrator";
 import { type SkillType } from "@/lib/tauri/templates";
 import { type GroomingOutput, type GuidanceOutput, type ImpactOutput, type ImplementationOutput, type ImplementationPlan, type PipelineResumeAction, type PlanReviewOutput, type PrDescriptionOutput, type RetrospectiveOutput, type SuggestedEdit, type TestOutput, type TestPlan, type TriageMessage, type TriageTurnOutput } from "@/lib/tauri/workflows";
-import { type BuildCheckResult, type ReplanCheckpointPayload, type WorktreeInfo } from "@/lib/tauri/worktree";
+import { type ReplanCheckpointPayload, type VerificationOutput, type WorktreeInfo } from "@/lib/tauri/worktree";
 
 // ── Stage type — single source of truth used by every screen + store slice ───
 
@@ -55,6 +55,7 @@ export type PipelineSession = Pick<
   | "guidance"
   | "implementation"
   | "implementationStreamText"
+  | "verificationOutput"
   | "testPlan"
   | "tests"
   | "review"
@@ -168,8 +169,10 @@ export interface ImplementTicketState {
     tool?: string;
     toolArg?: string;
   } | null;
-  buildVerification: BuildCheckResult | null;
-  buildCheckStreamText: string;
+  /** Result of the post-implementation verification pass — typecheck/test/
+   *  build summary surfaced alongside the implementation output in the
+   *  Implementation panel. Null until verification has completed. */
+  verificationOutput: VerificationOutput | null;
   /** Payload for the `replan` checkpoint, populated when the pipeline pauses
    *  at the plan-revision interrupt. Cleared on next interrupt. */
   replanCheckpoint: ReplanCheckpointPayload | null;

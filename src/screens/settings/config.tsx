@@ -76,8 +76,6 @@ export function ConfigSection({
   const [prAddressWorktreePath, setPrAddressWorktreePath] = useState("");
   const [groomingWorktreePath, setGroomingWorktreePath] = useState("");
   const [prTerminal, setPrTerminal] = useState("iTerm2");
-  const [buildVerifyEnabled, setBuildVerifyEnabled] = useState(false);
-  const [buildCheckCommand, setBuildCheckCommand] = useState("");
   // Snapshot of the values we hydrated with — used by the debounced
   // save hooks below to skip the initial-load no-op write.
   const [hydratedSnapshot, setHydratedSnapshot] = useState({
@@ -89,8 +87,6 @@ export function ConfigSection({
     prAddressWorktreePath: "",
     groomingWorktreePath: "",
     prTerminal: "iTerm2",
-    buildVerifyEnabled: false,
-    buildCheckCommand: "",
   });
 
   const [worktreeStatus, setWorktreeStatus] = useState<SectionStatus>({
@@ -121,8 +117,6 @@ export function ConfigSection({
           prAddressWorktreePath: prefs["pr_address_worktree_path"] ?? "",
           groomingWorktreePath: prefs["grooming_worktree_path"] ?? "",
           prTerminal: prefs["pr_review_terminal"] || "iTerm2",
-          buildVerifyEnabled: prefs["build_verify_enabled"] === "true",
-          buildCheckCommand: prefs["build_check_command"] ?? "",
         };
         setBoardId(snap.boardId);
         setRepoSlug(snap.repoSlug);
@@ -132,8 +126,6 @@ export function ConfigSection({
         setPrAddressWorktreePath(snap.prAddressWorktreePath);
         setGroomingWorktreePath(snap.groomingWorktreePath);
         setPrTerminal(snap.prTerminal);
-        setBuildVerifyEnabled(snap.buildVerifyEnabled);
-        setBuildCheckCommand(snap.buildCheckCommand);
         setHydratedSnapshot(snap);
         setHydrated(true);
       })
@@ -213,25 +205,6 @@ export function ConfigSection({
     transform: (v) => v.trim() || "iTerm2",
     onSaved,
   });
-  useDebouncedPrefSave({
-    hydrated,
-    prefKey: "build_check_command",
-    value: buildCheckCommand,
-    hydratedValue: hydratedSnapshot.buildCheckCommand,
-    transform: (v) => v.trim(),
-    onSaved,
-  });
-
-  // Build verification is a toggle — write it immediately rather than
-  // debouncing since the user is unlikely to flip it back and forth and
-  // a single click already implies "save this".
-  useEffect(() => {
-    if (!hydrated) return;
-    if (buildVerifyEnabled === hydratedSnapshot.buildVerifyEnabled) return;
-    void setPreference("build_verify_enabled", buildVerifyEnabled ? "true" : "false")
-      .then(() => onSaved())
-      .catch((err) => toast.error("Failed to save build verification", { description: String(err) }));
-  }, [buildVerifyEnabled, hydrated, hydratedSnapshot.buildVerifyEnabled, onSaved]);
 
   async function handleValidateWorktree() {
     if (!worktreePath.trim()) return;
@@ -520,48 +493,6 @@ export function ConfigSection({
                 </div>
               )}
             </div>
-            <div className="flex items-start justify-between gap-4 py-1">
-              <div>
-                <p className="text-sm font-medium">Build Verification</p>
-                <p className="text-xs text-muted-foreground mt-0.5">
-                  After the implementation agent writes code, run the
-                  configured build command. If it fails, an AI fix loop reads
-                  the error, edits the offending files, and retries (up to 3
-                  times) before handing control back to you.
-                </p>
-              </div>
-              <Button
-                size="sm"
-                variant={buildVerifyEnabled ? "default" : "outline"}
-                onClick={() => setBuildVerifyEnabled((v) => !v)}
-                className="shrink-0"
-              >
-                {buildVerifyEnabled ? "Enabled" : "Disabled"}
-              </Button>
-            </div>
-            {buildVerifyEnabled && (
-              <div className="space-y-1.5 pl-1">
-                <label
-                  htmlFor="build-check-command"
-                  className="text-xs font-medium text-muted-foreground"
-                >
-                  Build command
-                </label>
-                <input
-                  id="build-check-command"
-                  type="text"
-                  value={buildCheckCommand}
-                  onChange={(e) => setBuildCheckCommand(e.target.value)}
-                  placeholder="e.g. pnpm build, cargo check, make test"
-                  spellCheck={false}
-                  className="w-full rounded-md border bg-background px-3 py-1.5 text-sm font-mono"
-                />
-                <p className="text-xs text-muted-foreground">
-                  Runs in the configured worktree. Leave empty to skip the
-                  build sub-loop even when the toggle is on.
-                </p>
-              </div>
-            )}
           </div>
         )}
       </CardContent>

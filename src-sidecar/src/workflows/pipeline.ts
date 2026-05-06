@@ -33,9 +33,7 @@ import { makeTriageNode } from "./pipeline/nodes/triage.js";
 import { makePlanNode } from "./pipeline/nodes/plan.js";
 import { makeImplementationNode } from "./pipeline/nodes/implementation.js";
 import {
-  makeBuildCheckNode,
-  makeBuildFixNode,
-  routeAfterBuildCheck,
+  makeVerificationNode,
   routeAfterImplementation,
 } from "./pipeline/nodes/build.js";
 import { makeTestPlanNode } from "./pipeline/nodes/test-plan.js";
@@ -63,10 +61,12 @@ export function buildPipelineGraph(ctx: PipelineGraphContext) {
     // holding each agent's output.
     .addNode("do_plan", makePlanNode(ctx))
     .addNode("implementation", makeImplementationNode(ctx))
-    // Phase 3c — optional build verification sub-loop. Skipped entirely when
-    // the user hasn't enabled it in Settings.
-    .addNode("build_check", makeBuildCheckNode(ctx))
-    .addNode("build_fix", makeBuildFixNode(ctx))
+    // After per-file implementation, run a verification pass: the agent gets
+    // shell access (exec_in_worktree) and runs typecheck/test/build, fixing
+    // failures as it goes. Always runs — the older toggle/build-command
+    // settings were dropped in favour of the agent inferring commands from
+    // the project's manifests.
+    .addNode("verification", makeVerificationNode(ctx))
     .addNode("test_plan", makeTestPlanNode(tools))
     .addNode("test_gen", makeTestGenNode(tools))
     .addNode("code_review", makeCodeReviewNode(ctx))
@@ -79,7 +79,10 @@ export function buildPipelineGraph(ctx: PipelineGraphContext) {
     })
     .addNode(
       "checkpoint_implementation",
-      checkpointNode("implementation", (s) => s.implementationOutput),
+      checkpointNode("implementation", (s) => ({
+        ...(s.implementationOutput ?? {}),
+        verification: s.verificationOutput ?? null,
+      })),
     )
     // Plan-revision checkpoint: surfaced after verification or build failures
     // exhaust their in-stage budgets. Lets the user choose to revise the plan
@@ -110,22 +113,16 @@ export function buildPipelineGraph(ctx: PipelineGraphContext) {
     // iteration's input. The Plan's structured `files` list + per-file
     // `read_repo_file` is enough context for Implementation to act.
     .addEdge("do_plan", "implementation")
-    // implementation → (replan_check on verification failures, build_check
-    //                   when build verification is enabled, else checkpoint).
-    // build_check     → (build_fix while we have fix budget,
-    //                   replan_check once that budget is exhausted and we
-    //                   still have plan-revision budget,
-    //                   else checkpoint_implementation).
+    // implementation → (replan_check on per-file verification failures we
+    //                   still have plan-revision budget for, else verification).
+    // verification   → checkpoint_implementation (always — the agent has
+    //                   already done its tool-loop work and reported a
+    //                   structured summary the user reviews).
     .addConditionalEdges("implementation", routeAfterImplementation, [
-      "build_check",
+      "verification",
       "replan_check",
-      "checkpoint_implementation",
     ])
-    .addConditionalEdges("build_check", routeAfterBuildCheck, [
-      "build_fix",
-      "checkpoint_implementation",
-    ])
-    .addEdge("build_fix", "build_check")
+    .addEdge("verification", "checkpoint_implementation")
     .addEdge("checkpoint_implementation", "test_plan")
     .addEdge("test_plan", "checkpoint_test_plan")
     .addEdge("checkpoint_test_plan", "test_gen")

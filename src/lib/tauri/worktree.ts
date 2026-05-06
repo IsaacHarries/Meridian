@@ -9,18 +9,21 @@ export async function writeRepoFile(
   return invoke("write_repo_file", { path, content });
 }
 
-export interface BuildAttempt {
-  attempt: number;
-  exit_code: number;
-  output: string;
-  fixed: boolean;
-  files_written: string[];
+export interface VerificationStep {
+  command: string;
+  passed: boolean;
+  notes: string;
 }
 
-export interface BuildCheckResult {
-  build_command: string;
-  build_passed: boolean;
-  attempts: BuildAttempt[];
+/** Output of the post-implementation verification node — what shell commands
+ *  the agent ran (typecheck/test/build), which files it fixed mid-loop, and
+ *  whether the change ended up in a clean state. */
+export interface VerificationOutput {
+  summary: string;
+  steps: VerificationStep[];
+  files_written: string[];
+  unresolved: string[];
+  clean: boolean;
 }
 
 export type FileVerificationOutcome =
@@ -39,11 +42,10 @@ export interface FileVerification {
 }
 
 /** Payload of the `replan` checkpoint interrupt. Surfaces the prior plan and
- *  whatever failure context (verification, build) drove us back here. */
+ *  per-file post-write verification failures that drove us back here. */
 export interface ReplanCheckpointPayload {
-  reason: "verification_failed" | "build_failed" | "user_requested";
+  reason: "verification_failed" | "user_requested";
   verification_failures: FileVerification[];
-  build_attempts: BuildAttempt[];
   prior_plan: ImplementationPlan | null;
   previously_written_files: string[];
   revisions_used: number;
