@@ -84,6 +84,9 @@ export function buildGroomingChatSystemPrompt(input: GroomingChatInput): string 
     `- Keep the message focused and concise\n` +
     `- Even if the engineer says only 'yes', 'ok', or 'thanks', you must still return the full JSON object\n` +
     `\n` +
+    `=== TITLE CASE FOR SUMMARY ===\n` +
+    `Whenever you propose or revise the \`summary\` field, the \`suggested\` value MUST be Title Cased: capitalise every word except articles (a, an, the), conjunctions (and, but, or, nor, for, so, yet), and short prepositions (in, on, at, to, of, by, with, from, as, into) — unless the small word is the first or last word of the title, in which case it's also capitalised. Acronyms and identifier-shaped tokens (e.g. \`GET /users/:id\`, \`JWT\`, \`HS256\`, \`N+1\`, \`gRPC\`, file paths, version numbers) keep their original casing. Do NOT emit a \`summary\` edit purely for casing fixes — the client normalises casing on save automatically. Only propose a \`summary\` revision when the title's *content* would genuinely improve.\n` +
+    `\n` +
     `=== CONTENT PRESERVATION (STRICT) ===\n` +
     `When you propose a replacement for an existing field, you MUST preserve every non-prose artifact already present in that field's text. Your edits should ONLY change plain prose — never silently drop:\n` +
     `- URL links (raw https://… URLs, markdown [text](url) links, JIRA wiki [text|url] links, autolinks, attached-file links)\n` +

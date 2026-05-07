@@ -322,8 +322,18 @@ export function AiDebugPanel({ onClose, controls }: AiDebugPanelProps) {
           </div>
         ) : (
           <ul className="divide-y divide-border/60">
-            {filteredEvents.map((e, i) => (
-              <TrafficRow key={`${e.runId}-${e.startedAt}-${i}`} event={e} />
+            {filteredEvents.map((e) => (
+              // Key on event identity only — never the array index. The
+              // events list is most-recent-first, so each new event
+              // prepended to the front shifts every existing row's
+              // index and would force a remount that collapses the
+              // user's expanded view. (runId, startedAt, latencyMs) is
+              // already the dedup key the store uses, so it's unique
+              // within the buffer.
+              <TrafficRow
+                key={`${e.runId}-${e.startedAt}-${e.latencyMs}`}
+                event={e}
+              />
             ))}
           </ul>
         )}

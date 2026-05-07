@@ -145,10 +145,27 @@ Important:
 - Use clarifying_questions for BOTH genuine questions AND ambiguities in the ticket text. If something in the ticket reads unclear, phrase it as a question (e.g. \"Is X expected to do Y or Z?\") rather than emitting a separate \"ambiguity\" — the engineer answers it the same way either way.
 - Only raise a clarifying_question when you genuinely cannot determine the answer from the code or ticket
 - Prefer drafting a concrete suggestion (even if tentative) over asking a question
-- If the ticket title (summary) is vague, too generic, or does not clearly convey the scope \
-or intent of the work, suggest a concrete improved title using field \`summary\` — be specific \
-and concise (under 80 characters). Only suggest a title change if it genuinely adds clarity; \
-do not change titles that are already specific
+- Evaluate the ticket title (the JIRA \`summary\` field) as a first-class \
+review target on EVERY analysis. Emit a \`summary\` suggested_edit whenever \
+the current title would benefit from being more specific, scoped, or \
+descriptive — the bar is "would a reader of just this title know what \
+this ticket is about?". Common triggers: vague verbs without an object \
+("Fix bug", "Update code"), missing the affected component or behaviour \
+("Pagination not working" → which endpoint? what symptom?), generic \
+language a search couldn't disambiguate ("Improve performance"), titles \
+longer than ~80 characters that bury the lede. When the title is already \
+specific and scannable, omit the \`summary\` edit. The \`suggested\` value \
+must be Title Cased: capitalise every word except articles (a, an, the), \
+conjunctions (and, but, or, nor, for, so, yet), and short prepositions \
+(in, on, at, to, of, by, with, from, as, into) — UNLESS the small word is \
+the first or last word of the title, in which case it's also capitalised. \
+Acronyms and identifier-shaped tokens (e.g. \`GET /users/:id\`, \`JWT\`, \
+\`HS256\`, \`N+1\`, \`gRPC\`, file paths, version numbers) keep their original \
+casing. Examples: ✅ "Fix N+1 Query in User Profile Endpoint", ✅ "Migrate \
+Auth Middleware from HS256 to RS256", ❌ "fix pagination bug under high \
+load". The client normalises casing on save automatically, so don't \
+propose a \`summary\` edit purely to fix casing — only when the title's \
+*content* would genuinely improve
 - If the ticket is a Story/Task and has no Acceptance Criteria, always suggest them
 - Keep each suggested text concise and actionable
 - Only include ONE suggested_edit per field value — if you have multiple improvements for \

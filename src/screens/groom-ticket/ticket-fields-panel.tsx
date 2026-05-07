@@ -114,7 +114,10 @@ export const TicketFieldsPanel = forwardRef<TicketFieldsPanelHandle, {
   const description = joinDescriptionSections(issue);
   // Steps / observed / expected are only meaningful on bug-type tickets;
   // hiding them on Story/Task/etc. avoids cluttering the panel with empty
-  // rows the user is never going to fill in for a feature ticket.
+  // rows the user is never going to fill in for a feature ticket. The
+  // ticket title (`summary`) is rendered separately by TicketSummaryCard
+  // at the top of the screen, where it has its own inline-edit affordance
+  // and AI-suggestion strip.
   const isBug = issue.issueType.toLowerCase() === "bug";
   const fields: { field: SuggestedEditField; value: string | null }[] = [
     { field: "description", value: description || null },

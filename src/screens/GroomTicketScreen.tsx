@@ -16,6 +16,8 @@ import {
     preserveImagesFromOriginal,
     resolveJiraFieldId,
     suggestedEditsToDraftChanges,
+    synthesizeTitleCaseDraft,
+    toTitleCase,
 } from "@/screens/groom-ticket/_shared";
 import { ChatPanel } from "@/screens/groom-ticket/chat-panel";
 import { DraftChangesPanel } from "@/screens/groom-ticket/draft-changes-panel";
@@ -320,6 +322,13 @@ export function GroomTicketScreen({ credStatus, onBack }: GroomTicketScreenProps
         freshIssue.issueType,
       );
       const drafts = suggestedEditsToDraftChanges(output.suggested_edits, freshIssue);
+      // Fallback: when the agent didn't propose a title revision, run the
+      // existing title through the local title-case helper. If that
+      // produces a different string, surface it as a regular pending
+      // draft so the user gets the same Accept / Decline contract on
+      // the TicketSummaryCard strip as for any AI-authored suggestion.
+      const titleCaseDraft = synthesizeTitleCaseDraft(freshIssue, drafts);
+      if (titleCaseDraft) drafts.push(titleCaseDraft);
       const openingMsg = buildOpeningMessage(freshIssue, output);
       setSession((prev) =>
         prev?.issue.key === sessionKey
@@ -456,9 +465,15 @@ export function GroomTicketScreen({ credStatus, onBack }: GroomTicketScreenProps
         `JIRA field ID for "${field}" hasn't been discovered yet — open the AI analysis once to populate it.`,
       );
     }
+    // Always title-case the ticket summary on save — applies to both
+    // user-typed edits and AI-suggested ones the user has confirmed.
+    // toTitleCase preserves technical/identifier-shaped tokens (paths,
+    // version numbers, ALL-CAPS acronyms, mixed-case codenames), so
+    // titles like "Fix N+1 query in GET /users/:id" stay correct.
+    const valueToSave = field === "summary" ? toTitleCase(newValue) : newValue;
     await updateJiraFields(
       session.issue.key,
-      JSON.stringify({ [fieldId]: newValue }),
+      JSON.stringify({ [fieldId]: valueToSave }),
     );
     const fresh = await getIssue(session.issue.key).catch(() => session.issue);
     setSession((prev) => (prev ? { ...prev, issue: fresh } : prev));
@@ -480,10 +495,16 @@ export function GroomTicketScreen({ credStatus, onBack }: GroomTicketScreenProps
         // attachments from the JIRA ticket.
         const original =
           draft.current ?? getCurrentFieldValue(draft.field, session.issue);
-        const valueToSave = preserveImagesFromOriginal(
+        const preserved = preserveImagesFromOriginal(
           original,
           draft.editedSuggested,
         );
+        // Same title-case enforcement as the inline save path so an
+        // AI-suggested summary lands in JIRA correctly cased even if
+        // the agent (or the user's downstream edit) didn't get every
+        // word right.
+        const valueToSave =
+          draft.field === "summary" ? toTitleCase(preserved) : preserved;
         await updateJiraFields(session.issue.key, JSON.stringify({ [fieldId]: valueToSave }));
         results[draft.id] = { ok: true };
       } catch (e) {
@@ -696,6 +717,12 @@ export function GroomTicketScreen({ credStatus, onBack }: GroomTicketScreenProps
                   analyzing={session.thinking}
                   onAnalyze={analyzeTicket}
                   claudeAvailable={claudeAvailable}
+                  pendingDraft={session.drafts.find(
+                    (d) => d.field === "summary" && d.status === "pending",
+                  )}
+                  onSaveSummary={(value) => saveFieldEdit("summary", value)}
+                  onAcceptSuggestion={acceptSuggestion}
+                  onDeclineSuggestion={declineDraft}
                 />
               </div>
 

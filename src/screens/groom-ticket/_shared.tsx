@@ -111,6 +111,7 @@ export function suggestedEditsToDraftChanges(edits: GroomingOutput["suggested_ed
  *  only count as inline-rendered on bug-type tickets, mirroring the panel's
  *  own filter. */
 export function isInlineField(field: SuggestedEditField, issue: JiraIssue): boolean {
+  if (field === "summary") return true;
   if (field === "description" || field === "acceptance_criteria") return true;
   const isBug = issue.issueType.toLowerCase() === "bug";
   if (!isBug) return false;
@@ -119,6 +120,147 @@ export function isInlineField(field: SuggestedEditField, issue: JiraIssue): bool
     field === "observed_behavior" ||
     field === "expected_behavior"
   );
+}
+
+// ── Title case ────────────────────────────────────────────────────────────────
+//
+// Used on the ticket summary so titles land in JIRA looking like "Add Dark
+// Mode Support to Settings" regardless of how the user typed them or what
+// the AI emitted. Only applied to the `summary` field — descriptions / AC
+// stay verbatim because forcing title case on prose is wrong.
+//
+// The transformation has to be conservative on technical strings — engineer-
+// authored ticket titles routinely contain things like `GET /users/:id`,
+// `HS256`, `N+1`, `Sidekiq::Job`, version numbers, file paths. A naive
+// "lowercase then capitalise first letter of each word" mangles every one
+// of those. The rules here:
+//   - Words containing a digit, slash, dot, plus, or colon pass through
+//     unchanged (treated as code/identifier-shaped).
+//   - Words that already mix upper and lower case (e.g. `iOS`, `gRPC`,
+//     `JWT`, `JSON`) pass through unchanged — the user / AI deliberately
+//     cased them that way.
+//   - Words in the small-word list (articles, conjunctions, short
+//     prepositions) are lowercased — except the first or last word, which
+//     are always capitalised.
+//   - Everything else is Capitalised.
+
+const TITLE_CASE_SMALL_WORDS = new Set([
+  "a",
+  "an",
+  "and",
+  "as",
+  "at",
+  "but",
+  "by",
+  "for",
+  "from",
+  "in",
+  "into",
+  "of",
+  "on",
+  "or",
+  "the",
+  "to",
+  "vs",
+  "with",
+]);
+
+const TECHNICAL_WORD_RE = /[\d/.+:_]/;
+
+function isTechnicalWord(word: string): boolean {
+  return TECHNICAL_WORD_RE.test(word);
+}
+
+function isMixedCase(word: string): boolean {
+  // True when the word has at least one uppercase AND one lowercase letter
+  // somewhere other than just the leading character — that's the signal
+  // for an intentional casing like `iOS`, `gRPC`, `OAuth`. Single-letter
+  // words and ALL-CAPS acronyms (e.g. `JWT`) are NOT mixed case under
+  // this definition; the small-word + acronym handling below covers them.
+  let hasUpper = false;
+  let hasLower = false;
+  for (let i = 1; i < word.length; i++) {
+    const c = word[i];
+    if (c >= "A" && c <= "Z") hasUpper = true;
+    else if (c >= "a" && c <= "z") hasLower = true;
+    if (hasUpper && hasLower) return true;
+  }
+  return false;
+}
+
+function capitaliseFirst(word: string): string {
+  if (word.length === 0) return word;
+  return word[0].toUpperCase() + word.slice(1).toLowerCase();
+}
+
+/** Synthesise a fallback `summary` draft when the AI agent didn't emit
+ *  one and the existing title isn't already in title case. The result
+ *  surfaces in the same UI as the agent's suggestions — TicketSummaryCard
+ *  shows the strip, the user clicks Accept to load it into the editor,
+ *  Save commits to JIRA. Returns null when:
+ *   - the agent already emitted a summary edit (don't fight it),
+ *   - the title is empty,
+ *   - the title's already title-cased (toTitleCase would be a no-op).
+ *  Stable id keyed on the ticket so re-analysing the same ticket
+ *  produces the same draft id, which keeps the dedup contract in
+ *  `suggestedEditsToDraftChanges` happy if this synthesis ever ends up
+ *  on the same merging path. */
+export function synthesizeTitleCaseDraft(
+  issue: JiraIssue,
+  agentDrafts: DraftChange[],
+): DraftChange | null {
+  if (agentDrafts.some((d) => d.field === "summary")) return null;
+  const original = issue.summary?.trim() ?? "";
+  if (!original) return null;
+  const cased = toTitleCase(original);
+  if (cased === original) return null;
+  return {
+    id: `local-title-case-${issue.key}`,
+    field: "summary",
+    section: "Title",
+    current: original,
+    suggested: cased,
+    editedSuggested: cased,
+    userEdited: false,
+    reasoning:
+      "Title-case fix — capitalise content words and lowercase short articles / prepositions per the grooming convention. Generated locally because the AI agent didn't propose a content revision.",
+    status: "pending",
+  };
+}
+
+/**
+ * Title-case a ticket summary. See module-level notes for the full rules
+ * — short version: code/identifier-shaped words and intentionally
+ * mixed-case words pass through, articles / short prepositions are
+ * lowercased except at the start or end, everything else is Capitalised.
+ *
+ * Operates token-by-token while preserving the original whitespace
+ * separators so multi-space / tab inputs aren't collapsed.
+ */
+export function toTitleCase(input: string): string {
+  if (!input.trim()) return input;
+  // Split on whitespace boundaries while preserving the separators so we
+  // can reassemble the original spacing exactly.
+  const parts = input.split(/(\s+)/);
+  // Word-token indices (skip the captured whitespace runs) — used to
+  // identify the first and last word for the always-cap rule.
+  const wordIndices: number[] = [];
+  for (let i = 0; i < parts.length; i++) {
+    if (parts[i] && !/^\s+$/.test(parts[i])) wordIndices.push(i);
+  }
+  const firstIdx = wordIndices[0];
+  const lastIdx = wordIndices[wordIndices.length - 1];
+
+  const out = parts.map((part, idx) => {
+    if (!part || /^\s+$/.test(part)) return part;
+    if (isTechnicalWord(part)) return part;
+    if (isMixedCase(part)) return part;
+    const lower = part.toLowerCase();
+    const isEdge = idx === firstIdx || idx === lastIdx;
+    if (!isEdge && TITLE_CASE_SMALL_WORDS.has(lower)) return lower;
+    return capitaliseFirst(part);
+  });
+  return out.join("");
 }
 
 /** Draft whose target field doesn't have an inline home — e.g. summary,
