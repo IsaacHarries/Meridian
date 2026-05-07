@@ -4,6 +4,8 @@
 
 # Meridian
 
+> ⚠️ **Work in progress — expect rough edges.** Meridian is under active development as a personal tool. Workflows, settings, prompts, and storage formats are still in flux; features may change shape, regress, or break between commits without notice. There's no stable release branch yet — `main` is the only branch and it's where day-to-day iteration happens. Use at your own risk and pin to a known-good commit if you need stability.
+
 A personal productivity desktop application for a senior engineer and scrum master. Meridian combines an AI-assisted ticket implementation pipeline with engineering leadership tooling — sprint dashboard, retrospectives, PR review, ticket quality checks, and meeting transcription — all drawing from JIRA and Bitbucket as the single source of truth.
 
 ---
