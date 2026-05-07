@@ -42,6 +42,10 @@ export const FieldEditor = forwardRef<FieldEditorHandle, {
    *  longer writes to JIRA on its own; the user must press Save to submit. */
   onAcceptSuggestion: (draftId: string) => void;
   onDeclineSuggestion: (draftId: string) => void;
+  /** Notifies the parent panel whenever this field's dirty state flips
+   *  so the panel-level "Save all" button can enable/disable based on
+   *  whether anything is actually pending. */
+  onDirtyChange?: (dirty: boolean) => void;
 }>(function FieldEditor({
   field,
   label,
@@ -51,6 +55,7 @@ export const FieldEditor = forwardRef<FieldEditorHandle, {
   onSave,
   onAcceptSuggestion,
   onDeclineSuggestion,
+  onDirtyChange,
 }, ref) {
   // `editorContent` is what the editor currently shows — driven by user
   // typing, suggestion accepts, or external sync. `baseline` is the last
@@ -115,6 +120,15 @@ export const FieldEditor = forwardRef<FieldEditorHandle, {
   useEffect(() => {
     setDiffDecisions(new Map());
   }, [pendingDraftId]);
+
+  // Surface dirty state to the parent panel so its "Save all" button
+  // knows whether anything is pending across the field set. Only the
+  // editable + non-mid-resolution case counts as dirty for the
+  // panel-level save (matches what `flushIfDirty` will actually push).
+  const reportableDirty = editable && dirty && !pendingDraft;
+  useEffect(() => {
+    onDirtyChange?.(reportableDirty);
+  }, [reportableDirty, onDirtyChange]);
 
   async function commit() {
     setSaving(true);

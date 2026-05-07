@@ -14,6 +14,7 @@ pub mod diff;
 pub mod exec;
 pub mod files;
 pub mod git;
+pub mod manage;
 pub mod sync;
 pub mod types;
 pub mod validate;
@@ -40,6 +41,6 @@ pub use sync::{
     sync_grooming_worktree, sync_worktree,
 };
 pub use validate::{
-    validate_grooming_worktree, validate_pr_address_worktree, validate_pr_review_worktree,
-    validate_worktree,
+    validate_base_branch, validate_grooming_worktree, validate_pr_address_worktree,
+    validate_pr_review_worktree, validate_source_repo, validate_worktree, BaseBranchInfo,
 };

@@ -76,6 +76,31 @@ export async function validateWorktree(): Promise<WorktreeInfo> {
   return invoke<WorktreeInfo>("validate_worktree");
 }
 
+/** Validate the configured `repo_source_path` (auto-managed mode) — the
+ *  user's working repository that the four workflow worktrees branch
+ *  off. Returns the same metadata shape as the per-workflow validators. */
+export async function validateSourceRepo(): Promise<WorktreeInfo> {
+  return invoke<WorktreeInfo>("validate_source_repo");
+}
+
+export interface BaseBranchInfo {
+  branch: string;
+  /** Path the branch was looked up against — source repo (auto mode)
+   *  or implementation worktree (manual mode). */
+  checkedAgainst: string;
+  localExists: boolean;
+  /** True when `origin/<branch>` resolves. The expected happy-path. */
+  remoteExists: boolean;
+  headCommit: string;
+}
+
+/** Validate that the configured base branch resolves in the appropriate
+ *  source repo for the active worktree mode. Catches typos before any
+ *  workflow tries to branch off a non-existent ref. */
+export async function validateBaseBranch(): Promise<BaseBranchInfo> {
+  return invoke<BaseBranchInfo>("validate_base_branch");
+}
+
 /**
  * Fetch from origin and hard-reset the worktree to the configured base branch.
  * Returns the new HEAD info.

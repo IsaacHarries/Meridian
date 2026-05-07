@@ -1,8 +1,11 @@
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { type JiraIssue } from "@/lib/tauri/jira";
 import { type SuggestedEditField } from "@/lib/tauri/workflows";
-import { forwardRef, useImperativeHandle, useRef } from "react";
+import { Check, Loader2 } from "lucide-react";
+import { forwardRef, useCallback, useImperativeHandle, useRef, useState } from "react";
+import { toast } from "sonner";
 import {
     type DraftChange,
     FIELD_LABELS,
@@ -51,17 +54,59 @@ export const TicketFieldsPanel = forwardRef<TicketFieldsPanelHandle, {
   // pointing at remounted editors never linger.
   const editorRefs = useRef<Map<SuggestedEditField, FieldEditorHandle>>(new Map());
 
+  // Per-field dirty signals fed up from each FieldEditor — drives the
+  // "Save all" button's enabled state and counter. Tracked as a Set
+  // (rather than booleans per slot) so .size gives the dirty count
+  // directly and the empty-Set fast-path is a single check.
+  const [dirtyFields, setDirtyFields] = useState<Set<SuggestedEditField>>(
+    new Set(),
+  );
+  const [savingAll, setSavingAll] = useState(false);
+
+  const reportDirty = useCallback(
+    (field: SuggestedEditField, dirty: boolean) => {
+      setDirtyFields((prev) => {
+        const has = prev.has(field);
+        if (dirty && has) return prev;
+        if (!dirty && !has) return prev;
+        const next = new Set(prev);
+        if (dirty) next.add(field);
+        else next.delete(field);
+        return next;
+      });
+    },
+    [],
+  );
+
+  async function flushAllDirtyInner() {
+    const handles = Array.from(editorRefs.current.values());
+    // Sequential rather than Promise.all so a JIRA rate-limit on
+    // the first save doesn't fan out into duplicate 429s on the
+    // others; the field count here is small (~3–5).
+    for (const h of handles) {
+      await h.flushIfDirty();
+    }
+  }
+
+  async function handleSaveAll() {
+    if (dirtyFields.size === 0 || savingAll) return;
+    setSavingAll(true);
+    const count = dirtyFields.size;
+    try {
+      await flushAllDirtyInner();
+      toast.success(`Saved ${count} field${count === 1 ? "" : "s"} to JIRA`);
+    } catch (e) {
+      toast.error("Couldn't save all fields", { description: String(e) });
+    } finally {
+      setSavingAll(false);
+    }
+  }
+
   useImperativeHandle(
     ref,
     () => ({
       async flushAllDirty() {
-        const handles = Array.from(editorRefs.current.values());
-        // Sequential rather than Promise.all so a JIRA rate-limit on
-        // the first save doesn't fan out into duplicate 429s on the
-        // others; the field count here is small (~3–5).
-        for (const h of handles) {
-          await h.flushIfDirty();
-        }
+        await flushAllDirtyInner();
       },
     }),
     [],
@@ -95,10 +140,37 @@ export const TicketFieldsPanel = forwardRef<TicketFieldsPanelHandle, {
   return (
     <Card>
       <CardHeader className="pb-3 border-b">
-        <CardTitle className="text-sm font-semibold">Fields</CardTitle>
-        <p className="text-xs text-muted-foreground">
-          Edits save directly to JIRA. AI suggestions appear inline on each field.
-        </p>
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <CardTitle className="text-sm font-semibold">Fields</CardTitle>
+            <p className="text-xs text-muted-foreground">
+              Edits save directly to JIRA. AI suggestions appear inline on each field.
+            </p>
+          </div>
+          <Button
+            size="sm"
+            className="h-7 px-2 text-xs gap-1 shrink-0"
+            onClick={() => void handleSaveAll()}
+            disabled={dirtyFields.size === 0 || savingAll}
+            title={
+              dirtyFields.size === 0
+                ? "No unsaved field edits"
+                : `Save ${dirtyFields.size} pending field edit${dirtyFields.size === 1 ? "" : "s"} to JIRA`
+            }
+          >
+            {savingAll ? (
+              <Loader2 className="h-3 w-3 animate-spin" />
+            ) : (
+              <Check className="h-3 w-3" />
+            )}
+            Save all
+            {dirtyFields.size > 0 && !savingAll && (
+              <span className="ml-0.5 text-[10px] opacity-80">
+                ({dirtyFields.size})
+              </span>
+            )}
+          </Button>
+        </div>
       </CardHeader>
       <CardContent className="space-y-3 pt-3">
         {fields.map(({ field, value }) => (
@@ -120,6 +192,7 @@ export const TicketFieldsPanel = forwardRef<TicketFieldsPanelHandle, {
             onSave={(v) => onSaveField(field, v)}
             onAcceptSuggestion={onAcceptSuggestion}
             onDeclineSuggestion={onDeclineSuggestion}
+            onDirtyChange={(dirty) => reportDirty(field, dirty)}
           />
         ))}
         {Object.keys(issue.namedFields ?? {}).length > 0 && (

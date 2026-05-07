@@ -7,45 +7,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import {
-  NumberPreferenceField,
-  ToggleRow,
-  useAppPreferencesEditor,
-} from "./_shared";
-
-// ── Implementation pipeline tunables ──────────────────────────────────────────
-
-export function PipelineSettingsSection() {
-  const { prefs, error, update } = useAppPreferencesEditor();
-  return (
-    <Card>
-      <CardHeader className="pb-3">
-        <CardTitle className="text-base flex items-center gap-2">
-          <Activity className="h-4 w-4 text-muted-foreground" />
-          Implement Ticket Pipeline
-        </CardTitle>
-        <CardDescription className="text-xs mt-0.5">
-          Tunables for the per-stage agents.
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="space-y-4">
-        {!prefs ? (
-          <p className="text-xs text-muted-foreground">Loading…</p>
-        ) : (
-          <>
-            <ToggleRow
-              label="Stream partial output into stage panels"
-              helper="When on, each stage's structured panel fills in field-by-field as the agent emits JSON. Off renders the whole panel at once when the stage finishes (less busy, slightly later)."
-              checked={prefs.streamingPartialsEnabled}
-              onChange={(b) => void update("streamingPartialsEnabled", b)}
-            />
-          </>
-        )}
-        {error && <p className="text-xs text-destructive">{error}</p>}
-      </CardContent>
-    </Card>
-  );
-}
+import { NumberPreferenceField, useAppPreferencesEditor } from "./_shared";
 
 // ── PR Review tunables ────────────────────────────────────────────────────────
 

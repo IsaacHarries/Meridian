@@ -82,7 +82,17 @@ export function buildGroomingChatSystemPrompt(input: GroomingChatInput): string 
     `- To remove a suggestion, omit its id from updated_edits (the frontend will not delete it — include it with a note in reasoning if it should be withdrawn)\n` +
     `- If you change the suggested text or current text of an existing edit, the engineer's previous approval is automatically reset and they must re-approve — your edit is a fresh proposal.\n` +
     `- Keep the message focused and concise\n` +
-    `- Even if the engineer says only 'yes', 'ok', or 'thanks', you must still return the full JSON object` +
+    `- Even if the engineer says only 'yes', 'ok', or 'thanks', you must still return the full JSON object\n` +
+    `\n` +
+    `=== CONTENT PRESERVATION (STRICT) ===\n` +
+    `When you propose a replacement for an existing field, you MUST preserve every non-prose artifact already present in that field's text. Your edits should ONLY change plain prose — never silently drop:\n` +
+    `- URL links (raw https://… URLs, markdown [text](url) links, JIRA wiki [text|url] links, autolinks, attached-file links)\n` +
+    `- Image embeds (markdown ![alt](src), JIRA wiki !image.png|...! embeds, inline data URIs)\n` +
+    `- @user mentions, JIRA ticket references (PROJ-123), commit / PR links\n` +
+    `- Code blocks, inline code, and pre-formatted snippets\n` +
+    `- Tables, list bullet markers, and existing structural formatting\n` +
+    `\n` +
+    `If an artifact belongs in a different field, MOVE it (emit a suggested_edit for the destination field) rather than dropping it. If you cannot tell where it belongs, keep it in place. Anyone diffing your suggested against the original current must see only prose changes; every URL/image/mention must reappear with its target unchanged. This is a hard constraint — losing a link is never acceptable, even when rewriting the surrounding prose.` +
     templatesBlock
   );
 }

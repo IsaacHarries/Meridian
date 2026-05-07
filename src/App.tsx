@@ -16,6 +16,7 @@ import { clearAllEffects, fireBlackHole, fireComet, fireMeteorShower, firePulsar
 import { SpaceEffectsOverlay } from "@/lib/spaceEffects/overlay";
 import { setJiraBaseUrlCache, setLocalLlmUrlCache } from "@/lib/tauri/core";
 import { bitbucketComplete, credentialStatusComplete, getCredentialStatus, getNonSecretConfig, jiraComplete, type CredentialStatus } from "@/lib/tauri/credentials";
+import { cancelAllAgents } from "@/lib/cancelAllAgents";
 import { setRuntimeOverloadPct } from "@/lib/workloadClassifier";
 import { ThemeProvider } from "@/providers/ThemeProvider";
 import { AddressPrCommentsScreen } from "@/screens/AddressPrCommentsScreen";
@@ -33,7 +34,7 @@ import { TimeTrackingScreen } from "@/screens/TimeTrackingScreen";
 import { WorkflowScreen, type WorkflowId } from "@/screens/WorkflowScreen";
 import { useAiDebugStore } from "@/stores/aiDebugStore";
 import { useCredentialStatusStore } from "@/stores/credentialStatusStore";
-import { hydrateImplementStore, setStreamingPartialsEnabledRuntime } from "@/stores/implementTicket/listeners";
+import { hydrateImplementStore } from "@/stores/implementTicket/listeners";
 import { hydrateMeetingsStore } from "@/stores/meetings/listeners";
 import { hydratePrReviewStore } from "@/stores/prReview/listeners";
 import { usePrTasksStore } from "@/stores/prTasksStore";
@@ -42,7 +43,7 @@ import { hydrateTimeTrackingStore } from "@/stores/timeTrackingStore";
 import { POLL_INTERVAL_MS, useWorkloadAlertStore } from "@/stores/workloadAlertStore";
 import { Loader2 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
-import { Toaster } from "sonner";
+import { Toaster, toast } from "sonner";
 
 type Screen = "loading" | "onboarding" | "landing" | "settings" | "agent-skills" | WorkflowId;
 
@@ -103,7 +104,6 @@ function AppInner() {
     // can consult them on every event without round-tripping through
     // React state.
     void getAppPreferences().then((prefs) => {
-      setStreamingPartialsEnabledRuntime(prefs.streamingPartialsEnabled);
       setRuntimeOverloadPct(prefs.workloadOverloadThresholdPct);
       useAiDebugStore.getState().hydrate({
         enabled: prefs.aiDebugEnabled,
@@ -540,6 +540,37 @@ export default function Root() {
       if (e.metaKey && e.key === "r") {
         e.preventDefault();
         window.location.reload();
+        return;
+      }
+      if (e.key === "Escape") {
+        // Defer to local Escape handlers when the user is editing text
+        // or interacting with a modal/popover. Those have their own
+        // Escape semantics (close popover, exit search, dismiss dialog)
+        // and stealing the keystroke from them would be more annoying
+        // than the cancel shortcut is useful.
+        const t = e.target as HTMLElement | null;
+        if (
+          t &&
+          (t.tagName === "INPUT" ||
+            t.tagName === "TEXTAREA" ||
+            t.tagName === "SELECT" ||
+            t.isContentEditable)
+        ) {
+          return;
+        }
+        // Radix dialogs / dropdowns / popovers / tooltips all portal
+        // into body and carry these data attributes in their open state.
+        // If any are present, leave Escape for them.
+        if (
+          document.querySelector('[role="dialog"][data-state="open"]') ||
+          document.querySelector('[data-radix-popper-content-wrapper]')
+        ) {
+          return;
+        }
+        if (cancelAllAgents()) {
+          e.preventDefault();
+          toast.info("AI agent cancelled");
+        }
       }
     }
     window.addEventListener("keydown", handleKeyDown);

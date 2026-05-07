@@ -38,6 +38,7 @@ import { AnthropicSection } from "./settings/anthropic";
 import { BitbucketSection } from "./settings/bitbucket";
 import { CacheSection } from "./settings/cache";
 import { ConfigSection } from "./settings/config";
+import { WorktreesSection } from "./settings/worktrees";
 import { CopilotSection } from "./settings/copilot";
 import { CrossMeetingsSearchSection } from "./settings/cross-meetings";
 import { DataDirectorySection } from "./settings/data-directory";
@@ -52,7 +53,6 @@ import { NoteTemplatesSection } from "./settings/note-templates";
 import { NotificationsSettingsSection } from "./settings/notifications";
 import { OnboardingPreviewSection } from "./settings/onboarding-preview";
 import {
-    PipelineSettingsSection,
     PrReviewSettingsSection,
     PrTasksPollIntervalSection,
     SprintDashboardSettingsSection,
@@ -297,7 +297,7 @@ export function SettingsScreen({ onClose, onNavigate }: SettingsScreenProps) {
                 <h2 className="text-xl font-semibold text-foreground">
                   Workflows
                 </h2>
-                <PipelineSettingsSection />
+                <WorktreesSection onSaved={refresh} />
                 <PrReviewSettingsSection />
                 <SprintDashboardSettingsSection />
               </section>

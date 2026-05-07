@@ -14,7 +14,6 @@ import { getPreferences, setPreference, deletePreference } from "@/lib/preferenc
 const KEY = {
   prReviewDefaultChunkChars: "pr_review_default_chunk_chars",
   prTasksPollIntervalMinutes: "pr_tasks_poll_interval_minutes",
-  streamingPartialsEnabled: "streaming_partials_enabled",
   workloadOverloadThresholdPct: "workload_overload_threshold_pct",
   dailyTokenBudget: "daily_token_budget",
   notifyPrTaskAdded: "notify_pr_task_added",
@@ -37,7 +36,6 @@ const KEY = {
 export const APP_PREFERENCE_DEFAULTS = {
   prReviewDefaultChunkChars: 12000,
   prTasksPollIntervalMinutes: 60,
-  streamingPartialsEnabled: true,
   workloadOverloadThresholdPct: 140,
   /** Null = no budget set; positive integer = soft daily cap (UI alert
    *  when exceeded, no enforcement). */
@@ -90,7 +88,6 @@ export type AiDebugDockMode = "bottom" | "right" | "left" | "window" | "hidden";
 export type AppPreferences = {
   prReviewDefaultChunkChars: number;
   prTasksPollIntervalMinutes: number;
-  streamingPartialsEnabled: boolean;
   workloadOverloadThresholdPct: number;
   dailyTokenBudget: number | null;
   notifyPrTaskAdded: boolean;
@@ -157,10 +154,6 @@ export async function getAppPreferences(): Promise<AppPreferences> {
     prTasksPollIntervalMinutes: parsePositiveInt(
       prefs[KEY.prTasksPollIntervalMinutes],
       APP_PREFERENCE_DEFAULTS.prTasksPollIntervalMinutes,
-    ),
-    streamingPartialsEnabled: parseBool(
-      prefs[KEY.streamingPartialsEnabled],
-      APP_PREFERENCE_DEFAULTS.streamingPartialsEnabled,
     ),
     workloadOverloadThresholdPct: parseFloatPositive(
       prefs[KEY.workloadOverloadThresholdPct],
@@ -245,9 +238,6 @@ export async function setPrReviewDefaultChunkChars(value: number): Promise<void>
 }
 export async function setPrTasksPollIntervalMinutes(value: number): Promise<void> {
   await setPreference(KEY.prTasksPollIntervalMinutes, String(value));
-}
-export async function setStreamingPartialsEnabled(value: boolean): Promise<void> {
-  await setPreference(KEY.streamingPartialsEnabled, value ? "true" : "false");
 }
 export async function setWorkloadOverloadThresholdPct(value: number): Promise<void> {
   await setPreference(KEY.workloadOverloadThresholdPct, String(value));

@@ -203,8 +203,10 @@ use commands::{
     validate_gemini,
     validate_jira,
     validate_local_llm,
+    validate_base_branch,
     validate_pr_address_worktree,
     validate_pr_review_worktree,
+    validate_source_repo,
     // Repo / worktree
     validate_worktree,
     write_pr_address_file,
@@ -462,6 +464,8 @@ pub fn run() {
             read_ai_debug_log_cmd,
             // Repo / worktree
             validate_worktree,
+            validate_source_repo,
+            validate_base_branch,
             sync_worktree,
             glob_repo_files,
             grep_repo_files,

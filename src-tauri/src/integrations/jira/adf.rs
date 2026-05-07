@@ -151,6 +151,23 @@ fn render_adf_block(node: &Value, base_url: &str, out: &mut String, list_depth: 
                 }
             }
         }
+        "blockCard" | "embedCard" => {
+            // JIRA "smart link" rendered as a card on its own line. The
+            // title / status / preview metadata is resolved client-side
+            // by Atlassian's smart-card service and isn't carried in the
+            // ADF, so the URL is the only thing we have. Emit it as a
+            // plain markdown link so MarkdownBlock renders it as a
+            // clickable URL instead of dropping the node entirely.
+            if let Some(url) = node
+                .get("attrs")
+                .and_then(|a| a.get("url"))
+                .and_then(|u| u.as_str())
+            {
+                if !url.is_empty() {
+                    out.push_str(&format!("[{url}]({url})"));
+                }
+            }
+        }
         _ => {
             // Unknown block — emit its text content so we don't drop
             // anything silently.
@@ -234,6 +251,24 @@ fn render_adf_inline(node: &Value, base_url: &str, out: &mut String) {
             // Two trailing spaces + newline = a markdown line break that
             // doesn't start a new paragraph.
             out.push_str("  \n");
+        }
+        "inlineCard" => {
+            // Inline JIRA "smart link" — the URL is the only data the
+            // ADF carries; the rendered card title/icon comes from
+            // Atlassian's smart-card service at view time. Surface as
+            // a plain markdown link so the user at least sees a
+            // clickable URL inline (instead of the whole node being
+            // dropped by the unknown-inline fallback's recurse-into-
+            // empty-children no-op).
+            if let Some(url) = node
+                .get("attrs")
+                .and_then(|a| a.get("url"))
+                .and_then(|u| u.as_str())
+            {
+                if !url.is_empty() {
+                    out.push_str(&format!("[{url}]({url})"));
+                }
+            }
         }
         "media" | "mediaInline" => {
             if let Some(attrs) = node.get("attrs") {
@@ -446,6 +481,56 @@ mod adf_markdown_tests {
             collect_adf_markdown(&v, BASE),
             "![diagram](https://example.atlassian.net/rest/api/3/attachment/content/abc-123)"
         );
+    }
+
+    #[test]
+    fn inline_card_renders_as_url_link() {
+        let v = doc(json!([
+            {
+                "type": "paragraph",
+                "content": [
+                    { "type": "text", "text": "see " },
+                    {
+                        "type": "inlineCard",
+                        "attrs": { "url": "https://acme.atlassian.net/browse/PROJ-42" }
+                    },
+                    { "type": "text", "text": " for context" }
+                ]
+            }
+        ]));
+        assert_eq!(
+            collect_adf_markdown(&v, BASE),
+            "see [https://acme.atlassian.net/browse/PROJ-42](https://acme.atlassian.net/browse/PROJ-42) for context"
+        );
+    }
+
+    #[test]
+    fn block_card_renders_as_standalone_url_link() {
+        let v = doc(json!([
+            {
+                "type": "blockCard",
+                "attrs": { "url": "https://example.com/report" }
+            }
+        ]));
+        assert_eq!(
+            collect_adf_markdown(&v, BASE),
+            "[https://example.com/report](https://example.com/report)"
+        );
+    }
+
+    #[test]
+    fn smart_link_with_empty_url_is_dropped() {
+        let v = doc(json!([
+            {
+                "type": "paragraph",
+                "content": [
+                    { "type": "text", "text": "before " },
+                    { "type": "inlineCard", "attrs": { "url": "" } },
+                    { "type": "text", "text": "after" }
+                ]
+            }
+        ]));
+        assert_eq!(collect_adf_markdown(&v, BASE), "before after");
     }
 
     #[test]

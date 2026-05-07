@@ -1,6 +1,5 @@
 import { CredentialField } from "@/components/CredentialField";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
 import {
     Card,
     CardContent,
@@ -8,57 +7,21 @@ import {
     CardHeader,
     CardTitle,
 } from "@/components/ui/card";
-import { Label } from "@/components/ui/label";
 import { getPreferences, setPreference } from "@/lib/preferences";
 import { getNonSecretConfig } from "@/lib/tauri/credentials";
-import { validateGroomingWorktree, validatePrAddressWorktree, validatePrReviewWorktree, validateWorktree } from "@/lib/tauri/worktree";
-import { AlertCircle, CheckCircle, Loader2 } from "lucide-react";
+import { AlertCircle, CheckCircle } from "lucide-react";
 import { useEffect, useState } from "react";
-import { toast } from "sonner";
-import { type SectionStatus } from "./_shared";
+import { useDebouncedPrefSave } from "./_shared";
 
 /**
- * Debounce a string-value pref write so the on-disk file isn't hammered
- * on every keystroke. Skips the write on the first render (so the
- * initial hydrate doesn't immediately re-save the values it just loaded)
- * and on the value the field was hydrated with. The trimmed-on-save
- * branch is the convention the prior explicit-save code used; preserved
- * here so the resulting prefs file matches what the previous flow wrote.
+ * Integrations metadata card — JIRA board id and Bitbucket repo slug.
  *
- * `transform` lets callers post-process before writing — used to default
- * blanks (e.g. base branch falls back to "develop"). `onSaved` fires
- * after each successful write so the parent can refresh its
- * "configured?" badge without polling.
+ * The worktree-related fields that used to live here (mode toggle,
+ * source repo path, per-workflow paths, base branch, terminal app)
+ * moved to `WorktreesSection`, mounted under Settings → Workflows
+ * because they're a per-workflow setup concern rather than an
+ * integration credential.
  */
-function useDebouncedPrefSave(opts: {
-  hydrated: boolean;
-  prefKey: string;
-  value: string;
-  hydratedValue: string;
-  transform?: (raw: string) => string;
-  onSaved?: () => void;
-  delayMs?: number;
-}) {
-  const { hydrated, prefKey, value, hydratedValue, transform, onSaved } = opts;
-  const delayMs = opts.delayMs ?? 400;
-  useEffect(() => {
-    if (!hydrated) return;
-    if (value === hydratedValue) return;
-    const final = transform ? transform(value) : value;
-    const id = setTimeout(() => {
-      void setPreference(prefKey, final)
-        .then(() => onSaved?.())
-        .catch((err) => toast.error(`Failed to save ${prefKey}`, { description: String(err) }));
-    }, delayMs);
-    return () => clearTimeout(id);
-    // hydratedValue / transform / onSaved are stable refs from the
-    // caller's perspective; we intentionally don't include them so
-    // changing the helper's identity each render doesn't fire spurious
-    // saves. The value identity is what gates the actual write.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [value, hydrated, prefKey, delayMs]);
-}
-
 export function ConfigSection({
   jiraBoardId,
   bitbucketRepoSlug,
@@ -71,50 +34,14 @@ export function ConfigSection({
   const [hydrated, setHydrated] = useState(false);
   const [boardId, setBoardId] = useState("");
   const [repoSlug, setRepoSlug] = useState("");
-  const [worktreePath, setWorktreePath] = useState("");
-  const [baseBranch, setBaseBranch] = useState("develop");
-  const [prReviewWorktreePath, setPrReviewWorktreePath] = useState("");
-  const [prAddressWorktreePath, setPrAddressWorktreePath] = useState("");
-  const [groomingWorktreePath, setGroomingWorktreePath] = useState("");
-  const [prTerminal, setPrTerminal] = useState("iTerm2");
-  // Snapshot of the values we hydrated with — used by the debounced
-  // save hooks below to skip the initial-load no-op write.
   const [hydratedSnapshot, setHydratedSnapshot] = useState({
     boardId: "",
     repoSlug: "",
-    worktreePath: "",
-    baseBranch: "develop",
-    prReviewWorktreePath: "",
-    prAddressWorktreePath: "",
-    groomingWorktreePath: "",
-    prTerminal: "iTerm2",
   });
 
-  const [worktreeStatus, setWorktreeStatus] = useState<SectionStatus>({
-    state: "idle",
-    message: "",
-  });
-  const [prWorktreeStatus, setPrWorktreeStatus] = useState<SectionStatus>({
-    state: "idle",
-    message: "",
-  });
-  const [prAddressWorktreeStatus, setPrAddressWorktreeStatus] =
-    useState<SectionStatus>({ state: "idle", message: "" });
-  const [groomingWorktreeStatus, setGroomingWorktreeStatus] =
-    useState<SectionStatus>({ state: "idle", message: "" });
-
-  // Hydrate once on mount.
-  //
-  // Reads from the merged map (`getNonSecretConfig` = preferences ∪
-  // non-secret credentials, with prefs winning on collision) rather than
-  // `getPreferences` alone. Older app versions stored the config-section
-  // keys (board id, repo slug, worktree paths, base branch, terminal) in
-  // the credential store; the Rust read paths still fall through to it as
-  // a migration fallback, which is why the "Configured" badge could show
-  // green while the input fields stayed empty. Reading the merged map
-  // populates the inputs in that case, and the migration write below
-  // copies any cred-only value into preferences so the next read comes
-  // from the new storage location.
+  // Hydrate once from the merged config map (preferences ∪ credential
+  // store) so legacy values stored in the credential store before the
+  // prefs migration land in the inputs as well.
   useEffect(() => {
     let alive = true;
     void Promise.all([getNonSecretConfig(), getPreferences()])
@@ -123,38 +50,17 @@ export function ConfigSection({
         const snap = {
           boardId: config["jira_board_id"] ?? "",
           repoSlug: config["bitbucket_repo_slug"] ?? "",
-          worktreePath: config["repo_worktree_path"] ?? "",
-          baseBranch: config["repo_base_branch"] || "develop",
-          prReviewWorktreePath: config["pr_review_worktree_path"] ?? "",
-          prAddressWorktreePath: config["pr_address_worktree_path"] ?? "",
-          groomingWorktreePath: config["grooming_worktree_path"] ?? "",
-          prTerminal: config["pr_review_terminal"] || "iTerm2",
         };
         setBoardId(snap.boardId);
         setRepoSlug(snap.repoSlug);
-        setWorktreePath(snap.worktreePath);
-        setBaseBranch(snap.baseBranch);
-        setPrReviewWorktreePath(snap.prReviewWorktreePath);
-        setPrAddressWorktreePath(snap.prAddressWorktreePath);
-        setGroomingWorktreePath(snap.groomingWorktreePath);
-        setPrTerminal(snap.prTerminal);
         setHydratedSnapshot(snap);
         setHydrated(true);
 
-        // One-shot migration: any value present in the merged map that
-        // isn't yet in preferences came from the credential store —
-        // copy it into preferences so the new save path owns it from
-        // here on. Best-effort; failures aren't fatal because the
-        // dual-store read in Rust still works.
+        // One-shot migration: copy any cred-store-only value into
+        // preferences so the new save path owns it from here on.
         const migrations: Array<[string, string]> = [
           ["jira_board_id", snap.boardId],
           ["bitbucket_repo_slug", snap.repoSlug],
-          ["repo_worktree_path", snap.worktreePath],
-          ["repo_base_branch", snap.baseBranch],
-          ["pr_review_worktree_path", snap.prReviewWorktreePath],
-          ["pr_address_worktree_path", snap.prAddressWorktreePath],
-          ["grooming_worktree_path", snap.groomingWorktreePath],
-          ["pr_review_terminal", snap.prTerminal],
         ];
         for (const [key, value] of migrations) {
           if (value && !prefs[key]) {
@@ -172,10 +78,6 @@ export function ConfigSection({
     };
   }, []);
 
-  // Per-field debounced save. Each call wires one local state value to
-  // a single preference key; mismatches between local state and the
-  // hydrated value queue a write 400ms after the user stops typing,
-  // and `onSaved` re-checks the "Configured" badge.
   useDebouncedPrefSave({
     hydrated,
     prefKey: "jira_board_id",
@@ -192,128 +94,6 @@ export function ConfigSection({
     transform: (v) => v.trim(),
     onSaved,
   });
-  useDebouncedPrefSave({
-    hydrated,
-    prefKey: "repo_worktree_path",
-    value: worktreePath,
-    hydratedValue: hydratedSnapshot.worktreePath,
-    transform: (v) => v.trim(),
-    onSaved,
-  });
-  useDebouncedPrefSave({
-    hydrated,
-    prefKey: "repo_base_branch",
-    value: baseBranch,
-    hydratedValue: hydratedSnapshot.baseBranch,
-    transform: (v) => v.trim() || "develop",
-    onSaved,
-  });
-  useDebouncedPrefSave({
-    hydrated,
-    prefKey: "pr_review_worktree_path",
-    value: prReviewWorktreePath,
-    hydratedValue: hydratedSnapshot.prReviewWorktreePath,
-    transform: (v) => v.trim(),
-    onSaved,
-  });
-  useDebouncedPrefSave({
-    hydrated,
-    prefKey: "pr_address_worktree_path",
-    value: prAddressWorktreePath,
-    hydratedValue: hydratedSnapshot.prAddressWorktreePath,
-    transform: (v) => v.trim(),
-    onSaved,
-  });
-  useDebouncedPrefSave({
-    hydrated,
-    prefKey: "grooming_worktree_path",
-    value: groomingWorktreePath,
-    hydratedValue: hydratedSnapshot.groomingWorktreePath,
-    transform: (v) => v.trim(),
-    onSaved,
-  });
-  useDebouncedPrefSave({
-    hydrated,
-    prefKey: "pr_review_terminal",
-    value: prTerminal,
-    hydratedValue: hydratedSnapshot.prTerminal,
-    transform: (v) => v.trim() || "iTerm2",
-    onSaved,
-  });
-
-  async function handleValidateWorktree() {
-    if (!worktreePath.trim()) return;
-    setWorktreeStatus({ state: "loading", message: "Validating…" });
-    const prefs = await getPreferences();
-    const prev = prefs["repo_worktree_path"] ?? "";
-    await setPreference("repo_worktree_path", worktreePath.trim());
-    try {
-      const info = await validateWorktree();
-      setWorktreeStatus({
-        state: "success",
-        message: `✓ Valid git repo — branch: ${info.branch}, HEAD: ${info.headCommit}`,
-      });
-    } catch (err) {
-      await setPreference("repo_worktree_path", prev).catch(() => {});
-      setWorktreeStatus({ state: "error", message: String(err) });
-    }
-  }
-
-  async function handleValidatePrWorktree() {
-    if (!prReviewWorktreePath.trim()) return;
-    setPrWorktreeStatus({ state: "loading", message: "Validating…" });
-    const prefs = await getPreferences();
-    const prev = prefs["pr_review_worktree_path"] ?? "";
-    await setPreference("pr_review_worktree_path", prReviewWorktreePath.trim());
-    try {
-      const info = await validatePrReviewWorktree();
-      setPrWorktreeStatus({
-        state: "success",
-        message: `✓ Valid git repo — branch: ${info.branch}, HEAD: ${info.headCommit}`,
-      });
-    } catch (err) {
-      await setPreference("pr_review_worktree_path", prev).catch(() => {});
-      setPrWorktreeStatus({ state: "error", message: String(err) });
-    }
-  }
-
-  async function handleValidatePrAddressWorktree() {
-    if (!prAddressWorktreePath.trim()) return;
-    setPrAddressWorktreeStatus({ state: "loading", message: "Validating…" });
-    const prefs = await getPreferences();
-    const prev = prefs["pr_address_worktree_path"] ?? "";
-    await setPreference(
-      "pr_address_worktree_path",
-      prAddressWorktreePath.trim(),
-    );
-    try {
-      const info = await validatePrAddressWorktree();
-      setPrAddressWorktreeStatus({
-        state: "success",
-        message: `✓ Valid git repo — branch: ${info.branch}, HEAD: ${info.headCommit}`,
-      });
-    } catch (err) {
-      await setPreference("pr_address_worktree_path", prev).catch(() => {});
-      setPrAddressWorktreeStatus({ state: "error", message: String(err) });
-    }
-  }
-
-  async function handleValidateGroomingWorktree() {
-    if (!groomingWorktreePath.trim()) return;
-    setGroomingWorktreeStatus({ state: "loading", message: "Validating…" });
-    const prev = (await getPreferences())["grooming_worktree_path"] ?? "";
-    await setPreference("grooming_worktree_path", groomingWorktreePath.trim());
-    try {
-      const info = await validateGroomingWorktree();
-      setGroomingWorktreeStatus({
-        state: "success",
-        message: `✓ Valid git repo — branch: ${info.branch}, HEAD: ${info.headCommit}`,
-      });
-    } catch (err) {
-      await setPreference("grooming_worktree_path", prev).catch(() => {});
-      setGroomingWorktreeStatus({ state: "error", message: String(err) });
-    }
-  }
 
   const allSet = jiraBoardId && bitbucketRepoSlug;
 
@@ -359,175 +139,6 @@ export function ConfigSection({
               onChange={setRepoSlug}
               helperText="The repo slug from your Bitbucket URL: /repositories/workspace/my-repo"
             />
-            <div className="border-t pt-3 mt-1 space-y-3">
-              <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-                Implementation Worktree
-              </p>
-              <CredentialField
-                id="cfg-worktree-path"
-                label="Worktree Path"
-                placeholder="/Users/you/REPOS/MyRepo-meridian"
-                value={worktreePath}
-                onChange={setWorktreePath}
-                helperText={`Absolute path to a git worktree for the implementation pipeline (Grooming, Impact Analysis, Triage agents). Set up with: git worktree add ../MyRepo-meridian ${baseBranch || "develop"}`}
-              />
-              <CredentialField
-                id="cfg-base-branch"
-                label="Base Branch"
-                placeholder="develop"
-                value={baseBranch}
-                onChange={setBaseBranch}
-                helperText="The branch checked out in the worktree when a pipeline starts (usually develop or main)."
-              />
-              {worktreePath.trim() && (
-                <div className="flex items-center gap-2">
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={handleValidateWorktree}
-                    disabled={worktreeStatus.state === "loading"}
-                  >
-                    {worktreeStatus.state === "loading" ? (
-                      <Loader2 className="h-3 w-3 animate-spin mr-1" />
-                    ) : null}
-                    Test worktree
-                  </Button>
-                  {worktreeStatus.state !== "idle" && (
-                    <span
-                      className={`text-xs ${worktreeStatus.state === "success" ? "text-green-600" : "text-destructive"}`}
-                    >
-                      {worktreeStatus.message}
-                    </span>
-                  )}
-                </div>
-              )}
-            </div>
-            <div className="border-t pt-3 mt-1 space-y-3">
-              <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-                PR Review Worktree
-              </p>
-              <CredentialField
-                id="cfg-pr-review-worktree-path"
-                label="PR Review Worktree Path"
-                placeholder="/Users/you/REPOS/MyRepo-pr-review"
-                value={prReviewWorktreePath}
-                onChange={setPrReviewWorktreePath}
-                helperText={`Optional dedicated worktree for PR reviews. Branches are checked out here when you open a PR for review, keeping it isolated from your implementation worktree. Leave blank to share the implementation worktree. Set up with: git worktree add ../MyRepo-pr-review ${baseBranch || "develop"}`}
-              />
-              {prReviewWorktreePath.trim() && (
-                <div className="flex items-center gap-2">
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={handleValidatePrWorktree}
-                    disabled={prWorktreeStatus.state === "loading"}
-                  >
-                    {prWorktreeStatus.state === "loading" ? (
-                      <Loader2 className="h-3 w-3 animate-spin mr-1" />
-                    ) : null}
-                    Test PR review worktree
-                  </Button>
-                  {prWorktreeStatus.state !== "idle" && (
-                    <span
-                      className={`text-xs ${prWorktreeStatus.state === "success" ? "text-green-600" : "text-destructive"}`}
-                    >
-                      {prWorktreeStatus.message}
-                    </span>
-                  )}
-                </div>
-              )}
-              <div className="space-y-1.5">
-                <Label htmlFor="cfg-pr-terminal" className="text-xs">
-                  Terminal Application
-                </Label>
-                <select
-                  id="cfg-pr-terminal"
-                  value={prTerminal}
-                  onChange={(e) => setPrTerminal(e.target.value)}
-                  className="w-full rounded-md border border-input bg-background px-3 py-1.5 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-primary/50 disabled:opacity-50"
-                >
-                  <option value="iTerm2">iTerm2</option>
-                  <option value="Terminal">Terminal</option>
-                  <option value="Warp">Warp</option>
-                  <option value="Kitty">Kitty</option>
-                  <option value="Alacritty">Alacritty</option>
-                </select>
-                <p className="text-[11px] text-muted-foreground">
-                  The terminal app that opens when you press the play button in
-                  PR Review.
-                </p>
-              </div>
-            </div>
-            <div className="border-t pt-3 mt-1 space-y-3">
-              <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-                Address PR Comments Worktree
-              </p>
-              <CredentialField
-                id="cfg-pr-address-worktree-path"
-                label="PR Address Worktree Path"
-                placeholder="/Users/you/REPOS/MyRepo-pr-address"
-                value={prAddressWorktreePath}
-                onChange={setPrAddressWorktreePath}
-                helperText={`Optional dedicated worktree for addressing PR comments. Branches are checked out here when you work through reviewer comments, keeping it isolated from the implementation and review worktrees. If not set, falls back to the PR Review worktree, then the Implementation worktree. Set up with: git worktree add ../MyRepo-pr-address ${baseBranch || "develop"}`}
-              />
-              {prAddressWorktreePath.trim() && (
-                <div className="flex items-center gap-2">
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={handleValidatePrAddressWorktree}
-                    disabled={prAddressWorktreeStatus.state === "loading"}
-                  >
-                    {prAddressWorktreeStatus.state === "loading" ? (
-                      <Loader2 className="h-3 w-3 animate-spin mr-1" />
-                    ) : null}
-                    Test PR address worktree
-                  </Button>
-                  {prAddressWorktreeStatus.state !== "idle" && (
-                    <span
-                      className={`text-xs ${prAddressWorktreeStatus.state === "success" ? "text-green-600" : "text-destructive"}`}
-                    >
-                      {prAddressWorktreeStatus.message}
-                    </span>
-                  )}
-                </div>
-              )}
-            </div>
-            <div className="border-t pt-3 mt-1 space-y-3">
-              <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-                Grooming Context Worktree
-              </p>
-              <CredentialField
-                id="cfg-grooming-worktree-path"
-                label="Grooming Worktree Path"
-                placeholder="/Users/you/REPOS/MyRepo-grooming"
-                value={groomingWorktreePath}
-                onChange={setGroomingWorktreePath}
-                helperText={`Optional dedicated worktree that stays on ${baseBranch || "develop"} and is used for reading codebase context during Grooming and Groom Ticket checks. Meridian runs "git pull" here before each analysis to ensure it reads up-to-date code. If not set, falls back to the Implementation worktree. Set up with: git worktree add ../MyRepo-grooming ${baseBranch || "develop"}`}
-              />
-              {groomingWorktreePath.trim() && (
-                <div className="flex items-center gap-2">
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={handleValidateGroomingWorktree}
-                    disabled={groomingWorktreeStatus.state === "loading"}
-                  >
-                    {groomingWorktreeStatus.state === "loading" ? (
-                      <Loader2 className="h-3 w-3 animate-spin mr-1" />
-                    ) : null}
-                    Test grooming worktree
-                  </Button>
-                  {groomingWorktreeStatus.state !== "idle" && (
-                    <span
-                      className={`text-xs ${groomingWorktreeStatus.state === "success" ? "text-green-600" : "text-destructive"}`}
-                    >
-                      {groomingWorktreeStatus.message}
-                    </span>
-                  )}
-                </div>
-              )}
-            </div>
           </div>
         )}
       </CardContent>

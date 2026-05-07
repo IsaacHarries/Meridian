@@ -52,19 +52,6 @@ if (
   });
 }
 
-/** Module-level flag the pipeline listener consults to decide whether
- *  to surface streamed partial-JSON events into the per-stage panels.
- *  Hydrated from preferences at startup; updated live when the user
- *  toggles the Settings switch. False means skip the partial path
- *  entirely — the panel still streams text via the existing
- *  `*StreamText` fields, but the structured panel only renders once
- *  the final output lands. */
-let streamingPartialsEnabled = true;
-
-export function setStreamingPartialsEnabledRuntime(enabled: boolean): void {
-  streamingPartialsEnabled = enabled;
-}
-
 export async function ensurePipelineListener(): Promise<void> {
   if (pipelineUnlisten) return;
   pipelineUnlisten = await listen<PipelineEvent>(
@@ -178,7 +165,6 @@ export async function ensurePipelineListener(): Promise<void> {
         const partialData = e.data as { partial?: unknown } | undefined;
         const partialField = NODE_TO_PARTIAL_FIELD[e.node];
         if (
-          streamingPartialsEnabled &&
           partialField &&
           partialData?.partial &&
           typeof partialData.partial === "object"

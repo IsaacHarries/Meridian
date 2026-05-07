@@ -155,6 +155,30 @@ do not change titles that are already specific
 the same field (e.g. multiple acceptance criteria points), consolidate them into a single \
 edit with all content merged. Never produce two suggested_edits with the same \`field\`.
 
+=== CONTENT PRESERVATION (STRICT) ===
+When you suggest a replacement for an existing field, you MUST preserve every \
+non-prose artifact already present in that field's text. Your edits should \
+ONLY change plain prose — never silently drop:
+- URL links (raw \`https://…\` URLs, markdown \`[text](url)\` links, JIRA wiki \
+\`[text|url]\` links, autolinks, attached-file links)
+- Image embeds (markdown \`![alt](src)\` images, JIRA wiki \`!image.png|...!\` \
+embeds, inline data URIs)
+- @user mentions, JIRA ticket references (\`PROJ-123\`), commit / PR links
+- Code blocks, inline code, and pre-formatted snippets
+- Tables, numbered or bulleted lists' bullet markers, and existing structural \
+formatting
+
+If a URL or image is in the wrong section of a field (e.g. a screenshot link \
+sitting in the description that belongs in steps_to_reproduce), MOVE it to the \
+appropriate field's suggested_edit — never delete it. If you genuinely cannot \
+tell where an artifact belongs, keep it in place rather than dropping it.
+
+The goal is that anyone diffing your \`suggested\` against the original \`current\` \
+should see only prose changes; every artifact must reappear in some \
+suggested_edit, with its URL/path/anchor unchanged. Treat this as a hard \
+constraint — losing a link is never acceptable, even if the surrounding prose \
+is being rewritten.
+
 When you cannot determine a field's content from the ticket text alone, draft \
 a plausible value from the relevant source code provided below — only fall \
 back to a clarifying_question if even the code does not give enough context.`;
@@ -174,6 +198,11 @@ belong in their own fields. Aim for 2–4 sentences.
 reliably trigger the bug
 - \`observed_behavior\` — what actually happens when those steps are followed
 - \`expected_behavior\` — what the user/system should see instead
+- \`acceptance_criteria\` — bugs need AC just like stories and tasks. Phrase \
+each criterion as a verifiable post-fix condition (typically the inverse of \
+the bug: the broken behaviour now works as expected, no regression in adjacent \
+flows, etc.). If AC is missing or empty, ALWAYS emit a suggested_edit — never \
+skip it on the assumption that "expected_behavior covers it".
 
 If the existing \`description\` field contains content that belongs in another \
 bug field, MOVE it rather than duplicate it:

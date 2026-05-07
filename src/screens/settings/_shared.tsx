@@ -16,16 +16,57 @@ import {
     setNotifyPrTaskAdded,
     setPrReviewDefaultChunkChars,
     setPrTasksPollIntervalMinutes,
-    setStreamingPartialsEnabled,
     setWorkloadOverloadThresholdPct,
 } from "@/lib/appPreferences";
 import { BackgroundRenderer } from "@/lib/backgrounds/_registry";
 import { clearMeetingsEmbeddings } from "@/lib/tauri/meetings";
+import { setPreference } from "@/lib/preferences";
 import { setRuntimeOverloadPct } from "@/lib/workloadClassifier";
 import { useAiDebugStore } from "@/stores/aiDebugStore";
-import { setStreamingPartialsEnabledRuntime } from "@/stores/implementTicket/listeners";
 import { AlertCircle, CheckCircle, Loader2 } from "lucide-react";
 import { useEffect, useState } from "react";
+import { toast } from "sonner";
+
+/**
+ * Debounce a string-value pref write so the on-disk file isn't hammered
+ * on every keystroke. Skips the write on the first render (so the
+ * initial hydrate doesn't immediately re-save the values it just loaded)
+ * and on the value the field was hydrated with.
+ *
+ * `transform` lets callers post-process before writing — used to default
+ * blanks (e.g. base branch falls back to "develop"). `onSaved` fires
+ * after each successful write so the parent can refresh its
+ * "configured?" badge without polling.
+ */
+export function useDebouncedPrefSave(opts: {
+  hydrated: boolean;
+  prefKey: string;
+  value: string;
+  hydratedValue: string;
+  transform?: (raw: string) => string;
+  onSaved?: () => void;
+  delayMs?: number;
+}) {
+  const { hydrated, prefKey, value, hydratedValue, transform, onSaved } = opts;
+  const delayMs = opts.delayMs ?? 400;
+  useEffect(() => {
+    if (!hydrated) return;
+    if (value === hydratedValue) return;
+    const final = transform ? transform(value) : value;
+    const id = setTimeout(() => {
+      void setPreference(prefKey, final)
+        .then(() => onSaved?.())
+        .catch((err) =>
+          toast.error(`Failed to save ${prefKey}`, { description: String(err) }),
+        );
+    }, delayMs);
+    return () => clearTimeout(id);
+    // hydratedValue / transform / onSaved are intentionally omitted so
+    // changing their identity each render doesn't fire spurious saves;
+    // the value identity is what gates the actual write.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [value, hydrated, prefKey, delayMs]);
+}
 
 export const MASKED_SENTINEL = "••••••••";
 
@@ -227,12 +268,6 @@ export function useAppPreferencesEditor() {
           break;
         case "prTasksPollIntervalMinutes":
           await setPrTasksPollIntervalMinutes(value as number);
-          break;
-        case "streamingPartialsEnabled":
-          await setStreamingPartialsEnabled(value as boolean);
-          // Update the runtime gate immediately so the next pipeline
-          // event respects the new setting without an app restart.
-          setStreamingPartialsEnabledRuntime(value as boolean);
           break;
         case "workloadOverloadThresholdPct":
           await setWorkloadOverloadThresholdPct(value as number);

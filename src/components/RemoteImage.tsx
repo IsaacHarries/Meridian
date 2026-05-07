@@ -46,6 +46,27 @@ function isInlineRenderable(url: string): boolean {
   return url.startsWith("data:");
 }
 
+/** Derive a human-readable display label for a failed image. Markdown
+ *  authored in JIRA / Bitbucket usually carries a useful `alt` (the
+ *  filename), but when it's missing — e.g. JIRA's
+ *  `/rest/api/3/attachment/content/{id}` URLs that the AI didn't turn
+ *  into a wiki-link — fall back to the URL's last path segment so the
+ *  user has something to hover over instead of generic "failed to load"
+ *  text. data: URIs collapse to a fixed label since the URL itself
+ *  carries no useful filename. */
+function getDisplayName(src: string, alt: string | undefined): string {
+  if (alt && alt.trim()) return alt;
+  if (src.startsWith("data:")) return "embedded image";
+  try {
+    const u = new URL(src);
+    const last = u.pathname.split("/").filter(Boolean).pop();
+    if (last) return decodeURIComponent(last);
+  } catch {
+    /* not a parseable URL — fall through to the generic label */
+  }
+  return "image failed to load";
+}
+
 export function RemoteImage({
   src,
   alt,
@@ -99,11 +120,11 @@ export function RemoteImage({
   if (error) {
     return (
       <span
-        className="inline-flex items-center gap-1 text-xs text-muted-foreground border rounded px-1.5 py-0.5 align-middle"
+        className="inline-flex items-center gap-1 text-xs text-muted-foreground border rounded px-1.5 py-0.5 align-middle cursor-help"
         title={error}
       >
         <ImageOff className="h-3 w-3" />
-        {alt || "image failed to load"}
+        {getDisplayName(src, alt)}
       </span>
     );
   }
@@ -126,6 +147,16 @@ export function RemoteImage({
         "block max-w-full h-auto my-1 rounded border border-border/50"
       }
       draggable={false}
+      // The proxy fetch can succeed yet the bytes still fail to render
+      // (truncated content, mismatched contentType, malformed PNG). Flip
+      // to the failure span instead of letting the webview show its
+      // default broken-image icon — keeps the filename + hover tooltip
+      // contract consistent across every failure mode.
+      onError={() =>
+        setError(
+          "Image bytes loaded but the browser couldn't render them (corrupt file or unsupported format).",
+        )
+      }
     />
   );
 }

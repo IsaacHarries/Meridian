@@ -98,8 +98,8 @@ pub use repo::{
     glob_grooming_files, glob_repo_files, grep_grooming_files, grep_repo_files,
     push_pr_address_branch, push_worktree_branch, read_grooming_file, read_pr_address_file,
     read_repo_file, run_in_terminal, squash_worktree_commits, sync_grooming_worktree, sync_worktree,
-    validate_grooming_worktree, validate_pr_address_worktree, validate_pr_review_worktree,
-    validate_worktree,
+    validate_base_branch, validate_grooming_worktree, validate_pr_address_worktree,
+    validate_pr_review_worktree, validate_source_repo, validate_worktree,
     write_pr_address_file, write_repo_file,
 };
 pub use skills::{delete_agent_skill, load_agent_skills, save_agent_skill};
